@@ -375,28 +375,6 @@ def test_title_helpers():
     assert branding.tagged("x.bin") == "x.bin (%s)" % branding.APP_NAME
 
 
-def test_old_package_name_still_imports_but_warns():
-    import importlib
-    import sys
-    for mod in [m for m in sys.modules if m.startswith("edc16tuner")]:
-        del sys.modules[mod]
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        shim = importlib.import_module("edc16tuner")
-    import ovtsuite
-    assert shim is ovtsuite
-    assert any(issubclass(c.category, DeprecationWarning) for c in caught)
-
-
-def test_old_submodule_import_fails_loudly():
-    """Aliasing submodules would execute them a second time and give two copies
-    of every class; the shim refuses instead, naming the replacement."""
-    import edc16tuner            # noqa: F401  (installs the finder)
-    with pytest.raises(ImportError) as exc:
-        __import__("edc16tuner.model")
-    assert "ovtsuite.model" in str(exc.value)
-
-
 # ---------------------------------------------------------------------------
 # Carrying user data across the rename
 # ---------------------------------------------------------------------------

@@ -65,9 +65,6 @@ BASE_FILES = [
     "LICENSE", "LEGAL.md", "README.md", "CONTRIBUTING.md", "AGENTS.md",
     "pyproject.toml", "build.ps1", "build_linux.sh",
     ".gitattributes", ".gitignore", ".github/FUNDING.yml",
-    # branding: legacy-names-begin -- the old package's import shim
-    "edc16tuner/*",
-    # branding: legacy-names-end
     "packaging/*",
     "addons/README.md", "addons/addons.json",
     "docs/HELP.md", "docs/MODULES_PLAN.md", "docs/MODULE_SDK_DESIGN.md",
@@ -191,9 +188,7 @@ def _match(path: str, globs) -> bool:
 
 def _module_import(specs):
     ids = "|".join(sorted(specs))
-    # branding: legacy-names-begin -- the old package name still imports
-    pkgs = "%s|edc16tuner" % PKG
-    # branding: legacy-names-end
+    pkgs = PKG
     return re.compile(
         r"\b(?:%s)[./](?:%s)\b|from\s+(?:%s|\.\.?)\s+import\s+[^\n]*\b(?:%s)\b"
         % (pkgs, ids, PKG, ids))

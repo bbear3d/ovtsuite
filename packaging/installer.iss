@@ -54,33 +54,10 @@ AppVerName={#AppName} {#AppVersion}
 VersionInfoVersion={#AppVersion}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
-; branding: legacy-names-begin -- this whole block is about the install that
-; came BEFORE this one, so its names must not follow a rename.
-; Inno's default behavior on a same-AppId upgrade (UsePreviousAppDir/
-; UsePreviousGroup, both Yes -- left at their default here, not overridden)
-; is to keep reusing whatever directory/group the ORIGINAL install used,
-; ignoring DefaultDirName/DefaultGroupName above entirely. That's exactly why
-; the edc16tuner -> ovtsuite rename left Bear's install living under a folder
-; and Start Menu group still literally named "EDC16-Tuner" even after every
-; release since -- but it's also the RIGHT behavior for a directory/group the
-; user genuinely picked by hand, which a blanket override would have broken
-; on every future upgrade, rename or not. So this is handled surgically
-; instead, in [Code]'s CurPageChanged: the wizard's pre-filled directory/
-; group fields are redirected to the current default ONLY when they are
-; EXACTLY the old product's own default location/name -- anything else
-; (a custom drive, a custom subfolder, a custom group) is left untouched, on
-; this upgrade and every future one.
-;
-; The GROUP is different: DisableProgramGroupPage=yes below means the Select
-; Start Menu Folder page is NEVER shown, so CurPageChanged's redirect (which
-; only runs when a page is actually about to display) can never fire for
-; wpSelectProgramGroup -- Inno still silently resolves {group} from
-; UsePreviousGroup even with the page hidden, so leaving it at the default
-; Yes reused the OLD "EDC16-Tuner" group with nothing able to catch it. But a
-; page the user never sees is also a page they could never have used to pick
-; a custom group name, so there is no customization to preserve here the way
-; there is for the directory -- forcing it off costs nothing.
-; branding: legacy-names-end
+; An upgrade keeps the previous install's directory (UsePreviousAppDir) but not
+; its Start Menu group: the Select Start Menu Folder page is never shown
+; (DisableProgramGroupPage), so no group can have been chosen by hand, and a
+; past release's group would keep that release's name.
 UsePreviousGroup=no
 UninstallDisplayName={#AppName} {#AppVersion}
 UninstallDisplayIcon={app}\{#AppExeName}
@@ -228,20 +205,6 @@ Type: filesandordirs; Name: "{localappdata}\OVTSuite"
 ; app are left: they may serve an OVT Tools install as well.
 Type: filesandordirs; Name: "{app}\modules"
 
-; branding: legacy-names-begin
-; No [InstallDelete] for the old executables. Renaming has happened once and may
-; happen again, so there is a LIST of names to clean rather than one, and this
-; section cannot loop -- RemoveOldExecutables in [Code] does it instead, at
-; ssInstall, which is still before this version's own files are laid down. Why it
-; has to happen at all: the rename kept this installer's AppId GUID on purpose, so
-; Windows treats installing {#AppName} over an older install as an upgrade and
-; reuses the same {app} directory -- but [Files] only ever adds or overwrites the
-; entries THIS script declares, so a previous release's exe under its OLD name is
-; never removed by that reconciliation. EDC16Tuner.exe was found still sitting in
-; {app}, fully launchable, indefinitely, long after every real fix had shipped
-; under the new name.
-; branding: legacy-names-end
-
 ; The add-ons: optional downloads (the EDC16 boot-sector database, FTDI's USB
 ; driver) and marking the bundled modules' agreement accepted -- see each file.
 ; Included here, before [Code], because a ';' comment is not valid inside
@@ -258,16 +221,12 @@ Type: filesandordirs; Name: "{app}\modules"
 #endif
 
 [Code]
-// Every release this installer may find in the field, newest first, as product
-// name and executable base name. GENERATED: tools/rename_package.py prepends a
-// row on each rename, and tests/test_branding.py fails if this list and
-// branding.LEGACY_RELEASES disagree -- the installer cannot import the package,
-// so a test is the only thing holding the two together.
-//
-// The names in here must survive a rename, which is what the markers are for. A
-// rename that rewrote them would point the cleanup at the install being laid
-// down: the Start Menu group deleted below becomes the one [Icons] just created,
-// which is exactly the failure the comments here record.
+// Every past release this installer may find in the field, newest first, as
+// product name and executable base name. GENERATED: tools/rename_package.py
+// adds a row on each rename, and tests/test_branding.py fails if this list and
+// branding.LEGACY_RELEASES disagree (the installer cannot import the package).
+// The one past name is the pre-release name of the author's own early installs,
+// kept so those machines upgrade cleanly into the current folder.
 // branding: legacy-names-begin
 function LegacyReleaseCount(): Integer;
 begin
@@ -290,29 +249,18 @@ begin
   end;
 end;
 
-// A release's own DEFAULT install directory and Start Menu group -- NOT a guess:
-// DefaultDirName has always been {autopf}\{#AppName} and DefaultGroupName
-// {#AppName}, so a past release's default location is {autopf}\<its app name>
-// and its group is that name.
+// A past release's default install directory: DefaultDirName has always been
+// {autopf}\<product name>.
 function OldDefaultDir(I: Integer): String;
 begin
   Result := ExpandConstant('{autopf}\') + LegacyAppName(I);
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
-// Directory only: DisableProgramGroupPage=yes means wpSelectProgramGroup is
-// never the current page, so a matching branch here would just never run --
-// the group is instead forced deterministically via UsePreviousGroup=no in
-// [Setup] (see the comment there). Fires as the directory page is about to
-// be shown -- by then Inno has already pre-filled DirEdit from the previous
-// same-AppId install (UsePreviousAppDir, left at its normal Yes default).
-// Comparing case-insensitively and only against the exact old DEFAULT path
-// -- never a substring or partial match -- means a directory the user
-// genuinely customized, including one that happens to merely CONTAIN a past
-// product name somewhere in a longer custom path, is left completely alone;
-// only the untouched-default case (the one Bear actually hit) gets nudged onto
-// the new name. Every past release is checked, not just the most recent one: an
-// install that sat out a rename is exactly the one still on an old default.
+// An upgrade over a past release pre-fills the directory page with that
+// release's directory (UsePreviousAppDir). Only an untouched DEFAULT directory
+// of a past name is moved to the current default; a directory the user chose
+// is left alone.
 var
   I: Integer;
 begin
@@ -330,31 +278,10 @@ begin
   end;
 end;
 
-// See [InstallDelete] above for the {app}-reuse half of this. The other half
-// is Start Menu/desktop shortcuts: the old installer's [Icons] section used
-// the group name "EDC16-Tuner" (DefaultGroupName back then) and its own
-// desktop shortcut named "EDC16-Tuner.lnk" -- both a different GROUP and a
-// different FILENAME than this script's current {#AppName}, so Inno never
-// recognizes them as "the same icon, just renamed" and never touches them on
-// upgrade. A shortcut or taskbar pin still pointing at the old name then
-// kept launching genuinely stale code indefinitely, completely silently --
-// this is what actually caused what looked for a while like a persistent GUI
-// bug (the ECU dropdown appearing stuck disabled): whatever fix shipped
-// never had a chance to run, because the shortcut in use never pointed at
-// the build that contained it. Both per-user and all-users locations are
-// cleaned since PrivilegesRequiredOverridesAllowed lets the install mode
-// differ from whatever the original EDC16-Tuner install used.
 procedure RemoveOldStartMenuEntries();
-// Guarded the same way RemoveOldInstallDir already was, and for the same
-// reason: never delete a path that is ALSO where {group} (this run's own,
-// now-forced-deterministic Start Menu folder) actually points, however that
-// came to be true. This is what the first version of this fix got wrong --
-// with UsePreviousGroup left at its default and DisableProgramGroupPage
-// hiding the page my redirect relied on, {group} silently stayed
-// "EDC16-Tuner" too, so this DelTree call erased the very folder [Icons]
-// had just created the CURRENT shortcuts in. UsePreviousGroup=no in [Setup]
-// is the actual fix for that; this guard means a similarly wrong assumption
-// here can never again delete a folder that's genuinely still in use.
+// A past release's Start Menu group and desktop shortcut carry its old name,
+// so Inno never treats them as this release's. Remove them, per user and for
+// all users, but never the group this run installs into.
 var
   I: Integer;
   name, oldUser, oldCommon, group: String;
@@ -375,17 +302,8 @@ begin
 end;
 
 procedure RemoveOldInstallDir();
-// Covers two cases with one check: (a) CurPageChanged above redirected a
-// stale-default DirEdit value, so {app} is now the fresh {autopf}\{#AppName}
-// and the old "EDC16-Tuner" directory is redundant (everything needed
-// has already been copied into the new location by the time ssPostInstall
-// fires); (b) some other reason left an abandoned EDC16-Tuner directory
-// sitting alongside a CURRENT install that is already correctly named (nothing
-// to redirect, so nothing to lose by also checking here). Either way, this
-// never touches {app} itself -- see the CompareText guard below -- so a
-// genuinely still-in-use custom-named directory is never at risk. Checked
-// under both program-files roots since PrivilegesRequiredOverridesAllowed
-// lets per-user vs all-users differ between the old install and this one.
+// A past release's default install directory left beside this install, in
+// either program-files root. Never {app} itself.
 var
   I: Integer;
   name, d: String;
