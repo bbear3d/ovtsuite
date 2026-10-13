@@ -272,7 +272,7 @@ program blocks.
 ### Reading and writing
 
 <p align="center">
-  <img src="ovtsuite/data/help/images/flash-edc16.png" alt="The ECU read/write dialog set up for an EDC16 over a direct FTDI K-line cable" width="560">
+  <img src="docs/images/readme-flash.png" alt="The ECU read/write dialog set up for an EDC16 over a direct FTDI K-line cable" width="620">
 </p>
 
 - **Two ways to run it:** **Tools > ECU read / write** in the main app, or
