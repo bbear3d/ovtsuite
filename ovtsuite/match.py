@@ -88,13 +88,19 @@ REF_BINARIES = {
     # dataset-id reads a different project than the file structurally matches, and the
     # mismatch group is large/consistent enough to verify its own address layout. Also
     # deliberately NOT in ovtsuite.kb.FAMILIES -- reached only via _DATASET_ID_SUBFAMILY.
-    "u1_379u85b6": "u1_379u85b6_ref.bin",   # 379U85B6 (parent p350, 456/44 files consistent)
+    # 379U85B6: since 2026-10-13 from the Bosch A2L for 03G906016FK 9971
+    # (99.5 % on all U85B6 files), generate_kb_definition.py
+    "u1_379u85b6": "u1_379u85b6_ref.bin",
     # P447HAXE: since 2026-10-13 from the Bosch A2L C447HAXE_00 (address-exact
     # on all 39 HAXE files), tools/generate_kb_definition.py
     "p447_haxe": "p447_haxe_ref.bin",
     # P447HABB / P447HAS9: address-exact definitions, generate_kb_definition.py
     "p447_habb": "03G906021AN_P447HABB_ref.bin",   # A2L C447HABB_00
     "p447_has9": "03G906021SC_P447HAS9_ref.bin",   # XDF for 03G906021SC
+    # EDC16U1 / U31 address-exact definitions, generate_kb_definition.py
+    "u1_379u85b2": "03G906016AA_U85B2_from_A2L_HEX.bin",   # A2L 03G906016AA 5928
+    "u1_379u8592": "03G906016B_U8592_from_OLS.bin",       # WinOLS DAMOS 03G906016B
+    "p475_u8aa": "03G906016GT_P475U8AA_ref.bin",          # A2L C475U8AA_00
     "p475_aasj": "p475_aasj_ref.bin",   # P475AASJ (parent p447_906016, 602/5 files consistent)
     "p475_uas8": "p475_uas8_ref.bin",   # P475UAS8 (parent p447_906016, 672/5 files consistent)
     "p447_hbxb": "p447_hbxb_ref.bin",   # P447HBXB (parent p447, 641/5 files consistent)
@@ -391,7 +397,47 @@ def match(kb: Kb, tgtdata: bytes, region: tuple, progress=None) -> MatchResult:
                         repaired.append(Anchor(a.ref_addr, want, a.name))
                         continue
         repaired.append(a)
-    res.anchors = _lis_filter(sorted(repaired, key=lambda a: a.ref_addr))
+    def _any_struct(tab: KbTable, pos: int) -> bool:
+        # a structure of this table's kind at all: an A2L reserves the
+        # maximum size, so a re-calibrated table may hold one point more or
+        # fewer at the same header address (ASDrf_trqPush*_CUR: 8 points on
+        # 03G906016FK, 9 on HK 7000)
+        if tab.kind == "curve" or not contig.get(tab.name, True):
+            return try_curve(tgtdata, pos) is not None
+        return try_map(tgtdata, pos) is not None
+
+    # The same decoy, two or three tables long: a run of same-shaped
+    # neighbours (ASDrf_trqPull/Push*_CUR, four 8-point curves in a row)
+    # where each one's reference axis turns up uniquely at its neighbour's
+    # place. The run carries one offset, both sides of it agree on another,
+    # and every member has its own structure (or fingerprint) at the
+    # surrounding offset -- so the run is moved back as a whole. Checked
+    # against the A2Ls: 15 of 45 379U85B6 EDC16U1 files, 11 of 86
+    # P447HAXN and 4 of 38 P447HAXE files had such runs; all now exact.
+    A = sorted(repaired, key=lambda a: a.ref_addr)
+    i = 1
+    while i < len(A) - 1:
+        j = i
+        while j + 1 < len(A) and A[j + 1].offset == A[i].offset:
+            j += 1
+        if (j + 1 < len(A) and 1 < j - i + 2 <= 4
+                and A[i - 1].offset == A[j + 1].offset != A[i].offset):
+            p = A[i - 1].offset
+            moved = []
+            for a in A[i:j + 1]:
+                want = a.ref_addr + p
+                tab = kb_by_name.get(a.name)
+                fp = fps.get(a.name)
+                if tab is None or not 0 <= want < len(tgtdata):
+                    break
+                if not ((fp and bytes(tgtdata[want:want + len(fp)]) == fp)
+                        or _dims_ok(tab, want) or _any_struct(tab, want)):
+                    break
+                moved.append(Anchor(a.ref_addr, want, a.name))
+            else:
+                A[i:j + 1] = moved
+        i = j + 1
+    res.anchors = _lis_filter(A)
     model = OffsetModel(res.anchors)
 
     # ---- pass 2.5: structure-verify tables whose bytes changed ----------
