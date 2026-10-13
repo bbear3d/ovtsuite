@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+ <!-- 16-32 px version of ovt_project.svg: the same document and traces,
+      fewer and heavier, no lettering (it is unreadable this small). -->
+ <path d="M6 1.5 H20 L26.5 8 V29 a1.5 1.5 0 0 1 -1.5 1.5 H6 a1.5 1.5 0 0 1 -1.5 -1.5 V3 a1.5 1.5 0 0 1 1.5 -1.5z" fill="#122033"/>
+ <path d="M20 1.5 V7 a1 1 0 0 0 1 1 H26.5z" fill="#2c4466"/>
+ <g stroke="#39c5bb" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 9 H14 V14 H18"/><path d="M8 18 H11 V23 H16"/>
+ </g>
+ <g fill="#39c5bb"><circle cx="19" cy="14" r="2"/><circle cx="17" cy="23" r="2"/></g>
+</svg>

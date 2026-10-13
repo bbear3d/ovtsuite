@@ -1,0 +1,13 @@
+{
+ "_comment": "Reference files the screenshot recipes open, relative to the repository. None of them ship; a recipe whose file is missing is skipped.",
+ "edc16_lq": "Reference/Binaries/03G906016LQ.bin",
+ "edc16_q": "Reference/Binaries/038906016Q.Bin",
+ "edc15_bd": "Reference/Binaries/EDC15/038906012BD.bin",
+ "zf6hp19": "Reference/ZF6HP/OEM/4F1910156A__0030.sgo.bin",
+ "zf6hp28_tdi": "Reference/ZF6HP/3.0TDI-Stock.bin",
+ "zf8hp": "Reference/ZF8HP/OEM/8K0927158K__1014.frf.bin",
+ "aisin09d": "Reference/Aisin09D/09D927750HN_3403.bin",
+ "vdo_vwk501": "Reference/VDO/Samples/VWK501-FIS-Diesel-A4-UK-Base.bin",
+ "hvac_4f": "Reference/Binaries/4F0910043B___0080-hotseats-code12fix-v2.hvac",
+ "log_6hp19": "Reference/Logs/6hp19-tdi20-HALF-6-8_20261008_162724-discover.csv"
+}

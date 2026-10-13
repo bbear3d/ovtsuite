@@ -1,0 +1,38 @@
+[project]
+name = "ovtsuite"
+dynamic = ["version"]
+description = "Cross-platform tuner for Bosch EDC16, Bosch EDC15 and ZF 6HP VW-group ECU and TCU binaries"
+requires-python = ">=3.9"
+readme = "README.md"
+# The base app only; the closed-source modules carry their own EULA
+# (ovtsuite/modules/EULA.txt) and are not part of this distribution.
+license = {text = "MPL-2.0"}
+authors = [{name = "Blair Campbell"}]
+classifiers = [
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+ovtsuite = "ovtsuite.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# The version has one source: ovtsuite/branding.py. See tools/rename_package.py.
+[tool.setuptools.dynamic]
+version = {attr = "ovtsuite.branding.__version__"}
+
+# Discovered rather than listed: the previous hand-written list named only
+# ovtsuite and ovtsuite.edc15, so an installed copy silently shipped without
+# flash/, datalog/ and sniff/.
+[tool.setuptools.packages.find]
+include = ["ovtsuite*"]
+
+[tool.setuptools.package-data]
+ovtsuite = ["data/*.json.gz", "data/*.json", "data/*.ico", "data/*.txt",
+            "data/licenses/*.txt", "data/help/*.md", "data/help/*.json",
+            "data/help/**/*", "*/help/*.md", "*/help/**/*"]

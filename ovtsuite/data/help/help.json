@@ -1,0 +1,4 @@
+{
+ "_comment": "online_url: where the website built by tools/build_wiki.py is published (e.g. https://example.com/ovt-suite/help). Empty hides the help window's 'Open online' button.",
+ "online_url": ""
+}

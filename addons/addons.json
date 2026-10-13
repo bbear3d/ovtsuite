@@ -1,0 +1,15 @@
+{
+ "_comment": "Optional downloads the Windows installers offer (packaging/addon_bootdb.iss, packaging/addon_ftdi.iss). They are NOT shipped inside any installer: the installer downloads each from its url and checks its SHA-256 -- the sha256 pinned here, else that of the file of that name in this folder, computed by build.ps1 at build time. An empty url, or no hash, means the installers do not offer it.",
+ "edc16_bootdb": {
+  "file": "edc16_bootdb.bin",
+  "url": ""
+ },
+ "ftdi_driver": {
+  "_comment": "FTDI's CDM driver 2.12.36.20 (ftdibus + ftdiport, D2XX included) as Microsoft's Update Catalog publishes it (catalog entry 'FTDI - USB - 2.12.36.20', update 0d361860-6a8b-42f9-a22f-6499571bae54), signed by Microsoft. ftdichip.com cannot be used: its Cloudflare check refuses every download that is not a browser.",
+  "file": "ftdi-cdm-2.12.36.20.cab",
+  "url": "https://catalog.s.download.windowsupdate.com/d/msdownload/update/driver/drvs/2025/10/3c6ba1b9-6ca5-4e0a-903e-d60cfcf0c09c_04780a77d96c6214457450540118639a2b542f31.cab",
+  "version": "2.12.36.20",
+  "sha256": "b9d9e8d3a0de3a0d29886141db3ee87856e0a8edbbeeadaaf52c37d5a2ec51f8",
+  "size_mb": 2
+ }
+}

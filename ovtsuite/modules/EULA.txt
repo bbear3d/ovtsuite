@@ -1,0 +1,71 @@
+OVT-SUITE MODULE LICENCE AGREEMENT
+Copyright (c) 2026 Blair Campbell
+
+This agreement is between you and Blair Campbell ("the Author"). It covers
+the OVT-Suite control-unit modules and checksum modules the Author publishes
+as closed source ("the Module"): their program code, data and documentation.
+It does not cover the OVT-Suite base application, which is free software
+under the Mozilla Public License 2.0, or any module published under an
+open-source licence. Installing or using the Module means you accept this
+agreement. If you do not accept it, do not install or use the Module.
+
+1. LICENCE. The Author grants you a non-exclusive, non-transferable licence
+   to install and use the Module, with OVT-Suite or OVT Tools, on computers
+   you own or control, for your own work on vehicles, including work you do
+   for customers. Any future paid or keyed edition may limit the number of
+   installations; its terms will be stated when you obtain it.
+
+2. RESTRICTIONS. Except as permitted by section 4 or by law, you may not:
+   (a) copy, publish, sell, rent, lend or redistribute the Module, alone or
+       bundled with other software, other than one backup copy;
+   (b) modify the Module, or build products from it, beyond what the
+       application itself lets you do;
+   (c) remove or alter its copyright notices, signature or this agreement;
+   (d) use the Module to defeat, remove or disable emissions controls on a
+       vehicle used on public roads, or in any other unlawful way.
+   Tunes, files and definitions you make with the Module are yours.
+
+3. OWNERSHIP. The Module is licensed, not sold. The Author keeps all rights
+   not expressly granted here.
+
+4. THIRD-PARTY COMPONENTS. Parts of the Module may be third-party works under
+   their own licences (for example MIT, BSD, Apache-2.0 or LGPL). They are
+   listed with their licence texts in the Module and in Help > Credits &
+   licences. Those licences, not this agreement, govern those parts. Where a
+   component is under the GNU LGPL, nothing here limits your rights under it,
+   including modifying that component, replacing it with a modified version,
+   and reverse engineering to debug such modifications.
+
+5. NO WARRANTY. THE MODULE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NON-INFRINGEMENT. Reading, writing and modifying
+   control units can damage them and the vehicle. You use the Module at your
+   own risk, and you are responsible for keeping backups of original data.
+
+6. LIMITATION OF LIABILITY. TO THE EXTENT THE LAW ALLOWS, THE AUTHOR IS NOT
+   LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES, OR
+   FOR DAMAGE TO VEHICLES, CONTROL UNITS, ENGINES OR TRANSMISSIONS, LOSS OF
+   DATA, OR LOSS OF USE, ARISING FROM THE MODULE, EVEN IF ADVISED OF THEIR
+   POSSIBILITY. THE AUTHOR'S TOTAL LIABILITY IS LIMITED TO THE AMOUNT YOU
+   PAID FOR THE MODULE, IF ANY. Some places do not allow these limits, and
+   then they apply only as far as the law allows.
+
+7. LAWFUL USE. Modifying a vehicle's engine or transmission controller may
+   affect its warranty, insurance, emissions compliance and roadworthiness.
+   You are responsible for using the Module only where and how the law
+   allows.
+
+8. TRADEMARKS. Volkswagen, Audi, Bosch, ZF, Aisin, VDO and other names are
+   trademarks of their owners, used only to describe compatibility. The
+   Author is not affiliated with or endorsed by them.
+
+9. TERMINATION. This licence ends automatically if you break this
+   agreement. You must then delete every copy of the Module. Sections 3 to 6
+   and 9 to 10 survive termination.
+
+10. GENERAL. This is the whole agreement about the Module and replaces any
+    earlier one. If any part cannot be enforced, the rest stays in effect.
+    It is governed by the laws of the Province of British Columbia and the
+    federal laws of Canada that apply there, without regard to
+    conflict-of-law rules, and the courts of British Columbia have
+    jurisdiction over any dispute about it.

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+ <!-- The .ovt project file icon (concept I, chosen by Bear 2026-10-11):
+      a dark document, circuit traces ending in nodes, "OVT". -->
+ <path d="M52 16 H164 L212 64 V232 a8 8 0 0 1 -8 8 H52 a8 8 0 0 1 -8 -8 V24 a8 8 0 0 1 8 -8z" fill="#122033"/>
+ <path d="M164 16 V56 a8 8 0 0 0 8 8 H212z" fill="#2c4466"/>
+ <g stroke="#39c5bb" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M72 60 H120 V100 H150"/><path d="M72 92 H100 V140 H176"/><path d="M72 124 H88 V178 H130"/>
+ </g>
+ <g fill="#39c5bb"><circle cx="150" cy="100" r="9"/><circle cx="176" cy="140" r="9"/><circle cx="130" cy="178" r="9"/></g>
+ <text x="128" y="224" font-family="DejaVu Sans, Segoe UI, Arial, sans-serif" font-weight="bold" font-size="32" fill="#ffffff" text-anchor="middle">OVT</text>
+</svg>

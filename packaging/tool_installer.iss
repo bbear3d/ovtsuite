@@ -1,0 +1,195 @@
+; SPDX-License-Identifier: MPL-2.0
+; Copyright (c) 2026 Blair Campbell
+; This Source Code Form is subject to the terms of the Mozilla Public
+; License, v. 2.0. If a copy of the MPL was not distributed with this
+; file, You can obtain one at https://mozilla.org/MPL/2.0/.
+; Inno Setup script for the standalone tools WITHOUT the main OVT-Suite app:
+; one tool (flasher, sniffer, logger), or all three together (tools).
+;
+; build.ps1 -Installers flasher,sniffer,logger,tools passes the tool and the
+; usual version / folder / output defines:
+;
+;   ISCC.exe /DTool=flasher /DAppVersion=0.3.0 /DSourceDir=..\dist\OVTSuite ^
+;            /DOutputDir=..\dist /DOutputName=OVTFlasher-0.3.0-setup ^
+;            packaging\tool_installer.iss
+;
+; It ships the same one-folder build as the main installer, minus OVTSuite.exe
+; and the other tools' launchers: what is installed can only start its tool.
+; Each product has its own AppId, so it installs, upgrades and uninstalls on
+; its own, beside or without the main app.
+;
+; MODULES: the tools work for every control module, but correcting a checksum
+; needs that module (docs/MODULES_PLAN.md). When build.ps1 passes
+; /DModulesInclude=<generated .iss>, every module's small checksum-only variant
+; is offered as a component, all ticked; the full modules (definitions, the
+; editor) are for OVT-Suite and are not offered here.
+
+#ifndef Tool
+  #define Tool "flasher"
+#endif
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
+#ifndef SourceDir
+  #define SourceDir "..\dist\OVTSuite"
+#endif
+#ifndef OutputDir
+  #define OutputDir "..\dist"
+#endif
+#ifndef SetupCompression
+  #define SetupCompression "lzma2/max"
+#endif
+
+#define MainExe "OVTSuite.exe"
+#include "tools.iss"
+
+#define WithFlasher (Tool == "flasher" || Tool == "tools")
+#define WithSniffer (Tool == "sniffer" || Tool == "tools")
+#define WithLogger  (Tool == "logger"  || Tool == "tools")
+
+; Per product: name, a stable AppId (never change one: it is what makes the
+; next version an upgrade), the exe it is "about", and the setup's own icon.
+#if Tool == "flasher"
+  #define ProductName FlasherName
+  #define ProductGuid "E1DD9158-B43B-4FBB-B7C2-E286F8C7ED5B"
+  #define ProductExe  FlasherExe
+  #define ProductIcon "ovtsuite_flasher.ico"
+#elif Tool == "sniffer"
+  #define ProductName SnifferName
+  #define ProductGuid "2D8987A3-4BB9-453E-B874-E656EFC3E541"
+  #define ProductExe  SnifferExe
+  #define ProductIcon "ovtsuite_sniffer.ico"
+#elif Tool == "logger"
+  #define ProductName LoggerName
+  #define ProductGuid "F1DAC2AA-B8F8-4E30-97C3-23FD67A925C8"
+  #define ProductExe  LoggerExe
+  #define ProductIcon "ovtsuite_logger.ico"
+#elif Tool == "tools"
+  #define ProductName "OVT Tools"
+  #define ProductGuid "F8C48995-BA97-43C5-AF25-531EE44B3A17"
+  #define ProductExe  FlasherExe
+  #define ProductIcon "ovtsuite.ico"
+#else
+  #error Tool must be flasher, sniffer, logger or tools
+#endif
+
+#ifndef OutputName
+  #define OutputName StringChange(ProductName, " ", "") + "-setup"
+#endif
+
+; A single tool's shortcut goes straight in the Start menu; the three together
+; get a folder of their own.
+#if Tool == "tools"
+  #define ShortcutDir "{group}"
+#else
+  #define ShortcutDir "{autoprograms}"
+#endif
+
+; Everything in the build except the main app and the launchers of tools this
+; product does not include. Leading "\" anchors each to the build's top level.
+#define Excl "\" + MainExe
+#if !WithFlasher
+  #define Excl Excl + ",\" + FlasherExe
+#endif
+#if !WithSniffer
+  #define Excl Excl + ",\" + SnifferExe
+#endif
+#if !WithLogger
+  #define Excl Excl + ",\" + LoggerExe
+#endif
+; the build's modules folder holds every FULL module; this product takes only
+; their checksum variants, as components (ModulesInclude below)
+#define Excl Excl + ",\modules"
+
+[Setup]
+AppId={{{#ProductGuid}}
+AppName={#ProductName}
+AppVersion={#AppVersion}
+AppVerName={#ProductName} {#AppVersion}
+VersionInfoVersion={#AppVersion}
+DefaultDirName={autopf}\{#ProductName}
+DefaultGroupName={#ProductName}
+UsePreviousGroup=no
+DisableProgramGroupPage=yes
+UninstallDisplayName={#ProductName} {#AppVersion}
+UninstallDisplayIcon={app}\{#ProductExe}
+OutputDir={#OutputDir}
+OutputBaseFilename={#OutputName}
+Compression={#SetupCompression}
+SolidCompression=yes
+WizardStyle=modern
+SetupIconFile={#ProductIcon}
+PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+AllowNoIcons=yes
+; The licence. With modules on board (the full installer, the tools' checksum
+; modules) the License page is the module agreement, which must be accepted,
+; and OVT-Suite's own MPL-2.0 follows as information; without, the MPL-2.0.
+#ifdef ModulesInclude
+LicenseFile=..\ovtsuite\modules\EULA.txt
+InfoBeforeFile=..\LICENSE
+#else
+LicenseFile=..\LICENSE
+#endif
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Create &desktop shortcuts"; \
+    GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+[Files]
+Source: "{#SourceDir}\*"; Excludes: "{#Excl}"; DestDir: "{app}"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+
+#ifdef ModulesInclude
+  #include ModulesInclude
+#endif
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\modules"
+
+[Icons]
+#if WithFlasher
+Name: "{#ShortcutDir}\{#FlasherName}"; Filename: "{app}\{#FlasherExe}"; \
+    AppUserModelID: "{#FlasherAppId}"
+Name: "{autodesktop}\{#FlasherName}"; Filename: "{app}\{#FlasherExe}"; \
+    AppUserModelID: "{#FlasherAppId}"; Tasks: desktopicon
+#endif
+#if WithSniffer
+Name: "{#ShortcutDir}\{#SnifferName}"; Filename: "{app}\{#SnifferExe}"; \
+    AppUserModelID: "{#SnifferAppId}"
+Name: "{autodesktop}\{#SnifferName}"; Filename: "{app}\{#SnifferExe}"; \
+    AppUserModelID: "{#SnifferAppId}"; Tasks: desktopicon
+#endif
+#if WithLogger
+Name: "{#ShortcutDir}\{#LoggerName}"; Filename: "{app}\{#LoggerExe}"; \
+    AppUserModelID: "{#LoggerAppId}"
+Name: "{autodesktop}\{#LoggerName}"; Filename: "{app}\{#LoggerExe}"; \
+    AppUserModelID: "{#LoggerAppId}"; Tasks: desktopicon
+#endif
+
+#if Tool != "tools"
+[Run]
+Filename: "{app}\{#ProductExe}"; Description: "Launch {#ProductName}"; \
+    Flags: nowait postinstall skipifsilent
+#endif
+
+; The add-ons: optional downloads (the EDC16 boot-sector database for flasher
+; builds, FTDI's USB driver for every tool that talks to a K-line cable) and
+; marking the bundled modules' agreement accepted -- see each file. Each file
+; starts with ';' comments but may END inside its [Code], where they are not
+; valid, so an empty [Files] line re-opens a section first (a section may
+; appear any number of times).
+#if WithFlasher
+#include "addon_bootdb.iss"
+#endif
+[Files]
+#include "addon_ftdi.iss"
+#ifdef ModulesInclude
+[Files]
+#include "modules_eula.iss"
+#endif

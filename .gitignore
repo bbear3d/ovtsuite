@@ -1,0 +1,36 @@
+# build products and environments
+build/
+dist/
+.build-venv/
+.build-venv32/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# large reference material and generated output (kept on disk, not in history)
+Reference/
+generated/
+tunes/
+_to_delete/
+Claude outputs/
+*.log
+*.tmp
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# scratch: sync archives and session backups (kept on disk, not in history)
+_incoming/
+_session_backups/
+/*.tgz
+# machine-specific diagnostic output (the J2534 devices registered on this PC)
+tools/j2534logger/registryoutput.txt
+
+# downloaded add-on files the build only hashes (addons/README.md)
+addons/*.zip
+addons/*.cab

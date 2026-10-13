@@ -1,0 +1,289 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Blair Campbell
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+"""Definition snapshot (ovtsuite.defn): a container carries the resolved
+parameter table so reopening skips identification and matching -- and may
+never change the answer, only skip the work."""
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from conftest import BINARIES, ZF6HP_REFERENCE  # noqa: E402
+from ovtsuite import container as C  # noqa: E402
+from ovtsuite import defn as D  # noqa: E402
+from ovtsuite import history as H  # noqa: E402
+from ovtsuite.session import TunerSession  # noqa: E402
+
+EDC16 = os.path.join(BINARIES, "03G906016AB.bin")
+EDC15 = os.path.join(BINARIES, "EDC15", "038906012BD.bin")
+ZF = os.path.join(ZF6HP_REFERENCE, "3.0TDI-Stock.bin")
+
+
+def _need(p):
+    if not os.path.exists(p):
+        pytest.skip("%s not present" % os.path.basename(p))
+    return p
+
+
+def _same_model(a, b):
+    """Every entity, pairing key and platform attribute identical."""
+    for k in list(getattr(a, "_lazy", None) or ()):
+        getattr(a, k)
+    for k in list(getattr(b, "_lazy", None) or ()):
+        getattr(b, k)
+    ea = list(a.entities) + (list(a.variant_entities())
+                             if a.platform == "edc16" else [])
+    eb = list(b.entities) + (list(b.variant_entities())
+                             if b.platform == "edc16" else [])
+    ca, cb = D._Enc(ea, a.kb), D._Enc(eb, b.kb)
+    assert [D._erow(e) for e in ea] == [D._erow(e) for e in eb]
+    assert (sorted(json.dumps([ca.enc(k), ca.enc(e)["$e"]])
+                   for k, e in a.by_key.items())
+            == sorted(json.dumps([cb.enc(k), cb.enc(e)["$e"]])
+                      for k, e in b.by_key.items()))
+    skip = D._SKIP
+    for k, v in vars(a).items():
+        if k.startswith("_") or k in skip:
+            continue
+        assert json.dumps(ca.enc(v), sort_keys=True) == json.dumps(
+            cb.enc(vars(b)[k]), sort_keys=True), k
+
+
+def _saved(src, ext, tmp_path):
+    path = str(tmp_path / ("t" + ext))
+    s = TunerSession(src)
+    s.save(path, backup=False)
+    return path, s
+
+
+@pytest.mark.parametrize("src,ext", [(EDC16, ".edc16"), (EDC15, ".edc15"),
+                                     (ZF, ".6hp")])
+def test_a_reopened_container_uses_its_definition_and_changes_nothing(
+        src, ext, tmp_path):
+    path, built = _saved(_need(src), ext, tmp_path)
+    assert built.defn_state == "none"
+    again = TunerSession(path)
+    assert again.defn_state == "used"
+    assert again.platform == built.platform and again.family == built.family
+    _same_model(built, again)
+    # entities are wired to the live image, not to a copy of it
+    e = next(e for e in again.entities if e.kind in ("map", "curve"))
+    assert e.binfile is again.binfile
+
+
+def test_tuning_values_keeps_the_definition_valid(tmp_path):
+    path, _ = _saved(_need(EDC16), ".edc16", tmp_path)
+    s = TunerSession(path)
+    e = next(e for e in s.entities if e.name == "LIGov_nSetpointWarm_CUR")
+    s.edit_cells(e, [(0, 0, e.cell(0, 0) + 10)])
+    s.save(backup=False)
+    again = TunerSession(path)
+    assert again.defn_state == "used"
+    e2 = next(x for x in again.entities if x.name == e.name)
+    assert e2.cell(0, 0) == pytest.approx(e.cell(0, 0))
+
+
+def test_a_changed_structure_falls_back_to_the_normal_path(tmp_path):
+    path, built = _saved(_need(EDC16), ".edc16", tmp_path)
+    c = C.Container.load(path)
+    img = bytearray(c.external())
+    covered = sorted((e.addr, e.end) for e in built.entities)
+    # a byte no parameter cell owns: flip it as a code patch would
+    probe = next(a for a in range(0x20000, 0x60000, 0x101)
+                 if all(not (lo <= a < hi) for lo, hi in covered))
+    img[probe] ^= 0xFF
+    c.add(C.BLOCK_EXTERNAL, bytes(img))
+    c.save(path)
+    again = TunerSession(path)
+    assert again.defn_state == "image structure changed"
+    assert len(again.entities) == len(built.entities)   # built the slow way
+
+
+def test_a_structural_edit_in_the_session_is_not_snapshotted(tmp_path):
+    """A raw edit outside every cell and breakpoint (a count word, a header)
+    leaves the in-memory table describing the OLD bytes. Saving must not
+    snapshot it -- it would pass the mask check against the new bytes and
+    reopen with stale shapes. (2026-10-10: ASDdc_dnIntegLtdPos_MAP restored
+    4x4 -> 4x6 by raw bytes came back 4x4.)"""
+    path, built = _saved(_need(EDC16), ".edc16", tmp_path)
+    s = TunerSession(path)
+    assert s.defn_state == "used"
+    covered = sorted((e.addr, e.end) for e in s.entities)
+    probe = next(a for a in range(0x20000, 0x60000, 0x101)
+                 if all(not (lo <= a < hi) for lo, hi in covered))
+    s.edit_bytes(probe, bytes([s.binfile.data[probe] ^ 0xFF]))
+    assert D.build(s, bytes(s.binfile.data)) is None
+    s.save(backup=False)
+    again = TunerSession(path)
+    assert again.defn_state != "used"                    # parsed from the bytes
+    again.save(backup=False)                             # ... and re-snapshotted
+    assert TunerSession(path).defn_state == "used"
+
+
+@pytest.mark.parametrize("what", ["code", "data", "format"])
+def test_a_stale_definition_is_ignored(what, tmp_path, monkeypatch):
+    path, built = _saved(_need(EDC16), ".edc16", tmp_path)
+    if what == "code":
+        monkeypatch.setattr(D, "code_digest", lambda: "different")
+    elif what == "data":
+        monkeypatch.setattr(D, "data_digest", lambda: "different")
+    else:
+        monkeypatch.setattr(D, "FORMAT", D.FORMAT + 1)
+    again = TunerSession(path)
+    assert again.defn_state != "used" and again.defn_state != "none"
+    assert len(again.entities) == len(built.entities)
+
+
+def test_a_damaged_or_hostile_definition_cannot_break_or_run_anything(tmp_path):
+    path, built = _saved(_need(ZF), ".6hp", tmp_path)
+    c = C.Container.load(path)
+    snap = json.loads(c.get(C.BLOCK_DEFN).data)
+    # a node that names a class outside the package must be refused
+    snap["attrs"]["model"] = {"$o": 999, "c": "os:system", "f": {}}
+    c.add(C.BLOCK_DEFN, json.dumps(snap).encode())
+    c.save(path)
+    again = TunerSession(path)
+    assert again.defn_state.startswith("unreadable")
+    assert len(again.entities) == len(built.entities)
+    # garbage is no worse
+    c.add(C.BLOCK_DEFN, b"{not json")
+    c.save(path)
+    assert TunerSession(path).defn_state.startswith("unreadable")
+
+
+def test_an_explicit_family_ignores_the_definition(tmp_path):
+    path, built = _saved(_need(EDC16), ".edc16", tmp_path)
+    assert TunerSession(path, family=built.family).defn_state == "none"
+
+
+def test_a_container_without_a_definition_still_opens(tmp_path):
+    path, built = _saved(_need(EDC16), ".edc16", tmp_path)
+    c = C.Container.load(path)
+    c.remove(C.BLOCK_DEFN)
+    c.save(path)
+    again = TunerSession(path)
+    assert again.defn_state == "no snapshot"
+    assert len(again.entities) == len(built.entities)
+
+
+def test_the_definition_is_much_faster_than_building_it(tmp_path):
+    import time
+    path, _ = _saved(_need(ZF), ".6hp", tmp_path)
+    t = time.time()
+    TunerSession(ZF)
+    slow = time.time() - t
+    t = time.time()
+    TunerSession(path)
+    fast = time.time() - t
+    assert fast < slow / 3, "stored definition %.2fs vs built %.2fs" % (fast, slow)
+
+
+# -- another image of the same file shares the loaded definition -------------
+
+def _flip(s, *offsets):
+    data = bytearray(s.binfile.data)
+    for o in offsets:
+        data[o] ^= 0x5A
+    return bytes(data)
+
+
+@pytest.mark.parametrize("src", [EDC16, EDC15])
+def test_a_sibling_has_the_same_model_without_matching(src, tmp_path):
+    a = TunerSession(_need(src))
+    data = _flip(a, 0x1000, len(a.binfile.data) // 2)
+    sib = a.sibling(data)
+    p = str(tmp_path / ("x" + os.path.splitext(src)[1]))
+    with open(p, "wb") as fh:
+        fh.write(data)
+    _same_model(TunerSession(p), sib)
+    assert sib.defn_state == "shared"
+    assert bytes(sib.binfile.data) == data
+    assert all(e.binfile is sib.binfile for e in sib.entities)
+    assert all(e.binfile is a.binfile for e in a.entities)
+
+
+def test_a_sibling_is_independent_of_the_session_it_came_from():
+    a = TunerSession(_need(EDC16))
+    before = bytes(a.binfile.data)
+    sib = a.sibling(_flip(a, 0x2000))
+    sib.binfile.data[0x3000] ^= 0xFF
+    assert bytes(a.binfile.data) == before
+    assert sib.undo_stack is not a.undo_stack and sib.change_log == []
+    with pytest.raises(ValueError):
+        a.sibling(before[:-1])
+
+
+def test_a_zf_sibling_reads_its_own_cells_and_schedules(tmp_path):
+    a = TunerSession(_need(ZF))
+    sched = a.shift_schedules[0]
+    off = sched.addr + 3
+    data = _flip(a, off)
+    sib = a.sibling(data)
+    assert sib.defn_state == "shared"
+    mine = sib.shift_schedules[0]
+    assert mine is not sched and mine.binfile is sib.binfile
+    cells = lambda m: [m.cell(r, c) for r in range(m.rows)
+                       for c in range(m.cols)]
+    assert cells(mine) != cells(sched), "reads the edited image"
+    assert all(e.binfile is sib.binfile for e in sib.tcc_schedules)
+    p = str(tmp_path / "z.bin")
+    with open(p, "wb") as fh:
+        fh.write(data)
+    full = TunerSession(p)
+    assert [e.name for e in full.entities] == [e.name for e in sib.entities]
+    assert [m.addr for m in full.shift_schedules] == \
+        [m.addr for m in sib.shift_schedules]
+
+
+def test_a_history_version_reuses_the_loaded_definition():
+    from ovtsuite import patch as P
+    a = TunerSession(_need(EDC16))
+    s = P._session_from_bytes(_flip(a, 0x1000), a)
+    assert s.defn_state == "shared"
+
+
+def test_sibling_verify_rejects_a_different_structure():
+    a = TunerSession(_need(EDC16))
+    with pytest.raises(ValueError):
+        a.sibling(_flip(a, 0x1000), verify=True)
+
+
+def test_a_6hp_container_opens_a_saved_version_without_matching(tmp_path):
+    from ovtsuite import patch as P
+    path = str(tmp_path / "v.6hp")
+    s = TunerSession(_need(ZF))
+    s.save(path, backup=False)
+    s = TunerSession(path)
+    assert s.defn_state == "used"
+    m = s.shift_schedules[0]
+    s.edit_bytes(m.addr, bytes([s.binfile.data[m.addr] ^ 0x10]))
+    s.save(label="tweak")
+    vid = H.list_versions(s)[0]["id"]
+    ver = P.session_at_version(s, vid)
+    assert ver.defn_state == "shared"
+    assert ver.binfile.name.startswith("v.6hp @ ")
+
+
+def test_a_6hp_version_pairs_every_schedule_with_the_loaded_file(tmp_path):
+    from ovtsuite import patch as P
+    path = str(tmp_path / "p.6hp")
+    TunerSession(_need(ZF)).save(path, backup=False)
+    s = TunerSession(path)
+    m = s.shift_schedules[0]
+    s.edit_bytes(m.addr, bytes([s.binfile.data[m.addr] ^ 0x10]))
+    s.save(label="tweak")
+    ver = P.session_at_version(s, H.list_versions(s)[0]["id"])
+    assert ver.defn_state == "shared"
+    for fam in ("shift_schedules", "tcc_schedules"):
+        mine = getattr(s, fam)
+        assert mine, fam
+        paired = [s.counterpart(ver, e) for e in mine]
+        assert all(p is not None for p in paired), fam
+        assert all(p.binfile is ver.binfile for p in paired)
+        back = [ver.counterpart(s, p) for p in paired]
+        assert all(b is e for b, e in zip(back, mine)), fam
