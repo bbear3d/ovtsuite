@@ -63,7 +63,10 @@ REF_BINARIES = {
     "p475_83": "03G906016LQ.bin",
     "p475_84_mf": "03G906016MF.bin",
     "p475_84_hq": "03G906016HQ.bin",
-    "p447": "03G906021KK.bin",          # EDC16U34 / project P447 (Golf5 103kW, from OLS)
+    # EDC16U34 / P447HAXN: KB from the Bosch A2L for 03G906021LA SW 501410
+    # (tools/generate_kb_definition.py). HAXN calibration addresses are the
+    # same in every HAXN software, so KK (also HAXN) stays the reference.
+    "p447": "03G906021KK.bin",
     "p447_906016": "03G906016AC.bin",   # EDC16U34 / P447 dataset P447HAS7 (BRM 1.9, from A2L)
     # P529 sub-families: deliberately NOT in ovtsuite.kb.FAMILIES, so they never
     # enter detect_family's automatic candidate scan (adding them there once
@@ -86,7 +89,12 @@ REF_BINARIES = {
     # mismatch group is large/consistent enough to verify its own address layout. Also
     # deliberately NOT in ovtsuite.kb.FAMILIES -- reached only via _DATASET_ID_SUBFAMILY.
     "u1_379u85b6": "u1_379u85b6_ref.bin",   # 379U85B6 (parent p350, 456/44 files consistent)
-    "p447_haxe": "p447_haxe_ref.bin",   # P447HAXE (parent p475_83, 657/26 files consistent)
+    # P447HAXE: since 2026-10-13 from the Bosch A2L C447HAXE_00 (address-exact
+    # on all 39 HAXE files), tools/generate_kb_definition.py
+    "p447_haxe": "p447_haxe_ref.bin",
+    # P447HABB / P447HAS9: address-exact definitions, generate_kb_definition.py
+    "p447_habb": "03G906021AN_P447HABB_ref.bin",   # A2L C447HABB_00
+    "p447_has9": "03G906021SC_P447HAS9_ref.bin",   # XDF for 03G906021SC
     "p475_aasj": "p475_aasj_ref.bin",   # P475AASJ (parent p447_906016, 602/5 files consistent)
     "p475_uas8": "p475_uas8_ref.bin",   # P475UAS8 (parent p447_906016, 672/5 files consistent)
     "p447_hbxb": "p447_hbxb_ref.bin",   # P447HBXB (parent p447, 641/5 files consistent)
