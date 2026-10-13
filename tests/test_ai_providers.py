@@ -33,6 +33,7 @@ class Fake:
         self.error_body = {"error": {"message": "nope"}}
         self.busy = 0                   # answer this many POSTs "busy" first
         self.thinks = False             # DeepSeek: reasoning_content, to be sent back
+        self.binds = False              # Anthropic: signatures bound to the conversation
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -92,6 +93,10 @@ class Fake:
             return ""
         for i, m in enumerate(body.get("messages", [])):
             for j, b in enumerate(m.get("content") or []):
+                if self.binds and isinstance(b, dict) and b.get("type") == "thinking" \
+                        and b.get("signature") != self._sig(body):
+                    return ("messages.%d.content.%d: Invalid `signature` in `thinking` block. "
+                            "The block is bound to a different conversation." % (i, j))
                 if isinstance(b, dict) and b.get("type") == "thinking" and (
                         not b.get("thinking") or not b.get("signature")):
                     return ("messages.%d.content.%d.thinking: each thinking block must "
@@ -99,12 +104,19 @@ class Fake:
         return ""
 
     # -- canned answers: first ask for a tool, then answer --------------------------
+    def _sig(self, body):
+        """A signature bound to the conversation: here, its system prompt."""
+        if not self.binds:
+            return "sig-abc"
+        import zlib
+        return "sig-%08x" % zlib.crc32(json.dumps(body.get("system")).encode())
+
     def _anthropic(self, body):
         done = any(b.get("type") == "tool_result" for m in body["messages"]
                    for b in m["content"])
         if not done:
             return {"content": [{"type": "thinking", "thinking": "Need the handle first.",
-                                 "signature": "sig-abc"},
+                                 "signature": self._sig(body)},
                                 {"type": "text", "text": "Let me look."},
                                 {"type": "tool_use", "id": "tu1", "name": "where",
                                  "input": {"handle": "t1"}}],
@@ -332,6 +344,32 @@ def test_deepseek_gets_its_reasoning_back(env, streamed):
     from ovtsuite.ai.providers.openai_compat import OpenAIProvider
     other = OpenAIProvider.wire_messages("s", a.messages, "https://elsewhere/v1")
     assert all("reasoning_content" not in m for m in other)
+
+
+def test_a_follow_up_question_keeps_the_conversation_valid(env):
+    """Anthropic binds a reply's thinking blocks to the conversation they were
+    made in. The panel's context (active tab, selected map) changes between
+    questions; it used to be part of the system prompt, so the follow-up was
+    refused ("Invalid signature ... bound to a different conversation")."""
+    reg, _ = env
+    fake = Fake("anthropic")
+    fake.binds = True
+    try:
+        a = _assistant(reg, "anthropic", fake.url)
+        a.ask("which TCC schedule is this?", context="tab t1, map WT_NWK_SK6_0")
+        r = a.ask("shouldn't the change be made to all of them?",
+                  context="tab t1, map WT_NWK_SK7_0")
+        assert r.text == "All good."
+        posts = [q[3] for q in fake.requests if q[0] == "POST"]
+        # one system prompt for the whole chat; the context rides with each question
+        assert len({json.dumps(b["system"]) for b in posts}) == 1
+        last = posts[-1]["messages"]
+        assert "WT_NWK_SK7_0" in json.dumps(last[-3]) or "WT_NWK_SK7_0" in json.dumps(last)
+        # the first answer's thinking is not sent back with the follow-up
+        first_answer = last[1]
+        assert all(b.get("type") != "thinking" for b in first_answer["content"])
+    finally:
+        fake.close()
 
 
 def test_offline_falls_back_to_a_local_model(env, monkeypatch):

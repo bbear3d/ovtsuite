@@ -28,18 +28,24 @@ class AnthropicProvider(Provider):
     @staticmethod
     def wire_messages(messages):
         out = []
+        # Thinking blocks go back only for the answer in progress (its tool
+        # loop needs them). Those of earlier, finished answers are left out:
+        # the API drops them from the context anyway, and a signature bound to
+        # an earlier form of the conversation would fail the whole request.
+        last_question = max((i for i, m in enumerate(messages) if m["role"] == "user"),
+                            default=-1)
 
         def push(role, blocks):
             if out and out[-1]["role"] == role:
                 out[-1]["content"].extend(blocks)      # roles must alternate
             else:
                 out.append({"role": role, "content": list(blocks)})
-        for m in messages:
+        for i, m in enumerate(messages):
             if m["role"] == "user":
                 push("user", [{"type": "text", "text": m["text"]}])
             elif m["role"] == "assistant":
                 if m.get("raw") is not None and m.get("raw_kind") == "anthropic":
-                    push("assistant", _replayable(m["raw"]))
+                    push("assistant", _replayable(m["raw"], keep_thinking=i > last_question))
                     continue
                 blocks = []
                 if m.get("text"):
@@ -152,15 +158,19 @@ class AnthropicProvider(Provider):
                             "stop_reason": stop, "usage": usage})
 
 
-def _replayable(blocks):
+def _replayable(blocks, keep_thinking: bool = True):
     """An earlier assistant turn as it may be sent back. A thinking block
     is only accepted whole (its text and signature); one that arrived
     incomplete cannot be verified by the service, so it is left out rather
-    than failing the request. Everything else goes back unchanged."""
+    than failing the request. ``keep_thinking`` False leaves out every
+    thinking block (a finished answer's). Everything else goes back
+    unchanged."""
     out = []
     for b in blocks or []:
-        if isinstance(b, dict) and b.get("type") == "thinking":
-            if not b.get("signature") or "thinking" not in b:
+        if isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"):
+            if not keep_thinking:
+                continue
+            if b.get("type") == "thinking" and (not b.get("signature") or "thinking" not in b):
                 continue
         out.append(b)
     return out or [{"type": "text", "text": ""}]

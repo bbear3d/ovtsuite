@@ -329,8 +329,13 @@ def test_assistant_reads_the_selected_map_and_links_it(win):
     finally:
         fake.close()
     first, second = fake.requests
+    # what the user is looking at travels with the question; the system
+    # prompt stays the same for the whole chat (a changing one invalidated
+    # the earlier answers' thinking signatures, and defeats prompt caching)
     system = first["messages"][0]["content"]
-    assert "t1" in system and SMOKE in system           # what the user is looking at
+    question = first["messages"][1]["content"]
+    assert "t1" in question and SMOKE in question
+    assert SMOKE not in system
     assert second["messages"][-1]["role"] == "tool"
     assert '"values"' in second["messages"][-1]["content"]   # the real tool ran
     kinds = [k for k, _t in d.chat]
