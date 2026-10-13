@@ -1,0 +1,26 @@
+Qt 6 and Qt for Python (PySide6 / Shiboken6) -- https://www.qt.io/
+
+Copyright (C) The Qt Company Ltd. and other contributors.
+
+The Qt libraries (Qt6Core, Qt6Gui, Qt6Widgets, Qt6Svg, Qt6OpenGL, the platform,
+style, icon-engine and image-format plugins) and the PySide6 / Shiboken6
+bindings are used under the GNU Lesser General Public License, version 3 --
+see LGPL-3.0.txt (which incorporates GPL-3.0.txt). They are unmodified and are
+loaded as separate dynamic libraries from the program's installation folder,
+so they can be replaced with a compatible, modified build of your own.
+
+Source code for Qt and Qt for Python is available from
+https://download.qt.io/official_releases/ and
+https://code.qt.io/cgit/pyside/pyside-setup.git/ . On request the author of
+this program will provide the exact source used for a given release for at
+least three years after that release.
+
+Qt itself bundles third-party code, each under its own licence; see
+https://doc.qt.io/qt-6/licenses-used-in-qt.html . Credits some of those
+licences require:
+
+  * Portions of this software are copyright (c) The FreeType Project
+    (www.freetype.org). All rights reserved.
+  * This software is based in part on the work of the Independent JPEG Group.
+  * HarfBuzz, libpng, zlib, PCRE2, double-conversion, md4c, libwebp and
+    libtiff are used under their respective permissive licences.

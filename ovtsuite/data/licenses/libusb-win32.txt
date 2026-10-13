@@ -1,0 +1,13 @@
+libusb-win32 (libusb0.dll) -- https://sourceforge.net/projects/libusb-win32/
+
+Copyright (c) 2002-2012 Stephan Meyer, Travis Robinson and the libusb-win32
+contributors.
+
+The libusb-win32 library (libusb0.dll) is free software, distributed under the
+GNU Lesser General Public License, version 3 or (at your option) any later
+version -- see LGPL-3.0.txt and GPL-3.0.txt. The kernel driver (libusb0.sys) is
+GPL-licensed and is NOT distributed with this program.
+
+It is used as an unmodified, separately loaded dynamic library and may be
+replaced with any compatible build. Its source code is available from the
+project page above.

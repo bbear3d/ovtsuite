@@ -1,0 +1,318 @@
+---
+title: Projects (.ovt)
+order: 26
+context: ProjectPanel, RecoveryDialog, ProjectInfoDialog, DiskChangedDialog, MergeConflictDialog
+---
+# Projects (.ovt)
+
+A project keeps everything about one car (or one bench job) in a single
+`.ovt` file: its control units, every version you saved, the original you
+read, different tunes side by side, datalogs, patches and other attachments.
+Everything you work on is a project: there are no plain file tabs.
+
+| Part | What it is |
+|---|---|
+| **Set** | One control unit: ECU, TCU, cluster, HVAC. A set holds every memory region of that unit -- the flash, and the MPC internal flash or EEPROM where the unit has them. |
+| **Branch** | A line of versions of a set: *Stock*, *Stage 1*, *Economy*... Saving a tab adds a version to its branch. |
+| **History** | Every saved version of a branch. The first version of a read set is **the original as read**; it is never changed or deleted. |
+| **Logs** | Datalogs kept with the project. It keeps every log unless you set a limit; over the limit the oldest are removed first, except **pinned** ones. |
+| **Patches** | Patches kept with the project, to apply to any of its tabs. |
+| **Attachments** | Anything else: dyno sheets, notes, pictures, an internal-ROM dump. |
+
+## Starting a project
+
+A project starts in one of these ways:
+
+- **File > New project...** (Ctrl+N) -- describe the vehicle, then pick the
+  files it begins with: a read, the gearbox's `.frf`, a WinOLS project...
+  each becomes a set of its own.
+- **File > Import > Into a new project...** (Ctrl+Shift+I), or dropping a
+  binary on the window with no project open: the binary goes into a new,
+  untitled project, which asks for a name and the vehicle details on its
+  first **Save** (see [Importing](editor/files-and-formats.md#importing)).
+- A read from a control unit, which goes into a project from the start.
+- Importing a **WinOLS project** (`.ols`): see [WinOLS projects and
+  definitions](#winols-projects-and-definitions).
+
+## Project information
+
+What the project is for: **make**, **model**, **chassis code**, **model
+year**, **VIN**, **engine code**, **gearbox**, **stock power**, **odometer**,
+the **control unit**, the **owner / customer** and free **notes**. Every field
+is optional.
+
+- **File > Project information...**, or double-click the project in the
+  Project panel (or right-click it > **Project information...**), to see or
+  change it.
+- A new project asks for it when it is first saved (or, with **File > New
+  project...**, before its files are picked). **Skip** leaves it empty;
+  untick **Ask when a new project is created** to stop being asked.
+- A VIN is checked as you type: 17 characters, never I, O or Q.
+- The tab's tooltip and the Project panel show the vehicle, and an imported
+  WinOLS project fills in what its own project properties say.
+
+## Opening a project
+
+**File > Open project...** (Ctrl+O), **File > Open Recent**, or dropping a
+`.ovt` on the window opens a project. The first time, every set opens in a
+tab of its own; after that, the tabs you had open last time come back. Each
+tab is labelled with the project's name, the set and the branch -- *A6 ▸ ECU
+· Stage 1* -- and tinted like any ECU or TCU tab; the window title shows the
+same, with `*` when the project has unsaved changes.
+
+A set or branch that is not open is one click away: double-click it in the
+**Project panel** (View > Project panel), or pick it from **File > Open from
+project**. Close a tab as usual; the project stays open while any of its tabs
+is, and closes with the last one. **File > Close project** closes all of them.
+
+Several projects can be open at once. Copying values between tabs and
+comparing against another tab work across projects too. A project open in
+one window cannot be opened in another window (see [Tabs and
+sessions](editor/tabs-and-sessions.md#one-window)).
+
+To add a binary to the project in front, use **File > Import > Into this
+project...**, or drop it on the window and pick **Import into <project>**.
+A closed project comes back with **File > Restore project from history** or
+**File > Reopen last closed project** (Ctrl+Shift+T), with the tabs it had.
+
+## Comparing
+
+A project tab opens with **the original as read** as its comparison, so the
+differences shown are your changes. **File > Compare with saved version**
+lists the branch's versions; double-clicking a version in the Project panel
+makes it the comparison of its own branch's tab. **File > Import as
+comparison...** compares against a binary, or any set, branch and version of
+this project or another one. See
+[Comparing files](editor/comparison.md).
+
+## Saving
+
+| Command | What it saves |
+|---|---|
+| **Save** (Ctrl+S) | The whole project: every edited tab of it becomes a new version on its branch. |
+| **Save this branch only** (Ctrl+Alt+S) | Just this tab. The project's other tabs keep their unsaved changes. |
+| **Save As...** | The whole project under a new name. |
+
+A new, untitled project (an import into a new project, or a read) asks for
+its name and the vehicle details on its first **Save**. An imported file as
+it was on disk is the set's original, and your edits the next version. A
+`.dim`, `.sgo` or `.frf` is kept in the project byte for byte.
+
+Checksums are corrected when a version is saved, exactly as for any file.
+Closing a tab with unsaved changes asks about that tab only; closing the
+window asks about every project (see [Tabs and
+sessions](editor/tabs-and-sessions.md#closing-the-app)).
+
+## When another program changes the project file
+
+Other programs can write to an open project's `.ovt` file: a script, an AI
+assistant, or the standalone flasher or logger. The app notices, and never
+silently writes over their changes.
+
+- **Nothing unsaved in the project:** it reloads by itself within a few
+  seconds, and the status bar says so.
+- **Unsaved changes:** it asks whether to merge the other program's changes
+  in now. If you choose **Later**, the next save asks again.
+- **Saving**, from Save, the Project panel or the exit prompt, when the file
+  has changed since you opened or last saved it:
+
+| Choice | What happens |
+|---|---|
+| **Reload & merge** | The other program's changes come in, yours stay, then the project is saved with both. |
+| **Overwrite** | The file is replaced with your version. The other program's changes are lost. |
+| **Save mine as a copy...** | Your version goes into a new file, which the project uses from now on. The changed file is left alone. |
+| **Cancel** | Nothing is saved. |
+
+![Saving a project another program changed](images/project-disk-changed.png)
+
+Closing the app without saving leaves the file exactly as the other program
+wrote it.
+
+### How merging works
+
+Everything in a project (sets, branches, versions, originals, logs,
+attachments, patches, information) is matched by its identity, not by its
+position:
+
+- Something added on either side is kept: new versions, branches, logs,
+  attachments, information.
+- Something changed on one side only is taken from that side.
+- Something one side deleted and the other did not change is deleted. If the
+  other side changed it, or you have it open with unsaved edits, it is kept.
+- **Both sides saved to the same branch:** the other program's version stays
+  on the branch, and yours goes on a new branch, *name (mine)*, which your tab
+  then shows.
+- **Unsaved edits in a tab** whose branch the other program changed are
+  re-applied on top of its new version. If they touch the same bytes, they
+  stay as they are on a new *name (mine)* branch instead. Undo starts again
+  from the merge.
+- **The same thing changed differently on both sides**, such as a version's
+  name, an information field or a packaged definition: **Merge changes**
+  lists each one, and you choose to keep yours or the other program's.
+
+![Merge changes: what both sides changed differently](images/project-merge-conflicts.png)
+
+A merged project is unsaved until you save it. If the file now holds a
+different project, or needs a newer version of the app, it can't be merged:
+use **Overwrite** or **Save mine as a copy**.
+
+## Logs, patches and flashing
+
+- **Data logs** of a controller whose binary is open in a project tab are
+  kept in the project by default (see [Data
+  logging](logging.md#logs-in-the-project)).
+- **Patches** made in a project tab can be kept in it (see
+  [Patches](editor/patches.md#patches-kept-in-the-project)).
+- **Reads** from a control unit go into a project: with a project tab in
+  front you are asked **Add to <project>** or **New project** (see
+  [Reading](flashing/reading.md#where-the-read-goes)).
+- After a successful **write**, the version written is marked as last
+  flashed: the Project panel shows *⚡ flashed <date>* on it, and the set's
+  and tab's tooltips say *Last flashed <date> (<branch>, saved version |
+  unsaved edits)*. A tab with unsaved changes is offered to be saved first
+  (see [Writing](flashing/writing.md)).
+- A change proposed by the **AI** and accepted on a project tab with no
+  other unsaved edits is saved straight away as its own version, named
+  **AI: <title>** (each step of a plan separately), so it can be compared
+  against or reverted like any other (see [Proposals and
+  plans](ai/proposals.md#accepting)).
+
+## The Project panel
+
+**View > Project panel** (Ctrl+Shift+P, or its toolbar button) shows it
+expanded at the side of the window; used again, it collapses the panel to
+its strip.
+
+![The Project panel: a project, its set, branches and kept files](images/project-panel.png)
+
+- **Resize** it by dragging the edge between it and the rest of the window.
+- **Collapse** it with the arrow in its title bar, or with **View > Project
+  panel**: it shrinks to a narrow strip labelled *Project*, and the window
+  gets the space back.
+- While collapsed, **rest the mouse on the strip** and the panel opens over
+  the window (nothing beside it moves); it closes again when the mouse
+  leaves it. Drag its outer edge to make it wider.
+- **Expand** it again with **View > Project panel**, by clicking the strip,
+  or with **Keep open** at the top of the opened panel.
+
+It can also be docked on the right, or floated in a window of its own. It
+remembers whether it was collapsed and how wide it was.
+
+Right-click an item for what can be done with it:
+
+- **Project** -- project information, **Add files to the project** (each
+  becomes a set), save, rename, set how many logs are kept, close.
+- **Set** -- rename; **Attach a definition** (XDF, A2L, KP, OLS or DAM) to a
+  binary no module recognises, so it opens with that definition's tables and
+  values in the main view instead of only the hex editor; remove it again.
+  The set's tooltip names the definition it has.
+- **Branch** -- open it, make it the active branch (the one a first open
+  shows), rename, **New branch from here**, delete (its history stays).
+- **Version** -- compare with it, **Revert the branch to this version** (adds
+  a new version; nothing is lost), **New branch from this version**.
+- **Log** -- **Open in Data logging**, **Export...**, **Pin** / **Unpin**,
+  **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
+- **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,
+  **Remove**.
+- **Attachment** -- **Export...**, **Remove**.
+- **Logs** / **Patches** / **Attachments** (the headings) -- add one.
+
+Each project lists its **Logs**, **Patches** and **Attachments** under its
+sets.
+
+## WinOLS projects and definitions
+
+**A WinOLS project** (`.ols`) holds a binary *and* its map definitions.
+Importing one (**File > Import**, or **File > New project...**) makes it a
+set of the project:
+
+- its binary becomes the set's original, named after the WinOLS version it
+  holds (*WinOLS: Original*); an image WinOLS put together from an EDC16's
+  flash and MPC is split into the two again;
+- its maps become the set's definition: when no module recognises the binary,
+  it opens with WinOLS's maps -- names, descriptions, folders as categories,
+  axes, units and conversions -- in the main view; when a module does, the
+  module's tree stays and WinOLS's maps are added beside it, under **From
+  <file>.ols**. German descriptions and categories are shown in English;
+- the vehicle and control-unit details entered in WinOLS fill the project
+  information.
+
+The `.ols` itself is kept in the project. Projects of OLS 4 and 5 are read
+(format versions 114 to 597); a map list that does not read completely is
+reported rather than guessed at.
+
+**A definition** describes a binary but holds none:
+
+| File | What it is |
+|---|---|
+| `.xdf` | TunerPro definition |
+| `.a2l` | ASAP2 description (the manufacturer's), with its record layouts, shared axes and conversions |
+| `.kp` | WinOLS map pack |
+| `.dam` | Bosch DAMOS description |
+
+**File > Import > Definition file for this binary (XDF, A2L, KP, OLS, DAM)...**
+attaches one to the binary in the tab in front. Picked in **File > Import**
+together with one binary, it attaches to that binary; picked alone, it
+attaches to the binary of the tab in front, or (into a new project) asks
+which binary. A binary imported with a definition of the same name beside it
+(`car.bin` + `car.a2l`) gets it automatically. Attach or change one later from
+the Project panel. Addresses in an A2L are the control unit's: they are placed
+on the binary from the file's memory segments. Where an A2L layout stores its
+axis sizes in the binary, they are read from it. A DAMOS is placed with its
+program base address and memory segments; its curves' and maps' sizes are
+read from the binary, each axis is named after the measured value it uses,
+and conversions such as a frequency stored as a period show (and edit) in
+their physical units.
+
+A definition is only used when no module knows the binary -- a module's own
+map tree always wins.
+
+German in a definition is shown in English. A description the app knows --
+every description of the Bosch EDC15 DAMOS it ships translations for -- gets
+its checked English, with the German kept after **DE:**; any other is
+translated word by word, which leaves words it does not know in German. Units
+are always shown in English (*mg/Hub* reads *mg/stroke*, *Grad C* reads
+*deg C*).
+
+## Exporting
+
+**File > Export** makes every file from the last saved version of the branch
+(you are offered to save first):
+
+- **Binary (.bin)...** -- one part of the set (flash, MPC or EEPROM) as a
+  plain `.bin`;
+- **Original file (.sgo / .dim / .frf)...** -- the file the set was imported
+  from, with the saved version in it (byte for byte the original when
+  nothing changed). An edited `.frf` cannot be rebuilt yet --
+  export the `.bin` instead;
+- **Definition as XDF...** -- the tab's parameters as a TunerPro
+  definition;
+- **Data log...**, **Patch...** and **Attachment...** -- each picks one of
+  the project's.
+
+Files of earlier versions (`.6hp`, `.edc16`, `.edc15` ...) are imported
+only; there is no export to them.
+
+See [Exporting](editor/export.md).
+
+## Patches and version history
+
+Applying a patch, **Remove patch**, **Version history** (name a version,
+compare with one, go back to one) and **Generate patch from history** work on
+the branch's own versions. A patch
+applied and saved is listed by Remove patch whenever the project is opened
+again. Adjacent versions can be merged (Version history, or select them in
+the Project panel and right-click **Merge N versions into one...**); see
+[Version history](editing.md#where-the-history-is-kept).
+
+## Recovering after a crash
+
+While a project is open, its unsaved changes are kept aside every minute
+(**Tools > Options... > Projects and saving** changes how often), exactly as
+edited (no checksum correction). If the app does not close
+properly, the next start offers **Recover unsaved work**: recovered changes
+open as unsaved edits, so nothing is written until you save. **Decide later**
+keeps them for the next start; an unticked entry is discarded.
+
+Closing the app normally removes that data, whether you saved or chose not
+to.

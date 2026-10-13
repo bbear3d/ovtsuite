@@ -1,0 +1,4 @@
+# Shell scripts and the Linux build image run under bash/docker: keep them LF even
+# on a Windows checkout with core.autocrlf=true (a CR breaks every line).
+*.sh text eol=lf
+packaging/linux/Dockerfile text eol=lf

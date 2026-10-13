@@ -1,0 +1,229 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Blair Campbell
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+"""Signal-ID catalog for the measuring-block editor.
+
+The measuring-block map (UACC_RSigBlkGrp_MAP) stores each display slot as an
+internal *signal id*. The ECU turns that id into a live value through a
+signal-descriptor table in firmware; the id-to-meaning mapping is NOT in the
+calibration data. This module keeps a *pluggable* catalog of what those ids
+mean, from whichever source we can get:
+
+  * an original A2L / DAMOS MEASUREMENT section (names + addresses), or
+  * a disassembly pass over the firmware's signal-descriptor table
+    (id -> RAM source + scaling), or
+  * a VCDS/VAG-COM label file (group/field -> description), or
+  * hand curation.
+
+Catalogs live in ``data/signals_<family>.json`` -- data of the EDC16 module,
+found wherever it is installed (:mod:`ovtsuite.datafiles`) -- as
+``{"<id>": {"name": "...", "unit": "...", "note": "..."}}``; a missing file
+just means no names yet. Whatever the source, the editor gains labels the
+moment such a file is dropped in -- no code change.
+
+Even with no catalog, ``observed_ids`` gathers every id actually used across a
+binary's signal-block tables, so the dropdown always offers the known-valid
+set (with usage counts) rather than a blind number field.
+"""
+
+import json
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from . import datafiles
+
+# Ids that mean "no signal in this slot" (seen as sentinels in the tables).
+EMPTY_IDS = {255}  # 255 (0xFF) = empty slot; id 0 is a real signal (engine speed)
+
+# Tables whose cells are signal ids, used to gather the observed universe.
+SIGNAL_TABLES = [
+    "UACC_RSigBlkGrp_MAP",
+    "Uacc_AdjValK2SigBlkVal_MAP",
+    "Uacc_EOPDK2SigBlkVal_MAP",
+    "TstTog_K2SigBlkVal1_MAP",
+    "TstTog_K2SigBlkVal2_MAP",
+    "BasAdj_K2SigBlkVal0_MAP",
+    "BasAdj_K2SigBlkVal1_MAP",
+    "BasAdj_K2SigBlkVal2_MAP",
+    "UACC_ShtrpApplSigBlk_MAP",
+]
+
+
+@dataclass
+class SignalInfo:
+    id: int
+    name: str = ""      # Bosch A2L symbol, e.g. "Eng_nAvrg"
+    unit: str = ""
+    note: str = ""
+    human: str = ""     # plain-English name, e.g. "Engine Speed"
+
+    @property
+    def known(self) -> bool:
+        return bool(self.name)
+
+    def label(self) -> str:
+        if not self.name:
+            # No resolved symbol. The firmware signal-descriptor pass tags many
+            # of these with their raw internal number; the 8000-series are the
+            # CAN-received signals (module-present flags, bus torque requests,
+            # gateway status, etc.), so surface that rather than a bare number.
+            intnum = self._intnum()
+            if intnum is not None and intnum >= 8000:
+                return "%d - CAN bus signal (internal %d)" % (self.id, intnum)
+            return "%d" % self.id
+        u = " [%s]" % self.unit if self.unit else ""
+        if self.human:
+            # "12 - Engine Speed (Eng_nAvrg) [rpm]"
+            return "%d - %s (%s)%s" % (self.id, self.human, self.name, u)
+        return "%d - %s%s" % (self.id, self.name, u)
+
+    def _intnum(self):
+        """The raw internal signal number the disassembly pass recorded in the
+        note ('intnum=8002 unresolved'), or None."""
+        import re
+        m = re.search(r"intnum=(\d+)", self.note or "")
+        return int(m.group(1)) if m else None
+
+
+class SignalCatalog:
+    """Id -> meaning for one family, plus the ids a binary actually uses."""
+
+    def __init__(self, family: Optional[str] = None, session=None):
+        self.family = family
+        self._map: Dict[int, SignalInfo] = {}
+        #: the family whose catalog supplied the names, when it is not the
+        #: session's own (a sub-family sharing its parent's signal numbering)
+        self.source_family: Optional[str] = None
+        if session is not None and getattr(session, "is_edc15", False):
+            # EDC15: the ids are xcwGrp descriptor indices, named from the
+            # dataset itself (message number -> English label)
+            from .edc15.msblock15 import MeasuringBlocks15
+            for sid, v in MeasuringBlocks15(session).catalog_entries().items():
+                self._map[sid] = SignalInfo(sid, v.get("name", ""),
+                                            v.get("unit", ""), v.get("note", ""),
+                                            v.get("human", ""))
+            return
+        if family:
+            if not self._load(family) and session is not None:
+                parent = _parent_catalog_family(family, session)
+                if parent is not None and self._load(parent):
+                    self.source_family = parent
+
+    def _load(self, family: str) -> bool:
+        path = datafiles.path("signals_%s.json" % family)
+        if path is None:
+            return False
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except Exception:
+            return False
+        for k, v in raw.items():
+            try:
+                sid = int(k)
+            except ValueError:
+                continue
+            self._map[sid] = SignalInfo(sid, v.get("name", ""),
+                                        v.get("unit", ""), v.get("note", ""),
+                                        v.get("human", ""))
+        return True
+
+    def info(self, sid: int) -> SignalInfo:
+        return self._map.get(sid, SignalInfo(sid))
+
+    def label(self, sid: int) -> str:
+        if sid in EMPTY_IDS:
+            return "%d - (empty)" % sid
+        return self.info(sid).label()
+
+    @property
+    def named_count(self) -> int:
+        return sum(1 for s in self._map.values() if s.known)
+
+    def choices(self, observed: List[int]) -> List[tuple]:
+        """(id, label) pairs to offer in a dropdown: catalog ids first
+        (named), then any observed ids not in the catalog, then the empty
+        sentinels. Sorted by id within each group."""
+        cat = sorted(self._map)
+        obs_only = sorted(set(observed) - set(cat) - EMPTY_IDS)
+        out = []
+        for sid in cat:
+            if sid in EMPTY_IDS:
+                continue
+            out.append((sid, self.label(sid)))
+        for sid in obs_only:
+            out.append((sid, self.label(sid)))
+        for sid in sorted(EMPTY_IDS):
+            out.append((sid, self.label(sid)))
+        return out
+
+
+# The calibration table that turns a measuring-block cell id into the ECU's
+# internal signal number (cell id N -> UACC_ESBSigNr_C[N]). A catalog names
+# cell ids, so it carries over to another family only where this table is
+# byte-identical to the one the catalog was built against.
+ESB_SIGNR_TABLE = "UACC_ESBSigNr_C"
+
+
+def _parent_catalog_family(family: str, session) -> Optional[str]:
+    """The parent family whose signal catalog also names ``session``'s ids.
+
+    Only for an EDC16 dataset-id sub-family (``p350_u8a7`` -> ``p350``), and
+    only when the session's own UACC_ESBSigNr_C bytes equal the parent's
+    reference bytes (the parent KB's crc32) -- then every cell id maps to the
+    same internal signal number the parent catalog was built from. Anything
+    else (no parent, table missing or different) gives None: no names rather
+    than possibly wrong ones."""
+    try:
+        from .edc16.session16 import parent_family
+        from . import kb as kb_mod
+    except ImportError:
+        return None
+    parent = parent_family(family)
+    if parent is None or not datafiles.exists("signals_%s.json" % parent):
+        return None
+    ent = next((e for e in getattr(session, "entities", ())
+                if e.name == ESB_SIGNR_TABLE), None)
+    binfile = getattr(session, "binfile", None)
+    if ent is None or binfile is None or ent.addr is None:
+        return None
+    try:
+        pkb = kb_mod.load_cached(parent)
+    except Exception:
+        return None
+    ref = next((t for t in pkb.tables if t.name == ESB_SIGNR_TABLE), None)
+    if ref is not None:
+        span = ref.rows * ref.cols * (ref.z_bits // 8)
+    else:
+        ref = next((c for c in pkb.constants if c.name == ESB_SIGNR_TABLE),
+                   None)
+        if ref is None:
+            return None
+        span = ref.bits // 8
+    if not ref.vhash or span <= 0:
+        return None
+    import zlib
+    data = bytes(binfile.data[ent.addr:ent.addr + span])
+    if len(data) != span or (zlib.crc32(data) & 0xFFFFFFFF) != ref.vhash:
+        return None
+    return parent
+
+
+def observed_ids(session) -> Dict[int, int]:
+    """Every signal id used across a session's signal-block tables -> count."""
+    if getattr(session, "is_edc15", False):
+        from .edc15.msblock15 import observed_ids as _o15
+        return _o15(session)
+    by = {e.name: e for e in session.entities}
+    counts: Dict[int, int] = {}
+    for name in SIGNAL_TABLES:
+        e = by.get(name)
+        if e is None or e.kind not in ("map", "curve"):
+            continue
+        for r in range(e.rows):
+            for c in range(e.cols):
+                sid = int(round(e.cell(r, c)))
+                counts[sid] = counts.get(sid, 0) + 1
+    return counts
