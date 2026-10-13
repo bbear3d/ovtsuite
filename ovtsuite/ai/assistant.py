@@ -251,12 +251,20 @@ class Assistant:
         p = self.provider
         total = Usage()
         redacted = 0
-        q = question
+        # What the panel knows (active tab, selected map) travels with THIS
+        # question, not in the system prompt: the system prompt has to stay
+        # byte-identical for the whole chat. Anthropic binds a reply's
+        # thinking blocks to the conversation they were made in, and a
+        # follow-up whose system prompt had changed was refused ("Invalid
+        # signature ... bound to a different conversation"); an unchanged
+        # prefix is also what lets the service's prompt cache be reused.
+        q = ("[What I am looking at: %s]\n\n%s" % (context, question)) if context \
+            else question
         if self.redacting:
-            q, n = _redact.text(question)
+            q, n = _redact.text(q)
             redacted += n
         self.messages.append({"role": "user", "text": q})
-        system = system_prompt(context)
+        system = system_prompt()
         tools = self._tools()
         calls_made = 0
         made: List[str] = []
