@@ -37,7 +37,12 @@ def _path(name: str) -> str:
     return datafiles.path(name) or os.path.join(_DATA_DIR, name)
 
 FAMILIES = ("p350", "p475_83", "p475_84_mf", "p475_84_hq", "p447",
-            "p447_906016")
+            "p447_906016",
+            # EDC16U1 (1 MB, 03G906016 PD): a full Bosch-A2L catalogue since
+            # 2026-10-13, so it competes in detection like the others. It wins
+            # every 1 MB U1 image (0.79-0.99 vs p350's ~0.5), including ones
+            # with no readable dataset id; 2 MB images score ~0.
+            "u1_379u85b6")
 
 
 @dataclass
