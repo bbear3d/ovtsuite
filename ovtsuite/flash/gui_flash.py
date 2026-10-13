@@ -3874,7 +3874,11 @@ class FlashDialog(QtWidgets.QDialog):
             if ext:
                 container.add(_cont.BLOCK_EXTERNAL, ext)
             if mpc:
-                container.add(_cont.BLOCK_MPC, mpc, address=_cont._DEFAULT_ADDR[_cont.BLOCK_MPC])
+                # add() places the MPC at its default address. (Naming it here
+                # as _cont._DEFAULT_ADDR broke when the format moved to
+                # container.py: an AttributeError in this slot meant a full
+                # read neither opened in the app nor asked where to save.)
+                container.add(_cont.BLOCK_MPC, mpc)
             if not container.blocks:
                 QtWidgets.QMessageBox.information(
                     self, "Read full", "Read complete; nothing to save.")

@@ -438,3 +438,37 @@ def test_calibration_only_sits_with_the_other_options(app):
     lay = d.layout()
     assert lay.indexOf(d.uds_cal_only_chk) == lay.indexOf(d.force_full) + 1
     assert d.uds_cal_only_chk.isVisibleTo(d) and not d.force_full.isVisibleTo(d)
+
+
+# ---- EDC16 full read reaches the app (or the standalone save prompt) --------
+
+class _ReadWindow(_Window):
+    """Records what a finished read hands the window."""
+
+    def __init__(self):
+        super().__init__()
+        self.loaded = []
+
+    def load_from_image(self, data, name, *a, **k):
+        self.loaded.append((bytes(data), name))
+        return True
+
+
+def test_an_edc16_full_read_is_handed_to_the_window(app, monkeypatch):
+    """A full read (external flash + MPC) goes to load_from_image -- the app
+    opens it in a project, the standalone flasher asks where to save it.
+    Building the container named a constant edc16_container no longer
+    exports, and the AttributeError in this slot meant neither happened."""
+    from ovtsuite import container as _c
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information",
+                        lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Ok)
+    win = _ReadWindow()
+    d = gui_flash.FlashDialog(win)
+    ext, mpc = b"\x11" * 0x200000, b"\x22" * 0x80000
+    d._done("read_program_full", {"external": ext, "internal": mpc})
+    assert len(win.loaded) == 1, "the read never reached the window"
+    data, name = win.loaded[0]
+    assert name.startswith("edc16-full-")
+    got = _c.Container.from_bytes(data)
+    assert got.external() == ext
+    assert [b.data for b in got.blocks if b.type == _c.BLOCK_MPC] == [mpc]
