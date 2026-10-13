@@ -100,3 +100,22 @@ def test_cal_region_prefers_the_denser_of_two_equal_runs():
     fill(0x1C0000, 0x1F4000, 40)
     lo, hi = find_cal_region(bytes(buf))
     assert lo <= 0x1C0000 < hi and lo >= 0x1B8000
+
+
+@pytest.mark.parametrize("family", sorted(U34))
+def test_measuring_blocks_are_named(family):
+    """Every U34 family has a signal catalog: group 1 reads engine speed,
+    injection quantity, main-injection duration, coolant temperature, and
+    nearly every signal the binary's own blocks use has a name."""
+    from ovtsuite.session import TunerSession
+    from ovtsuite.signals import SignalCatalog, observed_ids
+    from ovtsuite.msblock import MeasuringBlocks
+    s = TunerSession(_ref(U34[family][0]))
+    cat = SignalCatalog(s.family, s)
+    g1 = MeasuringBlocks(s).groups()[0].channels()
+    names = [cat.info(i).name for i in g1]
+    assert names[0] == "Eng_nAvrg" and names[3] == "CTSCD_tClnt", names
+    assert names[1].startswith("InjCtl_q") and names[2].startswith("InjVlv_phiMI1Dur")
+    used = [i for i in observed_ids(s) if i != 255]
+    named = sum(1 for i in used if cat.info(i).known)
+    assert named >= 0.85 * len(used), (named, len(used))
