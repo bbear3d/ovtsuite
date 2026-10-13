@@ -107,6 +107,20 @@ def flash_edc16(ctx):
     return _flash_dialog(ctx, w, "EDC16", "kline", "ftdi", advanced=True)
 
 
+@shot("readme-flash", "../docs", size=(820, 300),
+      what="README: EDC16 with a file open, Advanced closed, and the head-unit "
+           "controls hidden (that feature is not released yet)")
+def readme_flash(ctx):
+    w = ctx.main_window(ctx.ref("edc16_lq"))
+    d = _flash_dialog(ctx, w, "EDC16", "kline", "ftdi", advanced=False)
+    for b in d.findChildren(ctx.QtWidgets.QPushButton):
+        if b.text().startswith("Pair head unit"):
+            b.hide()
+    d.staged_chk.hide()
+    ctx.settle(100)
+    return d
+
+
 @shot("flash-zf6hp", FOLDER, size=(820, 300),
       what="ZF6HP with a 6HP19 file open: TP 2.0, Force full write")
 def flash_zf6hp(ctx):
