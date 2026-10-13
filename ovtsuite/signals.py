@@ -106,12 +106,12 @@ class SignalCatalog:
                                             v.get("human", ""))
             return
         if family:
-            if not self._load(family) and session is not None:
+            if not self._load(family, session) and session is not None:
                 parent = _parent_catalog_family(family, session)
                 if parent is not None and self._load(parent):
                     self.source_family = parent
 
-    def _load(self, family: str) -> bool:
+    def _load(self, family: str, session=None) -> bool:
         path = datafiles.path("signals_%s.json" % family)
         if path is None:
             return False
@@ -128,7 +128,43 @@ class SignalCatalog:
             self._map[sid] = SignalInfo(sid, v.get("name", ""),
                                         v.get("unit", ""), v.get("note", ""),
                                         v.get("human", ""))
+        if session is not None and raw.get("_by_intnum"):
+            self._rename_by_intnum(raw["_by_intnum"],
+                                   raw.get("_esb_table", ESB_SIGNR_TABLE),
+                                   session)
         return True
+
+    def _rename_by_intnum(self, by_int: dict, table: str, session) -> None:
+        """Name each cell id through THIS binary's own cell -> internal
+        number table, when the catalog carries the firmware's internal
+        number -> signal map (EDC16U1). The cell numbering is calibration
+        data and varies between datasets of one family (one cell differs
+        between the 03G906016FK and HK U85B6 tables, 33 on GJ 7000); the
+        internal numbering is the program's, identical on every U1 5.41
+        program checked. Without the table in the session the catalog's own
+        cell names stand."""
+        ent = next((e for e in getattr(session, "entities", ())
+                    if e.name == table), None)
+        if ent is None:
+            return
+        try:
+            nums = [int(round(ent.cell(r, c)))
+                    for r in range(ent.rows) for c in range(ent.cols)]
+        except Exception:
+            return
+        remapped: Dict[int, SignalInfo] = {}
+        for sid, intn in enumerate(nums):
+            if intn == 0:
+                continue                    # empty ESB entry: no signal
+            v = by_int.get(str(intn))
+            if v:
+                remapped[sid] = SignalInfo(sid, v.get("name", ""),
+                                           v.get("unit", ""), v.get("note", ""),
+                                           v.get("human", ""))
+            else:
+                remapped[sid] = SignalInfo(sid, note="intnum=%d unresolved" % intn)
+        if remapped:
+            self._map = remapped
 
     def info(self, sid: int) -> SignalInfo:
         return self._map.get(sid, SignalInfo(sid))
