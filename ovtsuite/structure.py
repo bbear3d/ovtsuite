@@ -95,7 +95,12 @@ def find_cal_region(data: bytes, bucket_bits: int = 14,
             runs.append(run)
             run = [b, b]
     runs.append(run)
-    best = max(runs, key=lambda r: r[1] - r[0])
+    # Equal-length runs are decided by how many headers they hold: on some
+    # 03G906021 images (HK 2854, TQ 2186) the variant-coding block at
+    # 0x184000 spans exactly as many buckets as the main calibration at
+    # 0x1C0000, and taking the first of the two cut the main area off.
+    best = max(runs, key=lambda r: (r[1] - r[0],
+                                    sum(hits[b] for b in range(r[0], r[1] + 1))))
     # Pad one bucket each side: the outermost blocks of the calibration area
     # can be too sparse to clear the density threshold on their own.
     start = max(0, (best[0] - 1) << bucket_bits)
