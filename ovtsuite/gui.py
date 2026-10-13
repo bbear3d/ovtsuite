@@ -73,6 +73,10 @@ _MIN_CELL_W = 64
 #: per column on every selection change.
 _FIT_SAMPLE_ROWS = 200
 
+#: How long after the last edit the status line verifies the checksums.
+#: Verifying sums the whole image (~0.2 s on an EDC16), too slow per cell.
+CHECKSUM_DELAY_MS = 400
+
 _TAG_LEAD = _re0.compile(
     r'^[A-Za-z0-9]{2,5}:\s*[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9#]+)*$')
 
@@ -519,6 +523,38 @@ if HAVE_QT:
     SEP_FG = QtGui.QColor(255, 255, 255)
     HEX_HL_FG = QtGui.QColor(20, 20, 20)          # text on any highlight
 
+    # Grid roles as plain ints. The table model answers data() for every
+    # cell of every repaint; looking each role up on Qt's enum classes there
+    # was a measurable part of the time a table took to show.
+    _R_DISPLAY = int(QtCore.Qt.DisplayRole)
+    _R_EDIT = int(QtCore.Qt.EditRole)
+    _R_TIP = int(QtCore.Qt.ToolTipRole)
+    _R_FONT = int(QtCore.Qt.FontRole)
+    _R_ALIGN = int(QtCore.Qt.TextAlignmentRole)
+    _R_BG = int(QtCore.Qt.BackgroundRole)
+    _R_FG = int(QtCore.Qt.ForegroundRole)
+    _R_SIZE = int(QtCore.Qt.SizeHintRole)
+    _R_TEXT = frozenset((_R_DISPLAY, _R_EDIT))
+    #: everything TableModel.data answers; Qt asks for more, and those
+    #: return None before any work is done
+    _GRID_ROLES = frozenset((_R_DISPLAY, _R_EDIT, _R_TIP, _R_FONT, _R_ALIGN,
+                             _R_BG, _R_FG, _R_SIZE))
+    _AL_LEFT = int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+    _AL_RIGHT = int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+    _AL_CENTER = int(QtCore.Qt.AlignCenter)
+    _NO_SELECT_EDIT = ~(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable)
+    _NO_EDIT = ~QtCore.Qt.ItemIsEditable
+    _bold = []
+
+    def _bold_font():
+        """One bold font for the grid, made on first use (a QFont wants the
+        application to exist) and shared: Qt copies what data() returns."""
+        if not _bold:
+            f = QtGui.QFont()
+            f.setBold(True)
+            _bold.append(f)
+        return _bold[0]
+
     import os as _os
 
     def _ensure_ext(path, ext):
@@ -771,6 +807,7 @@ if HAVE_QT:
             #: session revision the values on screen were read at; the
             #: window's timer refreshes when an edit elsewhere moves it
             self._rev = None
+            self._ndiff = None              # see _diff_count
 
         def _cmp_axes(self):
             """(X, Y) breakpoints the comparison block's cells sit at.
@@ -812,18 +849,16 @@ if HAVE_QT:
                 return None
             differs = other is not None and abs(v - other) > 1e-6
             heat = self._heatmap and self._vmax > self._vmin
-            if role == QtCore.Qt.BackgroundRole:
+            if role == _R_BG:
                 if heat:
                     return self._heat((v - self._vmin) / (self._vmax - self._vmin))
                 return DIFF_BG if differs else None
-            if role == QtCore.Qt.ForegroundRole and (heat or differs):
+            if role == _R_FG and (heat or differs):
                 # both DIFF_BG and the heat ramp are light fills -> dark text,
                 # theme-independent (default text would be white in dark mode)
                 return CELL_DARK_FG
-            if role == QtCore.Qt.FontRole and heat and differs:
-                fnt = QtGui.QFont()
-                fnt.setBold(True)
-                return fnt
+            if role == _R_FONT and heat and differs:
+                return _bold_font()
             return None
 
         def set_entity(self, e: Optional[Entity], compare: Optional[Entity]):
@@ -838,6 +873,7 @@ if HAVE_QT:
                 e, compare, _view6.compare_columns(e, compare)) \
                 if (e and compare) else None
             self._cmp = self.overlay.values if self.overlay else []
+            self._ndiff = None
             self._x = e.x_values() if e else []
             self._y = e.y_values() if e else []
             self._cx, self._cy = self._cmp_axes()
@@ -918,6 +954,17 @@ if HAVE_QT:
                 return _view6.OFF_TEXT
             return _fmt(v * f, dec if f == 1.0 else 1)
 
+        def _diff_count(self) -> int:
+            """Cells that differ from the comparison; counted once per change
+            of values (the banner asks on every repaint)."""
+            if self._ndiff is None:
+                self._ndiff = sum(
+                    1 for r in range(self.entity.rows)
+                    for c in range(self.entity.cols)
+                    if self._cmp[r][c] is not None
+                    and abs(self._vals[r][c] - self._cmp[r][c]) > 1e-6)
+            return self._ndiff
+
         def sep_text(self, full: bool = False) -> str:
             """Banner for the comparison section.
 
@@ -929,10 +976,7 @@ if HAVE_QT:
                 return ""
             # A None comparison cell is a column the other calibration does
             # not have, so it is not a difference -- it is an absence.
-            n = sum(1 for r in range(self.entity.rows)
-                    for c in range(self.entity.cols)
-                    if self._cmp[r][c] is not None
-                    and abs(self._vals[r][c] - self._cmp[r][c]) > 1e-6)
+            n = self._diff_count()
             diff = "identical" if n == 0 else "%d cell(s) differ" % n
             mode = self.overlay.mode if self.overlay is not None else "direct"
             if not full:
@@ -1151,47 +1195,48 @@ if HAVE_QT:
             return str(row)
 
         # -- data -------------------------------------------------------
-        def data(self, idx, role=QtCore.Qt.DisplayRole):
-            if not idx.isValid() or not self.entity:
+        def data(self, idx, role=_R_DISPLAY):
+            # Qt asks every cell for roles this model never answers
+            # (decoration, check state, ...): those leave before any work.
+            if role not in _GRID_ROLES or not self.entity or not idx.isValid():
                 return None
             k, a, b = self._kind(idx.row(), idx.column())
+            tk = getattr(self.entity, "text_kind", "")
             if self.hl and (k, a, b) in self.hl:
-                if role == QtCore.Qt.BackgroundRole:
+                if role == _R_BG:
                     return HL_BG
-                if role == QtCore.Qt.ForegroundRole:
+                if role == _R_FG:
                     return CELL_DARK_FG
-            if role == QtCore.Qt.TextAlignmentRole:
+            if role == _R_ALIGN:
                 if k == "sep":
-                    return int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-                if k in ("z", "cz") and getattr(self.entity, "text_kind", ""):
+                    return _AL_LEFT
+                if k in ("z", "cz") and tk:
                     # characters and hex bytes read as a row of glyphs, not
                     # as right-aligned quantities -- both halves alike
-                    return int(QtCore.Qt.AlignCenter)
-                return int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                    return _AL_CENTER
+                return _AL_RIGHT
             if k in ("corner", "ccorner"):
                 return None
             if k == "sep":
-                if role == QtCore.Qt.SizeHintRole:
+                if role == _R_SIZE:
                     # The banner is spanned across the whole grid, but its
                     # text lives in column 0 -- left to Qt, that one sentence
                     # set the width of the axis column. Claim no width.
                     return QtCore.QSize(0, 0)
-                if role == QtCore.Qt.DisplayRole and b == 0:
+                if role == _R_DISPLAY and b == 0:
                     return self.sep_text()
-                if role == QtCore.Qt.ToolTipRole:
+                if role == _R_TIP:
                     text = self.sep_text(full=True)
                     cs = _ascii_of(self.compare) if self.compare else ""
                     if cs:
                         text += '\n"%s"' % cs  # the comparison's string whole
                     return text
-                if role == QtCore.Qt.BackgroundRole:
+                if role == _R_BG:
                     return SEP_BG
-                if role == QtCore.Qt.ForegroundRole:
+                if role == _R_FG:
                     return SEP_FG
-                if role == QtCore.Qt.FontRole:
-                    fnt = QtGui.QFont()
-                    fnt.setBold(True)
-                    return fnt
+                if role == _R_FONT:
+                    return _bold_font()
                 return None
             if k == "cz":
                 v = self._at(self._cmp, a, b)
@@ -1201,30 +1246,30 @@ if HAVE_QT:
                 # "raw" -- 34,035 rpm above 8,160 raw -- and anything copied
                 # from one into the other was wrong by the conversion.
                 f = self._zf(b)
-                if getattr(self.entity, "text_kind", "") == "ascii":
+                if tk == "ascii":
                     # the same characters-not-numbers view as the primary
                     # half, or a changed part number reads as two rows of
                     # unrelated integers
-                    if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+                    if role in _R_TEXT:
                         return "" if v is None else _as_char(v)
-                    if role == QtCore.Qt.ToolTipRole:
+                    if role == _R_TIP:
                         return "primary: %s" % ("-" if pv is None
                                                 else _as_char(pv))
                     return self._cell_style(v, pv, role)
-                if getattr(self.entity, "text_kind", "") == "hex":
-                    if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+                if tk == "hex":
+                    if role in _R_TEXT:
                         return "" if v is None else "%02X" % (int(round(v)) & 0xFF)
-                    if role == QtCore.Qt.ToolTipRole:
+                    if role == _R_TIP:
                         return ("primary: %s"
                                 % ("-" if pv is None else "%02X" % (int(round(pv)) & 0xFF)))
                     return self._cell_style(v, pv, role)
                 _copts = getattr(self.entity, "options", None)
-                if _copts and v is not None and role == QtCore.Qt.DisplayRole:
+                if _copts and v is not None and role == _R_DISPLAY:
                     _cl = _copts.get(int(round(v)))
                     return "%s  (%s)" % (_cl, _fmt(v, 0)) if _cl else _fmt(v, 0)
-                if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+                if role in _R_TEXT:
                     return "" if v is None else self._ztext(v, f, self._cmp_dec)
-                if role == QtCore.Qt.ToolTipRole:
+                if role == _R_TIP:
                     return "primary: %s" % self._ztext(pv, f, self._dec)
                 return self._cell_style(v, pv, role)
             if k in ("x", "y", "cx", "cy"):
@@ -1232,61 +1277,55 @@ if HAVE_QT:
                         "cx": self._cx, "cy": self._cy}[k]
                 if a >= len(vals):
                     return None
-                if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+                if role in _R_TEXT:
                     return _fmt(vals[a], 3)
                 # explicit bg AND fg so the band reads the same in light/dark
-                if role == QtCore.Qt.BackgroundRole:
+                if role == _R_BG:
                     return AXIS_BG
-                if role == QtCore.Qt.ForegroundRole:
+                if role == _R_FG:
                     return AXIS_FG
-                if role == QtCore.Qt.FontRole:
-                    fnt = QtGui.QFont()
-                    fnt.setBold(True)
-                    return fnt
+                if role == _R_FONT:
+                    return _bold_font()
                 return None
             # z
             v = self._at(self._vals, a, b)
-            if getattr(self.entity, "text_kind", "") == "ascii":
+            if tk == "ascii":
                 # A part number is characters, not numbers. hp6tuner showed
                 # these as text; reading 09L927156C as twelve integers is
                 # what the port was doing.
-                if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+                if role in _R_TEXT:
                     return _as_char(v)
-                if role == QtCore.Qt.TextAlignmentRole:
-                    return int(QtCore.Qt.AlignCenter)
                 return self._cell_style(v, self._at(self._cmp, a, b)
                                         if self._cmp else None, role)
-            if getattr(self.entity, "text_kind", "") == "hex":
+            if tk == "hex":
                 # A patch/bypass site is a raw byte the user matches against a
                 # hex signature ("stock 6C, bypass 60"), not a scaled number.
-                if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+                if role in _R_TEXT:
                     return "" if v is None else "%02X" % (int(round(v)) & 0xFF)
-                if role == QtCore.Qt.TextAlignmentRole:
-                    return int(QtCore.Qt.AlignCenter)
                 return self._cell_style(v, self._at(self._cmp, a, b)
                                         if self._cmp else None, role)
             opts = getattr(self.entity, "options", None)
             if opts and v is not None:
                 lbl = opts.get(int(round(v)))
-                if role == QtCore.Qt.DisplayRole:
+                if role == _R_DISPLAY:
                     return "%s  (%s)" % (lbl, _fmt(v, 0)) if lbl else _fmt(v, 0)
-                if role == QtCore.Qt.EditRole:
+                if role == _R_EDIT:
                     return _fmt(v, 0)
-                if role == QtCore.Qt.ToolTipRole:
+                if role == _R_TIP:
                     cv = self._at(self._cmp, a, b) if self._cmp else None
                     head = ("%s: %s\n" % (self.other_label, opts.get(
                         int(round(cv)), _fmt(cv, 0))) if cv is not None else "")
                     return head + "\n".join("%d = %s" % (k2, t)
                                              for k2, t in sorted(opts.items()))
             f = self._zf(b)
-            if role in (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole):
+            if role in _R_TEXT:
                 return self._ztext(v, f, self._dec)
-            if role == QtCore.Qt.ToolTipRole and self._cmp:
+            if role == _R_TIP and self._cmp:
                 cv = self._at(self._cmp, a, b)
                 return "%s: %s" % (self.other_label,
                                    "-" if cv is None
                                    else self._ztext(cv, f, self._cmp_dec))
-            if role == QtCore.Qt.ToolTipRole and self._off(v):
+            if role == _R_TIP and self._off(v):
                 return ("Stored %s = off (not a speed, so not converted). "
                         "Type a speed to switch it on, or \"off\" to restore "
                         "it." % _fmt(v, 0))
@@ -1298,16 +1337,14 @@ if HAVE_QT:
             if not self.entity:
                 return f
             k, a, b = self._kind(idx.row(), idx.column())
-            if k in ("corner", "ccorner"):
-                return f & ~(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable)
-            if k == "sep":
-                return f & ~(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable)
+            if k in ("corner", "ccorner", "sep"):
+                return f & _NO_SELECT_EDIT
             if k in ("cz", "cx", "cy") or self.readonly:
-                return f & ~QtCore.Qt.ItemIsEditable  # comparison is view-only
+                return f & _NO_EDIT  # comparison is view-only
             if getattr(self.entity, "read_only", False):
                 # a definition marks it so (a cluster's odometer, immobilizer
                 # data): carried by patches and transfers, never hand-edited
-                return f & ~QtCore.Qt.ItemIsEditable
+                return f & _NO_EDIT
             f |= QtCore.Qt.ItemIsEditable             # provenance is advisory, not a lock
             return f
 
@@ -1360,6 +1397,7 @@ if HAVE_QT:
             self._edit_cells(cells)
             if len(cells) == 1:
                 self._vals[a][b] = self.entity.cell(a, b)
+                self._ndiff = None
                 self._rev = getattr(self.session, "revision", None)
                 self.dataChanged.emit(idx, idx)
             else:
@@ -1650,7 +1688,15 @@ if HAVE_QT:
                                 _view6.row_headers(self.entity, self._y))
                 self._cx, self._cy = self._cmp_axes()
                 self._recompute_heat()
-                self.layoutChanged.emit()
+                self._ndiff = None
+                # Values and headers change, never the shape: a repaint of
+                # the grid, not the relayout layoutChanged asks the view for.
+                nr, nc = self.rowCount(), self.columnCount()
+                if nr and nc:
+                    self.dataChanged.emit(self.index(0, 0),
+                                          self.index(nr - 1, nc - 1))
+                    self.headerDataChanged.emit(QtCore.Qt.Vertical, 0, nr - 1)
+                    self.headerDataChanged.emit(QtCore.Qt.Horizontal, 0, nc - 1)
             self._rev = getattr(self.session, "revision", None)
 
     import math as _math
@@ -6535,18 +6581,42 @@ if HAVE_QT:
             if self._eeprom is not None:
                 cmp_ += " | EEPROM loaded%s" % ("*" if self._eeprom_dirty
                                                 else "")
-            rep = self.primary.checksum_status()
             csum = ""
-            if rep is not None:
-                csum = "  checksums: %s" % (
-                    "CANNOT VERIFY" if getattr(rep, "unreadable", "")
-                    else "valid" if rep.ok else "NEED FIX (auto on save)")
+            if (getattr(self.primary, "_checksum_cache", None) is not None
+                    and not self.primary.checksum_status_known()):
+                # Verifying sums the whole image. After an edit it waits for
+                # a pause rather than holding up every keystroke; the first
+                # report (on opening) is still made straight away.
+                self._schedule_checksum()
+                csum = "  checksums: checking..."
+            else:
+                rep = self.primary.checksum_status()
+                if rep is not None:
+                    csum = "  checksums: %s" % (
+                        "CANNOT VERIFY" if getattr(rep, "unreadable", "")
+                        else "valid" if rep.ok else "NEED FIX (auto on save)")
             fam = self.primary.family
             if getattr(self.primary, "is_edc15", False):
                 fam = "EDC15 %s, %d datasets" % (fam,
                                                  len(self.primary.datasets))
             return "%s%s  [%s, %d parameters]%s%s" % (
                 self.primary.binfile.name, dirty, fam, n, cmp_, csum)
+
+        def _schedule_checksum(self):
+            """Verify the checksums once edits pause, then redraw the status
+            line (see status_text)."""
+            t = getattr(self, "_csum_timer", None)
+            if t is None:
+                t = self._csum_timer = QtCore.QTimer(self)
+                t.setSingleShot(True)
+                t.setInterval(CHECKSUM_DELAY_MS)
+                t.timeout.connect(self._checksum_due)
+            t.start()                       # restarted by every edit
+
+        def _checksum_due(self):
+            if self.primary is not None:
+                self.primary.checksum_status()
+            self._status()
 
         # -- comparison -------------------------------------------------
         def set_comparison(self, comp, link=None):
@@ -7545,7 +7615,9 @@ if HAVE_QT:
                 banner = "\n" + tag
             lines.append("Group: %s | %s" % (tier_name(e.tier), src))
             self.desc.setText("\n".join(lines) + banner)
-            self.table.resizeColumnsToContents()
+            # (no second resizeColumnsToContents: _fit_columns above sized the
+            # columns from sampled rows; a full one here read every cell again
+            # and was half the time a click took)
 
         # -- file ops ---------------------------------------------------
         def _set_title(self, e):
@@ -8450,8 +8522,13 @@ if HAVE_QT:
             e = self.model.entity
             if e is None:
                 return None
-            return _view6.paired_entity(
-                e, _view6.index_by_name(self.primary.entities))
+            ents = self.primary.entities
+            key = (id(ents), len(ents), self.primary.revision)
+            if getattr(self, "_by_name_key", None) != key:
+                # every parameter by name: built once, not on every click
+                self._by_name = _view6.index_by_name(ents)
+                self._by_name_key = key
+            return _view6.paired_entity(e, self._by_name)
 
         def mirror_to_bank(self):
             e = self.model.entity
