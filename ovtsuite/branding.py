@@ -119,7 +119,7 @@ LEGACY_CONFIG_DIRS = tuple(
 LEGACY_QSETTINGS = tuple(
     (org, app) for app, _pkg, _exe, org in LEGACY_RELEASES)
 
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 
 
 def title(subject: str = "") -> str:
