@@ -193,12 +193,19 @@ def fingerprint(src_pkg: str, specs=None) -> Dict[str, str]:
     # makes a new package anyway, and leaving it out lets the build tell
     # "files changed" apart from "version bumped" (see version_warnings).
     for mid, spec in specs.items():
+        # a closed module's package also carries the module EULA, which lives
+        # outside its files: a changed agreement must repackage it too (it did
+        # not, and EDC16 1.0.8 shipped the agreement's draft text)
+        eula = ""
+        if _api.terms(spec.license) == _api.EULA_TERMS:
+            with open(_package.EULA_FILE, "rb") as fh:
+                eula = "|eula=" + hashlib.sha256(fh.read()).hexdigest()
         out[mid] = _hash(src_pkg, _package.payload(src_pkg, spec, _api.FULL),
-                         "api=%d|full" % spec.module_api)
+                         "api=%d|full%s" % (spec.module_api, eula))
         if spec.checksum:
             out[mid + "-checksum"] = _hash(
                 src_pkg, _package.payload(src_pkg, spec, _api.CHECKSUM_ONLY),
-                "api=%d|checksum" % spec.module_api)
+                "api=%d|checksum%s" % (spec.module_api, eula))
     return out
 
 
@@ -271,6 +278,16 @@ def check_package(base_parent: str, pkg_name: str, ovtmod: str, mid: str,
         env = dict(os.environ, PYTHONPATH=base_parent, PYTHONDONTWRITEBYTECODE="1",
                    OVT_ALLOW_UNSIGNED="1", **{ENV_DIRS: mods})
         env.pop("OVT_DISABLE_MODULES", None)
+        # The user's own modules folder (installer.user_dir) must not be seen:
+        # a module installed there is mounted first, so the check tested THAT
+        # copy -- a full EDC16 installed for the user failed the checksum-only
+        # package's check, and would pass a broken full one (Bear's build,
+        # 2026-10-13). Point every platform's per-user location at the scratch
+        # folder, where nothing but the package under test is installed.
+        home = os.path.join(mods, "_home")
+        env.update(LOCALAPPDATA=home, XDG_DATA_HOME=home)
+        if sys.platform == "darwin":
+            env["HOME"] = home
         r = subprocess.run(
             [sys.executable, "-c", _CHECK.format(pkg=pkg_name),
              ovtmod, mods, mid, variant],
