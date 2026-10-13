@@ -49,7 +49,7 @@ def test_modules_contribute_their_tools():
     by = {t.name: t.module for t in module_tools()}
     for name in ("analyse_engine_logs", "coding_states", "vss_settings", "gear_and_cruise"):
         assert by.get(name) == "edc16"
-    for name in ("shift_schedules", "lockup_schedules", "shift_feel_maps",
+    for name in ("shift_schedules", "lockup_schedules", "tcc_characteristics", "shift_feel_maps",
                  "tcu_fault_codes", "shift_torque_report"):
         assert by.get(name) == "zf6hp"
     assert "fault_codes" in by and "output_tests" in by
@@ -134,6 +134,29 @@ def test_zf6hp_tools(env):
     # the schedule ids work with the base tools
     g = call(env, "get_map", handle="h1", map=sk[0]["id"], comparison=False)
     assert g["shape"] == sk[0]["shape"]
+
+
+TFSI = os.path.join(ROOT, "Reference", "ZF6HP", "3.0TFSI-Stock.bin")
+
+
+def test_tcc_characteristics_span_every_wk_map(env):
+    """Bear: the assistant changed one TCC map pair for a lock-up change. A
+    gear's lock-up characteristics are picked per shift program by
+    WT_KWK_ZTAB and sit in several WK maps; the tool lists them all."""
+    _need(TFSI)
+    call(env, "open_file", path=TFSI)
+    got = call(env, "tcc_characteristics", handle="h1", gear=3)
+    (g3,) = got["by_gear"]
+    chars = g3["characteristics"]
+    assert {c["event"] for c in chars} == {"3>4", "3>2"}       # only gear 3's own events
+    assert len({c["wk_map"] for c in chars}) > 2                # spread over the maps
+    for c in chars:
+        grp = (c["characteristic"] - 1) % 10
+        assert c["wk_map"] == (c["characteristic"] - 1) // 10 + 1
+        assert c["columns"][0] == grp * len(c["columns"]) and c["map_id"]
+    lk = call(env, "lockup_schedules", handle="h1")
+    assert "tcc_characteristics" in lk["note"]
+    assert lk["schedules"][0]["title"].endswith("characteristics 1 to 10")
 
 
 VDO = os.path.join(ROOT, "Reference", "VDO", "Samples", "VWK501-FIS-Diesel-A4-UK-Base.bin")
