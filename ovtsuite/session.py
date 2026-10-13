@@ -807,17 +807,46 @@ class TunerSession:
                 "program_area": (self.correct_program_area if program_area is None
                                  else program_area)}
 
+    def _checksum_key(self, cs):
+        """What a verify report depends on: the provider, its options and
+        the bytes themselves (hashed -- a save can correct checksums in
+        place without moving ``revision``)."""
+        import hashlib
+        data = self.binfile.data
+        opts = tuple(sorted(self._checksum_opts().items()))
+        # by class: checksum_provider() makes a fresh provider on each call
+        return (type(cs), id(data), len(data), opts,
+                hashlib.blake2b(data, digest_size=16).digest())
+
     def checksum_status(self):
-        """Verify report for the current bytes, or None if unsupported."""
+        """Verify report for the current bytes, or None if unsupported.
+
+        Remembered for the bytes it was made from: verifying an EDC16 image
+        sums every block of it, and the status bar asks after every edit."""
         cs = self.checksum_provider()
         if cs is None:
             return None
+        key = self._checksum_key(cs)
+        cached = getattr(self, "_checksum_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        rep = None
         try:
             if cs.is_supported(self.binfile.data):
-                return cs.verify(self.binfile.data, **self._checksum_opts())
+                rep = cs.verify(self.binfile.data, **self._checksum_opts())
         except _modapi.ChecksumError:
-            return None
-        return None
+            rep = None
+        self._checksum_cache = (key, rep)
+        return rep
+
+    def checksum_status_known(self) -> bool:
+        """Whether :meth:`checksum_status` would answer from what it
+        remembers (no verify needed) for the current bytes."""
+        cs = self.checksum_provider()
+        if cs is None:
+            return True
+        cached = getattr(self, "_checksum_cache", None)
+        return cached is not None and cached[0] == self._checksum_key(cs)
 
     def checksum_exempt_ranges(self):
         """Byte ranges in ``self.binfile.data`` this platform's checksum
