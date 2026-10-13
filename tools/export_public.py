@@ -64,7 +64,7 @@ SRC_PKG = os.path.join(ROOT, PKG)
 BASE_FILES = [
     "LICENSE", "LEGAL.md", "README.md", "CONTRIBUTING.md", "AGENTS.md",
     "pyproject.toml", "build.ps1", "build_linux.sh",
-    ".gitattributes", ".gitignore",
+    ".gitattributes", ".gitignore", ".github/FUNDING.yml",
     # branding: legacy-names-begin -- the old package's import shim
     "edc16tuner/*",
     # branding: legacy-names-end
@@ -72,7 +72,7 @@ BASE_FILES = [
     "addons/README.md", "addons/addons.json",
     "docs/HELP.md", "docs/MODULES_PLAN.md", "docs/MODULE_SDK_DESIGN.md",
     "docs/OVT_CONTAINER.md", "docs/CONTAINERS.md", "docs/SEARCH.md",
-    "docs/DEFINITION_CACHE.md",
+    "docs/DEFINITION_CACHE.md", "docs/images/*",
     "tools/__init__.py", "tools/build_modules.py", "tools/collect_licenses.py",
     "tools/export_public.py", "tools/rename_package.py",
     "tools/make_file_icons.py", "tools/help_screenshots.py", "tools/help_shots/*",
@@ -275,12 +275,23 @@ def _warnings(which: str, paths) -> list:
 
 # --------------------------------------------------------------- writing
 def _clear(dest: str) -> None:
+    """Every file in ``dest`` but ``.git`` goes; then the folders left empty.
+    A folder Windows will not remove (Explorer, a sync client or an antivirus
+    holding it open: "Access is denied") is left empty -- the copy refills
+    it, and git does not track empty folders anyway."""
     for name in os.listdir(dest):
         if name == ".git":
             continue
         p = os.path.join(dest, name)
         if os.path.isdir(p) and not os.path.islink(p):
-            shutil.rmtree(p)
+            for d, _dirs, files in os.walk(p):
+                for f in files:
+                    os.remove(os.path.join(d, f))
+            for d, _dirs, _files in sorted(os.walk(p), key=lambda w: -len(w[0])):
+                try:
+                    os.rmdir(d)
+                except OSError:
+                    pass
         else:
             os.remove(p)
 
