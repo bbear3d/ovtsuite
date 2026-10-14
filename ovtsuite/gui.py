@@ -10515,12 +10515,18 @@ if HAVE_QT:
             return self.close()
 
         def closeEvent(self, ev):
+            from . import gui_saving as _sv
+            if _sv.saving(self):
+                ev.ignore()                 # a project is being written
+                return
+            _gp.pause_autosave(self)        # no snapshot starts mid-close
             if not self._quiet_close:
                 dirty = [ws for ws in self.workspaces() if ws.is_dirty()]
                 dirty += _gp.unsaved_entries(self)  # project-only changes
                 if dirty:
                     dlg = UnsavedDialog(dirty, self)
                     if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                        _gp.pause_autosave(self, False)
                         ev.ignore()
                         return
                     if dlg.choice == "save":
@@ -10529,11 +10535,13 @@ if HAVE_QT:
                             # one write per project, with only the ticked
                             # tabs committed (the others stay unsaved)
                             if not _gp.save_selection(self, doc, ptabs):
+                                _gp.pause_autosave(self, False)
                                 ev.ignore()     # cancelled a Save As, or failed
                                 return
                         for ws in tabs:
                             self.show_workspace(ws)
                             if not ws.save_checked(tab_only=True):
+                                _gp.pause_autosave(self, False)
                                 ev.ignore()
                                 return
                 self.remember_tabs()

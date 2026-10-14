@@ -37,6 +37,7 @@ from typing import List, Optional, Tuple
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import branding
+from . import gui_saving as _sv
 from .appsettings import settings as _settings
 from .gui_autohide import AutoHideDock
 from .project import Project, is_project
@@ -52,6 +53,12 @@ REF_SEP = "#ovt:"
 STATE_KEY = "projects/open_tabs/%s"
 #: how often open projects are auto-saved for crash recovery (ms)
 AUTOSAVE_MS = 60_000
+#: a tab's definition snapshot is stored this long after it opens, while the
+#: user is idle -- not at exit (:func:`keep_definition`)
+DEFN_IDLE_MS = 5_000
+#: on exit, definitions not yet in the .ovt are written only into a file no
+#: bigger than this; a bigger one gets them at its next save or close
+EXIT_DEFN_MAX = 32 * 1024 * 1024
 
 
 # ------------------------------------------------------------------ refs
@@ -295,6 +302,7 @@ def open_branch(win, doc, sid, bid, ws=None):
         if ws.is_empty() and win.tabs.count() > 1:
             win._remove_workspace(ws, remember=False)
         return None
+    defer_definition(ws)
     remember(win, doc)
     refresh_panel(win)
     return ws
@@ -559,7 +567,8 @@ def _commit(ws, label="") -> bool:
     proj = ref.doc.project
     head = ref.branch.head
     ws._sync_eeprom_to_primary()
-    ws.primary.save(ref.workfile)
+    # a scratch file read straight back: no compression, fsync or .bak
+    ws.primary.save(ref.workfile, durable=False)
     images, defn = _sb.read_back(proj, ref.sid, ref.workfile)
     lines, named, renames = _sb.read_log(proj, ref.sid, head,
                                         _cl.read_text(ref.workfile))
@@ -602,7 +611,7 @@ def _resync_log(ws):
     ref = ws.project_ref
     try:
         _cl.rewrite(ref.workfile, _sb.history_text(
-            ref.doc.project, ref.sid, ref.branch.head))
+            ref.doc.project, ref.sid, ref.branch.head), durable=False)
     except Exception:
         pass
 
@@ -739,8 +748,7 @@ def save(ws, tab_only=False, path=None, only=None) -> bool:
         doc.saver.saved()
     for t in tabs:
         t._after_save()
-        win._workspace_changed(t)
-    for t in doc.tabs(win):
+    for t in doc.tabs(win):             # (the saved ones among them)
         win._workspace_changed(t)
     remember(win, doc)
     refresh_panel(win)
@@ -806,7 +814,9 @@ def save_as_project(ws) -> bool:
             s = _imp.import_bytes(proj, data, os.path.basename(work),
                                   sidecar_log=log)
         _apply_info(proj, info)
-        proj.save(path)
+        job = proj.prepare_save(path)
+        _sv.run(win, job.run)               # the window waits, painting
+        job.finish()
     except Exception as ex:
         ws._save_failed(path, ex)
         return False
@@ -1368,10 +1378,22 @@ def keep_definition(ws) -> bool:
     if getattr(s, "defn_state", "") == "used":
         return False                    # it came from the stored one
     try:
+        import zlib
         from . import defn as _defn
-        blob = _defn.build(s, bytes(s.binfile.data))
+        data = bytes(s.binfile.data)
         proj = ref.doc.project
-        if not blob or blob == proj.cache(ref.sid, ref.bid):
+        have = proj.cache(ref.sid, ref.bid)
+        # built from these very bytes before, and it was the stored one:
+        # building it again (every save, every exit) gives the same again
+        key = (ref.sid, ref.bid, s.revision, len(data), zlib.crc32(data))
+        memo = getattr(s, "_ovt_defn_memo", None)
+        if have is not None and memo is not None and memo[0] == key \
+                and memo[1] is have:
+            return False
+        blob = _defn.build(s, data)
+        if blob and blob == have:
+            s._ovt_defn_memo = (key, have)
+        if not blob or blob == have:
             return False
         proj.set_cache(ref.sid, ref.bid, blob)
     except Exception:
@@ -1381,23 +1403,50 @@ def keep_definition(ws) -> bool:
     return True
 
 
-def write_definitions(win, doc) -> bool:
+def write_definitions(win, doc, at_exit: bool = False) -> bool:
     """Write definitions stored since the last save into the .ovt -- only
     when the project has nothing else unsaved, so no change the user did
-    not save goes in with them. True when the file was written."""
-    for t in doc.tabs(win):
-        keep_definition(t)
+    not save goes in with them. True when the file was written.
+
+    ``at_exit``: nothing is built (the tabs stored theirs while the user was
+    idle, :func:`defer_definition`), and a big file is not rewritten -- the
+    definitions are only a cache; they go in at its next save or close."""
+    if not at_exit:
+        for t in doc.tabs(win):
+            keep_definition(t)
     if not doc.__dict__.get("_cache_dirty") or not doc.path \
             or doc.project.modified_since_save:
         return False
     try:
+        if at_exit and os.path.getsize(doc.path) > EXIT_DEFN_MAX:
+            return False
         # refused (DiskChanged) when another program changed the file: the
         # definitions are only a cache, nothing is asked -- they are skipped
-        doc.project.save(doc.path)
+        job = doc.project.prepare_save(doc.path)
+        if at_exit:
+            job.run()
+        else:
+            _sv.run(win, job.run)
+        job.finish()
     except Exception:
         return False
     doc.__dict__["_cache_dirty"] = False
     return True
+
+
+def defer_definition(ws) -> None:
+    """Store the tab's definition snapshot (:func:`keep_definition`) a few
+    seconds after it opened, when the user is idle -- in memory; the file
+    gets it with the next save, or on closing."""
+    def later():
+        if getattr(ws, "project_ref", None) is None or _sv.saving(ws.win) \
+                or QtWidgets.QApplication.activeModalWidget() is not None:
+            return
+        keep_definition(ws)
+    try:
+        QtCore.QTimer.singleShot(DEFN_IDLE_MS, ws, later)
+    except (RuntimeError, TypeError):
+        pass
 
 
 def note_closing(win, ws, entry):
@@ -1497,15 +1546,29 @@ def unsaved_entries(win) -> list:
     return out
 
 
+def pause_autosave(win, paused: bool = True) -> None:
+    """Stop (or restart) the crash-recovery timer -- while the window is
+    asking whether to close, so no snapshot starts mid-exit."""
+    t = win.__dict__.get("_ovt_autosave_timer")
+    if t is None:
+        return
+    if paused:
+        t.stop()
+    elif not win.__dict__.get("_ovt_shut_down"):
+        t.start()
+
+
 def shutdown(win):
     """A proper exit: every project's recovery data goes (saved or not --
     the user has been asked), and the working files with it."""
+    win.__dict__["_ovt_shut_down"] = True
+    pause_autosave(win)
     timer = win.__dict__.get("_ovt_disksync_timer")
     if timer is not None:
         timer.stop()
     for d in list(docs(win)):
         remember(win, d)
-        write_definitions(win, d)
+        write_definitions(win, d, at_exit=True)
         d.close()
     docs(win).clear()
     from .gui_files import unlock_all
@@ -1516,6 +1579,8 @@ def shutdown(win):
 def autosave(win, doc=None) -> None:
     """Snapshot unsaved work of every open project (or one), in the
     background, without any checksum correction."""
+    if _sv.saving(win):
+        return                          # the next tick, once it is written
     for d in ([doc] if doc is not None else list(docs(win))):
         tabs = d.tabs(win)
         token = tuple((t.project_ref.sid, t.project_ref.bid,

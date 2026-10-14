@@ -52,7 +52,13 @@ ENV_DIR = "OVT_RECOVERY_DIR"
 ENTRY = "entry.json"
 LOCK = "lock"
 BASE = "base.ovt"
+#: marks an entry its owner discarded while a snapshot was still being
+#: written: removed at the next start, never offered
+DISCARDED = "discarded"
 ENTRY_VERSION = 1
+#: how long a save or an exit waits for a snapshot being written (seconds);
+#: past that the snapshot -- out of date anyway -- removes itself when done
+WAIT_S = 2.0
 
 
 def recovery_root() -> str:
@@ -124,6 +130,25 @@ def _file_sha(path: Optional[str]) -> Optional[str]:
 
 
 # ---------------------------------------------------------------- the saver
+class _Cancelled(Exception):
+    pass
+
+
+class _Job:
+    """A snapshot being written: ``cancel`` stops it at its next step (a
+    newer snapshot or a save made it out of date); with ``discard`` it also
+    removes the entry when it stops."""
+
+    def __init__(self):
+        self.cancel = threading.Event()
+        self.discard = False
+        self.thread: Optional[threading.Thread] = None
+
+    def check(self) -> None:
+        if self.cancel.is_set():
+            raise _Cancelled()
+
+
 class AutoSaver:
     """Keeps the recovery entry of one open project."""
 
@@ -135,7 +160,7 @@ class AutoSaver:
         self._token = None
         self._base_rev = None             # project.revision of base.ovt on disk
         self._started = now()
-        self._job: Optional[threading.Thread] = None
+        self._job: Optional[_Job] = None
         self._mutex = threading.Lock()
         self.last_error: Optional[str] = None
 
@@ -196,77 +221,114 @@ class AutoSaver:
                 "project_path": os.path.abspath(p.path) if p.path else None,
                 "base_sha256": None if need_base else _file_sha(p.path)}
         rev = p.revision
-        self.flush()
-        job = threading.Thread(target=self._write, name="ovt-autosave",
-                               args=(heads, parts, need_base, rev, info),
-                               daemon=True)
+        old = self._job
+        if old is not None:
+            old.cancel.set()            # out of date: it stops, this one writes
+        job = _Job()
+        job.thread = threading.Thread(
+            target=self._write, name="ovt-autosave",
+            args=(job, heads, parts, need_base, rev, info), daemon=True)
         self._job = job
-        job.start()
+        job.thread.start()
         if wait:
             self.flush()
 
-    def _write(self, heads, parts, need_base, rev, info) -> None:
+    def _write(self, job, heads, parts, need_base, rev, info) -> None:
         try:
             with self._mutex:
-                working = []
-                keep = {ENTRY, LOCK}
-                for sid, bid, head, label, base, new in heads:
-                    recs = _d.diff(base, new)
-                    if not recs:
-                        continue
-                    name = "w_%s_%s.ovd" % (sid, bid)
-                    keep.add(name)
-                    working.append({"set": sid, "branch": bid, "head": head,
-                                    "label": label, "delta": name,
-                                    "n_bytes": _d.changed_bytes(recs)})
-                    self._ensure_dir()
-                    _write_atomic(os.path.join(self.dir, name), _d.encode(recs))
-                if not working and not need_base:
-                    self._remove_dir()          # nothing unsaved
-                    return
-                self._ensure_dir()
-                if need_base:
-                    keep.add(BASE)
-                    if parts is not None:
-                        manifest, blobs = parts
-                        _write_atomic(os.path.join(self.dir, BASE),
-                                      _ar.write(manifest, blobs))
-                        self._base_rev = rev
-                info = dict(info, base=BASE if need_base else None,
-                            working=working)
-                _write_atomic(os.path.join(self.dir, ENTRY),
-                              json.dumps(info, indent=1).encode("utf-8"))
-                for f in os.listdir(self.dir):     # stale deltas / base
-                    if f not in keep and not f.endswith(".tmp"):
-                        try:
-                            os.remove(os.path.join(self.dir, f))
-                        except OSError:
-                            pass
-                if not need_base:
-                    self._base_rev = None
-                self.last_error = None
+                try:
+                    self._write_entry(job, heads, parts, need_base, rev, info)
+                except _Cancelled:
+                    pass
+                finally:
+                    if job.discard:     # saved or closed meanwhile
+                        self._remove_dir()
         except Exception as ex:                    # never take the app down
             self.last_error = str(ex)
 
-    def flush(self) -> None:
-        """Wait for a snapshot in progress."""
+    def _write_entry(self, job, heads, parts, need_base, rev, info) -> None:
+        job.check()
+        working = []
+        keep = {ENTRY, LOCK, DISCARDED}
+        for sid, bid, head, label, base, new in heads:
+            recs = _d.diff(base, new)
+            if not recs:
+                continue
+            name = "w_%s_%s.ovd" % (sid, bid)
+            keep.add(name)
+            working.append({"set": sid, "branch": bid, "head": head,
+                            "label": label, "delta": name,
+                            "n_bytes": _d.changed_bytes(recs)})
+            job.check()
+            self._ensure_dir()
+            _write_atomic(os.path.join(self.dir, name), _d.encode(recs))
+        if not working and not need_base:
+            self._remove_dir()          # nothing unsaved
+            return
+        self._ensure_dir()
+        if need_base:
+            keep.add(BASE)
+            if parts is not None:
+                manifest, blobs = parts
+                data = _ar.write(manifest, blobs)
+                job.check()
+                _write_atomic(os.path.join(self.dir, BASE), data)
+                self._base_rev = rev
+        info = dict(info, base=BASE if need_base else None,
+                    working=working)
+        job.check()
+        _write_atomic(os.path.join(self.dir, ENTRY),
+                      json.dumps(info, indent=1).encode("utf-8"))
+        for f in os.listdir(self.dir):     # stale deltas / base
+            if f not in keep and not f.endswith(".tmp"):
+                try:
+                    os.remove(os.path.join(self.dir, f))
+                except OSError:
+                    pass
+        if not need_base:
+            self._base_rev = None
+        self.last_error = None
+
+    def flush(self, timeout: Optional[float] = None) -> bool:
+        """Wait for a snapshot in progress (at most ``timeout`` seconds).
+        True when none is running any more."""
         job = self._job
-        if job is not None and job.is_alive():
-            job.join()
+        if job is not None and job.thread is not None \
+                and job.thread.is_alive():
+            job.thread.join(timeout)
+            return not job.thread.is_alive()
+        return True
 
     # -- lifecycle -------------------------------------------------------
-    def saved(self) -> None:
-        """The project was just saved: nothing is unsaved any more."""
-        self.flush()
-        with self._mutex:
-            self._remove_dir()
+    def saved(self, wait: float = WAIT_S) -> None:
+        """The project was just saved: nothing is unsaved any more. A
+        snapshot being written is out of date: it is stopped, and waited for
+        at most ``wait`` seconds -- past that it removes the entry itself
+        when it stops (and the next start removes it if the app is gone by
+        then)."""
+        job = self._job
+        if job is not None:
+            job.discard = True
+            job.cancel.set()
+        self.flush(wait)
+        if self._mutex.acquire(timeout=max(wait, 0.01)):
+            try:
+                self._remove_dir()
+            finally:
+                self._mutex.release()
+        else:                                     # pragma: no cover - slow disk
+            try:
+                with open(os.path.join(self.dir, DISCARDED), "wb"):
+                    pass
+            except OSError:
+                pass
         self._token = None
         self._base_rev = None
 
-    def discard(self) -> None:
+    def discard(self, wait: float = WAIT_S) -> None:
         """Proper exit (saved, or the user refused to save): delete the
-        recovery data."""
-        self.saved()
+        recovery data (see :meth:`saved`)."""
+        self.saved(wait)
 
     close = discard
 
@@ -323,6 +385,8 @@ def pending(root: Optional[str] = None) -> List[Recovery]:
         except OSError:
             continue
         try:
+            if os.path.exists(os.path.join(d, DISCARDED)):
+                raise ValueError("discarded by its owner")
             with open(os.path.join(d, ENTRY), "rb") as fh:
                 info = json.loads(fh.read().decode("utf-8"))
         except (OSError, ValueError):
