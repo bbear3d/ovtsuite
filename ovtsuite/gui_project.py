@@ -829,32 +829,89 @@ def save_as_project(ws) -> bool:
 
 
 # ------------------------------------------------------------- reads
+def _read_prompt_skipped() -> bool:
+    """Unattended runs (the test suite): no prompt when there is no project
+    to add the read to -- it opens as a new project, as it always did."""
+    return os.environ.get("OVT_NO_READ_PROMPT", "").strip() not in ("", "0")
+
+
+def ask_read(win, title, text, informative="", add_label=None, export=None):
+    """The "Read complete" prompt: ``"add"`` (to the project in front, offered
+    when ``add_label`` is given), ``"new"`` (a new project), ``"export"`` (the
+    read was saved to a file by ``export()``, which returns True when it
+    saved) or None (discard the read -- confirmed first: a read is not easily
+    repeated)."""
+    if add_label is None and _read_prompt_skipped():
+        return "new"
+    SB = QtWidgets.QMessageBox.StandardButton
+    Role = QtWidgets.QMessageBox.ButtonRole
+    while True:
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Question,
+                                    title, text, SB.Cancel, win)
+        if informative:
+            box.setInformativeText(informative)
+        add = (box.addButton(add_label, Role.AcceptRole)
+               if add_label is not None else None)
+        new = box.addButton("New project" if add is not None
+                            else "Open as a new project",
+                            Role.AcceptRole if add is None else Role.ActionRole)
+        exp = (box.addButton("Export to file...", Role.ActionRole)
+               if export is not None else None)
+        box.setDefaultButton(add if add is not None else new)
+        box.exec()
+        hit = box.clickedButton()
+        if add is not None and hit is add:
+            return "add"
+        if hit is new:
+            return "new"
+        if exp is not None and hit is exp:
+            if export():
+                return "export"
+            continue                    # the save was cancelled: ask again
+        if QtWidgets.QMessageBox.question(
+                win, title, "Discard this read? It is not saved anywhere.",
+                SB.Yes | SB.No, SB.No) == SB.Yes:
+            return None
+
+
+def export_read(win, data, name, eeprom=None, source=None) -> bool:
+    """Save a read to a file (an .ovt project, or the raw image) instead of
+    opening it. True when it was saved."""
+    from . import read_export as _rx
+    written = _rx.ask_save_read(win, data, name, eeprom=eeprom, source=source,
+                                title="Export the read")
+    if written and getattr(win, "statusBar", None) is not None:
+        try:
+            win.statusBar().showMessage(
+                "Read saved to %s" % ", ".join(os.path.basename(w)
+                                               for w in written), 8000)
+        except Exception:
+            pass
+    return bool(written)
+
+
 def open_read(win, data, name, eeprom=None, source=None):
     """A read from a module goes straight into a project, with the read itself
     as the as-read original (the root of its history): into the active tab's
-    project when the user says so, else a new, untitled project. It is in
-    the crash-recovery store at once, before anything is saved. Returns the
-    tab, or None."""
+    project when the user says so, else a new, untitled project -- or, when
+    the user says so, only to a file (Export to file...). It is in the
+    crash-recovery store at once, before anything is saved. Returns the tab,
+    or None (nothing opened: exported, discarded or failed)."""
     from .platforms.identify import identify
     from .project import importers as _imp
     cur = win.current
-    target = None
-    if getattr(cur, "project_ref", None) is not None:
-        doc = cur.project_ref.doc
-        SB = QtWidgets.QMessageBox.StandardButton
-        box = QtWidgets.QMessageBox(
-            QtWidgets.QMessageBox.Icon.Question, "Read complete",
-            "Add this read to the project %s?" % doc.title, SB.Cancel, win)
-        add = box.addButton("Add to %s" % doc.title,
-                            QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        new = box.addButton("New project",
-                            QtWidgets.QMessageBox.ButtonRole.ActionRole)
-        box.setDefaultButton(add)
-        box.exec()
-        if box.clickedButton() is add:
-            target = doc
-        elif box.clickedButton() is not new:
-            target = None
+    ref = getattr(cur, "project_ref", None)
+    here = ref.doc if ref is not None else None
+    choice = ask_read(
+        win, "Read complete",
+        "Add this read to the project %s?" % here.title if here is not None
+        else "The read is complete. Open it as a new project?",
+        add_label="Add to %s" % here.title if here is not None else None,
+        export=lambda: export_read(win, data, name, eeprom=eeprom,
+                                   source=source))
+    if choice in (None, "export"):
+        return None
+    target = here if choice == "add" else None
     try:
         if target is not None:
             proj = target.project
@@ -904,29 +961,24 @@ def open_eeprom_read(win, data, name, source=None):
     cur = win.current
     ref = getattr(cur, "project_ref", None)
     target = None
+    s = None
     if ref is not None:
         doc = ref.doc
         s = ref.set if ref.set.platform == "edc15" else next(
             (x for x in doc.project.sets if x.platform == "edc15"), None)
-        if s is not None:
-            SB = QtWidgets.QMessageBox.StandardButton
-            box = QtWidgets.QMessageBox(
-                QtWidgets.QMessageBox.Icon.Question, "EEPROM read complete",
-                "Add this EEPROM read to %s (%s)?" % (doc.title, s.name),
-                SB.Cancel, win)
-            box.setInformativeText(
-                "It becomes a new branch, \"%s\", with the flash of the "
-                "version in front and this EEPROM." % label)
-            add = box.addButton("Add to %s" % doc.title,
-                                QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-            new = box.addButton("New project",
-                                QtWidgets.QMessageBox.ButtonRole.ActionRole)
-            box.setDefaultButton(add)
-            box.exec()
-            if box.clickedButton() is add:
-                target = (doc, s)
-            elif box.clickedButton() is not new:
-                return None
+    choice = ask_read(
+        win, "EEPROM read complete",
+        "Add this EEPROM read to %s (%s)?" % (doc.title, s.name)
+        if s is not None else
+        "The EEPROM read is complete. Open it as a new project?",
+        informative="It becomes a new branch, \"%s\", with the flash of the "
+        "version in front and this EEPROM." % label if s is not None else "",
+        add_label="Add to %s" % doc.title if s is not None else None,
+        export=lambda: export_read(win, data, name, source=source))
+    if choice in (None, "export"):
+        return None
+    if choice == "add":
+        target = (doc, s)
     if target is not None:
         doc, s = target
         proj = doc.project

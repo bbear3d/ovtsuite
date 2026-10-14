@@ -30,21 +30,30 @@ if the connection was dropping.
 
 Every read goes into an **OVT project**, with the read itself as the
 project's original -- the first version of its history, never changed (see
-[Projects](../projects.md)). In the main window it opens as a project tab;
-when a project tab is in front you are asked: **Add to <project>** (as a new
-branch of a set of the same kind, or else a new set) or **New project**
-(closing the question also makes a new project, so a read is never lost). In
-the OVT Flasher it is saved as an `.ovt` project by default; you can choose to
-save the raw image exactly as read (`.bin`) instead. A raw `.bin` holds only
-the main flash: the EEPROM of an EDC15 **Full backup** and the MPC flash of
-an EDC16 **Full read...** are kept only in an `.ovt`.
+[Projects](../projects.md)). When a read finishes in the main window you are
+asked what to do with it:
+
+- **Add to <project>** (only when a project tab is in front): as a new branch
+  of a set of the same kind, or else a new set.
+- **New project** (**Open as a new project** when no project is open): it
+  opens as a new, untitled project tab.
+- **Export to file...**: save it without opening it, as an `.ovt` project
+  (the default) or the raw image exactly as read (`.bin`). Cancelling the
+  file picker brings the question back.
+- **Cancel** discards the read, after you confirm **Discard this read?**.
+
+The OVT Flasher has no tabs, so it always saves the read: as an `.ovt`
+project by default, or the raw image (`.bin`). A raw `.bin` holds only the
+main flash: the EEPROM of an EDC15 **Full backup** is saved beside it as
+`<name>_EEPROM.bin`, and the MPC flash of an EDC16 **Full read...** is kept
+only in an `.ovt`.
 
 | ECU | What is read |
 |---|---|
 | **EDC16** (**Read flash**) | The 512 KB calibration region (0x180000–0x1FFFFF), as a 2 MB image with the rest filled with 0xFF |
 | **EDC16** (**Full read...**) | The whole external flash and the internal (MPC) flash, as one set |
 | **EDC15** (**Read flash**) | The whole 512 KB flash |
-| **EDC15** (**Read EEPROM**) | The 512-byte EEPROM -- with an EDC15 project in front, you are asked **Add to <project>** (a new branch of its ECU set, *EEPROM read <date>*: the flash of the version in front plus the read EEPROM) or **New project**. Either way the [EEPROM editor](../tools/eeprom.md) then opens on it (with the EDC15 module). |
+| **EDC15** (**Read EEPROM**) | The 512-byte EEPROM -- with an EDC15 project in front, you are asked **Add to <project>** (a new branch of its ECU set, *EEPROM read <date>*: the flash of the version in front plus the read EEPROM) or **New project** (or **Export to file...**, as above). Either way the [EEPROM editor](../tools/eeprom.md) then opens on it (with the EDC15 module). |
 | **EDC15** (**Full backup**) | Flash, then EEPROM, as one set (flash + EEPROM) |
 | **ZF6HP** — 6HP19 / 6HP26 (TP 2.0) | The calibration window, in a 1 MB image filled with 0x00 outside it |
 | **ZF6HP** — 6HP28 (UDS) | The 512 KB calibration window, in a 2 MB image at its flash address, 0xFF below it (see [Transmissions](transmissions.md#6hp28-uds)) |
