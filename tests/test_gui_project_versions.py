@@ -119,3 +119,55 @@ def test_the_panel_offers_rename_on_a_version(win, tab, monkeypatch):
                         staticmethod(lambda *a, **k: ("Via F2", True)))
     panel._f2()
     assert ref.set.checkpoint(cid).label == "Via F2"
+
+
+# -- export / open any version ------------------------------------------------
+
+def test_export_a_version_writes_that_versions_bytes(win, tab, monkeypatch,
+                                                    tmp_path):
+    from ovtsuite import gui_project as gp
+    ref = tab.project_ref
+    root = ref.set.roots()[0].id
+    out = str(tmp_path / "v.bin")
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (out, "")))
+    assert gp.export_version(win, ref.doc, ref.sid, root) == out
+    assert open(out, "rb").read() == READ
+    assert gp.export_version(win, ref.doc, ref.sid, ref.branch.head) == out
+    data = open(out, "rb").read()
+    assert data != READ and data[0x10] == 0x55
+
+
+def test_open_a_version_read_only(win, tab, monkeypatch):
+    from ovtsuite import gui_project as gp
+    from ovtsuite import gui_viewonly as vo
+    from ovtsuite import recent
+    added = []
+    monkeypatch.setattr(recent, "add_recent", lambda p: added.append(p))
+    ref = tab.project_ref
+    root = ref.set.roots()[0].id
+    ws = vo.open_version(win, ref.doc, ref.sid, ref.bid, root)
+    assert ws is not None and ws is win.current and ws is not tab
+    assert vo.is_view_only(ws) and ws.project_ref is None
+    assert ws.display_name().endswith("(read-only)")
+    assert "@ as read" in ws.display_name()
+    assert bytes(ws.primary.binfile.data) == READ
+    assert ws.model.readonly
+    assert added == [] and ws.source_path() is None
+    # nothing to save, nothing asked on close
+    ws.primary.edit_bytes(0, b"\x01")
+    assert not ws.is_dirty()
+    assert ws.save() is False and ws.save_as() is False
+    assert gp.docs(win)[0].tabs(win) == [tab]       # still one project tab
+    # the editing actions are off while it is in front, back on after
+    save = next(a for a in win.actions() if vo._text(a) == "Save")
+    win._refresh_enabled()
+    assert not save.isEnabled()
+    win.show_workspace(tab)
+    win._refresh_enabled()
+    assert save.isEnabled()
+    # closing it asks nothing, and leaves nothing to reopen
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec",
+                        lambda *a: pytest.fail("asked on close"))
+    assert win.close_tab(ws)
+    assert win.closed_entry(ws) is None

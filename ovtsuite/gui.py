@@ -6494,14 +6494,17 @@ if HAVE_QT:
             return self.primary is None
 
         def is_dirty(self) -> bool:
+            if getattr(self, "view_only", None):
+                return False            # a saved version, read-only
             return self.primary is not None and bool(
                 self.primary.modified or self._eeprom_dirty)
 
         def source_path(self) -> Optional[str]:
             """The file this tab's primary came from; None for a read from a
             module that has not been saved anywhere yet."""
-            if self.primary is None or self._untitled:
-                return None
+            if self.primary is None or self._untitled \
+                    or getattr(self, "view_only", None):
+                return None             # nothing of its own on disk
             if self.project_ref is not None:
                 return self.project_ref.ref()   # the .ovt + set + branch
             return self._backup_path or getattr(self.primary, "path", None)
@@ -7762,6 +7765,9 @@ if HAVE_QT:
             dropped = self._carry_comparison(loaded)
             self.primary = loaded
             self._leave_project(self.__dict__.pop("_pending_project_ref", None))
+            # a saved version opened read-only (gui_viewonly), or not
+            self.view_only = self.__dict__.pop("_pending_view_only", None)
+            self.model.readonly = bool(self.view_only)
             try:
                 loaded.correct_program_area = program_area_pref()
             except Exception:
@@ -7775,7 +7781,7 @@ if HAVE_QT:
             self._show_comparison(None, None)
             self.title.setText("Select a parameter")
             self.desc.setText("")
-            if self.project_ref is None:
+            if self.project_ref is None and not self.view_only:
                 from .recent import add_recent
                 add_recent(path)
                 self._rebuild_recent()
@@ -8021,6 +8027,9 @@ if HAVE_QT:
             True once it is written; False when cancelled or it failed."""
             if self.primary is None:
                 return False
+            if getattr(self, "view_only", None):
+                from . import gui_viewonly as _vo
+                return _vo.refuse_save(self)
             if self.project_ref is not None:
                 return _gp.save(self, tab_only=tab_only)
             return _gp.save_as_project(self)
@@ -8077,6 +8086,9 @@ if HAVE_QT:
         def save_as(self):
             """Save As: the project under a new name -- or, for a tab that is
             not a project yet, as a new project."""
+            if getattr(self, "view_only", None):
+                from . import gui_viewonly as _vo
+                return _vo.refuse_save(self)
             if self.project_ref is not None:
                 return _gp.save_as(self)
             return _gp.save_as_project(self)
@@ -9824,9 +9836,12 @@ if HAVE_QT:
                     return False
             return cur._load_comparison(path)
 
-        def adopt_session(self, session, path):
-            """Give an already-loaded session a tab of its own."""
+        def adopt_session(self, session, path, view_only=None):
+            """Give an already-loaded session a tab of its own (``view_only``:
+            a saved version shown read-only -- gui_viewonly)."""
             ws = self._add_workspace()
+            if view_only:
+                ws._pending_view_only = view_only
             ws.adopt_primary(session, path)
             return ws
 
@@ -10335,6 +10350,8 @@ if HAVE_QT:
                 except Exception:
                     ok = False
                 a.setEnabled(ok)
+            from . import gui_viewonly as _vo
+            _vo.restrict_actions(self, ws)
 
         def _rebuild_recent(self):
             from . import gui_files as _gf

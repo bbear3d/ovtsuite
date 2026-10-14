@@ -214,6 +214,14 @@ Right-click an item for what can be done with it:
   **Rename...** (or select it and press **F2**; leave the name empty to give
   it back its automatic name). The new name shows in **Version history** too,
   and a name given or cleared there shows here.
+  **Export this version...** saves that version as it was saved: one part
+  of the set as a raw `.bin` (you pick which, for a set of several), or the
+  set's original file (`.dim`, `.sgo` ...) rebuilt with that version's
+  content. **Open this version (read-only)** opens it in a tab of its own,
+  titled *<project> – <set> @ <version> (read-only)*: look at its tables,
+  compare it, export it -- but nothing in it can be edited or saved, it is
+  not added to Open Recent, and closing it asks nothing. To work on it, use
+  **Revert the branch to this version** or **New branch from this version**.
 - **Log** -- **Open in Data logging**, **Export...**, **Pin** / **Unpin**,
   **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
 - **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,
