@@ -230,7 +230,8 @@ Right-click an item for what can be done with it:
 - **Logs** / **Patches** / **Attachments** (the headings) -- add one.
 
 Each project lists its **Logs**, **Patches** and **Attachments** under its
-sets.
+sets, newest first (as do **File > Export** and the pickers that offer
+them); sets and branches stay in the order they were made.
 
 ## WinOLS projects and definitions
 

@@ -8326,14 +8326,15 @@ if HAVE_QT:
             doc = self.project_ref.doc if self.project_ref is not None else None
             if doc is not None and doc.project.patches:
                 # the project's own patches first, a file from disk after
-                names = [a.filename for a in doc.project.patches]
+                pats = _gp.newest_first(doc.project.patches)
+                names = [a.filename for a in pats]
                 pick, ok = QtWidgets.QInputDialog.getItem(
                     self, "Apply patch", "Patch kept in %s:" % doc.title,
                     names + ["From a file..."], 0, False)
                 if not ok:
                     return
                 if pick != "From a file...":
-                    pid = doc.project.patches[names.index(pick)].id
+                    pid = pats[names.index(pick)].id
                     _gp.apply_project_patch(self, doc, pid)
                     return
             path, _f = QtWidgets.QFileDialog.getOpenFileName(

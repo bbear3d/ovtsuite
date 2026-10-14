@@ -2182,13 +2182,22 @@ def kept(doc, kind) -> list:
             "attachment": doc.project.attachments}[kind]
 
 
+def newest_first(items) -> list:
+    """Kept logs / patches / attachments for display: newest first (by when
+    they were added, then by their place in the list). The stored lists keep
+    their order -- the log cap relies on it."""
+    return [a for _i, a in sorted(enumerate(items),
+                                  key=lambda p: (p[1].added or "", p[0]),
+                                  reverse=True)]
+
+
 def export_kept(win, kind) -> Optional[str]:
     """File > Export > Data log / Patch / Attachment: pick one of the
     project's, write it to a file."""
     ref = getattr(win.current, "project_ref", None)
     if ref is None:
         return None
-    items = kept(ref.doc, kind)
+    items = newest_first(kept(ref.doc, kind))
     if not items:
         return None
     a = items[0]
@@ -2197,7 +2206,7 @@ def export_kept(win, kind) -> Optional[str]:
                  for x in items]
         pick, ok = QtWidgets.QInputDialog.getItem(
             win, "Export", "Which %s of %s?" % (kind, ref.doc.title), names,
-            len(names) - 1, False)
+            0, False)
         if not ok:
             return None
         a = items[names.index(pick)]
@@ -2435,7 +2444,7 @@ class ProjectPanel(AutoHideDock):
                     if kind == "logs" and d.project.max_logs else "")])
                 li.setData(0, _ROLE, (kind, d))
                 top.addChild(li)
-                for a in lst:
+                for a in newest_first(lst):
                     ai = QtWidgets.QTreeWidgetItem(["%s%s" % (
                         "📌 " if a.pinned else "", a.filename)])
                     where = ""
