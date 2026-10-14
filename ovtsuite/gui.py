@@ -10451,6 +10451,10 @@ if HAVE_QT:
             return self.close()
 
         def closeEvent(self, ev):
+            from . import gui_saving as _sv
+            if _sv.saving(self):
+                ev.ignore()                 # a project is being written
+                return
             if not self._quiet_close:
                 dirty = [ws for ws in self.workspaces() if ws.is_dirty()]
                 dirty += _gp.unsaved_entries(self)  # project-only changes
