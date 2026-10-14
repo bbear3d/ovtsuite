@@ -252,9 +252,7 @@ def _install(win, doc, res, mine, tabs) -> list:
             heads[t] = None
     new = res.project
     doc.project = new
-    doc.saver.project = new
-    doc.saver._token = None
-    doc.saver._base_rev = None
+    doc.saver.reset(new)
     gone = []
     for t in tabs:
         ref = t.project_ref

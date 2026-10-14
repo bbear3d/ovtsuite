@@ -1690,6 +1690,29 @@ def autosave(win, doc=None) -> None:
             pass                        # recovery is best effort, never fatal
 
 
+def autosave_soon(win, doc) -> None:
+    """:func:`autosave` of ``doc`` once the event loop runs again, not in
+    the middle of what called it (a logger's Stop); calls made meanwhile --
+    both panes of a logger stopping -- make one snapshot."""
+    pend = win.__dict__.get("_ovt_autosave_soon")
+    if pend is None:
+        pend = win.__dict__["_ovt_autosave_soon"] = []
+        QtCore.QTimer.singleShot(0, win, lambda: _autosave_pending(win))
+    if not any(d is doc for d in pend):
+        pend.append(doc)
+
+
+def _autosave_pending(win) -> None:
+    pend = win.__dict__.pop("_ovt_autosave_soon", [])
+    open_docs = docs(win)
+    for d in pend:
+        if any(d is o for o in open_docs):
+            try:
+                autosave(win, d)
+            except Exception:
+                pass                    # recovery is best effort, never fatal
+
+
 def install_disk_watch(win):
     """Notice open projects' files changed by other programs
     (:mod:`ovtsuite.gui_disksync`)."""
@@ -2293,10 +2316,7 @@ def keep_log(win, ws, path) -> bool:
     for t in ref.doc.tabs(win):
         win._workspace_changed(t)
     refresh_panel(win)
-    try:
-        autosave(win, ref.doc)          # safe before the project is saved
-    except Exception:
-        pass
+    autosave_soon(win, ref.doc)         # safe before the project is saved
     return True
 
 
