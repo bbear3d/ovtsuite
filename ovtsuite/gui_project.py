@@ -53,6 +53,12 @@ REF_SEP = "#ovt:"
 STATE_KEY = "projects/open_tabs/%s"
 #: how often open projects are auto-saved for crash recovery (ms)
 AUTOSAVE_MS = 60_000
+#: a tab's definition snapshot is stored this long after it opens, while the
+#: user is idle -- not at exit (:func:`keep_definition`)
+DEFN_IDLE_MS = 5_000
+#: on exit, definitions not yet in the .ovt are written only into a file no
+#: bigger than this; a bigger one gets them at its next save or close
+EXIT_DEFN_MAX = 32 * 1024 * 1024
 
 
 # ------------------------------------------------------------------ refs
@@ -296,6 +302,7 @@ def open_branch(win, doc, sid, bid, ws=None):
         if ws.is_empty() and win.tabs.count() > 1:
             win._remove_workspace(ws, remember=False)
         return None
+    defer_definition(ws)
     remember(win, doc)
     refresh_panel(win)
     return ws
@@ -1396,25 +1403,50 @@ def keep_definition(ws) -> bool:
     return True
 
 
-def write_definitions(win, doc) -> bool:
+def write_definitions(win, doc, at_exit: bool = False) -> bool:
     """Write definitions stored since the last save into the .ovt -- only
     when the project has nothing else unsaved, so no change the user did
-    not save goes in with them. True when the file was written."""
-    for t in doc.tabs(win):
-        keep_definition(t)
+    not save goes in with them. True when the file was written.
+
+    ``at_exit``: nothing is built (the tabs stored theirs while the user was
+    idle, :func:`defer_definition`), and a big file is not rewritten -- the
+    definitions are only a cache; they go in at its next save or close."""
+    if not at_exit:
+        for t in doc.tabs(win):
+            keep_definition(t)
     if not doc.__dict__.get("_cache_dirty") or not doc.path \
             or doc.project.modified_since_save:
         return False
     try:
+        if at_exit and os.path.getsize(doc.path) > EXIT_DEFN_MAX:
+            return False
         # refused (DiskChanged) when another program changed the file: the
         # definitions are only a cache, nothing is asked -- they are skipped
         job = doc.project.prepare_save(doc.path)
-        _sv.run(win, job.run)
+        if at_exit:
+            job.run()
+        else:
+            _sv.run(win, job.run)
         job.finish()
     except Exception:
         return False
     doc.__dict__["_cache_dirty"] = False
     return True
+
+
+def defer_definition(ws) -> None:
+    """Store the tab's definition snapshot (:func:`keep_definition`) a few
+    seconds after it opened, when the user is idle -- in memory; the file
+    gets it with the next save, or on closing."""
+    def later():
+        if getattr(ws, "project_ref", None) is None or _sv.saving(ws.win) \
+                or QtWidgets.QApplication.activeModalWidget() is not None:
+            return
+        keep_definition(ws)
+    try:
+        QtCore.QTimer.singleShot(DEFN_IDLE_MS, ws, later)
+    except (RuntimeError, TypeError):
+        pass
 
 
 def note_closing(win, ws, entry):
@@ -1514,15 +1546,29 @@ def unsaved_entries(win) -> list:
     return out
 
 
+def pause_autosave(win, paused: bool = True) -> None:
+    """Stop (or restart) the crash-recovery timer -- while the window is
+    asking whether to close, so no snapshot starts mid-exit."""
+    t = win.__dict__.get("_ovt_autosave_timer")
+    if t is None:
+        return
+    if paused:
+        t.stop()
+    elif not win.__dict__.get("_ovt_shut_down"):
+        t.start()
+
+
 def shutdown(win):
     """A proper exit: every project's recovery data goes (saved or not --
     the user has been asked), and the working files with it."""
+    win.__dict__["_ovt_shut_down"] = True
+    pause_autosave(win)
     timer = win.__dict__.get("_ovt_disksync_timer")
     if timer is not None:
         timer.stop()
     for d in list(docs(win)):
         remember(win, d)
-        write_definitions(win, d)
+        write_definitions(win, d, at_exit=True)
         d.close()
     docs(win).clear()
     from .gui_files import unlock_all

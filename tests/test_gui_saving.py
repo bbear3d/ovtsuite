@@ -9,7 +9,9 @@
 Driven offscreen with a synthetic project (an unrecognised image: no
 reference binaries needed): the .ovt is written on a worker thread while the
 window keeps painting and takes no input, a slow write shows "Saving...",
-and errors and the "changed on disk" question come through as before.
+errors and the "changed on disk" question come through as before, the
+crash-recovery timer stops while the window asks whether to close, and an
+exit does not rewrite a big project just for its definition cache.
 """
 import os
 import random
@@ -181,3 +183,66 @@ def test_changed_on_disk_still_asks(win, car, monkeypatch):
     assert ovt.Project.load(car).name == "theirs"
     assert dsg.write(win, doc)                     # Overwrite
     assert ovt.Project.load(car).name == "mine" and asked == [False, False]
+
+
+def test_autosave_pauses_while_the_window_asks_to_close(G, win, car,
+                                                        monkeypatch):
+    assert win.open_path(car)
+    _poke(_tab(win))
+    timer = win.__dict__["_ovt_autosave_timer"]
+    assert timer.isActive()
+    during = []
+
+    def exec_(self):
+        during.append(timer.isActive())
+        return QtWidgets.QDialog.DialogCode.Rejected
+    monkeypatch.setattr(G.UnsavedDialog, "exec", exec_)
+    assert not win.close()                         # the user cancelled
+    assert during == [False]
+    assert timer.isActive()                        # running again
+
+
+def test_an_exit_does_not_rewrite_a_big_project_for_its_cache(win, car,
+                                                              monkeypatch):
+    from ovtsuite import gui_project as gp
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    doc.__dict__["_cache_dirty"] = True
+    st = os.stat(car)
+    monkeypatch.setattr(gp, "EXIT_DEFN_MAX", 1)
+    built = []
+    monkeypatch.setattr(gp, "keep_definition", lambda ws: built.append(ws))
+    assert not gp.write_definitions(win, doc, at_exit=True)
+    assert built == []                             # nothing built at exit
+    assert os.stat(car).st_mtime_ns == st.st_mtime_ns
+    monkeypatch.setattr(gp, "EXIT_DEFN_MAX", 1 << 30)
+    assert gp.write_definitions(win, doc, at_exit=True)   # small: written
+    assert not doc.__dict__["_cache_dirty"]
+
+
+def test_quitting_waits_for_searches_once_not_one_by_one(app, monkeypatch):
+    from ovtsuite import gui_search as gs
+    from ovtsuite import search as S
+    monkeypatch.setattr(gs, "JOIN_MS", 300)
+    stop = threading.Event()
+
+    def job(cancel, progress):
+        stop.wait(5)                    # a search that is slow to notice
+        return []
+    threads = [gs._SearchThread(i, job, S.Cancel()) for i in range(3)]
+    for t in threads:
+        gs._LIVE.add(t)
+        t.start()
+    try:
+        t0 = time.monotonic()
+        gs._join_all()
+        assert time.monotonic() - t0 < 0.8           # one deadline, not 3 x
+        assert all(t.cancel.is_set for t in threads)  # all cancelled first
+    finally:
+        stop.set()
+        for t in threads:
+            t.wait(5000)
+            gs._LIVE.discard(t)
+    gs._hook_quit()
+    gs._hook_quit()
+    assert app.property("_ovt_search_join")
