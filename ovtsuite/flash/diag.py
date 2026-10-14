@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import kwp as _kwp
-from .transport import KLineError, KLineTimeout
+from .transport import KLineError, KLineTimeout, LinkStopped
 
 SPEEDS = {"Low": (0x00, 10400), "Medium": (0x87, 124800), "High": (0xA7, 244898)}
 EDC15_BAUDS = (9600, 10400)
@@ -44,6 +44,11 @@ CH34X_VID = 0x1A86
 
 class StopRequested(Exception):
     pass
+
+
+#: Read timeout while a session closes: stopCommunication is one frame, and a
+#: Disconnect must not sit out the 8 s connect timeout waiting for its echo.
+CLOSE_READ_TIMEOUT = 0.5
 
 
 # ---------------------------------------------------------------- formulas
@@ -304,6 +309,7 @@ class DiagSession:
     def connect(self, speed="Medium", cap_high=False, is_stop=None):
         self._speed, self._cap = speed, cap_high
         self.kwp = self.kw = None
+        self._arm_stop(is_stop)
         if self.ecu == "EDC15":
             self._connect_kw1281(is_stop)
         elif self.ecu in ("ZF6HP", "Aisin TRx"):
@@ -311,17 +317,44 @@ class DiagSession:
             # (session 0x86, ident 1A 9B, no security, no baud raise). The only
             # difference is the TP2.0 logical address, which rides on the link
             # the caller built (dest 0x02 for the Aisin 09D, 0x01-class for ZF).
-            self._connect_tcu()
+            self._connect_tcu(is_stop)
         else:
-            self._connect_kwp2000(speed, cap_high)
+            self._connect_kwp2000(speed, cap_high, is_stop)
         return self.baud
+
+    def _arm_stop(self, is_stop):
+        """Hand ``is_stop`` to every layer that waits or retries, so a stop
+        lands within one frame wait rather than after a whole connect: the
+        link's wake-up retries (K-line, J2534 K-line), the CAN link's
+        responsePending wait, a local TP 2.0 channel's frame waits. A hook the
+        owner of the link already installed is left alone -- the flasher sets
+        its own on a channel it shares with this session."""
+        self._is_stop = is_stop
+        if is_stop is None:
+            return
+        for obj in (self.k, getattr(self.k, "tp", None)):
+            if obj is not None and hasattr(obj, "is_stop") and obj.is_stop is None:
+                try:
+                    obj.is_stop = is_stop
+                except Exception:
+                    pass
+
+    def _check_stop(self, is_stop=None):
+        is_stop = is_stop if is_stop is not None else getattr(self, "_is_stop", None)
+        if is_stop is not None and is_stop():
+            raise StopRequested()
+
+    def _new_kwp(self, controller=0x10):
+        d = _kwp.Kwp2000(self.k, controller, self.log)
+        d.is_stop = getattr(self, "_is_stop", None)
+        return d
 
     def reconnect(self, is_stop=None):
         """Wake the ECU again after a dropout, with the same speed request."""
         self.k.clear_rx()
         return self.connect(getattr(self, "_speed", "Low"), getattr(self, "_cap", False), is_stop)
 
-    def _connect_tcu(self):
+    def _connect_tcu(self, is_stop=None):
         """Open a diagnostic session on a ZF 6HP (GS19) TCU, over CAN/TP2.0.
 
         Three deliberate differences from :meth:`_connect_kwp2000`, all of
@@ -359,13 +392,16 @@ class DiagSession:
         tp = getattr(self.k, "tp", None)
         if tp is not None and not getattr(tp, "opened", True):
             self.log("Opening the TP 2.0 channel to the TCU...")
+            self._check_stop(is_stop)
             self.k.wake_up()            # CanKLine.wake_up: clears buffers, tp.open()
-        d = _kwp.Kwp2000(self.k, 0x10, self.log)
+        d = self._new_kwp(0x10)
         d.P3, d.P4 = 0.025, 0.0
         d.fast = True
         self.kwp = d
+        self._check_stop(is_stop)
         d.send_receive(0x10, b"\x86")
         self.log("TCU diagnostic session open (10 86).")
+        self._check_stop(is_stop)
         try:
             rec = d.send_receive(0x1A, b"\x9B").body
             self.identity = format_identity(rec)
@@ -394,26 +430,32 @@ class DiagSession:
                 self.log("group %d: %s" % (g, body.hex(" ")))
         return out
 
-    def _connect_kwp2000(self, speed, cap_high):
+    def _connect_kwp2000(self, speed, cap_high, is_stop=None):
         self.k.set_baud(10400)
         self.log("Connecting (slow init at 10400)...")
+        self._check_stop(is_stop)
         version = self.k.wake_up(0x01, even_parity=False)
         if version < 2000:
             raise KLineError("The ECU answered with KW %d, not KWP2000" % version)
         self.baud = 10400
-        d = _kwp.Kwp2000(self.k, 0x10, self.log)      # EDC16 physical address (83 10 F1 ...)
+        d = self._new_kwp(0x10)                       # EDC16 physical address (83 10 F1 ...)
         d.P3, d.P4 = 0.025, 0.0          # fast timing: batched send, short gap
         d.fast = True
         self.kwp = d
         time.sleep(0.05)
+        self._check_stop(is_stop)
         d.send_receive(0x10, b"\x89")
         self.log("Diagnostic session open (10 89).")
+        self._check_stop(is_stop)
         try:
             rec = d.send_receive(0x1A, b"\x9B").body
             self.identity = format_identity(rec)
             self.log("ECU: %s" % self.identity)
+        except LinkStopped:
+            raise
         except (KLineError, KLineTimeout):
             self.identity = ""
+        self._check_stop(is_stop)
         self._raise_baud(speed, cap_high)
 
     def _raise_baud(self, speed, cap_high):
@@ -529,8 +571,16 @@ class DiagSession:
             body = body[-length:]
         return body if len(body) == length else None
 
-    def read_groups(self, groups: Sequence[int]) -> Dict[int, Optional[List[Cell]]]:
-        return {g: self.read_group(g) for g in groups}
+    def read_groups(self, groups: Sequence[int],
+                    is_stop=None) -> Dict[int, Optional[List[Cell]]]:
+        """Every group in ``groups``. ``is_stop`` (default: the one given to
+        :meth:`connect`) is checked between groups, so a logger reading a
+        dozen blocks per row stops within one block, not one row."""
+        out = {}
+        for g in groups:
+            self._check_stop(is_stop)
+            out[g] = self.read_group(g)
+        return out
 
     def keepalive(self):
         if self.kwp is not None:
@@ -570,9 +620,23 @@ class DiagSession:
 
     # ---- teardown ----
     def close(self):
+        """End the session, briefly. The read timeout drops to
+        :data:`CLOSE_READ_TIMEOUT` first: K-line stopCommunication only waits
+        for its own echo, and a dead line must not hold a Disconnect for the
+        connect-time timeout. Over TP 2.0 stopCommunication is skipped -- it
+        is a full request/response there, the ECU may be the reason we are
+        closing, and the channel disconnect (A8) the link sends on close ends
+        the session anyway."""
+        try:
+            k = self.k
+            if getattr(k, "read_timeout", None) is not None:
+                k.read_timeout = min(k.read_timeout, CLOSE_READ_TIMEOUT)
+        except Exception:
+            pass
         try:
             if self.kwp is not None:
-                self.kwp.send(0x82, b"")               # stopCommunication
+                if not getattr(self.k, "is_tp20", False):
+                    self.kwp.send(0x82, b"")           # stopCommunication
             elif self.kw is not None:
                 self.kw.end_communication()
         except Exception:
