@@ -164,7 +164,8 @@ use **Overwrite** or **Save mine as a copy**.
 - **Patches** made in a project tab can be kept in it (see
   [Patches](editor/patches.md#patches-kept-in-the-project)).
 - **Reads** from a control unit go into a project: with a project tab in
-  front you are asked **Add to <project>** or **New project** (see
+  front you are asked **Add to <project>** or **New project**, and can
+  **Export to file...** instead of opening it (see
   [Reading](flashing/reading.md#where-the-read-goes)).
 - After a successful **write**, the version written is marked as last
   flashed: the Project panel shows *⚡ flashed <date>* on it, and the set's

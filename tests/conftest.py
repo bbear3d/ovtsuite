@@ -21,6 +21,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # A new project asks for its vehicle details in a modal dialog; the suite
 # runs unattended, so it is off unless a test turns it on (gui_project).
 os.environ.setdefault("OVT_NO_INFO_PROMPT", "1")
+# Likewise the "Read complete" prompt when there is no project to add a read
+# to: the read opens as a new project (gui_project.ask_read).
+os.environ.setdefault("OVT_NO_READ_PROMPT", "1")
 
 # The GUI tests run on Qt's offscreen platform, which ships no fonts: every
 # character is drawn as a wide placeholder box, so text measured ~twice its

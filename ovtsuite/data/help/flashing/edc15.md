@@ -48,8 +48,9 @@ among others.
 - **Read EEPROM** reads it into a project. With an EDC15 project in front you
   are asked **Add to <project>** — a new branch of its ECU set, named
   *EEPROM read <date>*: the flash of the version in front plus the EEPROM
-  just read — or **New project**. Either way the EEPROM editor then opens on
-  it (with the EDC15 module). The OVT Flasher saves the read as an `.ovt`
+  just read — or **New project** (or **Export to file...** to save it
+  without opening it). Opened, the EEPROM editor then shows it (with the
+  EDC15 module). The OVT Flasher saves the read as an `.ovt`
   project (or the raw 512 bytes).
 - **Write EEPROM...** asks for a 512-byte EEPROM file (`.bin`, `.eep`,
   `.rom`) and writes it. When an EEPROM is already loaded — the set in the
