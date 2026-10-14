@@ -517,9 +517,10 @@ class TunerSession:
         self.last_checksum = None
         # When True, EDC16 2 MB save/correct also regenerates the content digest
         # required to flash edited blocks over KWP2000/OBD (see checksum.correct(
-        # ..., digest=True)). Defaults True so saved tunes are flash-ready; the
-        # digest is the canonical MPPS-identical trailer and is harmless on the
-        # bench/BDM path. Set False to leave the trailer untouched.
+        # ..., digest=True)). Defaults True so saved tunes are flash-ready: an
+        # edited calibration block gets the canonical MPPS-identical trailer
+        # (harmless on the bench/BDM path); an unedited one keeps its genuine
+        # OEM signature. Set False to leave the trailer untouched.
         self.write_digest = True
         # When True a ZF 6HP save/correct ALSO rewrites the program/boot-area
         # descriptor self-CRCs (zlib CRC-32), not just the calibration checksum.
