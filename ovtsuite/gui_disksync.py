@@ -64,12 +64,16 @@ class _Busy:
 def write(win, doc, path: Optional[str] = None, force: bool = False) -> bool:
     """``doc.project.save`` to ``path`` (default ``doc.path``) -- asking
     first when the file changed on disk (``force``: the user already said
-    Overwrite). True once written."""
+    Overwrite). True once written. The writing runs on a worker thread
+    while the window waits (:mod:`ovtsuite.gui_saving`)."""
+    from . import gui_saving as _sv
     with _Busy(win):
         while True:
             target = path or doc.path
             try:
-                doc.project.save(target, force=force)
+                job = doc.project.prepare_save(target, force=force)
+                _sv.run(win, job.run)
+                job.finish()
                 return True
             except _ds.DiskChanged as ex:
                 what = resolve(win, doc, ex.deleted)

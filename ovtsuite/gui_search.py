@@ -99,13 +99,31 @@ if HAVE_QT:
             except Exception as ex:                     # QueryError or a bug
                 self.done.emit(self.gen, None, ex)
 
+    #: how long quitting waits for running searches, all of them together
+    JOIN_MS = 3000
+
     def _join_all():
-        for t in list(_LIVE):
+        """On quit: cancel every running search first, then wait for them
+        within one shared deadline."""
+        live = list(_LIVE)
+        for t in live:
             try:
                 t.cancel.set()
-                t.wait(3000)
             except RuntimeError:
                 pass
+        deadline = QtCore.QDeadlineTimer(JOIN_MS)
+        for t in live:
+            try:
+                t.wait(deadline)
+            except RuntimeError:
+                pass
+
+    def _hook_quit():
+        """Connect :func:`_join_all` to the application's quit, once."""
+        app = QtWidgets.QApplication.instance()
+        if app is not None and not app.property("_ovt_search_join"):
+            app.aboutToQuit.connect(_join_all)
+            app.setProperty("_ovt_search_join", True)
 
     class SearchPanel(QtWidgets.QWidget):
         """The contents of the dock."""
@@ -133,7 +151,7 @@ if HAVE_QT:
             self._poll_timer.timeout.connect(self._poll)
             self._build()
             self._restore()
-            QtWidgets.QApplication.instance().aboutToQuit.connect(_join_all)
+            _hook_quit()
             self._poll_timer.start()
 
         # -- settings ------------------------------------------------------

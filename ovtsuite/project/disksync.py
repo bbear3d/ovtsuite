@@ -104,6 +104,18 @@ class DiskState:
         return cls(path, size, mtime, _ar.sha256(data), project.manifest(),
                    dict(project._blobs))
 
+    @classmethod
+    def after_write(cls, path: str, data: bytes, manifest: dict,
+                    blobs: Dict[str, bytes]) -> "DiskState":
+        """``data`` -- made from ``manifest`` and ``blobs`` -- was just
+        written to ``path`` (any thread: the project is not touched)."""
+        try:
+            st = os.stat(path)
+            size, mtime = st.st_size, st.st_mtime_ns
+        except OSError:
+            size, mtime = len(data), 0
+        return cls(path, size, mtime, _ar.sha256(data), manifest, blobs)
+
     def is_for(self, path: Optional[str]) -> bool:
         return bool(path) and _norm(path) == self.path
 
@@ -118,11 +130,16 @@ class DiskState:
         return "changed"
 
     def changed(self) -> Optional[str]:
-        """Full check: None, "changed" or "deleted". A file only touched
-        (same content, new time) counts as unchanged, and its new time is
+        """Full check: None, "changed" or "deleted". The same size and time
+        as when saved or loaded is taken as unchanged without reading the
+        file; otherwise its content decides. A file only touched (same
+        content, new time) counts as unchanged, and its new time is
         remembered."""
         try:
             st = os.stat(self.path)
+            if (st.st_size, st.st_mtime_ns) == (self.size, self.mtime_ns) \
+                    and self.mtime_ns:
+                return None
             sha = _file_sha(self.path)
         except OSError:
             return "deleted"

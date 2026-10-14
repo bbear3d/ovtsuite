@@ -1,7 +1,7 @@
 ---
 title: Projects (.ovt)
 order: 26
-context: ProjectPanel, RecoveryDialog, ProjectInfoDialog, DiskChangedDialog, MergeConflictDialog
+context: ProjectPanel, RecoveryDialog, ProjectInfoDialog, DiskChangedDialog, MergeConflictDialog, SavingDialog
 ---
 # Projects (.ovt)
 
@@ -99,6 +99,13 @@ it was on disk is the set's original, and your edits the next version. A
 `.dim`, `.sgo` or `.frf` is kept in the project byte for byte.
 
 Checksums are corrected when a version is saved, exactly as for any file.
+
+The project file is written in the background: the window keeps drawing,
+but takes no clicks or typing until the file is safely on disk. A save that
+takes more than a moment (a big project, a slow or network drive) shows
+**Saving...** meanwhile. Only what changed since the last save is packed
+again, so saving a project with many logs stays quick.
+
 Closing a tab with unsaved changes asks about that tab only; closing the
 window asks about every project (see [Tabs and
 sessions](editor/tabs-and-sessions.md#closing-the-app)).

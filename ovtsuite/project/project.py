@@ -72,6 +72,9 @@ class Project:
         self.path: Optional[str] = None
         self.report = _ar.LoadReport()
         self._blobs: Dict[str, bytes] = {}
+        #: each blob as last stored in the zip: a save copies the unchanged
+        #: ones instead of hashing and compressing them again
+        self._zcache: _ar.PackCache = {}
         self._damaged: set = set()
         self._states: Dict[Tuple[str, str], Images] = {}
         self._dirty = False
@@ -827,7 +830,7 @@ class Project:
         # re-saving never launders corruption into a "good" hash.
         self._ensure_point_images()        # a full image at every root
         return _ar.write(self.manifest(), self._blobs, sign_key=sign_key,
-                         signer=signer)
+                         signer=signer, cache=self._zcache)
 
     def save(self, path: Optional[str] = None, *, sign_key: Optional[str] = None,
              signer: str = "", force: bool = False) -> str:
@@ -835,19 +838,27 @@ class Project:
         to, only while that file is unchanged: if another program changed
         or removed it, :class:`~.disksync.DiskChanged` (nothing written)
         unless ``force``."""
+        job = self.prepare_save(path, sign_key=sign_key, signer=signer,
+                                force=force)
+        job.run()
+        return job.finish()
+
+    def prepare_save(self, path: Optional[str] = None, *,
+                     sign_key: Optional[str] = None, signer: str = "",
+                     force: bool = False) -> "SaveJob":
+        """:meth:`save` in three steps, so the slow middle one can run on
+        another thread: this one freezes what is written (on the thread that
+        owns the project), :meth:`SaveJob.run` writes it (any thread; the
+        project must not change meanwhile), :meth:`SaveJob.finish` (back on
+        the owning thread) records the save."""
         path = path or self.path
         if not path:
             raise ValueError("no path to save the project to")
         if not path.lower().endswith(_ar.EXT):
             path += _ar.EXT
-        data = self.to_bytes(sign_key=sign_key, signer=signer)
-        if not force:
-            _ds.check(self, path)          # as late as possible before writing
-        _ar.atomic_write(path, data)
-        self.path = path
-        self._dirty = False
-        self._disk = _ds.DiskState.of(self, path, data)
-        return path
+        self._ensure_point_images()        # a full image at every root
+        return SaveJob(self, path, self.manifest(), dict(self._blobs),
+                       sign_key, signer, force)
 
     def changed_on_disk(self, quick: bool = False) -> Optional[str]:
         """None, "changed" or "deleted": the file this project was loaded
@@ -856,8 +867,11 @@ class Project:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "Project":
-        manifest, blobs, report = _ar.read(data)
-        return cls.from_manifest(manifest, blobs, report)
+        cache: _ar.PackCache = {}
+        manifest, blobs, report = _ar.read(data, cache=cache)
+        p = cls.from_manifest(manifest, blobs, report)
+        p._zcache = cache
+        return p
 
     @classmethod
     def from_manifest(cls, manifest: dict, blobs: Dict[str, bytes],
@@ -930,3 +944,42 @@ class Project:
         if self.attachments:
             rows.append("  attachments: %d" % len(self.attachments))
         return "\n".join(rows)
+
+
+class SaveJob:
+    """A :meth:`Project.save` in progress (:meth:`Project.prepare_save`)."""
+
+    def __init__(self, project, path, manifest, blobs, sign_key, signer, force):
+        self.project = project
+        self.path = path
+        self.manifest = manifest
+        self.blobs = blobs
+        self.sign_key = sign_key
+        self.signer = signer
+        self.force = force
+        self.revision = project.revision
+        self._done = None
+
+    def run(self) -> None:
+        """Serialise, check the file on disk, write (fsync'd, atomic). Raises
+        :class:`~.disksync.DiskChanged` (nothing written) unless forced.
+        Touches nothing of the project but its pack cache and disk record."""
+        p = self.project
+        data = _ar.write(self.manifest, self.blobs, sign_key=self.sign_key,
+                         signer=self.signer, cache=p._zcache)
+        if not self.force:
+            _ds.check(p, self.path)        # as late as possible before writing
+        _ar.atomic_write(self.path, data)
+        self._done = _ds.DiskState.after_write(self.path, data, self.manifest,
+                                               self.blobs)
+
+    def finish(self) -> str:
+        """Record the save in the project (its owning thread)."""
+        if self._done is None:
+            raise RuntimeError("the save was not written")
+        p = self.project
+        p.path = self.path
+        if p.revision == self.revision:
+            p._dirty = False
+        p._disk = self._done
+        return self.path
