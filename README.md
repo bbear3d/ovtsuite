@@ -22,7 +22,7 @@ the same ECU, where every table sits at another address. The same window has
 the flasher, a two-ECU data logger, a CAN/K-line bus sniffer, an ECU simulator
 and an AI assistant that proposes changes but never makes them on its own.
 
-> **Status:** active development, version 0.4.6. The base app is free and open
+> **Status:** active development, version 0.4.7. The base app is free and open
 > source. Editing and checksum support for each kind of control unit comes from
 > a **module**. See [Supported control units](#supported-control-units) and
 > [Tested on real hardware](#tested-on-real-hardware) before you trust a write
@@ -32,9 +32,9 @@ and an AI assistant that proposes changes but never makes them on its own.
 
 | | Windows | Linux / any platform |
 |---|---|---|
-| **OVT-Suite app 0.4.6** | [OVTSuite-Base-0.4.6-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/OVTSuite-Base-0.4.6-setup.exe) | [ovtsuite_0.4.6-1_amd64.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/ovtsuite_0.4.6-1_amd64.deb), [ovtsuite-0.4.6-1.x86_64.rpm](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/ovtsuite-0.4.6-1.x86_64.rpm) |
-| **Bosch EDC16 module 1.0.10** (free) | [OVTSuite-BoschEDC16-1.0.10-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/OVTSuite-BoschEDC16-1.0.10-setup.exe) | [edc16-1.0.10.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/edc16-1.0.10.ovtmod), [ovtsuite-module-edc16_1.0.10-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/ovtsuite-module-edc16_1.0.10-1_all.deb) |
-| **Bosch EDC15 module 1.0.10** (free) | [OVTSuite-BoschEDC15-1.0.10-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/OVTSuite-BoschEDC15-1.0.10-setup.exe) | [edc15-1.0.10.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/edc15-1.0.10.ovtmod), [ovtsuite-module-edc15_1.0.10-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/ovtsuite-module-edc15_1.0.10-1_all.deb) |
+| **OVT-Suite app 0.4.7** | [OVTSuite-Base-0.4.7-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/OVTSuite-Base-0.4.7-setup.exe) | [ovtsuite_0.4.7-1_amd64.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/ovtsuite_0.4.7-1_amd64.deb), [ovtsuite-0.4.7-1.x86_64.rpm](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/ovtsuite-0.4.7-1.x86_64.rpm) |
+| **Bosch EDC16 module 1.0.11** (free) | [OVTSuite-BoschEDC16-1.0.11-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/OVTSuite-BoschEDC16-1.0.11-setup.exe) | [edc16-1.0.11.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/edc16-1.0.11.ovtmod), [ovtsuite-module-edc16_1.0.11-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/ovtsuite-module-edc16_1.0.11-1_all.deb) |
+| **Bosch EDC15 module 1.0.10** (free) | [OVTSuite-BoschEDC15-1.0.10-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/OVTSuite-BoschEDC15-1.0.10-setup.exe) | [edc15-1.0.10.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/edc15-1.0.10.ovtmod), [ovtsuite-module-edc15_1.0.10-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/ovtsuite-module-edc15_1.0.10-1_all.deb) |
 | **VDO Cluster module** (open source) | [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) | [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) |
 
 Install the app first, then the modules you need. Every release is on the
@@ -142,10 +142,10 @@ checksum correction and that unit's tools.
 
 | Module | Control units | What the module adds | Version | Licence |
 |---|---|---|---|---|
-| **Bosch EDC16** | EDC16U31 / U34 (2 MB) VW PD TDI ECUs. Families P350 (038906016…, 038997016…), P475 and P447 (03G906016…), P529, P213. EDC16U1 (1 MB) is untested and may not be compatible. | About 10,000 named parameters per file; all checksums (block/span, prog/boot, header, signatures, digests); MPC and 4 KB EEPROM/immobiliser editor; Tune from logs; `.sgo` / `.dim` round-trip; XDF export | 1.0.10 (stable) | Free, closed source |
+| **Bosch EDC16** | EDC16U31 / U34 (2 MB) VW PD TDI ECUs. Families P350 (038906016…, 038997016…), P475 and P447 (03G906016…), P529, P213. EDC16U1 (1 MB) is untested and may not be compatible. | About 10,000 named parameters per file; all checksums (block/span, prog/boot, header, signatures, digests); MPC and 4 KB EEPROM/immobiliser editor; Tune from logs; `.sgo` / `.dim` round-trip; XDF export | 1.0.11 (stable) | Free, closed source |
 | **Bosch EDC15** | EDC15VM+ (VP37, e.g. 1.9 TDI ALH 038906012…) and EDC15P (PD, 038906019…). | Per-dataset parameter tree (manual / automatic); V4.1 checksum chain read from the image's own routine; 512-byte EEPROM editor (immobiliser, SKC, odometer, DSV coding, trims, virginize) | 1.0.10 (stable) | Free, closed source |
-| **ZF 6HP** | 6HP19A (09L/0AT), 6HP26A (09E), 6HP28AF (T04/0B6) TCUs. | Shift points, shift feel, lock-up (TCC), Tiptronic limits, shift programs and state tables; schedules found by structure; Z shown as output, engine or road speed; ZF fault-code editor; shift torque report; CRC-16 checksum; Stage 1 auto-tune (command line) | 1.0.9 (stable) | Closed source |
-| **ZF 8HP** | Gen1 (8K0/8K1/8R0927158…) and Gen2 VW-group TCUs. | Every parameter's location and shape taken from the calibration's pointer table; shift programs and converter-clutch tables; per-block CRC-32 | 0.1.6 (early) | Closed source |
+| **ZF 6HP** | 6HP19A (09L/0AT), 6HP26A (09E), 6HP28AF (T04/0B6) TCUs. | Shift points, shift feel, lock-up (TCC), Tiptronic limits, shift programs and state tables; schedules found by structure; Z shown as output, engine or road speed; ZF fault-code editor; shift torque report; CRC-16 checksum; Stage 1 auto-tune (command line) | 1.0.10 (stable) | Closed source |
+| **ZF 8HP** | Gen1 (8K0/8K1/8R0927158…) and Gen2 VW-group TCUs. | Every parameter's location and shape taken from the calibration's pointer table; shift programs and converter-clutch tables; per-block CRC-32 | 0.1.7 (early) | Closed source |
 | **Aisin TR-xx** | TR-60SN (09D) and TR-80SD (0C8 / 09G). | Identification and the 09D checksum. No parameter tree yet. | 0.1.5 (early) | Closed source |
 | **VDO Cluster** | Mk4-era VDO clusters: VWK501, VWK503, VMMJ08 (verified); VQMJ07, K5MJ07 (extrapolated). | 2 KB EEPROM definitions (K-value, needle maps, coding, SKC); gauge checksum; needle / LED / DSG-needle sweep patches for the exact ROM build; speed and distance correction | 0.1.8 (early) | MPL-2.0, [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) |
 | **4F/4L HVAC** | Audi A6 C6 (4F0910043, 4F0910043B) and Q7 (4L0910043, 4L0910043D) Climatronic. Only the post-facelift (2009+) C6 has been tested. | Heated-seat tables, A/C compressor bypass and cutouts, sensor curves; checksum; `.sgo` repack | 0.1.6 (early) | Closed source |
@@ -484,8 +484,8 @@ installer, or from **Tools > Modules... > Install from file**.
 
 | Module | Windows | Linux, or any platform |
 |---|---|---|
-| Bosch EDC16 1.0.10 (free) | [OVTSuite-BoschEDC16-1.0.10-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/OVTSuite-BoschEDC16-1.0.10-setup.exe) | [edc16-1.0.10.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/edc16-1.0.10.ovtmod), [ovtsuite-module-edc16_1.0.10-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/ovtsuite-module-edc16_1.0.10-1_all.deb) |
-| Bosch EDC15 1.0.10 (free) | [OVTSuite-BoschEDC15-1.0.10-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/OVTSuite-BoschEDC15-1.0.10-setup.exe) | [edc15-1.0.10.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/edc15-1.0.10.ovtmod), [ovtsuite-module-edc15_1.0.10-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.6/ovtsuite-module-edc15_1.0.10-1_all.deb) |
+| Bosch EDC16 1.0.11 (free) | [OVTSuite-BoschEDC16-1.0.11-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/OVTSuite-BoschEDC16-1.0.11-setup.exe) | [edc16-1.0.11.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/edc16-1.0.11.ovtmod), [ovtsuite-module-edc16_1.0.11-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/ovtsuite-module-edc16_1.0.11-1_all.deb) |
+| Bosch EDC15 1.0.10 (free) | [OVTSuite-BoschEDC15-1.0.10-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/OVTSuite-BoschEDC15-1.0.10-setup.exe) | [edc15-1.0.10.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/edc15-1.0.10.ovtmod), [ovtsuite-module-edc15_1.0.10-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.7/ovtsuite-module-edc15_1.0.10-1_all.deb) |
 | VDO Cluster (open source) | Build it from [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) | Same |
 
 A `.ovtmod` file works on every platform: open it, or use **Tools > Modules...
