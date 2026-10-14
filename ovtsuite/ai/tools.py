@@ -56,6 +56,11 @@ class Context:
     #: who is asking ("mcp:<client name>", "assistant") -- recorded on proposals
     client: str = ""
     settings: Dict[str, Any] = field(default_factory=dict)
+    #: ``on_gui(fn)`` runs ``fn`` where the app's open tabs may be touched
+    #: (its GUI thread) and returns the result. Tools that compute a lot
+    #: (diff, find_maps ...) take what they need from a tab through it and do
+    #: the work on the caller's thread; None: everything runs here.
+    on_gui: Optional[Callable[[Callable[[], Any]], Any]] = None
 
 
 class Registry:
