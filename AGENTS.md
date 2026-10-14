@@ -24,14 +24,17 @@ new features in their own modules.
 
 ## Versions
 
-* **The app** (`__version__` in `ovtsuite/branding.py`): every major feature
-  addition raises it by 0.0.1 (0.3.0 -> 0.3.1). Change only that line;
-  `build.ps1` rewrites `packaging/version_info.txt` from it (keep the copy in
-  the repo in step when you touch it).
+**Version numbers are raised only for a release** -- never per change or per
+feature. A batch of work going into one release raises each version once.
+
+* **The app** (`__version__` in `ovtsuite/branding.py`): raised by 0.0.1 for a
+  release (0.3.0 -> 0.3.1). Change only that line; `build.ps1` rewrites
+  `packaging/version_info.txt` from it (keep the copy in the repo in step when
+  you touch it).
 * **Each module** has its own version in `ovtsuite/<id>/module.py`,
-  independent of the app's (stable modules 1.x, the rest 0.x). Raise it
-  whenever that module's files change; the build warns when they changed and
-  the version did not. See `docs/MODULES_PLAN.md`.
+  independent of the app's (stable modules 1.x, the rest 0.x). Raise it for a
+  release when that module's files changed since its last release; the build
+  warns when they changed and the version did not. See `docs/MODULES_PLAN.md`.
 
 ## Help pages
 
