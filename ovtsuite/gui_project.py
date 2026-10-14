@@ -320,8 +320,9 @@ def load_into(ws, doc, sid, bid) -> bool:
             ws, "Open from project", "That branch can't be opened: %s" % ex)
         return False
     log = _sb.history_text(proj, sid, b.head)
-    ext, data = _sb.working_file(proj, sid, state, defn=proj.cache(sid, bid),
-                                 log=log)
+    ext, data = _sb.working_file(
+        proj, sid, state, defn=_sb.definition_for(proj, sid, bid, state),
+        log=log)
     work = _sb.write_working_file(doc.tmpdir, "%s - %s" % (doc.title, s.name),
                                   ext, data, log=log)
     try:
@@ -406,8 +407,9 @@ def _session_at(ws, cid, label):
             return ws.primary.sibling(bytes(data), label)
         except Exception:
             pass                        # load it in full below
-    ext, blob = _sb.working_file(proj, ref.sid, state,
-                                 defn=proj.cache(ref.sid, ref.bid))
+    ext, blob = _sb.working_file(
+        proj, ref.sid, state,
+        defn=_sb.definition_for(proj, ref.sid, ref.bid, state))
     path = _sb.write_working_file(ref.doc.tmpdir, label, ext, blob)
     sess = ws._load_session(path, title="Loading %s" % label)
     _apply_definition(proj, ref.sid, sess)
@@ -586,8 +588,9 @@ def _commit(ws, label="") -> bool:
             auto = "patch"
     proj.commit(ref.sid, ref.bid, images, label=label or named or auto,
                 kind=kind, log=lines)
-    if defn:
-        proj.set_cache(ref.sid, ref.bid, defn)
+    # no snapshot from this save (a structural edit, a value it can't carry):
+    # drop the branch's old one rather than keep a stale definition about
+    proj.set_cache(ref.sid, ref.bid, defn or None)
     _resync_log(ws)
     _name(ws)
     return True

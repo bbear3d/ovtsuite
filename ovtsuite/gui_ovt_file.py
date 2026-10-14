@@ -57,7 +57,8 @@ def open_version(path, parent=None, title="Open project", text=None,
     try:
         s = proj.set(sid)
         state = proj.state(sid, cid)
-        ext, blob = _sb.working_file(proj, sid, state, defn=proj.cache(sid, bid))
+        ext, blob = _sb.working_file(
+            proj, sid, state, defn=_sb.definition_for(proj, sid, bid, state))
         tmpdir = tempfile.mkdtemp(prefix="ovt-tool-")
         work = _sb.write_working_file(tmpdir, s.name, ext, blob)
         session = TunerSession(work)

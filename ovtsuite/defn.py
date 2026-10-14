@@ -106,6 +106,13 @@ def _module_of(platform: Optional[str]):
     return registry.for_platform(platform) if platform else None
 
 
+#: Data files that are DERIVED from the definition data rather than read
+#: when a model is built: the search label index (ovtsuite.search) is
+#: regenerated whenever the labels change, and hashing it would make a GUI
+#: change look like a knowledge-base change.
+_NOT_MODEL_DATA = {"search_index.json.gz"}
+
+
 def data_digest(platform: Optional[str] = None) -> str:
     """Hash of the definition data a ``platform`` session is built from: its
     module's data files only, so installing or removing ANOTHER module never
@@ -115,54 +122,100 @@ def data_digest(platform: Optional[str] = None) -> str:
     if key not in _DIGEST_CACHE:
         from . import datafiles
         m = _module_of(platform)
-        files = [p for _n, p in datafiles.listing(m.id if m is not None else None)]
+        files = [p for n, p in datafiles.listing(m.id if m is not None else None)
+                 if n not in _NOT_MODEL_DATA]
         _DIGEST_CACHE[key] = _hash_files(sorted(files))
     return _DIGEST_CACHE[key]
 
 
-#: Code that does not take part in building a session's model.
-_NOT_MODEL_DIRS = {"flash", "logtune", "datalog", "sniff", "autotune",
-                   "__pycache__", "data", "modules", "platforms"}
-_NOT_MODEL_FILES = {"gui.py", "cli.py", "eeprom_gui.py", "recent.py",
-                    "history.py", "patch.py", "changelog.py", "branding.py"}
+#: Bump when the way the BASE app builds or restores a model changes in a way
+#: that makes a stored definition wrong: what a loader derives, an entity
+#: field's meaning, the decode, the variant tables. Every stored definition
+#: is then rebuilt once. A change to a file in ``MODEL_FILES`` also
+#: invalidates them (in a source checkout), and tests/test_defn.py fails until
+#: its recorded hash is updated -- that is the prompt to decide whether this
+#: wants bumping too. A frozen build has no source to hash, so there this
+#: number (with each module's own version) is ALL that tells builds apart.
+MODEL_VERSION = 1
+
+#: The base files that build, shape or restore a session's model -- traced
+#: from ``TunerSession.__init__`` through a module's ``build`` / ``load_kb``
+#: and :func:`restore`. Nothing else in the base app can change what a stored
+#: definition holds: the GUI, the AI tools, projects, flashing, logging and
+#: the app version do not. Tree labels have their own digest (``ui_digest``).
+MODEL_FILES = (
+    "session.py",     # the load flow, attribute defaults, variant_entities()
+    "defn.py",        # this encoder / decoder
+    "model.py",       # Entity / Axis
+    "equation.py",    # the equations entities carry
+    "binary.py",      # how the image is read (endianness, cells)
+    "datafiles.py",   # which data files a knowledge base is read from
+    "kb.py",          # the knowledge-base model the loaders read
+    "match.py",       # anchor matching / cross-binary identification
+    "structure.py",   # structural detection of maps and curves
+    "layout.py",      # the ECU's calibration pointer table
+    "fileinfo.py",    # ident16(), which layout.identify() keys on
+    "catalogue.py",   # applying the tuning catalogue; resolve_selectors()
+    "tiers.py",       # an entity's tier
+    "groups.py",      # an entity's task group
+    "variant.py",     # the variant (coding-selected) tables a snapshot holds
+)
 
 
-def _py_files(top: str, skip_dirs=()) -> list:
+def _hash_source(paths) -> str:
+    """Like ``_hash_files``, but line endings are normalised, so a checkout
+    with CRLF line endings hashes the same as one with LF."""
+    h = hashlib.sha1()
+    for p in paths:
+        h.update(_rel(p).encode())
+        try:
+            with open(p, "rb") as fh:
+                h.update(fh.read().replace(b"\r\n", b"\n"))
+        except OSError:
+            h.update(b"?")
+    return h.hexdigest()
+
+
+def model_files_digest() -> str:
+    """Hash of the base app's ``MODEL_FILES`` ("" without source files)."""
+    if "model_files" not in _DIGEST_CACHE:
+        files = [os.path.join(_PKG, n) for n in MODEL_FILES]
+        _DIGEST_CACHE["model_files"] = (
+            _hash_source(files) if all(os.path.isfile(p) for p in files)
+            else "")
+    return _DIGEST_CACHE["model_files"]
+
+
+def _py_files(top: str) -> list:
     files = []
     for d, dirs, names in os.walk(top):
-        dirs[:] = sorted(x for x in dirs
-                         if x not in _NOT_MODEL_DIRS and x not in skip_dirs)
-        for n in sorted(names):
-            if n.endswith(".py") and not (
-                    (d == top or n == "eeprom_gui.py") and n in _NOT_MODEL_FILES):
-                files.append(os.path.join(d, n))
+        dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+        files += [os.path.join(d, n) for n in sorted(names) if n.endswith(".py")]
     return files
 
 
 def code_digest(platform: Optional[str] = None) -> str:
-    """Hash of the source that builds a ``platform`` session's model -- the
-    base app's model code plus that platform's module -- and both versions.
-    Other modules' code is left out, so they come and go freely.
+    """Hash of what builds a ``platform`` session's model: ``MODEL_VERSION``,
+    the base app's ``MODEL_FILES``, and that platform's module (id, version
+    and source). Other modules, the rest of the app and the app's version are
+    left out, so an unrelated change or a new release keeps stored
+    definitions valid.
 
-    A build that ships without source files (a frozen app) falls back to the
-    versions alone, which change on every release."""
+    A build that ships without source files (a frozen app) hashes only
+    ``MODEL_VERSION`` and the module's version."""
     key = "code|%s" % (platform or "")
     if key not in _DIGEST_CACHE:
-        from .branding import __version__
-        from .platforms import MODULES
         from .modules import loader
         m = _module_of(platform)
-        files = _py_files(_PKG, skip_dirs=set(MODULES))
-        mod_ver = ""
+        mod = ""
         if m is not None:
-            mod_ver = "%s %s" % (m.id, m.version)
             root = loader.module_roots().get(m.id, _PKG)
-            files += _py_files(os.path.join(root, m.id))
-        elif platform is None:
-            files = _py_files(_PKG)
-        h = _hash_files(files) if files else ""
+            files = _py_files(os.path.join(root, m.id))
+            mod = "%s %s %s" % (m.id, m.version,
+                                _hash_source(files) if files else "")
         _DIGEST_CACHE[key] = hashlib.sha1(
-            ("%s|%s|%s|%d" % (__version__, mod_ver, h, FORMAT)).encode()
+            ("%d|%s|%s|%d" % (MODEL_VERSION, model_files_digest(), mod,
+                              FORMAT)).encode()
         ).hexdigest()
     return _DIGEST_CACHE[key]
 
@@ -544,6 +597,20 @@ def check(snap: dict, platform: str, data: bytes) -> Optional[str]:
     if snap.get("efields") != _EF or snap.get("afields") != _AF:
         return "entity layout changed"
     return None
+
+
+def usable(blob: bytes, platform: str, data: bytes) -> Optional[str]:
+    """Why the snapshot ``blob`` would not be used for ``data``, or None when
+    :func:`restore` would take it -- the same checks, without decoding the
+    attributes or loading a knowledge base. For choosing among several."""
+    try:
+        snap = json.loads(bytes(blob).decode("utf-8"))
+        why = check(snap, platform, data)
+        if why:
+            return why
+        return _structure_ok(snap, _rows_to_entities(snap, None), data)
+    except Exception as ex:
+        return "unreadable snapshot (%s)" % ex
 
 
 def restore(session, container, data: bytes, rep=None) -> Optional[str]:

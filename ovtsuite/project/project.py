@@ -184,6 +184,32 @@ class Project:
         self._touch()
         return m
 
+    def adopt_platform(self, sid: str, platform: str) -> BinarySet:
+        """A set stored as ``unknown`` (imported by an app that had no
+        detector for it) that the base app now identifies as ``platform``:
+        describe it as an import would today -- the set's platform and kind,
+        its unidentified members', and a ``raw`` main image becomes ``flash``.
+
+        It is a correction, not an edit, so the project is NOT marked
+        modified: it is written with the next save, and until then every
+        open simply identifies the set again."""
+        from .importers import _endian, _module_ref
+        from .model import PLATFORM_SET_KIND
+        s = self.set(sid)
+        old = s.platform
+        s.platform = platform
+        if s.kind == PLATFORM_SET_KIND.get(old, "other"):
+            s.kind = PLATFORM_SET_KIND.get(platform, s.kind)
+        for m in s.members:
+            if m.platform in ("", "unknown", old):
+                m.platform = platform
+                m.module = _module_ref(platform)
+                m.endian = _endian(platform)
+        raw = next((m for m in s.members if m.role == "raw"), None)
+        if raw is not None and not any(m.role == "flash" for m in s.members):
+            raw.role = "flash"
+        return s
+
     # ============================================================== history
     def _check_images(self, s: BinarySet, images: Images):
         for mid in images:
@@ -402,7 +428,15 @@ class Project:
         if s.checkpoint(at) is None:
             raise KeyError("no checkpoint %r" % at)
         self.state(s.id, at)               # refuse a state that can't be rebuilt
+        # the definition cache of the branch it comes from goes with it, so
+        # the new branch opens without matching (its own save replaces it)
+        src = next((o for o in s.branches if o.head == at
+                    and o.id == s.active_branch), None) or next(
+            (o for o in s.branches if o.head == at), s.active)
+        defn = self.best_cache(s.id, src.id) if src is not None else None
         b = self._new_branch(s, name, at)
+        if defn is not None:
+            self.set_cache(s.id, b.id, defn)
         self._touch()
         return b
 
@@ -427,6 +461,7 @@ class Project:
         if len(s.branches) == 1:
             raise ValueError("a set needs at least one branch")
         s.branches.remove(b)
+        self._blobs.pop(self._cache_path(s.id, b.id), None)
         if s.active_branch == b.id:
             s.active_branch = s.branches[0].id
         self._touch()
@@ -618,6 +653,33 @@ class Project:
         b = s.branch(branch)
         p = self._cache_path(s.id, b.id)
         return None if p in self._damaged else self._blobs.get(p)
+
+    def cache_candidates(self, sid: str, branch: str) -> List[bytes]:
+        """Definition caches that may serve ``branch``: its own first, then
+        the other branches' of the same set, the most recently saved head
+        first. Every branch of a set is the same software, so another
+        branch's snapshot usually fits; ``ovtsuite.defn``'s checks (image
+        structure included) still decide whether it is used."""
+        s = self.set(sid)
+        b = s.branch(branch)
+        own = self.cache(s.id, b.id)
+        out = [own] if own is not None else []
+
+        def ts(o):
+            c = s.checkpoint(o.head)
+            return c.ts if c is not None else ""
+        for o in sorted((o for o in s.branches if o.id != b.id),
+                        key=ts, reverse=True):
+            d = self.cache(s.id, o.id)
+            if d is not None and d not in out:
+                out.append(d)
+        return out
+
+    def best_cache(self, sid: str, branch: str) -> Optional[bytes]:
+        """The branch's own definition cache, else a sibling branch's
+        (:meth:`cache_candidates`), else None."""
+        c = self.cache_candidates(sid, branch)
+        return c[0] if c else None
 
     # =================================================== logs, attachments
     @property

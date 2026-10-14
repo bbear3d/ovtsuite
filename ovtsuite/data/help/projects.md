@@ -65,6 +65,13 @@ A set or branch that is not open is one click away: double-click it in the
 project**. Close a tab as usual; the project stays open while any of its tabs
 is, and closes with the last one. **File > Close project** closes all of them.
 
+A project keeps each branch's parameter tree once it has been worked out, so
+a binary opens without being identified and matched again. A new branch
+starts with the tree of the branch it came from, and a branch without one
+borrows a sibling branch's when it still fits the binary. A binary saved in
+the project as *unknown* by an older version of the app is recognised again
+when it opens, and the project records what it is the next time it is saved.
+
 Several projects can be open at once. Copying values between tabs and
 comparing against another tab work across projects too. A project open in
 one window cannot be opened in another window (see [Tabs and
