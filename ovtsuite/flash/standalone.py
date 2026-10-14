@@ -153,36 +153,9 @@ class StandaloneFlashHost:
         """A finished read. There is no tab to open it in, so ask where to
         put it: an .ovt project by default (the read is its original), or the
         raw image as read. Returns True when it was saved."""
-        from ..project import Project, import_read
-        from .. import container as _cont
-        filters = ["OVT project (*.ovt)", "Raw image as read (*.bin)",
-                   "All files (*)"]
-        default = os.path.join(_recent.get_last_dir(), name + ".ovt")
-        path, chosen = QtWidgets.QFileDialog.getSaveFileName(
-            parent, "Save the read", default, ";;".join(filters))
-        if not path:
-            return False
-        if not os.path.splitext(path)[1]:
-            path += ".bin" if chosen == filters[1] else ".ovt"
-        try:
-            if path.lower().endswith(".ovt"):
-                proj = Project(name)
-                import_read(proj, data, name, eeprom=eeprom,
-                            source={"tool": "OVT Flasher"})
-                proj.save(path)
-            else:
-                raw = bytes(data)
-                if _cont.format_for_magic(raw[:8]) is not None:
-                    raw = _cont.Container.from_bytes(raw).external() or raw
-                with open(path, "wb") as fh:
-                    fh.write(raw)
-        except Exception as ex:
-            QtWidgets.QMessageBox.critical(parent, "Save the read",
-                                           "%s could not be saved:\n%s"
-                                           % (os.path.basename(path), ex))
-            return False
-        _recent.set_last_dir(os.path.dirname(path))
-        return True
+        from .. import read_export as _rx
+        return bool(_rx.ask_save_read(parent, data, name, eeprom=eeprom,
+                                      source={"tool": "OVT Flasher"}))
 
     def load_backup(self, flash, eeprom, path=None, name=None):
         """A full backup (flash + EEPROM): saved like any read, as one

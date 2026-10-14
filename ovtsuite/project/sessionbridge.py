@@ -301,12 +301,15 @@ def history_text(project: Project, sid: str, cid: str) -> str:
         if not ok:
             out = []                    # the session's history starts after it
             continue
-        rec = {"id": c.id, "ts": c.ts, "label": c.label or c.kind,
+        extra = getattr(c, "extra", None) or {}
+        rec = {"id": c.id, "ts": c.ts,
+               "label": extra.get("auto_label", c.label) or c.kind,
                "ranges": ranges,
                "n_bytes": c.n_bytes}
+        if "auto_label" in extra and c.label:
+            rec["name"] = c.label       # the user's name: clearable there
         if regions:
             rec["regions"] = regions
-        extra = getattr(c, "extra", None) or {}
         if extra.get("merged_from"):
             # the versions merged into this one, and itself: Version history
             # shows "Merged from N saves" and the first and last save's time
@@ -348,7 +351,8 @@ def read_log(project: Project, sid: str, cid: str, text: str):
     not a checkpoint of the branch (normally the one just made), without the
     ``VERSION`` records themselves (the project's delta is the byte record);
     ``label`` is that save's name if the user gave one; ``renames`` is
-    ``{checkpoint id: name}`` for checkpoints renamed in Version history."""
+    ``{checkpoint id: name}`` for checkpoints renamed in Version history
+    (``""``: the name was cleared, back to the automatic label)."""
     import json
     known = {c.id: c for c in project.set(sid).lineage(cid)}
     new, label, renames = [], "", {}
@@ -365,8 +369,11 @@ def read_log(project: Project, sid: str, cid: str, text: str):
         if ids and all(i in known for i in ids):
             for rec in recs:
                 name = rec.get("name") or ""
-                if name and name != known[rec["id"]].label:
+                k = known[rec["id"]]
+                if name and name != k.label:
                     renames[rec["id"]] = name
+                elif not name and "auto_label" in (k.extra or {}):
+                    renames[rec["id"]] = ""     # its name cleared there
             continue
         new += [l for l in block if not l.startswith(VERSION)]
         for rec in recs:

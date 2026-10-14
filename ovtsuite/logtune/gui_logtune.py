@@ -233,12 +233,13 @@ class LogTuneDialog(QtWidgets.QDialog):
         from .. import recent as _recent
         ref = getattr(self._window, "project_ref", None)
         if ref is not None and ref.doc.project.logs:
-            # the project's own logs first (this binary's at the top), a
-            # file from disk after
+            # the project's own logs first (this binary's at the top, each
+            # group newest first), a file from disk after
+            from ..gui_project import newest_first
             doc = ref.doc
             menu = QtWidgets.QMenu(self)
-            logs = sorted(doc.project.logs,
-                          key=lambda a: (a.set != ref.sid, a.added), reverse=False)
+            logs = sorted(newest_first(doc.project.logs),
+                          key=lambda a: a.set != ref.sid)    # stable
             for a in logs:
                 act = menu.addAction("%s   (%s)" % (a.filename,
                                                     a.added.replace("T", " ")[:16]))
