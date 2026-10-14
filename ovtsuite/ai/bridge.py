@@ -125,6 +125,10 @@ class _Handler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
 
+#: how often the server loop looks whether it is being stopped (seconds)
+POLL_S = 0.05
+
+
 class _TCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = False
@@ -157,7 +161,9 @@ class BridgeServer:
         self._srv = _TCPServer(("127.0.0.1", 0), _Handler)
         self._srv.bridge = self                           # type: ignore[attr-defined]
         self.port = self._srv.server_address[1]
+        # a short poll: stop() (on exit) waits for the loop to notice
         self._thread = threading.Thread(target=self._srv.serve_forever,
+                                        kwargs={"poll_interval": POLL_S},
                                         name="ovt-ai-bridge", daemon=True)
         self._thread.start()
         _write_private(live_path(), {"port": self.port, "token": self.token,

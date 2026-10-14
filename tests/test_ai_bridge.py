@@ -134,3 +134,15 @@ def test_resolve_keeps_a_record(aidir):
     assert P.all_pending() == []
     rec = json.load(open(os.path.join(P.inbox_dir(), "rejected", "abc123.json")))
     assert rec["status"] == "rejected" and rec["resolution"] == "not wanted"
+
+
+def test_stopping_the_bridge_is_quick(aidir):
+    """The app's exit waits for the server loop to notice it is stopped."""
+    import time
+    srv = B.BridgeServer(_LiveWS(), registry=_registry([]))
+    srv.start()
+    time.sleep(0.05)
+    t0 = time.monotonic()
+    srv.stop()
+    assert time.monotonic() - t0 < 0.3
+    assert not srv.running
