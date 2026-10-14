@@ -282,6 +282,7 @@ close with the tab.
 | Item | Shortcut | What it does |
 |---|---|---|
 | **Help contents** | F1 | Opens this help, with the pages of every installed module. |
+| **Check for Updates...** | | Looks for a newer version of the app and of your modules. See [Checking for updates](updates.md). |
 | **Ask the AI about the app...** | | Opens the [assistant panel](ai/assistant.md) for a question about using the app, answered from these help pages. |
 | **About OVT-Suite...** | | The version and the installed modules. See [About and credits](about.md). |
 | **Credits & licences...** | | The licences of the parts the app is built from. |

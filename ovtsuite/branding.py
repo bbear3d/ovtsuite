@@ -73,6 +73,11 @@ TOOL_NAMES = {"flasher": "OVT Flasher", "sniffer": "OVT Sniffer", "logger": "OVT
 #: bundle: the main exe is windowed and has no usable stdin/stdout.
 MCP_EXE = "OVTMcp"
 
+#: Windows: the named mutex every exe of the bundle holds while it runs
+#: (packaging/entry.py), and the installers' AppMutex (packaging/tools.iss,
+#: module_installer.iss): setup waits until no copy is running.
+APP_MUTEX = EXE_NAME + "AppRunning"
+
 #: Environment-variable prefix for build switches (``<PREFIX>_ONEFILE`` ...).
 ENV_PREFIX = "OVTSUITE"
 

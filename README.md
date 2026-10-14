@@ -471,6 +471,11 @@ the [Releases](https://github.com/bbear3d/ovtsuite/releases) page.
 - **Linux:** installs to `/opt/ovtsuite` with a menu entry, the `.ovt` file
   type and the udev rule.
 
+The app checks for a newer version once a day (Tools > Options > General) and
+on **Help > Check for Updates...**. On Windows it can download, verify and
+install the update and your modules' updates for you, after asking about
+unsaved work; elsewhere it links to the release.
+
 ### Modules
 
 Modules are signed `.ovtmod` packages. The app checks the signature and every
@@ -546,6 +551,12 @@ Linux, as a `.deb` (and optionally an `.rpm`):
 `build.ps1` finds Python 3.10+, provisions an isolated build venv, freezes the
 app with PyInstaller (`packaging/ovtsuite.spec`) and builds the installers.
 Repeat builds are incremental.
+
+Both builds also write `dist/SHA256SUMS.txt` and its signature
+`dist/SHA256SUMS.txt.sig` (the module signing key); upload them with every
+release, as the in-app updater checks its downloads against them
+(`tools/build_modules.py release-sums`). `.\build.ps1 -CodeSign` (with
+`OVT_CODESIGN_ARGS`) also Authenticode-signs the executables and installers.
 
 **Tests:** `python -m pytest tests/<file>.py -q`. The GUI tests are marked
 slow and run offscreen (`--slow`, `QT_QPA_PLATFORM=offscreen`). See

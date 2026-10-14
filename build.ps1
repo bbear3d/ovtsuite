@@ -130,6 +130,22 @@
     creating it on the first build (back it up) and adding its public half to
     ovtsuite\data\module_keys.json (commit that file).
 
+.PARAMETER CodeSign
+    Authenticode-sign the executables and every installer (and its
+    uninstaller) with signtool.exe. The signing options come from
+    $env:OVT_CODESIGN_ARGS, e.g.
+        /sha1 <certificate thumbprint> /fd sha256 /tr http://timestamp.digicert.com /td sha256
+    or, for Azure Trusted Signing,
+        /fd sha256 /tr http://timestamp.acs.microsoft.com /td sha256 /dlib <path>\Azure.CodeSigning.Dlib.dll /dmdf <path>\metadata.json
+    signtool.exe is found on PATH, in the Windows SDK, or at $env:OVT_SIGNTOOL.
+    Implied when OVT_CODESIGN_ARGS is set.
+
+    Every build also writes dist\SHA256SUMS.txt (the SHA-256 of the installers
+    and module packages it made, merged into the list already there) and,
+    unless -Unsigned, its Ed25519 signature dist\SHA256SUMS.txt.sig with the
+    module signing key. Upload both with the release: the app's update check
+    verifies every download against them.
+
 .PARAMETER Clean
     Delete build\, dist\ and the build environment before starting, so every
     step runs from scratch.
@@ -188,6 +204,7 @@ param(
     [string[]]$Modules = @('all'),
     [switch]$BaseOnly,
     [switch]$Unsigned,
+    [switch]$CodeSign,
     [switch]$Update,
     [switch]$FastInstaller,
     [switch]$RebuildInstallers,
@@ -531,6 +548,25 @@ function Get-PythonCandidates {
     }
 
     return $paths
+}
+
+function Find-SignTool {
+    <#
+      Locate signtool.exe (Windows SDK) for -CodeSign: $env:OVT_SIGNTOOL, PATH,
+      then the newest x64 one under Windows Kits\10\bin. Returns $null if none.
+    #>
+    if ($env:OVT_SIGNTOOL -and (Test-Path -LiteralPath $env:OVT_SIGNTOOL -PathType Leaf)) {
+        return $env:OVT_SIGNTOOL
+    }
+    $onPath = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($onPath -and $onPath.Path) { return $onPath.Path }
+    $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    if (Test-Path -LiteralPath $kits) {
+        $found = @(Get-ChildItem -LiteralPath $kits -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending)
+        if ($found.Count) { return $found[0].FullName }
+    }
+    return $null
 }
 
 function Find-InnoSetup {
@@ -1175,6 +1211,30 @@ if ($NoInstaller) {
                 }
             }
         }
+        # Authenticode (-CodeSign / OVT_CODESIGN_ARGS): the app's own exes are
+        # signed in place before they are packed (an exe already validly signed
+        # is left alone, so an unchanged build does not rebuild its installers),
+        # and ISCC signs each setup.exe and its uninstaller through the SignTool
+        # directive (#ifdef SignTool in the .iss files).
+        $SignDefs = @()
+        if ($CodeSign -or $env:OVT_CODESIGN_ARGS) {
+            $SignTool = Find-SignTool
+            if (-not $env:OVT_CODESIGN_ARGS) { throw '-CodeSign needs $env:OVT_CODESIGN_ARGS (see the help)' }
+            if (-not $SignTool) { throw '-CodeSign: signtool.exe not found (install the Windows SDK or set OVT_SIGNTOOL)' }
+            Write-Step 'Authenticode signing'
+            $signArgs = @($env:OVT_CODESIGN_ARGS -split '\s+' | Where-Object { $_ })
+            foreach ($exe in @(Get-ChildItem -LiteralPath $Built -Filter '*.exe' -File)) {
+                if ((Get-AuthenticodeSignature -LiteralPath $exe.FullName).Status -eq 'Valid') {
+                    Write-Ok "already signed: $($exe.Name)"
+                    continue
+                }
+                $code = Invoke-NativeStreaming $SignTool (@('sign') + $signArgs + @($exe.FullName))
+                if ($code -ne 0) { throw "signtool failed on $($exe.Name) (exit $code)" }
+            }
+            # ISCC: /S<name>=<command>, $q a quote, $f the file to sign
+            $SignDefs = @('/DSignTool=ovtsign',
+                          ('/Sovtsign=$q' + $SignTool + '$q sign ' + ($signArgs -join ' ') + ' $f'))
+        }
         # every installer to build: script, setup name, launchers it needs, defines
         $Jobs = @()
         foreach ($which in $Installers) {
@@ -1258,7 +1318,7 @@ if ($NoInstaller) {
                 "/DSetupCompression=$Compression",
                 "/DSourceDir=$source",
                 "/DOutputDir=$OutDir",
-                "/DOutputName=$SetupName") + $defs
+                "/DOutputName=$SetupName") + $defs + $SignDefs
 
             $made = Join-Path $OutDir "$SetupName.exe"
             $stamp = Join-Path $StampDir "$SetupName.key"
@@ -1295,6 +1355,23 @@ if ($NoInstaller) {
             if (-not $Installer) { $Installer = $made }
         }
     }
+}
+
+# --------------------------------------------------------------------------
+# 6b. Release checksums: dist\SHA256SUMS.txt (+ .sig, the module signing key)
+# --------------------------------------------------------------------------
+# What the in-app update check verifies downloads against (ovtsuite\updates.py).
+# Entries are merged by file name, so build_linux.sh can add its packages to the
+# same list; upload SHA256SUMS.txt and SHA256SUMS.txt.sig with the release.
+$SumFiles = @($InstallersBuilt)
+if (-not $BaseOnly -and (Test-Path $ModulesOut)) {
+    $SumFiles += @(Get-ChildItem -LiteralPath $ModulesOut -Filter '*.ovtmod' | ForEach-Object { $_.FullName })
+}
+if ($SumFiles.Count) {
+    Write-Step 'Release checksums'
+    $sumArgs = @('release-sums', '--out', (Join-Path $DistDir 'SHA256SUMS.txt'))
+    if ($Unsigned) { $sumArgs += '--unsigned' }
+    Invoke-BuildModules ($sumArgs + $SumFiles) 'release checksums'
 }
 
 # --------------------------------------------------------------------------
