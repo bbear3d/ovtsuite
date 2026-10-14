@@ -50,6 +50,7 @@ from .model import Entity
 from .dtc import DtcTable, FaultPath
 from .transfer import build_overlay
 from .diff import same_extent as _same_extent, cells_differ as _cells_differ
+from .diff import axis_changes as _axis_changes
 from .msblock import MeasuringBlocks
 from .gears import GearRatios
 from .variant import vss_pulse_settings
@@ -735,7 +736,9 @@ if HAVE_QT:
         def createEditor(self, parent, option, index):
             opts = self._opts(index)
             if not opts:
-                return super().createEditor(parent, option, index)
+                from . import gui_cellkeys as _gck  # arrows / Ctrl+Enter
+                return _gck.editor_created(
+                    super().createEditor(parent, option, index), self.parent())
             box = QtWidgets.QComboBox(parent)
             for raw, label in sorted(opts.items()):
                 box.addItem("%s  (%d)" % (label, raw), raw)
@@ -808,6 +811,8 @@ if HAVE_QT:
             #: window's timer refreshes when an edit elsewhere moves it
             self._rev = None
             self._ndiff = None              # see _diff_count
+            self._ax_diff = frozenset()     # ("x"|"y", i) breakpoints differing
+            self._crheads = None            # comparison's own row labels
 
         def _cmp_axes(self):
             """(X, Y) breakpoints the comparison block's cells sit at.
@@ -861,34 +866,83 @@ if HAVE_QT:
                 return _bold_font()
             return None
 
+        def _sync_compare(self):
+            """Everything the comparison block shows that depends on both
+            sides' current values: the overlay, the breakpoints its cells sit
+            at, which of those differ from the primary's, and the
+            comparison's own row labels. Rebuilt on every change of either
+            side -- the overlay's mode (direct / axes differ) follows an axis
+            edit or an undo, not just a new table."""
+            e, cp = self.entity, self.compare
+            # A TCC comparison matches columns by gear group rather than
+            # interpolating across them; see view6hp.compare_columns.
+            self.overlay = build_overlay(
+                e, cp, _view6.compare_columns(e, cp)) if (e and cp) else None
+            self._cmp = self.overlay.values if self.overlay else []
+            self._ndiff = None
+            self._cx, self._cy = self._cmp_axes()
+            self._ax_diff = frozenset(
+                (ax, i) for ax, i, _a, _b in _axis_changes(e, cp)
+            ) if (e and cp and self._cmp) else frozenset()
+            # A pedal map labels its rows from its Y axis. The comparison
+            # block used the primary's labels, so a saved version or another
+            # file whose pedal axis differed showed the current file's axis.
+            self._crheads = None
+            if cp is not None and self._y_differs():
+                # never the primary's labels on rows that sit elsewhere: the
+                # comparison's own, else its breakpoints as numbers
+                self._crheads = (self._row_labels(cp, self._cy)
+                                 or [_fmt(v, 1) for v in self._cy] or None)
+
+        @staticmethod
+        def _row_labels(ent, yvals):
+            """Row labels for ``ent`` shown at Y breakpoints ``yvals``. A
+            label that is its Y axis (a ZF pedal %) is made from ``yvals``,
+            so a comparison or saved version shows its own axis and an axis
+            edit shows at once; other labels are the entity's own."""
+            if ent is None:
+                return None
+            fmt = getattr(ent, "row_label_fmt", None)
+            if fmt and yvals:
+                try:
+                    return [fmt % v for v in yvals]
+                except (TypeError, ValueError):
+                    pass
+            return (getattr(ent, "row_labels", None)
+                    or _view6.row_headers(ent, yvals))
+
+        def _y_differs(self) -> bool:
+            return any(ax == "y" for ax, _i in self._ax_diff)
+
+        def _want_coff(self) -> int:
+            """1 when the Y band is drawn: always for a plain map, and for a
+            pedal map (Y shown as row headers) when the comparison's Y axis
+            differs -- the band then shows both sides' breakpoints, which
+            the shared column headers of a transposed grid cannot."""
+            e = self.entity
+            return 1 if (e and self._y and (not self._rheads
+                                            or self._y_differs())) else 0
+
         def set_entity(self, e: Optional[Entity], compare: Optional[Entity]):
             self.beginResetModel()
             self.entity = e
             self.hl = frozenset()           # a search's cells are for one table
             self.compare = compare
             self._vals = e.values() if e else []
-            # A TCC comparison matches columns by gear group rather than
-            # interpolating across them; see view6hp.compare_columns.
-            self.overlay = build_overlay(
-                e, compare, _view6.compare_columns(e, compare)) \
-                if (e and compare) else None
-            self._cmp = self.overlay.values if self.overlay else []
-            self._ndiff = None
             self._x = e.x_values() if e else []
             self._y = e.y_values() if e else []
-            self._cx, self._cy = self._cmp_axes()
+            self._sync_compare()
             self._dec = _entity_decimals(e) if e else 3
             self._cmp_dec = _entity_decimals(compare) if compare else self._dec
             self._zheads = ((getattr(e, "col_labels", None) or
                              _view6.column_headers(e)) if e else None)
-            self._rheads = ((getattr(e, "row_labels", None) or
-                             _view6.row_headers(e, self._y)) if e else None)
+            self._rheads = self._row_labels(e, self._y)
             self._roff = 1 if (e and self._x) else 0
             # A pedal map already carries its Y axis in the row headers, in
             # percent. Drawing the Y band as well put the same axis on screen
             # twice -- the header rounded, the band not -- so the band is left
             # off for those and the headers are the one presentation.
-            self._coff = 1 if (e and self._y and not self._rheads) else 0
+            self._coff = self._want_coff()
             self.transposed = self._default_transpose(e)
             if not _view6.z_modes(e):
                 self.zmode = "raw"
@@ -977,7 +1031,10 @@ if HAVE_QT:
             # A None comparison cell is a column the other calibration does
             # not have, so it is not a difference -- it is an absence.
             n = self._diff_count()
-            diff = "identical" if n == 0 else "%d cell(s) differ" % n
+            na = len(self._ax_diff)
+            parts = (["%d cell(s) differ" % n] if n else []) + \
+                (["%d axis point(s) differ" % na] if na else [])
+            diff = ", ".join(parts) if parts else "identical"
             mode = self.overlay.mode if self.overlay is not None else "direct"
             if not full:
                 tag = {"axis-mismatch": " · axes differ",
@@ -1185,11 +1242,12 @@ if HAVE_QT:
                     return ""
                 if rr < 0:
                     return across               # the comparison's axis band
-                return self._rowhead(rr)
+                return self._rowhead(rr, self._crheads)
             return self._rowhead(sec - self._top)
 
-        def _rowhead(self, row: int) -> str:
-            heads = self._zheads if self.transposed else self._rheads
+        def _rowhead(self, row: int, cheads=None) -> str:
+            heads = (self._zheads if self.transposed
+                     else (cheads or self._rheads))
             if heads and 0 <= row < len(heads):
                 return heads[row]
             return str(row)
@@ -1279,11 +1337,14 @@ if HAVE_QT:
                     return None
                 if role in _R_TEXT:
                     return _fmt(vals[a], 3)
-                # explicit bg AND fg so the band reads the same in light/dark
+                differs = (k[-1], a) in self._ax_diff
+                # explicit bg AND fg so the band reads the same in light/dark;
+                # a breakpoint the other side does not share is marked like a
+                # differing cell
                 if role == _R_BG:
-                    return AXIS_BG
+                    return DIFF_BG if differs else AXIS_BG
                 if role == _R_FG:
-                    return AXIS_FG
+                    return CELL_DARK_FG if differs else AXIS_FG
                 if role == _R_FONT:
                     return _bold_font()
                 return None
@@ -1374,10 +1435,9 @@ if HAVE_QT:
                 self._y = self.entity.y_values()
             if k in ("x", "y"):
                 # the comparison band shows the primary's breakpoints unless
-                # its own differ -- keep it on the edited ones
-                self._cx, self._cy = self._cmp_axes()
-                self._rev = getattr(self.session, "revision", None)
-                self.layoutChanged.emit()
+                # its own differ, and whether they differ may just have
+                # changed: rebuild the comparison side (refresh)
+                self.refresh()
                 return True
             if k != "z":
                 return False
@@ -1684,11 +1744,17 @@ if HAVE_QT:
                 self._vals = self.entity.values()
                 self._x = self.entity.x_values()
                 self._y = self.entity.y_values()
-                self._rheads = (getattr(self.entity, "row_labels", None) or
-                                _view6.row_headers(self.entity, self._y))
-                self._cx, self._cy = self._cmp_axes()
+                self._rheads = self._row_labels(self.entity, self._y)
+                self._sync_compare()
                 self._recompute_heat()
-                self._ndiff = None
+                coff = self._want_coff()
+                if coff != self._coff:
+                    # the Y band comes or goes: the grid's shape changes
+                    self.beginResetModel()
+                    self._coff = coff
+                    self.endResetModel()
+                    self._rev = getattr(self.session, "revision", None)
+                    return
                 # Values and headers change, never the shape: a repaint of
                 # the grid, not the relayout layoutChanged asks the view for.
                 nr, nc = self.rowCount(), self.columnCount()
@@ -5372,6 +5438,13 @@ if HAVE_QT:
                         where = ("[%d]" % (r * e.cols + c) if run
                                  else "[%d,%d]" % (r, c))
                         first = "%s %s → %s" % (where, _fmt(a), _fmt(b))
+            axes = _axis_changes(e, cp)
+            if axes:
+                ax, i, a, b = axes[0]
+                note = "%s axis[%d] %s → %s" % (ax.upper(), i, _fmt(a), _fmt(b))
+                if len(axes) > 1:
+                    note += " (+%d more axis point(s))" % (len(axes) - 1)
+                first = "%s; %s" % (first, note) if first else note
             return n, first
 
         def _open(self, row, _col):
@@ -5464,6 +5537,8 @@ if HAVE_QT:
                 self._check_item(self.tbl, i, 0, e.selected)
                 ch = ("structure differs" if e.changed_cells is None
                      else "%d/%d" % (e.changed_cells, e.total_cells))
+                if getattr(e, "changed_axes", 0):
+                    ch += " + %d axis" % e.changed_axes
                 for j, txt in enumerate(
                        (e.title(), ch, e.first_change, e.source_grade), start=1):
                     self.tbl.setItem(i, j, QtWidgets.QTableWidgetItem(txt))
@@ -6340,6 +6415,8 @@ if HAVE_QT:
             self._zoom = _gz.install(
                 self.table, "table",
                 after=lambda _f: self.table.resizeColumnsToContents())
+            from . import gui_cellkeys as _gck      # cell keys (Edit > Cells)
+            _gck.attach(self)
 
             self.title = QtWidgets.QLabel("Select a parameter")
             self.title.setStyleSheet("font-weight: bold;")
@@ -7038,7 +7115,10 @@ if HAVE_QT:
                 if cp is None:
                     continue
                 if _same_extent(e, cp):
-                    if bytes(pdata[e.addr:e.end]) != bytes(cdata[cp.addr:cp.end]):
+                    # the axes sit outside [addr, end): a map whose only edit
+                    # is its breakpoints differs too
+                    if (bytes(pdata[e.addr:e.end]) != bytes(cdata[cp.addr:cp.end])
+                            or _axis_changes(e, cp)):
                         changed.add(id(e))
                 elif _cells_differ(e, cp):
                     changed.add(id(e))
@@ -10211,6 +10291,8 @@ if HAVE_QT:
             self.copy_tab_menu.aboutToShow.connect(
                 lambda: self.fill_copy_from_menu(self.copy_tab_menu))
             self._needs_file.append(self.copy_tab_menu.menuAction())
+            from . import gui_cellkeys as _gck      # Edit > Cells (keyboard)
+            _gck.add_menu(self, e)
             e.addSeparator()
             self.diff_act = self._act(e, "Show differences...",
                                       self._on_ws("show_differences"),

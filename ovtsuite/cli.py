@@ -507,6 +507,8 @@ def cmd_patch_inspect(args):
     for e in pt.entries:
         ch = ("structure differs" if e.changed_cells is None
               else "%d/%d cells" % (e.changed_cells, e.total_cells))
+        if getattr(e, "changed_axes", 0):
+            ch += " + %d axis point(s)" % e.changed_axes
         print("  [%s] %-34s %-8s %-16s (%s)  %s"
               % ("x" if e.selected else " ", e.name, e.kind, ch,
                  e.source_grade, e.first_change))
