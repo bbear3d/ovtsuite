@@ -222,6 +222,13 @@ the current file and code: format version, platform, image length,
 `mask_digest` (the image minus parameter cells and axis breakpoints, so
 calibration edits don't invalidate it). Any mismatch falls back to the
 normal build; `session.defn_state` says `used`, `none`, or the reason.
+`code_digest` covers only what builds a model: `defn.MODEL_VERSION`,
+the base files in `defn.MODEL_FILES`, and the platform's module (id,
+version, source). The app version and the rest of the app are left out,
+so a release that does not touch model building keeps stored definitions
+valid; a frozen build (no source) relies on `MODEL_VERSION` and the module
+version alone. Bump `MODEL_VERSION` when model-building semantics change
+(`tests/test_defn.py` records the `MODEL_FILES` hash to prompt it).
 Cost: EDC15 files are roughly twice the raw image size. Inspect with
 `ovtsuite container-info FILE`.
 
