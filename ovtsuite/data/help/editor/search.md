@@ -11,7 +11,10 @@ for a **byte pattern** inside one table. Picking a result opens that table
 and highlights the cells that matched.
 
 Open it with **Edit > Find...** (Ctrl+F). It appears along the bottom of the
-main window, and one panel serves every tab.
+main window, and one panel serves every tab. The toolbar's Find button (the
+magnifying glass) shows the panel and hides it again: it stays pressed while
+the panel is open. Ctrl+F and **Edit > Find...** always open the panel and put
+the cursor in the query, open already or not.
 
 ![The Find panel with a text search](../images/main-find.png)
 
@@ -61,8 +64,9 @@ binary — **File**. At most 2000 results are listed; the count then shows a
 `+`.
 
 The panel is an ordinary dockable panel: drag its title bar to move it or
-float it as a window, and close it with its **×** or Esc. Closing it keeps
-the query, options and results; Ctrl+F brings them back.
+float it as a window, and close it with its **×**, Esc or the toolbar's Find
+button. Closing it keeps the query, options and results; Ctrl+F brings them
+back.
 
 ## Search types
 

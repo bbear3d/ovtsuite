@@ -46,6 +46,7 @@ FOR_ACTION = {
     "edit/undo": "undo-2",
     "edit/redo": "redo-2",
     "edit/find": "search",
+    "edit/find-panel": "search",
     "edit/find-in-definition": "file-search",
     "edit/scale-selection": "percent",
     "edit/copy-cells": "copy",
