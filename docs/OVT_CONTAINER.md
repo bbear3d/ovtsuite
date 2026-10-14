@@ -375,7 +375,13 @@ Qt). Help page: `ovtsuite/data/help/projects.md`.
   A tab edits its branch through an ordinary `TunerSession` opened from a
   *working file* -- the state written as the platform's native container
   (with the branch's definition cache, so it opens fast) or a plain `.bin` --
-  so every editor and tool works unchanged.
+  so every editor and tool works unchanged. The cache is the branch's own,
+  else a sibling branch's that `defn.usable` accepts for the image
+  (`sessionbridge.definition_for`); a fork copies its source's, and a save
+  that produced no snapshot clears the branch's. A set stored as `unknown`
+  is identified again (`sessionbridge.set_platform`); a platform with a
+  native container is adopted in memory (`Project.adopt_platform`, not
+  marking the project modified) and written with the next save.
 * **Opening**: the tabs the project had open last time on this computer
   (QSettings, keyed by the project's `id`), or every set on its active branch
   the first time. Anything else opens from the Project panel or File > Open

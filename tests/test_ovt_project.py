@@ -727,3 +727,55 @@ def test_the_working_file_definition_skips_a_rejected_one(monkeypatch):
     # none usable: its own goes in, and the session says why it was not used
     monkeypatch.setattr(D, "usable", lambda *a: "built by different code")
     assert sb.definition_for(p, s.id, stock.id, state) == b"own"
+
+
+def _unknown_set(tmp_path):
+    from ovtsuite.project import importers
+    p = ovt.Project("bench")
+    flash = _rand(0x8000, 7)
+    s = importers.import_bytes(p, flash, "mystery.bin")
+    assert s.platform == "unknown" and s.members[0].role == "raw"
+    p.save(str(tmp_path / "b.ovt"))
+    return p, s, flash
+
+
+def test_a_set_stored_as_unknown_is_identified_again(tmp_path, monkeypatch):
+    """A set imported before the base app could identify it opens as its
+    platform's container now (so it can carry a definition cache), without
+    marking the project modified."""
+    from ovtsuite.platforms import identify as I
+    from ovtsuite.project import sessionbridge as sb
+    p, s, flash = _unknown_set(tmp_path)
+    monkeypatch.setattr(I, "identify",
+                        lambda data, **k: I.Identity("edc16", "structure"))
+    p.set_cache(s.id, s.active.id, b"DEFN")
+    state = p.head_state(s.id)
+    ext, blob = sb.working_file(p, s.id, state,
+                                defn=sb.definition_for(p, s.id, s.active.id,
+                                                       state))
+    assert ext == ".edc16"
+    cont = _c.Container.from_bytes(blob)
+    assert cont.external() == flash and cont.get(_c.BLOCK_DEFN).data == b"DEFN"
+    assert s.platform == "edc16" and s.kind == "ecu"
+    m = s.members[0]
+    assert m.role == "flash" and m.platform == "edc16" and m.endian == "big"
+    assert not p.modified_since_save
+    # what the session saves comes back to the same member
+    path = str(tmp_path / ("w" + ext))
+    with open(path, "wb") as fh:
+        fh.write(blob)
+    images, defn = sb.read_back(p, s.id, path)
+    assert images == {m.id: flash} and defn == b"DEFN"
+    assert [x.id for x in s.members] == [m.id]
+    # written with the next save
+    q = ovt.Project.from_bytes(p.to_bytes())
+    assert q.set(s.id).platform == "edc16"
+
+
+def test_a_set_still_unknown_stays_a_plain_image(tmp_path):
+    from ovtsuite.project import sessionbridge as sb
+    p, s, flash = _unknown_set(tmp_path)
+    ext, blob = sb.working_file(p, s.id, p.head_state(s.id))
+    assert (ext, blob) == (".bin", flash)
+    assert s.platform == "unknown" and s.members[0].role == "raw"
+    assert not p.modified_since_save
