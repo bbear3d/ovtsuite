@@ -96,7 +96,24 @@ def register(win) -> Dict[str, QtGui.QAction]:
         menu = top.menu()
         if menu is not None:
             walk(menu, slug(top.text()) + "/", [label(top)])
+    for aid, a, path in win.__dict__.get("extra_actions", ()):
+        if id(a) in taken or not shiboken6.isValid(a):
+            continue
+        ids[aid] = a
+        taken.add(id(a))
+        if a not in win.actions():
+            win.addAction(a)
+        a.setObjectName(aid)
+        paths[aid] = path
+        _defaults(win).setdefault(aid, a.shortcut().toString())
     return ids
+
+
+def add_extra(win, aid: str, action: QtGui.QAction, path: str) -> None:
+    """An action in no menu that the toolbar (and the Options pages) can
+    still offer -- the Find panel's on/off button. ``path`` is where it is
+    listed: ``"Edit ▸ Find panel"``."""
+    win.__dict__.setdefault("extra_actions", []).append((aid, action, path))
 
 
 def _defaults(win) -> Dict[str, str]:

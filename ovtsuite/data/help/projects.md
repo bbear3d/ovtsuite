@@ -195,8 +195,11 @@ its strip.
 - **Expand** it again with **View > Project panel**, by clicking the strip,
   or with **Keep open** at the top of the opened panel.
 
-It can also be docked on the right, or floated in a window of its own. It
-remembers whether it was collapsed and how wide it was.
+The panel appears when the first project opens and is never closed: it is
+either expanded, collapsed to its strip, or open over the window from the
+strip. Drag its title bar to the other side of the window to dock it on the
+right (or back on the left). It remembers whether it was collapsed and how
+wide it was.
 
 Right-click an item for what can be done with it:
 

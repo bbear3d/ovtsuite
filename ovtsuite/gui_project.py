@@ -2151,13 +2151,10 @@ def show_panel(win, focus=False):
 
 
 def toggle_panel(win):
-    """View > Project panel (and its toolbar button): hidden or collapsed to
-    its strip -> shown expanded, to stay (and given the keyboard); expanded
-    -> collapsed to the strip again. Floating -> closed."""
+    """View > Project panel (and its toolbar button): collapsed to its strip
+    (or not shown yet) -> expanded, to stay (and given the keyboard);
+    expanded -> collapsed to the strip again. The panel is never closed."""
     dock = panel(win)
-    if dock.isVisible() and dock.isFloating():
-        dock.hide()
-        return
     if dock.isVisible() and not dock.is_collapsed():
         dock.collapse()
         return

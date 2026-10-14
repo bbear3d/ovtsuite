@@ -16,12 +16,18 @@ remembers them between sessions.
 
 ## Reading a tab
 
+The current tab stands out from the rest: its label is **bold**, its
+background is the window's, and a thick bar of its colour runs along its
+top. The other tabs have only a thin line of their colour and slightly
+dimmed labels.
+
 A tab's label shows:
 
 - a badge for the kind of unit — **ECU**, **TCU**, **HVAC**, **CLU**
-  (cluster) or **BIN** (a binary no module recognised) — and a tint to match:
-  engine ECUs blue, gearboxes amber, orange or red, Climatronic green, clusters
-  purple, unrecognised binaries grey;
+  (cluster) or **BIN** (a binary no module recognised) — and a colour to
+  match, as a line along the tab's top: engine ECUs blue, gearboxes amber,
+  orange or red, Climatronic green, clusters purple, unrecognised binaries
+  grey;
 - the project, set and branch (*A6 ▸ ECU · Stage 1*), with `*` when it has
   unsaved changes;
 - `↔` and the comparison's name, shortened in the middle when it is long —

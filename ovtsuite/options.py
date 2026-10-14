@@ -124,7 +124,8 @@ PAGES: List[str] = list(dict.fromkeys(o.page for o in OPTIONS))
 #: the toolbar's buttons until the user changes them
 DEFAULT_TOOLBAR = [
     "file/new-project", "file/open-project", "file/open-recent", "file/save",
-    "|", "edit/undo", "edit/redo", "|", "edit/find", "edit/show-differences",
+    "|", "edit/undo", "edit/redo", "|", "edit/find-panel",
+    "edit/show-differences",
     "edit/version-history", "|", "tools/ecu-read-write", "tools/data-logging",
     "|", "view/project-panel", "tools/ai/assistant", "tools/options",
 ]
@@ -207,7 +208,36 @@ def toolbar() -> List[str]:
         items = None
     if not isinstance(items, list):
         return list(DEFAULT_TOOLBAR)
-    return [str(x) for x in items]
+    return _migrate_toolbar([str(x) for x in items])
+
+
+#: the key naming the toolbar changes already made to a saved toolbar
+TOOLBAR_MIGRATED_KEY = "toolbar/migrated"
+#: ``(name, old id, new id)``: a saved toolbar's button that became another
+#: one -- done once, so the old button can be put back afterwards
+_TOOLBAR_RENAMES = (
+    # the Find button shows / hides the panel (Edit > Find still opens it)
+    ("find-panel", "edit/find", "edit/find-panel"),
+)
+
+
+def _migrate_toolbar(items: List[str]) -> List[str]:
+    s = _store()
+    try:
+        raw = str(s.value(TOOLBAR_MIGRATED_KEY) or "")
+    except Exception:
+        return items
+    done = {x for x in raw.split(",") if x}     # (``set`` is ours, here)
+    todo = [r for r in _TOOLBAR_RENAMES if r[0] not in done]
+    if not todo:
+        return items
+    for name, old, new in todo:
+        items = [new if x == old and new not in items else x for x in items]
+        done.add(name)
+    s.setValue(TOOLBAR_MIGRATED_KEY, ",".join(sorted(done)))
+    s.setValue(TOOLBAR_KEY, json.dumps(items))
+    s.sync()
+    return items
 
 
 def set_toolbar(ids: List[str]) -> None:
@@ -215,6 +245,9 @@ def set_toolbar(ids: List[str]) -> None:
     if ids == toolbar():
         return
     s = _store()
+    # (chosen now: no older toolbar's buttons to change)
+    s.setValue(TOOLBAR_MIGRATED_KEY,
+               ",".join(sorted(r[0] for r in _TOOLBAR_RENAMES)))
     if ids == DEFAULT_TOOLBAR:
         s.remove(TOOLBAR_KEY)
     else:

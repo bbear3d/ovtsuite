@@ -184,3 +184,52 @@ def test_the_project_panel_button_expands_and_collapses(win):
     assert not dock.is_collapsed() and not dock.is_flown_out()
     act.trigger()
     assert dock.is_collapsed()
+
+def test_the_find_button_toggles_and_ctrl_f_opens(win, app):
+    """The toolbar's Find button shows and hides the Find panel, pressed
+    while it is shown; Edit > Find (Ctrl+F) only ever opens it."""
+    ids = _ids(win)
+    btn, find = ids["edit/find-panel"], ids["edit/find"]
+    assert btn is not find and btn.isCheckable() and not find.isCheckable()
+    assert btn in _toolbar_ids_actions(win)
+    assert not btn.icon().isNull()
+    dock = win.search_dock
+    assert not dock.isVisible() and not btn.isChecked()
+    btn.trigger()
+    app.processEvents()
+    assert dock.isVisible() and btn.isChecked()
+    find.trigger()                                  # stays open
+    app.processEvents()
+    assert dock.isVisible() and btn.isChecked()
+    btn.trigger()
+    app.processEvents()
+    assert not dock.isVisible() and not btn.isChecked()
+    find.trigger()
+    app.processEvents()
+    assert dock.isVisible() and btn.isChecked()
+    dock.hide()                                     # Escape, the close button
+    app.processEvents()
+    assert not btn.isChecked()
+    # tabbed with another dock and behind it: the button raises it
+    other = QtWidgets.QDockWidget("Other", win)
+    win.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, other)
+    btn.trigger()
+    win.tabifyDockWidget(dock, other)
+    other.show()
+    other.raise_()
+    app.processEvents()
+    assert not dock.isHidden() and not btn.isChecked()
+    btn.trigger()
+    app.processEvents()
+    assert btn.isChecked() and other.visibleRegion().isEmpty()
+    btn.trigger()
+    app.processEvents()
+    assert dock.isHidden() and not btn.isChecked()
+    # listed for the toolbar editor, with its icon
+    from ovtsuite import gui_actions
+    assert "edit/find-panel" in dict(gui_actions.by_menu(win))["Edit"]
+
+
+def _toolbar_ids_actions(w):
+    from ovtsuite import gui_toolbar
+    return gui_toolbar.toolbar(w).actions()
