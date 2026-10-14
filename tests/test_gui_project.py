@@ -513,6 +513,89 @@ def test_an_edited_and_saved_tab_reopens_from_its_stored_definition(G, win, car)
     assert ecu.primary.defn_state == "used", ecu.primary.defn_state
 
 
+def _until(cond, secs=60):
+    import time
+    end = time.monotonic() + secs
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        QtWidgets.QApplication.processEvents()
+        time.sleep(0.01)
+
+
+def _info_on_disk(path):
+    return ovt.Project.load(path).info
+
+
+def test_a_rebuilt_definition_goes_into_the_file_alone(G, win, car,
+                                                       monkeypatch):
+    """Rebuilt snapshots are written into the .ovt soon after the tabs open,
+    by themselves: the project's other unsaved change stays unsaved, and the
+    next save is not taken for a file changed by another program."""
+    from ovtsuite import gui_defncache as dc
+    from ovtsuite import gui_disksync as dsg
+    from ovtsuite import gui_project as gp
+    monkeypatch.setattr(gp, "DEFN_IDLE_MS", 0)
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    assert doc.project.set_info({"make": "VW"})     # unsaved, the project's
+    tabs = _project_tabs(win)
+    _until(lambda: all(t.primary.defn_state == "used" for t in tabs)
+           and not dc.running(doc) and "_defn_timer" not in doc.__dict__)
+    p = ovt.Project.load(car)
+    assert all(p.cache(t.project_ref.sid, t.project_ref.bid) for t in tabs)
+    assert "make" not in p.info
+    assert doc.project.modified_since_save          # still offered on close
+    assert [e.doc for e in gp.unsaved_entries(win)] == [doc]
+    assert not doc.__dict__.get("_cache_dirty")
+    monkeypatch.setattr(dsg, "resolve",
+                        lambda *a: pytest.fail("taken as changed on disk"))
+    assert gp.save_selection(win, doc, [])
+    assert _info_on_disk(car)["make"] == "VW"
+    assert not doc.project.modified_since_save
+
+
+def test_closing_keeps_a_rebuilt_definition_whatever_else_is_unsaved(
+        G, win, car, monkeypatch):
+    """Close the binary, or take the tab away without it going into the
+    history: the snapshot is kept and written, the project's other
+    unsaved change is not."""
+    from ovtsuite import gui_defncache as dc
+    from ovtsuite import gui_project as gp
+    monkeypatch.setattr(gp, "DEFN_IDLE_MS", 1 << 30)   # not while idle
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    doc.project.set_info({"make": "VW"})
+    ecu, tcu = sorted(_project_tabs(win), key=lambda t: t.project_ref.set.name)
+    refs = [(t.project_ref.sid, t.project_ref.bid) for t in (ecu, tcu)]
+    assert ecu.primary.defn_state != "used"
+    ecu.close_primary()
+    dc.finish(doc)
+    p = ovt.Project.load(car)
+    assert p.cache(*refs[0]) and not p.cache(*refs[1])
+    win._remove_workspace(tcu, remember=False)     # the project's last tab
+    assert doc not in gp.docs(win)
+    dc.finish(doc)
+    p = ovt.Project.load(car)
+    assert p.cache(*refs[0]) and p.cache(*refs[1])
+    assert "make" not in p.info
+
+
+def test_dont_save_still_writes_the_rebuilt_definitions(G, win, car,
+                                                        monkeypatch):
+    from ovtsuite import gui_defncache as dc
+    from ovtsuite import gui_project as gp
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    doc.project.set_info({"make": "VW"})
+    refs = [(t.project_ref.sid, t.project_ref.bid) for t in _project_tabs(win)]
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(
+        lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Discard))
+    assert gp.close_project(win, doc)
+    dc.finish(doc)
+    p = ovt.Project.load(car)
+    assert all(p.cache(*r) for r in refs) and "make" not in p.info
+
+
 def test_versions_merge_from_the_history_dialog_and_the_panel(G, win, car,
                                                                monkeypatch):
     from ovtsuite import gui_project as gp
