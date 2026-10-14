@@ -57,6 +57,8 @@
 ; OVT Tools / Flasher installs (tool_installer.iss); they use a module's checksum
 #define ToolsGuid   "{F8C48995-BA97-43C5-AF25-531EE44B3A17}"
 #define FlasherGuid "{E1DD9158-B43B-4FBB-B7C2-E286F8C7ED5B}"
+; = branding.APP_MUTEX (and tools.iss): every running copy of the app holds it
+#define AppMutex "OVTSuiteAppRunning"
 
 #if Variant == "checksum"
   #define ProductName AppName + " " + ModuleName + " module (checksum only)"
@@ -85,6 +87,12 @@ Compression={#SetupCompression}
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=ovtsuite.ico
+; Authenticode: build.ps1 -CodeSign passes /DSignTool=ovtsign and the
+; /Sovtsign=... signtool command line; setup.exe and its uninstaller are signed.
+#ifdef SignTool
+SignTool={#SignTool}
+SignedUninstaller=yes
+#endif
 PrivilegesRequiredOverridesAllowed=dialog
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -92,6 +100,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; the module folder is replaced whole: a file a newer version dropped must not
 ; linger, and the app refuses a module whose files do not match its manifest
 DirExistsWarning=no
+; the app reads a module's files while it runs: wait until every copy has
+; closed (the in-app updater runs this installer after the app has quit)
+AppMutex={#AppMutex}
+CloseApplications=yes
+RestartApplications=no
 ; A closed-source module's licence agreement (ovtsuite\modules\EULA.txt, which
 ; the build puts in the package as <id>\EULA.txt): build.ps1 passes its path,
 ; and the wizard asks the user to accept it. Open-source modules have none.

@@ -76,6 +76,9 @@ OPTIONS: Tuple[Option, ...] = (
            minimum=1, maximum=50),
     Option("tabs/closed_max", 15, "Closed projects kept in File > Restore "
            "project from history", GENERAL, "int", minimum=1, maximum=100),
+    Option("updates/check_at_startup", True, "Check for updates at start-up",
+           GENERAL, help="At most once a day, a few seconds after the app "
+           "starts. Help > Check for Updates checks at any time."),
     # -- Projects and saving -------------------------------------------------
     Option("projects/autosave_s", 60, "Keep unsaved work for crash recovery "
            "every", PROJECTS, "int",
