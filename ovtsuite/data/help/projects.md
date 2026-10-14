@@ -210,7 +210,10 @@ Right-click an item for what can be done with it:
 - **Branch** -- open it, make it the active branch (the one a first open
   shows), rename, **New branch from here**, delete (its history stays).
 - **Version** -- compare with it, **Revert the branch to this version** (adds
-  a new version; nothing is lost), **New branch from this version**.
+  a new version; nothing is lost), **New branch from this version**,
+  **Rename...** (or select it and press **F2**; leave the name empty to give
+  it back its automatic name). The new name shows in **Version history** too,
+  and a name given or cleared there shows here.
 - **Log** -- **Open in Data logging**, **Export...**, **Pin** / **Unpin**,
   **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
 - **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,

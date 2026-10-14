@@ -626,6 +626,25 @@ def after_history_dialog(ws):
         refresh_panel(ws.win)
 
 
+def rename_version(win, doc, sid, cid, name) -> None:
+    """Name checkpoint ``cid`` of set ``sid`` ("" gives it back its automatic
+    name); every open tab of the set -- its Version history, and a
+    comparison against that version -- sees the new name."""
+    tabs = [t for t in doc.tabs(win) if t.project_ref.sid == sid]
+    for t in tabs:
+        after_history_dialog(t)             # names typed in the dialog first
+    doc.project.set_checkpoint_label(sid, cid, name)
+    c = doc.project.set(sid).checkpoint(cid)
+    for t in tabs:
+        _resync_log(t)
+        ver = getattr(t.comparison, "version_of", None) \
+            if t.comparison is not None else None
+        if isinstance(ver, dict) and ver.get("id") == cid:
+            ver["label"] = c.label or c.kind
+        win._workspace_changed(t)
+    refresh_panel(win)
+
+
 def merge_versions(win, doc, sid, cids, label="") -> str:
     """Merge adjacent saved versions of set ``sid`` into one
     (``Project.merge_checkpoints``); every open tab of the set sees the new
@@ -2270,6 +2289,9 @@ class ProjectPanel(AutoHideDock):
         self.tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
         self.tree.itemDoubleClicked.connect(self._double)
+        f2 = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2), self.tree)
+        f2.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        f2.activated.connect(self._f2)
         self.set_body(self.tree)
         self.setMinimumWidth(self.minimum_body_width())
 
@@ -2510,6 +2532,9 @@ class ProjectPanel(AutoHideDock):
                         lambda: self._revert(d, sid, bid, cid))
             m.addAction("New branch from this version...",
                         lambda: self._new_branch(d, sid, cid))
+            m.addSeparator()
+            rn = m.addAction("Rename...", lambda: self._rename_version(d, sid, cid))
+            rn.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2))
         elif kind in ("logs", "patches", "attachments"):
             m.addAction("Add %s..." % _ATT_ITEM[kind],
                         lambda: self._add_att(d, kind))
@@ -2575,6 +2600,29 @@ class ProjectPanel(AutoHideDock):
             self, "Rename", "Name:", text=s.name)
         if ok and name.strip():
             self._do(d, lambda: d.project.rename_set(sid, name.strip()))
+
+    def _f2(self):
+        """F2: rename the selected version (or set, or branch)."""
+        item = self.tree.currentItem()
+        data = item.data(0, _ROLE) if item is not None else None
+        if not data:
+            return
+        if data[0] == "ck":
+            self._rename_version(data[1], data[2], data[4])
+        elif data[0] == "set":
+            self._rename_set(data[1], data[2])
+        elif data[0] == "branch":
+            self._rename_branch(data[1], data[2], data[3])
+
+    def _rename_version(self, d, sid, cid):
+        c = d.project.set(sid).checkpoint(cid)
+        if c is None:
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Rename version",
+            "Name (leave it empty for the automatic name):", text=c.label)
+        if ok:
+            rename_version(self.win, d, sid, cid, name)
 
     def _rename_branch(self, d, sid, bid):
         b = d.project.set(sid).branch(bid)

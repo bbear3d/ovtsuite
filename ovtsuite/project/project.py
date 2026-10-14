@@ -360,6 +360,7 @@ class Project:
         newest.extra.setdefault("ts_from", chain[0].ts)
         if label:
             newest.label = label
+            newest.extra.pop("auto_label", None)    # the merge's own name
         for c in inner:
             s.checkpoints.remove(c)
             self._blobs.pop(self._delta_path(s.id, c.id), None)
@@ -369,13 +370,29 @@ class Project:
         return newest
 
     def set_checkpoint_label(self, sid: str, cid: str, label: str) -> None:
-        """Name a checkpoint (its content never changes; its name may)."""
+        """Name a checkpoint (its content never changes; its name may). ""
+        gives it back its automatic label -- the one it was made with
+        (kept in ``extra["auto_label"]`` while it has a name of the user's)."""
         c = self.set(sid).checkpoint(cid)
         if c is None:
             raise KeyError(cid)
-        if label and label != c.label:
+        label = (label or "").strip()
+        auto = c.extra.get("auto_label", c.label)
+        if not label or label == auto:
+            changed = "auto_label" in c.extra or c.label != auto
+            c.extra.pop("auto_label", None)
+            label = auto
+        else:
+            changed = label != c.label
+            c.extra.setdefault("auto_label", c.label)
+        if changed:
             c.label = label
             self._touch()
+
+    @staticmethod
+    def checkpoint_renamed(c) -> bool:
+        """True when checkpoint ``c`` carries a name the user gave it."""
+        return "auto_label" in (c.extra or {})
 
     def delta_records(self, sid: str, cid: str):
         """The decoded delta of checkpoint ``cid`` (None for a root, or one
