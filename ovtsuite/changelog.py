@@ -104,25 +104,28 @@ def retire_sidecar(path: str) -> None:
         pass                            # best effort: a leftover .log is harmless
 
 
-def rewrite(path: str, text: str) -> None:
+def rewrite(path: str, text: str, durable: bool = True) -> None:
     """Replace the saved log text of the file at ``path`` (renaming or
     merging checkpoints). For a container only its log block changes -- the
     file's other blocks are carried over byte for byte from disk, never
-    from an editor's unsaved state -- and the write is atomic."""
+    from an editor's unsaved state -- and the write is atomic.
+    ``durable=False``: a scratch file (a project tab's working file) --
+    written uncompressed and not flushed to the platter."""
     if embeds(path):
         c = _c.Container.load(path)
         c.add(_c.BLOCK_LOG, block_bytes(text))
-        _atomic_write(path, c.to_bytes())
+        _atomic_write(path, c.to_bytes(compress=durable), durable)
         retire_sidecar(path)
         return
-    _atomic_write(sidecar_path(path), text.encode("utf-8"))
+    _atomic_write(sidecar_path(path), text.encode("utf-8"), durable)
 
 
-def _atomic_write(path: str, data: bytes) -> None:
+def _atomic_write(path: str, data: bytes, durable: bool = True) -> None:
     tmp = os.path.join(os.path.dirname(os.path.abspath(path)) or ".",
                        ".%s.tmp" % os.path.basename(path))
     with open(tmp, "wb") as fh:
         fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
+        if durable:
+            fh.flush()
+            os.fsync(fh.fileno())
     os.replace(tmp, path)

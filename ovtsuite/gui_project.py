@@ -37,6 +37,7 @@ from typing import List, Optional, Tuple
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import branding
+from . import gui_saving as _sv
 from .appsettings import settings as _settings
 from .gui_autohide import AutoHideDock
 from .project import Project, is_project
@@ -559,7 +560,8 @@ def _commit(ws, label="") -> bool:
     proj = ref.doc.project
     head = ref.branch.head
     ws._sync_eeprom_to_primary()
-    ws.primary.save(ref.workfile)
+    # a scratch file read straight back: no compression, fsync or .bak
+    ws.primary.save(ref.workfile, durable=False)
     images, defn = _sb.read_back(proj, ref.sid, ref.workfile)
     lines, named, renames = _sb.read_log(proj, ref.sid, head,
                                         _cl.read_text(ref.workfile))
@@ -602,7 +604,7 @@ def _resync_log(ws):
     ref = ws.project_ref
     try:
         _cl.rewrite(ref.workfile, _sb.history_text(
-            ref.doc.project, ref.sid, ref.branch.head))
+            ref.doc.project, ref.sid, ref.branch.head), durable=False)
     except Exception:
         pass
 
@@ -739,8 +741,7 @@ def save(ws, tab_only=False, path=None, only=None) -> bool:
         doc.saver.saved()
     for t in tabs:
         t._after_save()
-        win._workspace_changed(t)
-    for t in doc.tabs(win):
+    for t in doc.tabs(win):             # (the saved ones among them)
         win._workspace_changed(t)
     remember(win, doc)
     refresh_panel(win)
@@ -806,7 +807,9 @@ def save_as_project(ws) -> bool:
             s = _imp.import_bytes(proj, data, os.path.basename(work),
                                   sidecar_log=log)
         _apply_info(proj, info)
-        proj.save(path)
+        job = proj.prepare_save(path)
+        _sv.run(win, job.run)               # the window waits, painting
+        job.finish()
     except Exception as ex:
         ws._save_failed(path, ex)
         return False
@@ -1368,10 +1371,22 @@ def keep_definition(ws) -> bool:
     if getattr(s, "defn_state", "") == "used":
         return False                    # it came from the stored one
     try:
+        import zlib
         from . import defn as _defn
-        blob = _defn.build(s, bytes(s.binfile.data))
+        data = bytes(s.binfile.data)
         proj = ref.doc.project
-        if not blob or blob == proj.cache(ref.sid, ref.bid):
+        have = proj.cache(ref.sid, ref.bid)
+        # built from these very bytes before, and it was the stored one:
+        # building it again (every save, every exit) gives the same again
+        key = (ref.sid, ref.bid, s.revision, len(data), zlib.crc32(data))
+        memo = getattr(s, "_ovt_defn_memo", None)
+        if have is not None and memo is not None and memo[0] == key \
+                and memo[1] is have:
+            return False
+        blob = _defn.build(s, data)
+        if blob and blob == have:
+            s._ovt_defn_memo = (key, have)
+        if not blob or blob == have:
             return False
         proj.set_cache(ref.sid, ref.bid, blob)
     except Exception:
@@ -1393,7 +1408,9 @@ def write_definitions(win, doc) -> bool:
     try:
         # refused (DiskChanged) when another program changed the file: the
         # definitions are only a cache, nothing is asked -- they are skipped
-        doc.project.save(doc.path)
+        job = doc.project.prepare_save(doc.path)
+        _sv.run(win, job.run)
+        job.finish()
     except Exception:
         return False
     doc.__dict__["_cache_dirty"] = False
@@ -1516,6 +1533,8 @@ def shutdown(win):
 def autosave(win, doc=None) -> None:
     """Snapshot unsaved work of every open project (or one), in the
     background, without any checksum correction."""
+    if _sv.saving(win):
+        return                          # the next tick, once it is written
     for d in ([doc] if doc is not None else list(docs(win))):
         tabs = d.tabs(win)
         token = tuple((t.project_ref.sid, t.project_ref.bid,

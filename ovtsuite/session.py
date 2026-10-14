@@ -1170,7 +1170,7 @@ class TunerSession:
 
     def save(self, path: Optional[str] = None, fix_checksum: bool = True,
              backup: bool = True, write_log: bool = True,
-             label: str = "") -> str:
+             label: str = "", durable: bool = True) -> str:
         """Write the image, atomically.
 
         A tune is hours of work and the only copy is usually the file being
@@ -1186,6 +1186,10 @@ class TunerSession:
         backup is a courtesy, not a precondition, so it never fails the save.
         Saving over an existing native container (.edc16 / .edc15 / .6hp /
         .hvac) makes none: its version history is inside the file.
+
+        ``durable=False`` is for a scratch file the app reads straight back
+        (a project tab's working file): a native container is written
+        uncompressed, with no flush to the platter and no ``.bak``.
         """
         import os as _os
         out = path or self.path
@@ -1257,7 +1261,8 @@ class TunerSession:
             # log and the definition ride along, refreshed from any in-place
             # edits. A session that came from a plain file becomes a
             # container the first time it is saved under one of these names.
-            data = self._native_bytes(out, data, write_log)
+            data = self._native_bytes(out, data, write_log,
+                                      compress=durable)
             log_inside = True
         elif self._hvac is not None and self.platform == "hvac" and out.lower().endswith(".sgo"):
             # Climatronic: route the repack through hvac_image so (a) the flat
@@ -1295,8 +1300,11 @@ class TunerSession:
         tmp = _os.path.join(directory, ".%s.tmp" % _os.path.basename(out))
         with open(tmp, "wb") as fh:
             fh.write(data)
-            fh.flush()
-            _os.fsync(fh.fileno())
+            if durable:
+                fh.flush()
+                _os.fsync(fh.fileno())
+        if not durable:
+            backup = False
         if backup and log_inside and _os.path.exists(out):
             # A native container already keeps its own version history with
             # every save, so it needs no .bak -- but only when what is being
@@ -1368,7 +1376,7 @@ class TunerSession:
                                             or fmt).ext.lstrip(".")))
         return None
 
-    def _native_bytes(self, out, data, write_log):
+    def _native_bytes(self, out, data, write_log, compress=True):
         """The bytes of this session as the native container ``out`` names."""
         fmt = _cont.format_for_ext(out)
         why = self.save_refusal(out)
@@ -1434,7 +1442,7 @@ class TunerSession:
             text += _cl.format_entry(self.change_log, os.path.basename(out))
         if text:
             c.add(_cont.BLOCK_LOG, _cl.block_bytes(text))
-        return c.to_bytes()
+        return c.to_bytes(compress=compress)
 
     def sibling(self, data: bytes, name: Optional[str] = None,
                 verify: bool = False) -> "TunerSession":
