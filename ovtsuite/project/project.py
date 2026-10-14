@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import threading
 from collections import deque
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -80,6 +81,9 @@ class Project:
         self._dirty = False
         #: the file as it was when loaded / last saved (:mod:`.disksync`)
         self._disk: Optional[_ds.DiskState] = None
+        #: held while the file is written (a save, or :mod:`.cachewrite`
+        #: writing definition caches on another thread)
+        self._io_lock = threading.RLock()
         #: bumped on every structural change (crash recovery uses it to
         #: decide when the project itself needs re-snapshotting)
         self.revision = 0
@@ -1046,11 +1050,12 @@ class SaveJob:
         p = self.project
         data = _ar.write(self.manifest, self.blobs, sign_key=self.sign_key,
                          signer=self.signer, cache=p._zcache)
-        if not self.force:
-            _ds.check(p, self.path)        # as late as possible before writing
-        _ar.atomic_write(self.path, data)
-        self._done = _ds.DiskState.after_write(self.path, data, self.manifest,
-                                               self.blobs)
+        with p._io_lock:
+            if not self.force:
+                _ds.check(p, self.path)    # as late as possible before writing
+            _ar.atomic_write(self.path, data)
+            self._done = _ds.DiskState.after_write(self.path, data,
+                                                   self.manifest, self.blobs)
 
     def finish(self) -> str:
         """Record the save in the project (its owning thread)."""
