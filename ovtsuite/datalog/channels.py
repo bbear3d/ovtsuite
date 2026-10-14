@@ -14,6 +14,7 @@ the ECU's own signal identities instead of label files.
 from typing import Dict, List, Optional, Tuple
 
 from .logfile import Channel
+from ..signal_names import english_units
 
 
 class ChannelNamer:
@@ -76,7 +77,8 @@ class ChannelNamer:
             return ("Group %d / Cell %d (signal %d)" % (group, field + 1, sid), "", "")
         human = info.human or info.name
         label = "%s (%s)" % (human, info.name) if info.human else info.name
-        return (label, info.name, info.unit or "")
+        # some catalogs still carry the definition's German unit ("mg/Hub")
+        return (label, info.name, english_units(info.unit or ""))
 
     def channel(self, group: int, field: int) -> Channel:
         label, signal, unit = self.resolve(group, field)

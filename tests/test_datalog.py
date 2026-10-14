@@ -426,7 +426,7 @@ def test_edc15_kw1281_groups_and_faults():
     assert s.connect() == 9600
     assert "038906012A" in s.identity
     g = s.read_group(1)
-    assert [c.text for c in g] == ["800 rpm", "50.0 mg/h", "12.0 V", "90.0 °C"]
+    assert [c.text for c in g] == ["800 rpm", "50.0 mg/stroke", "12.0 V", "90.0 °C"]
     assert s.read_group(5) is None
     codes = s.read_dtcs()
     assert [(c.code, c.status) for c in codes] == [(17664, 0x23)]
@@ -489,3 +489,17 @@ def test_channel_namer_without_binary():
     n = ChannelNamer(None)
     assert not n.available
     assert n.channel(7, 2).title == "Group 7 / Cell 3"
+
+
+def test_quantity_per_stroke_is_not_per_hour():
+    """VAG's "mg/H" (formulas 39, 49, 51) is per Hub -- per stroke. The table
+    once said "mg/h", which read as milligrams per hour; logs written then
+    read back per stroke."""
+    from ovtsuite.flash.diag import decode_cell
+    from ovtsuite.datalog.logfile import split_value_unit
+    for f in (39, 49, 51):
+        assert decode_cell(f, 10, 140)[1] == "mg/stroke", f
+    assert decode_cell(35, 10, 140)[1] == "l/h"          # really per hour
+    assert split_value_unit("3.4 mg/h") == (3.4, "mg/stroke")
+    assert split_value_unit("2.1 l/h") == (2.1, "l/h")
+

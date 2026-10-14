@@ -9,7 +9,7 @@ Native layout is KWHack's, so logs move between the two tools unchanged::
 
     # Cells: 1.1,1.2,11.1
     Timestamp,Engine speed (Eng_nAvrg),Injected quantity (InjCtl_qSetUnBal),...
-    2026-09-06 14:03:11.250,812 rpm,3.4 mg/h,...
+    2026-09-06 14:03:11.250,812 rpm,3.4 mg/stroke,...
 
 The marker line lists the logged cells as ``group.field`` (field 1-based), the
 header carries the display labels and every row is a wall-clock stamp plus
@@ -145,9 +145,16 @@ def split_value_unit(text: str):
     if not m:
         return None, ""
     try:
-        return float(m.group(1)), m.group(2)
+        v = float(m.group(1))
     except ValueError:
         return None, ""
+    # Logs written before the formula table was corrected say "mg/h" for a
+    # quantity per stroke (VAG's "mg/H", H = Hub); no measuring-block formula
+    # gives milligrams per hour.
+    return v, _LEGACY_UNITS.get(m.group(2), m.group(2))
+
+
+_LEGACY_UNITS = {"mg/h": "mg/stroke"}
 
 
 # ------------------------------------------------------------ KWHack layout
