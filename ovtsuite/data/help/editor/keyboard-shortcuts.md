@@ -36,6 +36,22 @@ defaults: any menu item's shortcut can be changed, added or removed in
 | Ctrl+C | **Edit > Copy cells** |
 | Ctrl+V | **Edit > Paste cells** |
 
+### Edit > Cells
+
+They act on the selected map cells while the table has the focus, each as one
+undo step.
+
+| Keys | Action |
+|---|---|
+| Alt+Up / Alt+Down | **Step up** / **Step down** -- by the map's own step |
+| Alt+Shift+Up / Alt+Shift+Down | **Step up x10** / **Step down x10** |
+| Alt+PgUp / Alt+PgDn | **Increase 1%** / **Decrease 1%** |
+| Ctrl+Shift+L | **Interpolate selection** -- along a row, down a column, or a block from its four corners, by the selection's shape |
+| Ctrl+Shift+M | **Smooth selection** (one 3x3 pass) |
+| Ctrl+R | **Copy from comparison** |
+| Ctrl+Shift+R | **Revert to as-read values** -- the project's original read (the file as opened, outside a project) |
+| | **Set step for this map...** -- the step Alt+Up / Alt+Down use for this map, remembered per map. Unset, it is one raw step: the smallest change the map can hold. |
+
 ## View
 
 | Keys | Action |
@@ -74,10 +90,15 @@ defaults: any menu item's shortcut can be changed, added or removed in
 | Arrow keys | Move between cells. |
 | Shift+arrow keys | Extend the selection. |
 | Ctrl+A | Select the whole grid. |
+| Ctrl+arrow keys | Jump to the edge of the data, as in Excel: to the end of a run of values, or across blank cells to the next value. The axes, the map and the comparison are separate regions. |
+| Ctrl+Shift+arrow keys | Extend the selection to the edge of the data. |
 | Typing a value | Replaces the current cell's value. |
 | F2 | Edit the current cell's value. |
 | Enter | Keep the value typed. |
+| Ctrl+Enter (while editing) | Keep the value typed and write it into every selected cell. |
+| Left at the start / Right at the end of the text (while editing) | Keep the value and move to the cell on the left / right. |
 | Esc | Leave the cell as it was. |
+| = | A sum for every selected cell, typed in a box at the cell: `+5`, `-5`, `*1.05`, `/2`, `=120`, `+3%`, or an expression in `x`, the cell's value (`x*1.1+2`). Enter applies it, Esc cancels. Values are as shown (in a ZF converted view, engine rpm or road speed). |
 | Ctrl+3 | **3D surface** |
 | Enter in the **Modify selection** box | **Apply** |
 
