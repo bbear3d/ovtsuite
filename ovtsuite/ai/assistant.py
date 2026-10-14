@@ -32,12 +32,15 @@ from typing import Callable, Deque, List, Optional
 from . import config as _cfg
 from . import keystore as _keys
 from . import redact as _redact
-from .providers import (AUTH, OFFLINE, SERVER, SPECS, HttpClient, Provider, ProviderError,
-                        Usage, detect_local, make)
+from .providers import (AUTH, BAD, OFFLINE, SERVER, SPECS, HttpClient, Provider,
+                        ProviderError, Usage, detect_local, make)
 from .tools import Context, Registry, default_registry, to_text
 
 #: the last requests sent to any AI service, newest last ("what was sent")
 SENT: Deque[dict] = collections.deque(maxlen=60)
+#: ... and no more than this much of them: every request of a chat carries the
+#: whole conversation so far, so a long chat's requests add up fast
+SENT_MAX_BYTES = 32 << 20
 _SENT_LOCK = threading.Lock()
 
 
@@ -45,11 +48,25 @@ def _log_sent(service: str, rec: dict) -> None:
     rec = dict(rec, service=service)
     with _SENT_LOCK:
         SENT.append(rec)
+        total = sum(int(r.get("size") or 0) for r in SENT)
+        while len(SENT) > 1 and total > SENT_MAX_BYTES:
+            total -= int(SENT.popleft().get("size") or 0)
 
 
 def sent_log() -> List[dict]:
     with _SENT_LOCK:
         return list(SENT)
+
+
+def strip_replay(messages: List[dict]) -> None:
+    """Drop the services' own replay data (``raw``: thinking blocks and their
+    signatures, Gemini thought signatures) from every answer: the
+    conversation then goes out rebuilt from its text and tool calls, which
+    any service accepts."""
+    for m in messages:
+        if m.get("role") == "assistant":
+            m.pop("raw", None)
+            m.pop("raw_kind", None)
 
 
 class NotConfigured(Exception):
@@ -134,6 +151,10 @@ class Assistant:
         self._provider = provider
         self._service = service or (provider.spec.id if provider else None)
         self.cancelled = threading.Event()
+        #: the conversation was reopened from a saved chat (see .chats): a
+        #: refused request is tried once more without the services' own
+        #: replay data (``raw``), which an app update may have made stale
+        self.restored = False
         #: how a tool runs -- the panel routes tab tools to the GUI thread
         self.call_tool = call_tool or (lambda name, args: self.registry.call(
             name, self.ctx, args))
@@ -148,6 +169,7 @@ class Assistant:
                 self._service = choose_service(self.cfg)
             self._provider = make_provider(self._service, self.cfg,
                                            on_send=self._on_send(self._service))
+            self._wire(self._provider)
         if not self._provider.model:
             models = self._provider.list_models()
             if not models:
@@ -165,6 +187,25 @@ class Assistant:
 
     def _on_send(self, service):
         return lambda rec: _log_sent(service, rec)
+
+    def _wire(self, p) -> None:
+        """Stop reaches the provider's connection (see :meth:`stop`)."""
+        http = getattr(p, "http", None)
+        if http is not None and hasattr(http, "cancel"):
+            http.cancel = self.cancelled
+
+    def stop(self) -> None:
+        """Any thread: stop the answer in progress -- a reply being streamed
+        ends now (its connection is closed), a tool already running is let
+        finish, and nothing further is asked."""
+        self.cancelled.set()
+        p = self._provider
+        abort = getattr(getattr(p, "http", None), "abort", None)
+        if abort is not None:
+            try:
+                abort()
+            except Exception:
+                pass
 
     @property
     def redacting(self) -> bool:
@@ -209,6 +250,7 @@ class Assistant:
                                   (models[0] if models else ""),
                                   base_url=_cfg.base_url_for(self.cfg, sid),
                                   http=HttpClient(timeout=180, on_send=self._on_send(sid)))
+            self._wire(self._provider)
             # the unanswered question was already appended: drop it and retry
             while self.messages and self.messages[-1]["role"] != "user":
                 self.messages.pop()
@@ -232,6 +274,8 @@ class Assistant:
             shown = []
 
             def on_text(piece):
+                if self.cancelled.is_set():        # Stop: no more of this reply
+                    raise ProviderError("cancelled", "stopped")
                 shown.append(piece)
                 self._emit("delta", piece)
             try:
@@ -239,6 +283,16 @@ class Assistant:
                                   max_tokens=int(self.cfg.get("max_tokens", 4096)),
                                   on_text=on_text if stream else None)
             except ProviderError as ex:
+                if self.cancelled.is_set():
+                    raise ProviderError("cancelled", "stopped")
+                if ex.kind == BAD and self.restored and not shown:
+                    # a reopened chat refused: carry on from its plain text
+                    self.restored = False
+                    strip_replay(self.messages)
+                    self._emit("notice", "The service would not accept this reopened chat "
+                                         "as it was saved; it continues from the text of "
+                                         "the earlier answers.")
+                    continue
                 if ex.kind != SERVER or ex.status not in self.TRANSIENT or shown or not waits:
                     raise
                 wait = waits.pop(0)

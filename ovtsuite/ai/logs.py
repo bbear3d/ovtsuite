@@ -14,14 +14,72 @@ which is what a question about one pull or one shift needs.
 
 from __future__ import annotations
 
+import collections
+import hashlib
 import os
 import tempfile
+import threading
 from typing import List, Optional, Sequence
 
 from .describe import num
 from .tools import ToolError
 
 MAX_WINDOW_ROWS = 200
+#: parsed logs kept: log_summary then a few log_window calls read the same
+#: log, and parsing a long CSV is the slow part
+CACHE_SIZE = 4
+_CACHE: "collections.OrderedDict" = collections.OrderedDict()
+_CACHE_LOCK = threading.Lock()
+
+
+def _cached(key, load):
+    with _CACHE_LOCK:
+        log = _CACHE.get(key)
+        if log is not None:
+            _CACHE.move_to_end(key)
+            return log
+    log = load()                       # outside the lock: two threads may both parse
+    with _CACHE_LOCK:
+        _CACHE[key] = log
+        _CACHE.move_to_end(key)
+        while len(_CACHE) > CACHE_SIZE:
+            _CACHE.popitem(last=False)
+    return log
+
+
+def clear_cache() -> None:
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+def load_path_cached(path: str):
+    """:func:`load_path`, parsed once per file version (size + mtime)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return load_path(path)                      # its own error message
+    return _cached(("path", os.path.normcase(os.path.abspath(path)),
+                    st.st_size, st.st_mtime_ns), lambda: load_path(path))
+
+
+def load_bytes_cached(data: bytes, filename: str, att_id: str = ""):
+    """:func:`load_bytes`, parsed once per attachment and content."""
+    key = ("bytes", att_id, filename, len(data),
+           hashlib.blake2b(data, digest_size=16).digest())
+    return _cached(key, lambda: load_bytes(data, filename))
+
+
+def summary_cached(log, name: str = "") -> dict:
+    """:func:`summary`, worked out once per parsed log (a copy each time)."""
+    import copy
+    memo = getattr(log, "_ai_summary", None)
+    if memo is None or memo[0] != name:
+        memo = (name, summary(log, name))
+        try:
+            log._ai_summary = memo
+        except AttributeError:
+            pass
+    return copy.deepcopy(memo[1])
 
 
 def load_path(path: str):

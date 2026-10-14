@@ -34,8 +34,12 @@ class TabTarget:
     def __init__(self, handle: str, ws):
         self.handle = handle
         self._ws = weakref.ref(ws)
-        self._index = None
-        self._index_key = None
+        #: (key, Index): one attribute, so another thread swaps it whole
+        self._index_pair = None
+        #: the comparison's pairing for diff / changed_only (see pairs())
+        self._pairs = None
+        self._cps = None
+        self._search = None
         self.notes: List[str] = []
 
     @property
@@ -102,13 +106,77 @@ class TabTarget:
             return "saved version %s" % (ver.get("label") or ver.get("id", ""))
         return getattr(c.binfile, "name", "") or "comparison"
 
+    def _index_key(self, s):
+        return (id(s), id(s.entities), len(s.entities))
+
     @property
     def index(self) -> Index:
         s = self.session
-        key = (id(s), len(s.entities))
-        if self._index is None or self._index_key != key:
-            self._index, self._index_key = Index(s), key
-        return self._index
+        key = self._index_key(s)
+        pair = self._index_pair
+        if pair is None or pair[0] != key:
+            pair = self._index_pair = (key, Index(s))
+        return pair[1]
+
+    def index_snapshot(self):
+        """GUI thread: ``(index, entities, make)``. ``index`` is the current
+        index or None; then ``make()`` builds it on any thread from
+        ``entities`` (taken now) and keeps it."""
+        s = self.session
+        key = self._index_key(s)
+        pair = self._index_pair
+        if pair is not None and pair[0] == key:
+            return pair[1], pair[1].ordered, None
+        from .describe import all_entities
+        ents = all_entities(s)
+
+        def make():
+            idx = Index(s, ents)
+            self._index_pair = (key, idx)
+            return idx
+        return None, ents, make
+
+    def _paired(self, slot, cmp, ents, pair):
+        s = self.session
+        key = (id(s), id(cmp), id(s.entities), id(cmp.entities), len(s.entities),
+               len(cmp.entities), len(ents))
+        hit = getattr(self, slot)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        out = []
+        for e in ents:
+            try:
+                cp = pair(e)
+            except Exception:
+                cp = None
+            out.append((e, cp))
+        setattr(self, slot, (key, out))
+        return out
+
+    def pairs(self, cmp):
+        """GUI thread: ``[(comparison entity, its counterpart here or None)]``
+        -- what ``diff`` compares. The pairing follows the definitions, not
+        the values, so it is kept until either side's parameters change."""
+        return self._paired("_pairs", cmp, list(cmp.entities),
+                            lambda e: cmp.counterpart(self.session, e))
+
+    def counterparts(self, cmp, ents):
+        """GUI thread: ``[(e, its counterpart in the comparison or None)]``
+        for this session's ``ents`` (``list_maps changed_only``)."""
+        return self._paired("_cps", cmp, ents, lambda e: self.session.counterpart(cmp, e))
+
+    def search_source(self):
+        """GUI thread: a stand-in session for the search engine -- the entity
+        lists, taken now -- kept per tab so the engine's index of it is
+        reused while the parameters stay the same."""
+        from .describe import all_entities
+        s = self.session
+        if self._search is None or self._search.of is not s:
+            self._search = _Entities(s)
+        ents = all_entities(s)
+        self._search.entities = ents[:len(s.entities)]
+        self._search.variants = ents[len(s.entities):]
+        return self._search
 
     def counterpart(self, e):
         cmp = self.comparison
@@ -148,6 +216,18 @@ class TabTarget:
             d["set"] = r.set.name
             d["branch"] = r.branch.name
         return d
+
+
+class _Entities:
+    """What :class:`~ovtsuite.search.SearchEngine` reads of a session."""
+
+    def __init__(self, session):
+        self.of = session
+        self.entities = []
+        self.variants = []
+
+    def variant_entities(self):
+        return self.variants
 
 
 class LiveWorkspace:

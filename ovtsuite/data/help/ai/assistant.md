@@ -40,9 +40,15 @@ Ask the way you would ask a person who knows the car and the app:
 
 The answer appears as it is written. While the AI works, the line above
 **Send** says what it is doing (*Reading FlMng_qPresSmoke_MAP...*,
-*Searching help for flashing...*). **Stop** ends the answer after the current step; **New chat**
-starts over with an empty conversation (the AI forgets the earlier
-questions, so start a new chat when you change subject).
+*Searching help for flashing...*). **New chat** starts over with an empty
+conversation (the AI forgets the earlier questions, so start a new chat when
+you change subject).
+
+**Stop** ends the answer at once: text being written stops where it is (what
+has arrived stays in the panel) and nothing more is asked of the service. A
+look-up the AI has already started — reading a map, comparing the file — is
+let finish first; these run beside the window, so it stays responsive and
+you can keep working while the AI reads.
 
 ### Include
 

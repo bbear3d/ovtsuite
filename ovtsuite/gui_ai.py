@@ -43,6 +43,9 @@ except Exception:                                   # pragma: no cover
 #: QSettings key: share open tabs with AI apps (opt-in)
 SHARE_KEY = "ai/share_tabs"
 POLL_MS = 2000
+#: the inbox is watched (QFileSystemWatcher); a full look this often anyway,
+#: for file systems that do not report changes
+FALLBACK_POLL_S = 30
 
 if HAVE_QT:
     from .ai import proposals as P
@@ -106,10 +109,23 @@ if HAVE_QT:
             btn.clicked.connect(self.open_proposals)
             btn.hide()
             win.statusBar().addPermanentWidget(btn)
+            # the button's "working" line ages on this; the inbox itself is
+            # watched, and only looked through when it changes
             self.timer = QtCore.QTimer(self)
             self.timer.setInterval(POLL_MS)
-            self.timer.timeout.connect(self.poll)
+            self.timer.timeout.connect(self._tick)
             self.timer.start()
+            self._last_full = 0.0
+            self._recount = QtCore.QTimer(self)
+            self._recount.setSingleShot(True)
+            self._recount.setInterval(250)        # a burst of changes: one look
+            self._recount.timeout.connect(self.poll)
+            self.watcher = None
+            try:
+                self.watcher = QtCore.QFileSystemWatcher([P.inbox_dir()], self)
+                self.watcher.directoryChanged.connect(lambda *_: self._recount.start())
+            except Exception:
+                self.watcher = None
             app = QtWidgets.QApplication.instance()
             if app is not None:
                 app.aboutToQuit.connect(self.stop_bridge)
@@ -189,7 +205,15 @@ if HAVE_QT:
                         break
             return out
 
+        def _tick(self):
+            now = time.time()
+            if self.watcher is None or now - self._last_full >= FALLBACK_POLL_S:
+                self.poll()
+            else:
+                self._update_button()
+
         def poll(self):
+            self._last_full = time.time()
             try:
                 st = P.stamp()
             except Exception:
@@ -1316,10 +1340,33 @@ if HAVE_QT:
             if self.entries:
                 self.list.setCurrentRow(0)
 
+        #: entries bigger than this are formatted on a worker thread
+        BIG = 256 << 10
+        #: and shown no further than this (the rest is cut, with a note)
+        SHOW_MAX = 4 << 20
+
         def _show(self, i):
-            if 0 <= i < len(self.entries):
-                self.body.setPlainText(json.dumps(self.entries[i], indent=2,
-                                                  ensure_ascii=False, default=str))
+            if not 0 <= i < len(self.entries):
+                return
+            e = self.entries[i]
+            self._want = i
+
+            def fmt():
+                t = json.dumps(e, indent=2, ensure_ascii=False, default=str)
+                if len(t) > self.SHOW_MAX:
+                    t = t[:self.SHOW_MAX] + "\n\n... (%s more characters not shown)" % (
+                        "{:,}".format(len(t) - self.SHOW_MAX))
+                return t
+            if int(e.get("size") or 0) < self.BIG:
+                self.body.setPlainText(fmt())
+                return
+            self.body.setPlainText("Formatting a large request (%s bytes)..."
+                                   % "{:,}".format(int(e.get("size") or 0)))
+
+            def done(text, err, i=i):
+                if getattr(self, "_want", None) == i:
+                    self.body.setPlainText(text if err is None else "Could not show it: %s" % err)
+            _Job(self, fmt, done)
 
     def _path(url: str) -> str:
         try:
@@ -1370,6 +1417,8 @@ if HAVE_QT:
                    "propose_change": "Writing a proposal:", "checksum_status": "Checking checksums of"}
 
     PANEL_KEY = "ai/panel_"
+    #: at most this often (ms) the reply being written is redrawn
+    RENDER_MS = 250
     PANEL_WIDTH, PANEL_MIN, RAIL_WIDTH = 380, 260, 26
 
     class _Rail(QtWidgets.QWidget):
@@ -1571,6 +1620,7 @@ if HAVE_QT:
             self.setMinimumWidth(PANEL_MIN)
             self.setMaximumWidth(16777215)
             self._width = w
+            self.refresh_context()
             self.win.resizeDocks([self], [w], QtCore.Qt.Orientation.Horizontal)
             # once more after the layout has settled (the first may be clipped
             # while the rail's fixed width is still in force)
@@ -1634,12 +1684,20 @@ if HAVE_QT:
                 self._settings_pending = True
                 return
             self._settings_pending = False
+            self._config(fresh=True)
             if self.assistant is not None:
                 self.assistant.use_settings()
             self._update_status()
 
+        def _config(self, fresh=False):
+            """The AI settings, read from disk once and again only when they
+            were saved (settings_changed) or a question is asked."""
+            if fresh or getattr(self, "_cfg", None) is None:
+                self._cfg = _C.load()
+            return self._cfg
+
         def _update_status(self):
-            cfg = _C.load()
+            cfg = self._config()
             if not cfg.get("enabled"):
                 self.banner.setText("The assistant is off. Turn it on, and choose a service, "
                                     "in <a href='#'>AI settings</a>. A model on this PC "
@@ -1659,27 +1717,36 @@ if HAVE_QT:
             self.status.setText("%s%s" % (svc, " · %s tokens this chat" % "{:,}".format(self.tokens)
                                           if self.tokens else ""))
 
+        def _context_tick(self):
+            """The timer's look at what the user has selected: only while the
+            panel is open (folded or hidden it shows nothing of it)."""
+            if self.isVisible() and not self.collapsed and self.job is None:
+                self.refresh_context()
+
         def refresh_context(self):
             ws = self.win.current
             e = None
             if ws is not None and getattr(ws, "primary", None) is not None:
-                self.use_tab.setText("this tab (%s)" % _short(ws.tab_label() if hasattr(ws, "tab_label")
-                                                             else ws.primary.binfile.name, 40))
-                self.use_tab.setEnabled(True)
+                tab = ("this tab (%s)" % _short(ws.tab_label() if hasattr(ws, "tab_label")
+                                                else ws.primary.binfile.name, 40), True)
                 try:
                     e = ws._current_entity() or (ws.model.entity if hasattr(ws, "model") else None)
                 except Exception:
                     e = None
             else:
-                self.use_tab.setText("this tab (none open)")
-                self.use_tab.setEnabled(False)
+                tab = ("this tab (none open)", False)
             if e is not None:
-                from .ai.describe import title as _title
-                self.use_map.setText("the selected parameter (%s)" % _short(_title(e), 40))
-                self.use_map.setEnabled(True)
+                if getattr(self, "_ctx_entity", (None,))[0] is not e:
+                    from .ai.describe import title as _title
+                    self._ctx_entity = (e, _title(e))     # the title costs a lookup
+                mp = ("the selected parameter (%s)" % _short(self._ctx_entity[1], 40), True)
             else:
-                self.use_map.setText("the selected parameter (none)")
-                self.use_map.setEnabled(False)
+                mp = ("the selected parameter (none)", False)
+            for box, (text, on) in ((self.use_tab, tab), (self.use_map, mp)):
+                if box.text() != text:                     # no relayout when unchanged
+                    box.setText(text)
+                if box.isEnabled() != on:
+                    box.setEnabled(on)
 
         def _context_text(self) -> str:
             ws = self.win.current
@@ -1717,17 +1784,21 @@ if HAVE_QT:
 
         def _make_assistant(self):
             from .ai.assistant import Assistant
-            from .ai.bridge import GUI_TOOLS
+            from .ai.bridge import GUI_TOOLS, split_tool
             lw = self._workspace()
             a = Assistant(lw, cfg=_C.load())
             runner = self.st.runner
 
             def call(name, args):
+                if name not in GUI_TOOLS and split_tool(name):
+                    # a snapshot of the tab on the GUI thread, the work here
+                    return a.registry.call(name, a.ctx, args)
                 if name in GUI_TOOLS or (name != "open_file" and lw.is_tab(args.get("handle", ""))):
                     return runner(lambda: a.registry.call(name, a.ctx, args))
                 return a.registry.call(name, a.ctx, args)
             a.call_tool = call
             a.ctx.client = "assistant"
+            a.ctx.on_gui = runner
             return a
 
         # -- asking ----------------------------------------------------------------------
@@ -1735,7 +1806,7 @@ if HAVE_QT:
             question = (question or "").strip()
             if not question or self.job is not None:
                 return
-            cfg = _C.load()
+            cfg = self._config(fresh=True)
             if not cfg.get("enabled"):
                 self._update_status()
                 self.banner.show()
@@ -1772,11 +1843,12 @@ if HAVE_QT:
                     self.chat[-1] = ("ai_live", self.chat[-1][1] + ev.text)
                 else:
                     self.chat.append(("ai_live", ev.text))
-                self._activity = "Writing..."
-                self.activity.setText(self._activity)
+                if self._activity != "Writing...":
+                    self._activity = "Writing..."
+                    self.activity.setText(self._activity)
                 if not getattr(self, "_render_due", False):
-                    self._render_due = True       # at most ~12 redraws a second
-                    QtCore.QTimer.singleShot(80, self._render_now)
+                    self._render_due = True       # at most 4 redraws a second
+                    QtCore.QTimer.singleShot(RENDER_MS, self._render_now)
                 return
             if self.chat and self.chat[-1][0] == "ai_live" and ev.kind in ("tool", "text"):
                 # the streamed text of a turn that goes on to use tools stays
@@ -1853,8 +1925,8 @@ if HAVE_QT:
 
         def _stop(self):
             if self.assistant is not None:
-                self.assistant.cancelled.set()
-            self._activity = "Stopping after the current step..."
+                self.assistant.stop()             # a reply being written ends now
+            self._activity = "Stopping..."
             self.activity.setText(self._activity)
 
         def _act(self, what, pid):
@@ -1898,49 +1970,100 @@ if HAVE_QT:
             self._update_status()
 
         # -- showing -----------------------------------------------------------------------
-        def _render(self):
+        def _parts(self):
+            """The transcript as ``[(text, live)]``, one per block shown:
+            Markdown, or -- ``live`` -- the reply being written, as plain text
+            (it is shown as Markdown once it is done)."""
             parts = []
             maps = []
             for kind, text in self.chat:
                 if kind != "map" and maps:
-                    parts.append("Parameters: " + " · ".join(maps))
+                    parts.append(("Parameters: " + " · ".join(maps), False))
                     maps = []
                 if kind == "you":
-                    parts.append("**You:** " + _md_escape(text))
-                elif kind in ("ai", "ai_partial", "ai_live"):
-                    parts.append(text)
+                    parts.append(("**You:** " + _md_escape(text), False))
+                elif kind == "ai_live":
+                    parts.append((text, True))
+                elif kind in ("ai", "ai_partial"):
+                    parts.append((text, False))
                 elif kind == "map":
                     h, mid, title = text
                     maps.append("[%s](%s:%s/%s)" % (_md_escape(title or mid), MAP_SCHEME,
                                                      _q(h, safe=""), _q(mid, safe="")))
                 elif kind == "proposal":
                     title, pid = text
-                    parts.append("**Proposal:** %s  \n[Preview](%s:prev/%s) · [Accept](%s:acc/%s)"
-                                 " · [Reject](%s:rej/%s) · [Review...](%s:%s)" % (
-                                     _md_escape(title), ACT_SCHEME, pid, ACT_SCHEME, pid,
-                                     ACT_SCHEME, pid, PROP_SCHEME, pid))
+                    parts.append(("**Proposal:** %s  \n[Preview](%s:prev/%s) · [Accept](%s:acc/%s)"
+                                  " · [Reject](%s:rej/%s) · [Review...](%s:%s)" % (
+                                      _md_escape(title), ACT_SCHEME, pid, ACT_SCHEME, pid,
+                                      ACT_SCHEME, pid, PROP_SCHEME, pid), False))
                 elif kind == "plan":
                     title, n, first, last = text
-                    parts.append("**Plan:** %s (%d step%s)  \n[Preview result](%s:prev/%s) · "
-                                 "[Accept plan](%s:accplan/%s) · [Reject plan](%s:rejplan/%s) · "
-                                 "[Review steps...](%s:%s)" % (
-                                     _md_escape(title), n, "" if n == 1 else "s",
-                                     ACT_SCHEME, last, ACT_SCHEME, last, ACT_SCHEME, last,
-                                     PROP_SCHEME, first))
+                    parts.append(("**Plan:** %s (%d step%s)  \n[Preview result](%s:prev/%s) · "
+                                  "[Accept plan](%s:accplan/%s) · [Reject plan](%s:rejplan/%s) · "
+                                  "[Review steps...](%s:%s)" % (
+                                      _md_escape(title), n, "" if n == 1 else "s",
+                                      ACT_SCHEME, last, ACT_SCHEME, last, ACT_SCHEME, last,
+                                      PROP_SCHEME, first), False))
                 elif kind == "notice":
-                    parts.append("_%s_" % _md_escape(text))
+                    parts.append(("_%s_" % _md_escape(text), False))
                 elif kind == "error":
-                    parts.append("**Problem:** %s" % _md_escape(text))
+                    parts.append(("**Problem:** %s" % _md_escape(text), False))
             if maps:
-                parts.append("Parameters: " + " · ".join(maps))
+                parts.append(("Parameters: " + " · ".join(maps), False))
             if not parts:
-                parts.append("_Ask about the open calibration (\"what does this map do?\", "
-                             "\"what changed against the original?\", \"is the smoke limiter "
-                             "holding back fuel above 3000 rpm?\"), a data log, or how to do "
-                             "something in %s. Changes the assistant suggests wait in "
-                             "Tools > AI > Proposals for you._" % branding.APP_NAME)
-            self.view.setMarkdown("\n\n---\n\n".join(parts) if len(parts) > 1 else parts[0])
-            self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
+                parts.append(("_Ask about the open calibration (\"what does this map do?\", "
+                              "\"what changed against the original?\", \"is the smoke limiter "
+                              "holding back fuel above 3000 rpm?\"), a data log, or how to do "
+                              "something in %s. Changes the assistant suggests wait in "
+                              "Tools > AI > Proposals for you._" % branding.APP_NAME, False))
+            return parts
+
+        def _render(self, full=False):
+            """Bring the view up to date with the transcript. Only what
+            changed is redrawn: blocks already shown stay, the reply being
+            written is replaced as plain text, and the view follows the end
+            only when the user had not scrolled up."""
+            parts = self._parts()
+            shown = self.__dict__.setdefault("_shown", [])
+            pos = self.__dict__.setdefault("_pos", [])
+            k = 0
+            if not full:
+                n = min(len(parts), len(shown))
+                while k < n and parts[k] == shown[k]:
+                    k += 1
+                if k == len(parts) == len(shown):
+                    return
+            sb = self.view.verticalScrollBar()
+            at_end = sb.value() >= sb.maximum() - 4
+            doc = self.view.document()
+            cur = QtGui.QTextCursor(doc)
+            if k == 0:
+                doc.clear()
+            elif k < len(shown):
+                cur.setPosition(pos[k])
+                cur.movePosition(QtGui.QTextCursor.MoveOperation.End,
+                                 QtGui.QTextCursor.MoveMode.KeepAnchor)
+                cur.removeSelectedText()
+            del shown[k:], pos[k:]
+            for text, live in parts[k:]:
+                cur.movePosition(QtGui.QTextCursor.MoveOperation.End)
+                pos.append(cur.position())
+                if shown:                       # a rule between blocks
+                    cur.insertBlock(QtGui.QTextBlockFormat(), QtGui.QTextCharFormat())
+                    rule = QtGui.QTextBlockFormat()
+                    rule.setProperty(QtGui.QTextFormat.Property.BlockTrailingHorizontalRulerWidth,
+                                     QtGui.QTextLength(QtGui.QTextLength.Type.PercentageLength, 100))
+                    cur.setBlockFormat(rule)
+                    cur.insertBlock(QtGui.QTextBlockFormat(), QtGui.QTextCharFormat())
+                if live:
+                    cur.insertText(text, QtGui.QTextCharFormat())
+                else:
+                    md = QtGui.QTextDocument()
+                    md.setMarkdown(text)
+                    cur.insertFragment(QtGui.QTextDocumentFragment(md))
+                shown.append((text, live))
+            if at_end:
+                sb.setValue(sb.maximum())
 
         def _render_now(self):
             self._render_due = False
@@ -1984,7 +2107,7 @@ if HAVE_QT:
         if getattr(st, "dock", None) is None:
             d = st.dock = AssistantDock(st)
             win.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, d)
-            st.timer.timeout.connect(d.refresh_context)
+            st.timer.timeout.connect(d._context_tick)
             cfg = _settings()
             width = int(cfg.value(PANEL_KEY + "width", PANEL_WIDTH) or PANEL_WIDTH)
             folded = _truthy(cfg.value(PANEL_KEY + "collapsed", True))
