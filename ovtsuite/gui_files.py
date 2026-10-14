@@ -110,6 +110,8 @@ def _info_on_open(win, ws=None) -> None:
     turned that off -- gui_fileinfo)."""
     ws = ws or win.current
     if ws is not None and ws.primary is not None:
+        if getattr(ws.primary, "support", "full") not in ("full", "definition"):
+            return      # what it is is explained instead (as adopt_primary)
         try:
             ws.show_file_info(loaded=True)
         except Exception:

@@ -1160,6 +1160,10 @@ def _open_new_doc(win, proj, ws=None):
     except Exception:
         pass
     show_panel(win)
+    if first is not None:
+        # project tab loads keep the file information quiet (load_into)
+        from . import gui_files as _gf
+        _gf._info_on_open(win, first)
     return first
 
 
@@ -1285,9 +1289,14 @@ def add_files(win, doc) -> bool:
         return False
     set_last_dir(paths[0])
     sets = _import_paths(win, doc.project, paths)
+    first = None
     for s in sets:
-        open_branch(win, doc, s.id, s.active.id)
+        t = open_branch(win, doc, s.id, s.active.id)
+        first = first or t
     refresh_panel(win)
+    if first is not None:
+        from . import gui_files as _gf
+        _gf._info_on_open(win, first)
     return bool(sets)
 
 
