@@ -85,3 +85,19 @@ def test_toolbar_and_shortcuts_round_trip_and_reset(tmp_path):
     assert opt.get("recent/max") == 5
     opt.set_shortcuts({"file/save": None})               # back to its default
     assert opt.shortcuts() == {"edit/undo": ""}
+
+
+def test_a_saved_toolbar_gets_the_find_panel_button_once():
+    s = opt._store()
+    s.setValue(opt.TOOLBAR_KEY, '["file/save", "edit/find"]')
+    s.sync()
+    assert opt.toolbar() == ["file/save", "edit/find-panel"]
+    assert opt.toolbar() == ["file/save", "edit/find-panel"]
+    opt.set_toolbar(["edit/find", "edit/find-panel"])    # chosen: kept
+    assert opt.toolbar() == ["edit/find", "edit/find-panel"]
+    assert "edit/find-panel" in opt.DEFAULT_TOOLBAR
+
+
+def test_a_toolbar_chosen_now_is_not_changed():
+    opt.set_toolbar(["edit/find"])
+    assert opt.toolbar() == ["edit/find"]

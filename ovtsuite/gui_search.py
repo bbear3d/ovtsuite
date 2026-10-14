@@ -1049,6 +1049,9 @@ if HAVE_QT:
             win.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea,
                               self)
             self.visibilityChanged.connect(self.panel.on_visibility)
+            self._on_screen = False
+            self.visibilityChanged.connect(
+                lambda v: setattr(self, "_on_screen", bool(v)))
             win.tabs.currentChanged.connect(
                 lambda _i: self.panel.on_tab_changed())
             self.hide()                 # opened with Ctrl+F
@@ -1058,6 +1061,37 @@ if HAVE_QT:
             self.show()
             self.raise_()
             self.panel.focus_query()
+
+        def showing(self) -> bool:
+            """On screen: shown, and not behind another dock tabbed with
+            it (``isVisible`` is still True there: Qt only says so with
+            ``visibilityChanged``)."""
+            return not self.isHidden() and self._on_screen
+
+        def toggle(self):
+            """The toolbar's Find button: open the panel, or close it when
+            it is already on screen (behind another tabbed dock: raise it)."""
+            if self.showing():
+                self.hide()
+            else:
+                self.open()
+
+        def toggle_action(self) -> QtGui.QAction:
+            """The toolbar's Find button (Edit > Find and Ctrl+F always
+            open): checkable, pressed while the panel is on screen."""
+            a = self.__dict__.get("_toggle_act")
+            if a is None:
+                a = QtGui.QAction("Find panel", self)
+                a.setCheckable(True)
+                a.setToolTip("Show or hide the Find panel")
+                # (triggered flips the check mark first: put it right, the
+                # visibility signal then keeps it in step)
+                a.triggered.connect(lambda _on: self.toggle())
+                a.triggered.connect(lambda _on: a.setChecked(self.showing()))
+                self.visibilityChanged.connect(a.setChecked)
+                a.setChecked(self.showing())
+                self.__dict__["_toggle_act"] = a
+            return a
 
         def step(self, delta):
             if not self.isVisible():

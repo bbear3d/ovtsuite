@@ -10111,6 +10111,11 @@ if HAVE_QT:
             self._act(e, "Redo", self._on_ws("redo"), "Ctrl+Y", needs_file=True)
             e.addSeparator()
             self._act(e, "Find...", self.search_dock.open, "Ctrl+F")
+            # the toolbar's Find button shows / hides the panel
+            from . import gui_actions
+            gui_actions.add_extra(self, "edit/find-panel",
+                                  self.search_dock.toggle_action(),
+                                  "Edit ▸ Find panel (show / hide)")
             self._act(e, "Find in definition...",
                       self.search_dock.open_in_definition, "Ctrl+Shift+F",
                       needs_file=True,
