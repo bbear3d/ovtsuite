@@ -720,3 +720,35 @@ def test_tabs_are_painted_between_arrows_at_both_ends(win):
     covered = sum(r.width() for r in reg)
     assert covered < bar.width() / 3
     assert not reg.contains(QtCore.QPoint(bar.width() // 2, bar.height() // 2))
+
+
+def test_the_current_tab_stands_out(G, app):
+    """The current tab: a bold label (with room for it) and a thick bar of
+    its colour; the others only a thin line of theirs."""
+    from PySide6 import QtGui
+    tabs = QtWidgets.QTabWidget()
+    tabs.setTabBar(G.TabBar())
+    tabs.setDocumentMode(True)
+    bar = tabs.tabBar()
+    for name, plat in (("one.bin", "edc16"), ("two.bin", "zf6hp")):
+        i = tabs.addTab(QtWidgets.QWidget(), name)
+        bar.setTabData(i, G.platform_badge(plat)[2])
+    tabs.setCurrentIndex(1)
+    tabs.resize(400, 80)
+    tabs.show()
+    app.processEvents()
+    bold = QtGui.QFont(bar.font())
+    bold.setBold(True)
+    need = QtGui.QFontMetrics(bold).horizontalAdvance("two.bin")
+    assert bar.tabSizeHint(1).width() >= need
+    img = bar.grab().toImage()
+
+    def coloured_rows(i):
+        r = bar.tabRect(i)
+        want = bar.tabData(i)
+        x = r.center().x()
+        return sum(1 for y in range(r.top(), r.top() + 8)
+                   if QtGui.QColor(img.pixel(x, y)) == want)
+    assert coloured_rows(1) >= G.TabBar.CURRENT_BAR
+    assert 0 < coloured_rows(0) < G.TabBar.CURRENT_BAR
+    tabs.close()

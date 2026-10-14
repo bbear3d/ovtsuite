@@ -22,6 +22,11 @@ main window with three ways to be:
 The title bar's button collapses; the strip's button (or a click anywhere on
 the strip) expands again. Whether the panel is collapsed and how wide it is
 are remembered.
+
+It is never closed or floated -- no close or float button, no entry in the
+window's right-click list of panels, and closing it (Alt+F4 on it, say)
+collapses it instead -- but its title bar can be dragged to the window's
+other side.
 """
 
 from __future__ import annotations
@@ -216,7 +221,12 @@ class AutoHideDock(QtWidgets.QDockWidget):
     def __init__(self, title: str, win):
         super().__init__(title, win)
         self.win = win
+        # docked at the left or right, never floating nor closed
+        self.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable)
         self.setAllowedAreas(_Area.LeftDockWidgetArea | _Area.RightDockWidgetArea)
+        # not in the window's right-click list of panels to close
+        self.toggleViewAction().setVisible(False)
         self._body = None
         self._collapsed = False
         self._sticky = False
@@ -231,7 +241,6 @@ class AutoHideDock(QtWidgets.QDockWidget):
         self._watch.timeout.connect(self._check_leave)
         self._away = QtCore.QElapsedTimer()
         self.dockLocationChanged.connect(self._area_changed)
-        self.topLevelChanged.connect(self._floating_changed)
         win.installEventFilter(self)
         QtWidgets.QApplication.instance().focusChanged.connect(self._focus_changed)
 
@@ -255,16 +264,6 @@ class AutoHideDock(QtWidgets.QDockWidget):
         lay.setSpacing(0)
         lab = QtWidgets.QLabel("<b>%s</b>" % self.windowTitle())
         lay.addWidget(lab, 1)
-
-        def tool(icon, tip, slot):
-            b = QtWidgets.QToolButton()
-            b.setAutoRaise(True)
-            b.setIcon(self.style().standardIcon(icon))
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            lay.addWidget(b)
-            return b
-        SP = QtWidgets.QStyle.StandardPixmap
         self._collapse_btn = QtWidgets.QToolButton()
         self._collapse_btn.setAutoRaise(True)
         self._collapse_btn.setToolTip(
@@ -272,11 +271,6 @@ class AutoHideDock(QtWidgets.QDockWidget):
             "the strip to see the panel)")
         self._collapse_btn.clicked.connect(self.collapse)
         lay.addWidget(self._collapse_btn)
-        self._float_btn = tool(SP.SP_TitleBarNormalButton,
-                               "Float the panel in its own window",
-                               lambda: self.setFloating(not self.isFloating()))
-        tool(SP.SP_TitleBarCloseButton, "Close the panel (View menu opens it "
-             "again)", self.close)
         self._sync_collapse_arrow()
         return bar
 
@@ -284,7 +278,6 @@ class AutoHideDock(QtWidgets.QDockWidget):
         left = self.area() != _Area.RightDockWidgetArea
         self._collapse_btn.setArrowType(QtCore.Qt.ArrowType.LeftArrow if left
                                         else QtCore.Qt.ArrowType.RightArrow)
-        self._collapse_btn.setVisible(not self.isFloating())
 
     # -- state ----------------------------------------------------------
     def area(self):
@@ -317,7 +310,7 @@ class AutoHideDock(QtWidgets.QDockWidget):
 
     # -- collapse / expand ---------------------------------------------
     def collapse(self, remember: bool = True):
-        if self._collapsed or self.isFloating() or self._body is None:
+        if self._collapsed or self._body is None:
             return
         if remember and self.isVisible() and self.width() > STRIP_WIDTH:
             self.remember_width(self.width())
@@ -430,10 +423,10 @@ class AutoHideDock(QtWidgets.QDockWidget):
         if self.flyout.isVisible():
             self.flyout.place()
 
-    def _floating_changed(self, floating):
-        if floating and self._collapsed:
-            self.expand()
-        self._sync_collapse_arrow()
+    def closeEvent(self, ev):
+        """Never closed: collapsed to its strip instead."""
+        ev.ignore()
+        self.collapse()
 
     def hideEvent(self, ev):
         self.fly_in()

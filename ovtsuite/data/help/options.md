@@ -58,7 +58,9 @@ and sniffer use them too (the theme, for example).
 The toolbar under the menus holds buttons for menu items. Each button is
 the menu item itself: it is greyed out, ticked and triggered exactly as the
 menu item is, and its tooltip names its shortcut. A button for a sub-menu,
-such as **Open Recent** or **Export**, drops that menu down.
+such as **Open Recent** or **Export**, drops that menu down. One button is
+not a menu item: **Find panel** (under Edit) shows and hides the Find panel,
+where **Edit > Find...** only opens it.
 
 - **Show the toolbar**, **Icon size** (small, medium, large) and **Buttons
   show** (icons only, or text beside or under the icon).
