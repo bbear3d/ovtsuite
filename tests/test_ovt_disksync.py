@@ -244,3 +244,109 @@ def test_a_definition_cache_only_we_have_is_kept_but_not_unsaved(car):
     res = _ds.merge(mine, ovt.Project.load(car))
     assert not res.differs and not res.project.modified_since_save
     assert res.project.cache(s.id, "Stage 1") == b"DEFN"
+
+
+# ------------------------------------------- definition caches on their own
+def test_a_rebuilt_cache_goes_into_the_file_without_the_other_edits(car):
+    from ovtsuite.project import cachewrite as _cw
+    mine = ovt.Project.load(car)
+    s = mine.set("ECU")
+    mine.set_info({"make": "VW"})                   # an unsaved edit
+    mine.add_log("run.csv", b"1,2")                 # and another
+    mine.set_cache(s.id, "Stage 1", b"DEFN-stage1")
+    before = ovt.Project.load(car)
+    job = _cw.prepare(mine)
+    assert job is not None and job.run() and job.outcome == "written"
+    q = ovt.Project.load(car)
+    assert q.cache(s.id, "Stage 1") == b"DEFN-stage1"
+    assert "make" not in q.info and not q.logs      # nothing else went in
+    assert q.modified == before.modified
+    assert q.manifest()["sets"] == before.manifest()["sets"]
+    # the other edits are still unsaved, and the next save is not refused
+    assert mine.modified_since_save
+    assert mine.changed_on_disk() is None
+    assert _cw.persisted(mine) and _cw.prepare(mine) is None
+    mine.save()
+    q = ovt.Project.load(car)
+    assert q.info["make"] == "VW" and q.cache(s.id, "Stage 1") == b"DEFN-stage1"
+    assert not mine.modified_since_save
+
+
+def test_a_cache_write_copies_the_other_entries_as_stored(car):
+    import zipfile
+    from ovtsuite.project import cachewrite as _cw
+    mine = ovt.Project.load(car)
+    mine.set_cache(mine.set("ECU").id, "Stock", b"DEFN" * 100)
+    with zipfile.ZipFile(car) as zf:
+        old = {i.filename: (i.CRC, i.compress_size) for i in zf.infolist()}
+    assert _cw.prepare(mine).run()
+    with zipfile.ZipFile(car) as zf:
+        new = {i.filename: (i.CRC, i.compress_size) for i in zf.infolist()}
+    added = [k for k in new if k not in old]
+    assert len(added) == 1 and added[0].endswith(".defn")
+    assert all(new[k] == v for k, v in old.items()
+               if k not in ("manifest.json", "integrity.json"))
+
+
+def test_a_cache_write_leaves_a_file_another_program_changed(car):
+    from ovtsuite.project import cachewrite as _cw
+    mine = ovt.Project.load(car)
+    mine.set_cache(mine.set("ECU").id, "Stage 1", b"DEFN")
+    job = _cw.prepare(mine)
+    _other_program(car, lambda q: q.set_info({"vin": "X"}))
+    with open(car, "rb") as fh:
+        data = fh.read()
+    assert not job.run() and job.outcome == "changed on disk"
+    with open(car, "rb") as fh:
+        assert fh.read() == data
+    assert mine.changed_on_disk() == "changed"      # the save still asks
+    with pytest.raises(_ds.DiskChanged):
+        mine.save()
+
+
+def test_a_cache_for_a_moved_branch_or_an_unsaved_project_is_not_written(car):
+    from ovtsuite.project import cachewrite as _cw
+    mine = ovt.Project.load(car)
+    s = mine.set("ECU")
+    flash = _flash(mine, "Stage 1")
+    mine.commit(s.id, "Stage 1", {"flash": _edit(flash, 0x300, b"\x03")})
+    mine.set_cache(s.id, "Stage 1", b"DEFN-of-the-unsaved-head")
+    assert _cw.prepare(mine) is None
+    assert _cw.prepare(ovt.Project("new")) is None  # never saved
+
+
+def test_a_cache_write_skips_a_signed_file(car, tmp_path):
+    pytest.importorskip("cryptography")
+    from ovtsuite.modules import signing
+    from ovtsuite.project import archive as _ar
+    from ovtsuite.project import cachewrite as _cw
+    key = str(tmp_path / "k.pem")
+    signing.generate_key(key)
+    _ar.atomic_write(car, ovt.Project.load(car).to_bytes(sign_key=key,
+                                                         signer="Bear"))
+    mine = ovt.Project.load(car)
+    assert mine.report.signature.status == "valid"
+    mine.set_cache(mine.set("ECU").id, "Stock", b"DEFN")
+    job = _cw.prepare(mine)
+    assert not job.run() and job.outcome == "signed"
+    assert ovt.Project.load(car).report.signature.status == "valid"
+
+
+def test_a_save_and_a_cache_write_on_another_thread_do_not_clash(car):
+    import threading
+    from ovtsuite.project import cachewrite as _cw
+    mine = ovt.Project.load(car)
+    s = mine.set("ECU")
+    mine.set_cache(s.id, "Stock", b"DEFN")
+    mine.set_info({"make": "VW"})
+    job = _cw.prepare(mine)
+    t = threading.Thread(target=job.run)
+    with mine._io_lock:
+        t.start()                           # waits for the lock
+        save = mine.prepare_save()
+    save.run()                              # either order: never refused
+    save.finish()
+    t.join()
+    q = ovt.Project.load(car)
+    assert q.info["make"] == "VW" and q.cache(s.id, "Stock") == b"DEFN"
+    assert mine.changed_on_disk() is None

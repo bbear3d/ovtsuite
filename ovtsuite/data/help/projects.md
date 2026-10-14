@@ -66,7 +66,12 @@ project**. Close a tab as usual; the project stays open while any of its tabs
 is, and closes with the last one. **File > Close project** closes all of them.
 
 A project keeps each branch's parameter tree once it has been worked out, so
-a binary opens without being identified and matched again. A new branch
+a binary opens without being identified and matched again. A tree that had
+to be worked out afresh is written into the project file by itself a few
+seconds after the tab opens (or when you close it) -- even when you have
+other unsaved changes, which stay unsaved, or close without saving. It is
+not written into a file another program changed meanwhile, nor into a signed
+project (that would break its signature). A new branch
 starts with the tree of the branch it came from, and a branch without one
 borrows a sibling branch's when it still fits the binary. A binary saved in
 the project as *unknown* by an older version of the app is recognised again
