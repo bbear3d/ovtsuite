@@ -51,6 +51,31 @@ def _main_member(project: Project, sid: str):
     return s.members[0] if s.members else None
 
 
+def set_platform(project: Project, sid: str, state: Images) -> str:
+    """Set ``sid``'s platform, for its working file. A set stored as
+    ``unknown`` -- imported before the base app had a detector for it -- is
+    identified again from its main image; when that names a platform with a
+    native container, the set adopts it (``Project.adopt_platform``), so it
+    opens as that container and can carry a definition cache from then on."""
+    from .. import container as _c
+    from ..platforms import PLATFORMS
+    s = project.set(sid)
+    if s.platform in PLATFORMS and s.platform != "unknown":
+        return s.platform
+    m = _main_member(project, sid)
+    data = state.get(m.id) if m is not None else None
+    if not data:
+        return s.platform
+    from ..platforms.identify import identify
+    try:
+        ident = identify(bytes(data))
+    except Exception:
+        return s.platform
+    if ident.known and _c.format_for_kind(ident.platform) is not None:
+        project.adopt_platform(sid, ident.platform)
+    return s.platform
+
+
 def working_file(project: Project, sid: str, state: Images, *,
                  defn: Optional[bytes] = None,
                  log: Optional[str] = None) -> Tuple[str, bytes]:
@@ -62,7 +87,7 @@ def working_file(project: Project, sid: str, state: Images, *,
     (:func:`write_working_file`)."""
     _c, role_block = _blocks()
     s = project.set(sid)
-    fmt = _c.format_for_kind(s.platform)
+    fmt = _c.format_for_kind(set_platform(project, sid, state))
     if fmt is None:
         m = _main_member(project, sid)
         return ".bin", bytes(state.get(m.id, b"")) if m else b""
@@ -79,6 +104,32 @@ def working_file(project: Project, sid: str, state: Images, *,
     if defn:
         cont.add(_c.BLOCK_DEFN, defn)
     return fmt.ext, cont.to_bytes()
+
+
+def definition_for(project: Project, sid: str, branch: str,
+                   state: Images) -> Optional[bytes]:
+    """The definition cache to open ``state`` of ``branch`` with: the
+    branch's own, or -- when it has none, or its own would be rejected -- one
+    of its sibling branches' (``Project.cache_candidates``). With a single
+    candidate it is passed on unchecked (the session's own checks decide);
+    with several, the first that ``ovtsuite.defn.usable`` accepts for this
+    image, which costs far less than the matching it saves."""
+    try:
+        cands = project.cache_candidates(sid, branch)
+    except (KeyError, AttributeError):
+        return None
+    if len(cands) <= 1:
+        return cands[0] if cands else None
+    m = _main_member(project, sid)
+    data = state.get(m.id) if m is not None else None
+    if data is None:
+        return cands[0]
+    from .. import defn as _defn
+    platform = set_platform(project, sid, state)
+    for blob in cands:
+        if _defn.usable(blob, platform, bytes(data)) is None:
+            return blob
+    return cands[0]
 
 
 def read_back(project: Project, sid: str, path: str) -> Tuple[Images, Optional[bytes]]:

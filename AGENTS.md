@@ -35,6 +35,12 @@ feature. A batch of work going into one release raises each version once.
   independent of the app's (stable modules 1.x, the rest 0.x). Raise it for a
   release when that module's files changed since its last release; the build
   warns when they changed and the version did not. See `docs/MODULES_PLAN.md`.
+* **Stored definitions** (`MODEL_VERSION` in `ovtsuite/defn.py`) is not a
+  release number, so the rule above does not apply: bump it when
+  a change alters how a session's model is built or restored, so files and
+  projects carrying a stored definition rebuild it. Editing a file listed in
+  `defn.MODEL_FILES` fails `tests/test_defn.py` until its recorded hash is
+  updated -- decide then whether `MODEL_VERSION` needs the bump too.
 
 ## Help pages
 

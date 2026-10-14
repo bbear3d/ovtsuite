@@ -129,9 +129,9 @@ def test_a_structural_edit_in_the_session_is_not_snapshotted(tmp_path):
 def test_a_stale_definition_is_ignored(what, tmp_path, monkeypatch):
     path, built = _saved(_need(EDC16), ".edc16", tmp_path)
     if what == "code":
-        monkeypatch.setattr(D, "code_digest", lambda: "different")
+        monkeypatch.setattr(D, "code_digest", lambda *a: "different")
     elif what == "data":
-        monkeypatch.setattr(D, "data_digest", lambda: "different")
+        monkeypatch.setattr(D, "data_digest", lambda *a: "different")
     else:
         monkeypatch.setattr(D, "FORMAT", D.FORMAT + 1)
     again = TunerSession(path)
@@ -287,3 +287,96 @@ def test_a_6hp_version_pairs_every_schedule_with_the_loaded_file(tmp_path):
         assert all(p.binfile is ver.binfile for p in paired)
         back = [ver.counterpart(s, p) for p in paired]
         assert all(b is e for b, e in zip(back, mine)), fam
+
+
+# -- what invalidates a stored definition -------------------------------------
+
+#: ``MODEL_VERSION`` and the hash of ``defn.MODEL_FILES`` it was recorded with.
+#: See test_the_model_files_are_unchanged_or_model_version_was_considered.
+RECORDED_MODEL = (1, "f2abfae681ecece4b213e55622a8d8f0074dd101")
+
+
+def test_the_model_files_are_unchanged_or_model_version_was_considered():
+    """A change to a file that builds the model (``defn.MODEL_FILES``) makes
+    every stored definition stale in a source checkout -- but a FROZEN build
+    tells builds apart only by ``MODEL_VERSION`` (and module versions). So
+    this fails on any such change until the recorded hash is updated, which
+    is the moment to decide whether the change alters what a model holds."""
+    got = (D.MODEL_VERSION, D.model_files_digest())
+    if not got[1]:
+        pytest.skip("no source files (frozen build)")
+    assert got == RECORDED_MODEL, (
+        "a file in ovtsuite/defn.py MODEL_FILES changed (hash %s, recorded "
+        "%s). If the change alters how a model is built or restored (what a "
+        "loader derives, an entity field's meaning, the snapshot decode), "
+        "bump defn.MODEL_VERSION. Either way set RECORDED_MODEL in "
+        "tests/test_defn.py to (MODEL_VERSION, %r)."
+        % (got[1], RECORDED_MODEL[1], got[1]))
+
+
+def _fresh_digests(monkeypatch):
+    monkeypatch.setattr(D, "_DIGEST_CACHE", {})
+
+
+def test_the_code_digest_ignores_the_app_version_and_other_code(monkeypatch):
+    from ovtsuite import branding
+    _fresh_digests(monkeypatch)
+    before = D.code_digest("edc16")
+    monkeypatch.setattr(branding, "__version__", "99.9.9")
+    _fresh_digests(monkeypatch)
+    assert D.code_digest("edc16") == before
+    # a base file outside MODEL_FILES (here: the GUI) is not hashed at all
+    seen = []
+    real = D._hash_source
+    monkeypatch.setattr(D, "_hash_source",
+                        lambda ps: seen.extend(ps) or real(ps))
+    _fresh_digests(monkeypatch)
+    D.code_digest("edc16")
+    names = {os.path.basename(p) for p in seen}
+    assert "session.py" in names and "match.py" in names
+    assert not names & {"gui.py", "gui_project.py", "branding.py", "cli.py"}
+
+
+def test_the_code_digest_follows_model_version_and_the_module(monkeypatch):
+    from types import SimpleNamespace
+    _fresh_digests(monkeypatch)
+    before = D.code_digest("edc16")
+    monkeypatch.setattr(D, "MODEL_VERSION", D.MODEL_VERSION + 1)
+    _fresh_digests(monkeypatch)
+    assert D.code_digest("edc16") != before
+    monkeypatch.setattr(D, "MODEL_VERSION", D.MODEL_VERSION - 1)
+    mod = SimpleNamespace(id="fake", version="1.0.0")
+    monkeypatch.setattr(D, "_module_of", lambda p: mod)
+    _fresh_digests(monkeypatch)
+    v1 = D.code_digest("fake")
+    mod.version = "1.0.1"
+    _fresh_digests(monkeypatch)
+    assert D.code_digest("fake") != v1
+
+
+def test_a_frozen_build_digests_versions_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(D, "_PKG", str(tmp_path))       # no source files
+    _fresh_digests(monkeypatch)
+    assert D.model_files_digest() == ""
+    a = D.code_digest(None)
+    monkeypatch.setattr(D, "MODEL_VERSION", D.MODEL_VERSION + 1)
+    _fresh_digests(monkeypatch)
+    assert D.code_digest(None) != a
+
+
+def test_the_data_digest_skips_the_search_index(monkeypatch, tmp_path):
+    from ovtsuite import datafiles
+    kb = tmp_path / "kb.json"
+    idx = tmp_path / "search_index.json.gz"
+    kb.write_bytes(b"kb")
+    idx.write_bytes(b"one")
+    monkeypatch.setattr(datafiles, "listing", lambda mid=None: [
+        ("kb.json", str(kb)), ("search_index.json.gz", str(idx))])
+    _fresh_digests(monkeypatch)
+    a = D.data_digest()
+    idx.write_bytes(b"two")
+    _fresh_digests(monkeypatch)
+    assert D.data_digest() == a
+    kb.write_bytes(b"kb2")
+    _fresh_digests(monkeypatch)
+    assert D.data_digest() != a
