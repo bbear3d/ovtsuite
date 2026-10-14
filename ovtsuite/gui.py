@@ -9168,10 +9168,16 @@ if HAVE_QT:
             super().mouseReleaseEvent(ev)
 
     class TabBar(QtWidgets.QTabBar):
-        """Tabs tinted by what they hold -- ECU blue, TCU amber -- so a
+        """Tabs marked by what they hold -- ECU blue, TCU amber -- so a
         glance says which kind of file each one is. The colour is the tab's
-        ``tabData``; a tab without one (an empty tab) is drawn plainly.
+        ``tabData``; a tab without one (an empty tab) is drawn plainly. The
+        current tab stands out: the style's own selected look, a bold label
+        and a thick bar of its colour along the top; the others get only a
+        thin line of theirs and slightly dimmed text.
         Middle-click closes a tab, as in a browser."""
+
+        #: the current tab's bar and the others' line, in pixels
+        CURRENT_BAR, OTHER_LINE = 4, 2
 
         def _arrow_region(self):
             """Where the scroll arrows sit (empty when they are hidden). The
@@ -9187,6 +9193,25 @@ if HAVE_QT:
                     reg = reg.united(QtGui.QRegion(b.geometry()))
             return reg
 
+        def _bold(self) -> QtGui.QFont:
+            f = QtGui.QFont(self.font())
+            f.setBold(True)
+            return f
+
+        def tabSizeHint(self, i):
+            # every tab has room for its label in bold, so the tabs don't
+            # shift as the current one changes
+            sz = super().tabSizeHint(i)
+            text = self.tabText(i)
+            extra = (QtGui.QFontMetrics(self._bold()).horizontalAdvance(text)
+                     - self.fontMetrics().horizontalAdvance(text))
+            if extra > 0:
+                sz.setWidth(sz.width() + extra)
+            return sz
+
+        def minimumTabSizeHint(self, i):
+            return self.tabSizeHint(i)
+
         def paintEvent(self, _ev):
             painter = QtWidgets.QStylePainter(self)
             arrows = self._arrow_region()
@@ -9196,6 +9221,7 @@ if HAVE_QT:
             order = [i for i in range(self.count()) if i != cur]
             if cur >= 0:
                 order.append(cur)          # the current tab overlaps last
+            base, bold = painter.font(), self._bold()
             for i in order:
                 opt = QtWidgets.QStyleOptionTab()
                 self.initStyleOption(opt, i)
@@ -9203,14 +9229,29 @@ if HAVE_QT:
                     QtWidgets.QStyle.ControlElement.CE_TabBarTabShape, opt)
                 col = self.tabData(i)
                 if isinstance(col, QtGui.QColor):
-                    r = opt.rect.adjusted(2, 2, -2, -1)
-                    fill = QtGui.QColor(col)
-                    fill.setAlpha(105 if i == cur else 50)
-                    painter.fillRect(r, fill)
+                    r = opt.rect.adjusted(2, 1, -2, 0)
+                    h = self.CURRENT_BAR if i == cur else self.OTHER_LINE
                     painter.fillRect(
-                        QtCore.QRect(r.left(), r.top(), r.width(), 3), col)
+                        QtCore.QRect(r.left(), r.top(), r.width(), h), col)
+                if i == cur:
+                    painter.setFont(bold)
+                    opt.fontMetrics = QtGui.QFontMetrics(bold)
+                else:
+                    painter.setFont(base)
+                    pal = opt.palette
+                    for role in (QtGui.QPalette.ColorRole.WindowText,
+                                 QtGui.QPalette.ColorRole.ButtonText):
+                        fg = pal.color(role)
+                        bg = pal.color(QtGui.QPalette.ColorRole.Window)
+                        a = 0.68                    # how much of the text
+                        pal.setColor(role, QtGui.QColor(
+                            round(fg.red() * a + bg.red() * (1 - a)),
+                            round(fg.green() * a + bg.green() * (1 - a)),
+                            round(fg.blue() * a + bg.blue() * (1 - a))))
+                    opt.palette = pal
                 painter.drawControl(
                     QtWidgets.QStyle.ControlElement.CE_TabBarTabLabel, opt)
+            painter.setFont(base)
 
         def mouseReleaseEvent(self, ev):
             if ev.button() == QtCore.Qt.MouseButton.MiddleButton:
