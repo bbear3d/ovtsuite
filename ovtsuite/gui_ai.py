@@ -1518,11 +1518,14 @@ if HAVE_QT:
             lay.addWidget(self.status)
             top = QtWidgets.QHBoxLayout()
             top.addStretch(1)
-            new = QtWidgets.QToolButton()
+            new = self.new_btn = QtWidgets.QToolButton()
             new.setText("New chat")
             new.setAutoRaise(True)
             new.clicked.connect(self.new_chat)
             top.addWidget(new)
+            from .gui_ai_chats import ChatHistory
+            self.history = ChatHistory(self)      # saved chats (gui_ai_chats)
+            top.addWidget(self.history.button)
             sett = QtWidgets.QToolButton()
             sett.setText("Settings")
             sett.setAutoRaise(True)
@@ -1824,6 +1827,7 @@ if HAVE_QT:
             self.refresh_context()
             context = self._context_text()
             self.input.clear()
+            self.history.begin(question)
             self.chat.append(("you", question))
             self._activity = "Thinking..."
             self._busy(True)
@@ -1834,6 +1838,8 @@ if HAVE_QT:
 
         def _busy(self, on):
             self.send.setEnabled(not on)
+            self.new_btn.setEnabled(not on)            # no switching chats mid-answer
+            self.history.button.setEnabled(not on)
             self.stop.setVisible(on)
             self.activity.setText(self._activity if on else "")
 
@@ -1887,6 +1893,7 @@ if HAVE_QT:
                     self.chat.append(("error", _err_text(err)))
                 self._render()
                 self._update_status()
+                self.history.save()
                 return
             self.tokens += reply.usage.input + reply.usage.output
             if self.chat and self.chat[-1][0] in ("ai_live", "ai_partial") and \
@@ -1921,6 +1928,7 @@ if HAVE_QT:
                                   "before sending." % reply.redacted))
             self._render()
             self._update_status()
+            self.history.save()
             self.st.poll()
 
         def _stop(self):
@@ -1964,8 +1972,10 @@ if HAVE_QT:
                 return
             if self.assistant is not None:
                 self.assistant.reset()
+                self.assistant.restored = False
             self.chat = []
             self.tokens = 0
+            self.history.forget_current()           # the next question: a new saved chat
             self._render()
             self._update_status()
 
@@ -2004,7 +2014,7 @@ if HAVE_QT:
                                       _md_escape(title), n, "" if n == 1 else "s",
                                       ACT_SCHEME, last, ACT_SCHEME, last, ACT_SCHEME, last,
                                       PROP_SCHEME, first), False))
-                elif kind == "notice":
+                elif kind in ("notice", "restored"):
                     parts.append(("_%s_" % _md_escape(text), False))
                 elif kind == "error":
                     parts.append(("**Problem:** %s" % _md_escape(text), False))
@@ -2120,6 +2130,7 @@ if HAVE_QT:
             if not visible:
                 d.hide()
             d._restoring = False
+            d.history.open_last()             # the chat used last, as it was left
         return st.dock
 
     def _truthy(v) -> bool:

@@ -1,7 +1,7 @@
 ---
 title: The assistant panel
 order: 10
-context: AssistantDock
+context: AssistantDock, ChatHistoryDialog
 ---
 # The assistant panel
 
@@ -42,7 +42,7 @@ The answer appears as it is written. While the AI works, the line above
 **Send** says what it is doing (*Reading FlMng_qPresSmoke_MAP...*,
 *Searching help for flashing...*). **New chat** starts over with an empty
 conversation (the AI forgets the earlier questions, so start a new chat when
-you change subject).
+you change subject); the chat you leave is kept, see [Chat history](#chat-history).
 
 **Stop** ends the answer at once: text being written stops where it is (what
 has arrived stays in the panel) and nothing more is asked of the service. A
@@ -90,6 +90,31 @@ open files you name and answer questions about the app.
 The top line shows the service and model in use, and how many tokens this
 chat has used (what an online service charges for). **Settings** opens the
 AI settings.
+
+## Chat history
+
+Every chat is saved on this computer after each answer, so you can come
+back to it. When the app starts, the panel shows the chat you had open last,
+and you can carry on asking in it.
+
+- **History** (next to **New chat**) lists your recent chats with when they
+  were last used and the model that answered; a star marks chats about the
+  project in the active tab. Click one to reopen it. **New chat** starts a new
+  one, saved from its first answer.
+- **History > All chats...** lists them all. **Only chats about this
+  project** narrows the list to the active tab's project. **Open** reopens the
+  selected chat, **Rename...** gives it a name of your own (it is named after
+  its first question), **Delete** removes it, and **Clear all chats...**
+  removes every one after asking.
+- While an answer is being written you cannot switch chats; click **Stop**
+  first.
+- A reopened chat starts with a note that tabs it talked about may no longer
+  be open: the AI looks them up again when it needs them.
+- Chats are kept in your own settings folder, readable only by you. API keys
+  are never part of a chat. **Options > AI > Maximum saved chat history** sets
+  how much room they may take (50 MB to start with): above it the chats used
+  longest ago are deleted, never the one that is open. Long look-up results
+  of earlier questions are shortened when a chat is saved.
 
 ## Asking from where you are
 
