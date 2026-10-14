@@ -182,3 +182,38 @@ def test_with_a_project_in_front_add_is_offered(win, monkeypatch):
     assert len(gp.docs(win)) == 1
     s = gp.docs(win)[0].project.sets
     assert sum(len(x.branches) for x in s) == 2
+
+
+# -- file information after New project / Add files -----------------------------
+
+def _count_info(G, monkeypatch):
+    """Record each tab the file information is shown for (gui_files), and
+    keep the limited-support explanation (a modal box) out of the way."""
+    from ovtsuite import gui_files as gf
+    seen = []
+    monkeypatch.setattr(gf, "_info_on_open",
+                        lambda win, ws=None: seen.append(ws or win.current))
+    monkeypatch.setattr(G.Workspace, "_explain_limited_support",
+                        lambda self, *a, **k: None)
+    return seen
+
+
+def test_new_project_shows_the_file_information_once(G, win, monkeypatch,
+                                                     tmp_path):
+    from ovtsuite import gui_project as gp
+    path = tmp_path / "car.bin"
+    path.write_bytes(READ)
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: ([str(path)], "")))
+    seen = _count_info(G, monkeypatch)
+    assert gp.new_project(win)
+    QtWidgets.QApplication.processEvents()
+    assert seen == [win.current]
+    # adding a file to it shows that file's
+    other = tmp_path / "other.bin"
+    other.write_bytes(READ[::-1])
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: ([str(other)], "")))
+    assert gp.add_files(win, gp.docs(win)[0])
+    QtWidgets.QApplication.processEvents()
+    assert len(seen) == 2 and seen[1] is not seen[0]
