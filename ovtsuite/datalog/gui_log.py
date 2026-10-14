@@ -16,6 +16,7 @@ error reconnect at the same baud for up to 10 s. Names for cells come from
 the loaded binary (:class:`ChannelNamer`) so columns carry A2L signal
 identities, falling back to "Group N / Cell M".
 """
+import bisect
 import os
 import threading
 import time
@@ -34,6 +35,7 @@ from ..flash.gui_flash import (list_ports, kline_devices, is_j2534, open_j2534,
                                cable_allows_high)
 from . import logfile as _lf
 from .channels import ChannelNamer
+from . import logview as _lv
 from .. import branding
 
 SPEED_LABELS = ["Low (10400)", "Medium (124800)", "High (244898)"]
@@ -103,10 +105,36 @@ def retire_thread(thread):
 
 
 # ------------------------------------------------------------------ worker
+#: Read timeout for live data once a session is open. The links connect with
+#: 8 s -- the slow init and the flasher need it -- but a measuring block
+#: answers in tens of milliseconds, and with 8 s a dead line held every row,
+#: and a Disconnect, for 8 s per request. Set after every (re)connect.
+LIVE_READ_TIMEOUT = 1.5
+
+#: Seconds the worker's own teardown (stopCommunication, channel and device
+#: close) may take: the 32-bit bridge gets what is left of it to exit before
+#: it is killed.
+TEARDOWN_BUDGET = 2.5
+
+#: After Disconnect (or closing the window) the worker gets this long to wind
+#: down by itself; then the transport is cut under it (abort_transport).
+#: Never on Stop -- Stop leaves the connection alone.
+DISCONNECT_GRACE_MS = 8000
+
+#: Closing the window: one shared wait for every connection, not one each.
+CLOSE_WAIT_S = 5.0
+#: ... and after cutting the transport, how long to wait before leaving the
+#: thread to the reaper.
+ABORT_WAIT_S = 1.5
+
+
 class LogWorker(QtCore.QThread):
     connected = QtCore.Signal(str, int)              # identity, baud
     browsed = QtCore.Signal(int, list)               # group, [(field, text, value)]
-    logged = QtCore.Signal(object, list, list)       # stamp, texts, values
+    #: generation, stamp, texts, values -- the generation is the recording the
+    #: row belongs to (start_logging's return), so a row that was already on
+    #: its way when Stop was pressed is recognised and dropped
+    logged = QtCore.Signal(int, object, list, list)
     status = QtCore.Signal(str)
     failed = QtCore.Signal(str)
     ended = QtCore.Signal()
@@ -128,6 +156,8 @@ class LogWorker(QtCore.QThread):
         self._logging = False
         self._paused = False
         self._stop = False
+        self._gen = 0                   # recording generation (see ``logged``)
+        self._link = None               # for abort_transport
         self.rows = 0
 
     # -- controls (any thread) --
@@ -136,6 +166,8 @@ class LogWorker(QtCore.QThread):
             self._browse_group = int(g)
 
     def start_logging(self, channels, path):
+        """Open ``path`` and start writing rows; returns the recording's
+        generation, which every ``logged`` row of it carries."""
         with self._lock:
             self._channels = list(channels)
             self._fh = open(path, "w", encoding="utf-8", newline="")
@@ -143,11 +175,15 @@ class LogWorker(QtCore.QThread):
             self._logging = True
             self._paused = False
             self.rows = 0
+            self._gen += 1
+            return self._gen
 
     def stop_logging(self):
+        """Close the file and go back to browsing. The connection stays up."""
         with self._lock:
             self._logging = False
             self._paused = False
+            self._gen += 1
             self._close_file()
 
     def pause(self, on):
@@ -156,6 +192,30 @@ class LogWorker(QtCore.QThread):
 
     def stop(self):
         self._stop = True
+
+    def abort_transport(self):
+        """Cut the link under a worker that has not wound down by itself --
+        the last resort after Disconnect, from the GUI thread. Only for a
+        transport whose blocked call can be ended from outside:
+
+        * the 32-bit J2534 bridge: kill the process; the worker's pending
+          read sees EOF and unwinds with a J2534Error;
+        * a serial K-line cable: cancel the pending read/write;
+        * a J2534 DLL loaded in-process: nothing can interrupt a call into
+          it, so the thread is left to finish (the reaper holds it).
+
+        Returns what was done ("bridge", "serial") or None."""
+        if not self._stop:
+            return None                 # only ever after Disconnect / close
+        can = self._can
+        if isinstance(can, _j2534.BridgePassThru):
+            can.kill()
+            return "bridge"
+        link = self._link
+        if isinstance(link, KLine):
+            link.cancel()
+            return "serial"
+        return None
 
     def _close_file(self):
         if self._fh is not None:
@@ -208,6 +268,7 @@ class LogWorker(QtCore.QThread):
                 link = J2534KLine(self._can, log=self.status.emit, fast_init=self._fast_init)
             else:
                 link = KLine(self._port, baud=10400, prefer_fast_init=self._fast_init)
+            self._link = link
             if self._ecu == "ZF6HP-UDS":
                 from .zf6hp_uds_live import Zf6hpUdsLiveSession
                 sess = Zf6hpUdsLiveSession(link, self._ecu, self.status.emit)
@@ -216,8 +277,10 @@ class LogWorker(QtCore.QThread):
             try:
                 sess.connect(speed, cap, is_stop=lambda: self._stop)
             except Exception as ex:
-                self.failed.emit("Could not connect: %s" % ex)
+                if not self._stop:      # a Disconnect while connecting is no error
+                    self.failed.emit("Could not connect: %s" % ex)
                 return
+            self._live_timeout(link)
             self.connected.emit(sess.identity, sess.baud)
             # Only when an address-read channel is actually ticked. The AST
             # chain preset that ticked them was removed (2026-10-10, Bear: it
@@ -232,13 +295,15 @@ class LogWorker(QtCore.QThread):
                         paused = self._paused
                         group = self._browse_group
                         chans = list(self._channels)
+                        gen = self._gen
                     if paused:
                         sess.keepalive()
                         time.sleep(0.7)
                         continue
                     if logging_:
                         groups = sorted({c.group for c in chans if not c.is_memory})
-                        res = sess.read_groups(groups) if groups else {}
+                        res = (sess.read_groups(groups, is_stop=lambda: self._stop)
+                               if groups else {})
                         texts, values = [], []
                         for c in chans:
                             if c.is_memory:
@@ -256,10 +321,15 @@ class LogWorker(QtCore.QThread):
                                 values.append(None)
                         stamp = datetime.now()
                         with self._lock:
-                            if self._writer is not None:
+                            # Stopped (or restarted) while this row was being
+                            # read: it belongs to no file, and must not reach
+                            # the chart after Stop either.
+                            current = self._logging and self._gen == gen
+                            if current and self._writer is not None:
                                 self._writer.row(stamp, texts)
                                 self.rows += 1
-                        self.logged.emit(stamp, texts, values)
+                        if current:
+                            self.logged.emit(gen, stamp, texts, values)
                     else:
                         cells = sess.read_group(group)
                         out = []
@@ -267,29 +337,58 @@ class LogWorker(QtCore.QThread):
                             for f, cell in enumerate(cells):
                                 out.append((f, cell.text, cell.value))
                         self.browsed.emit(group, out)
+                except _diag.StopRequested:
+                    break
                 except (KLineError, OSError, _j2534.J2534Error) as ex:
+                    if self._stop:
+                        break           # the read was cut short by Disconnect
                     self.status.emit("Lost the ECU (%s) - reconnecting for up to 10 s..." % ex)
                     if not self._reconnect(sess):
-                        self.failed.emit("Could not reconnect within 10 seconds.")
+                        # Disconnect during the retries is not a failure to report
+                        if not self._stop:
+                            self.failed.emit("Could not reconnect within 10 seconds.")
                         break
+                    self._live_timeout(link)
         finally:
-            with self._lock:
-                self._close_file()
+            self._teardown(sess, link)
+
+    def _live_timeout(self, link):
+        """Short reads for live data (see LIVE_READ_TIMEOUT); the connect
+        paths put the link back to their own 8 s on every wake-up."""
+        try:
+            if link is not None and getattr(link, "read_timeout", None) is not None:
+                link.read_timeout = LIVE_READ_TIMEOUT
+        except Exception:
+            pass
+
+    def _teardown(self, sess, link):
+        """Close session, link and device within TEARDOWN_BUDGET. Each step is
+        short by itself (DiagSession.close drops the read timeout and skips
+        the TP 2.0 stopCommunication; the link close is one channel
+        disconnect); the bridge gets what is left of the budget to exit before
+        it is killed. A call that hangs inside a DLL anyway is for the GUI's
+        Disconnect watchdog (abort_transport)."""
+        deadline = time.monotonic() + TEARDOWN_BUDGET
+        with self._lock:
+            self._close_file()
+        try:
+            if sess is not None:
+                sess.close()
+        except Exception:
+            pass
+        if link is not None:
             try:
-                if sess is not None:
-                    sess.close()
+                link.close()
             except Exception:
                 pass
-            if link is not None:
-                try:
-                    link.close()
-                except Exception:
-                    pass
-            if self._can is not None:
-                try:
+        if self._can is not None:
+            try:
+                if isinstance(self._can, _j2534.BridgePassThru):
+                    self._can.close(timeout=max(0.5, deadline - time.monotonic()))
+                else:
                     self._can.close()
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
     def _probe_memory(self, sess):
         """Settle whether this ECU serves readMemoryByAddress, and at which
@@ -435,9 +534,9 @@ class StripChart(QtWidgets.QWidget):
         for k in range(1, 4):
             y = top + gh * k / 4
             p.drawLine(left, y, right, y)
-        start = 0
-        while start < len(self.times) - 1 and self.times[start] < x0:
-            start += 1
+        # first sample on screen; times only grow, so bisect rather than walk
+        # from the start on every repaint of a long log
+        start = min(bisect.bisect_left(self.times, x0), len(self.times) - 1)
         legend_x = left
         for i, s in enumerate(self.series):
             col = PALETTE[i % len(PALETTE)]
@@ -955,7 +1054,11 @@ class ConnPane(QtWidgets.QWidget):
         self._scope = scope
         self._worker: Optional[LogWorker] = None
         self._channels: List[_lf.Channel] = []
+        # The recording in progress: set by Start, cleared the moment it is
+        # stopped -- so a session that ends later (Disconnect after Stop)
+        # does not hand the same log on a second time.
         self._log_path = ""
+        self._rec_gen = 0               # LogWorker generation of that recording
         self._t0 = None
         self._live = _lf.DataLog()
         self._logging = False           # real state, not read back off a button
@@ -1343,10 +1446,31 @@ class ConnPane(QtWidgets.QWidget):
 
     def disconnect_now(self):
         if self._worker is not None:
-            self._worker.stop()
+            w = self._worker
+            already = w._stop
+            w.stop()
             self.connect_btn.setText("Disconnecting...")
             self.connect_btn.setEnabled(False)
             self.state_changed.emit()
+            if not already:
+                # The worker winds down by itself within a couple of seconds;
+                # a call stuck in the cable's driver is cut after the grace.
+                QtCore.QTimer.singleShot(DISCONNECT_GRACE_MS, self,
+                                         lambda w=w: self._disconnect_overdue(w))
+
+    def _disconnect_overdue(self, w):
+        """Disconnect's watchdog: the worker is still running after the grace
+        period, so cut the transport under it (see LogWorker.abort_transport).
+        Only Disconnect and closing the window arm this -- never Stop."""
+        if not w.isRunning():
+            return
+        how = w.abort_transport()
+        if how == "bridge":
+            self._say("The J2534 device did not let go; its bridge was closed.")
+        elif how == "serial":
+            self._say("The K-line cable did not let go; its read was cancelled.")
+        else:
+            self._say("Still waiting for the J2534 driver to close the device...")
 
     def _on_connected(self, identity, baud):
         self.ident.setText("%s   (%d baud)" % (identity or "connected", baud))
@@ -1367,12 +1491,11 @@ class ConnPane(QtWidgets.QWidget):
         self.conn.set_enabled_all(True)
         self.ident.setText("Not connected.")
         self._set_logging_ui(False, connected=False)
-        if self._log_path and os.path.exists(self._log_path):
-            if self._keep_log():
-                self._say("Session ended. The log is kept in the project.")
-            else:
-                self._say("Session ended. Log saved to %s" % self._log_path)
-            self.log_finished.emit(self._log_path)
+        # Only a recording the session ended in the middle of: one already
+        # stopped was handed on then, and _log_path was cleared with it.
+        path, self._log_path = self._log_path, ""
+        if path and os.path.exists(path):
+            self._finish_log(path, self._live.rows, ended=True)
         self.state_changed.emit()
 
     def request_stop(self):
@@ -1382,14 +1505,45 @@ class ConnPane(QtWidgets.QWidget):
             self._worker.stop()
 
     def shutdown(self):
-        """Stop the worker for good; the dialog is closing."""
-        self._logging = False
-        if self._worker is not None:
-            self._worker.stop()
-            # a CAN close can outlast this; then it finishes in the background
-            self._worker.wait(5000)
-            retire_thread(self._worker)
-            self._worker = None
+        """Stop the worker for good; the dialog is closing (or the dual pane
+        is being taken away)."""
+        ConnPane.wind_down([self])
+
+    @staticmethod
+    def wind_down(panes):
+        """Disconnect every pane's worker for good, in bounded time.
+
+        All are asked first, then waited on against ONE shared deadline
+        (CLOSE_WAIT_S) -- not five seconds each, one after the other. Whatever
+        is still running then has its transport cut (LogWorker.abort_transport)
+        and gets ABORT_WAIT_S more; anything left after that (a call inside an
+        in-process J2534 DLL) is handed to the reaper and finishes on its own."""
+        panes = [p for p in panes if getattr(p, "_worker", None) is not None]
+        for p in panes:
+            p.request_stop()
+        deadline = time.monotonic() + CLOSE_WAIT_S
+        for p in panes:
+            p._wait_worker(deadline)
+        late = [p for p in panes if p._worker.isRunning()]
+        for p in late:
+            p._abort_worker()
+        deadline = time.monotonic() + ABORT_WAIT_S
+        for p in late:
+            p._wait_worker(deadline)
+        for p in panes:
+            retire_thread(p._worker)    # never destroy a still-running QThread
+            p._worker = None
+
+    def _wait_worker(self, deadline):
+        """Wait for the worker until ``deadline`` (time.monotonic)."""
+        w = self._worker
+        if w is not None and w.isRunning():
+            w.wait(max(0, int((deadline - time.monotonic()) * 1000)))
+
+    def _abort_worker(self):
+        w = self._worker
+        if w is not None and w.isRunning():
+            w.abort_transport()
 
     # ---- browsing -----------------------------------------------------
     def _current_group(self):
@@ -1641,7 +1795,7 @@ class ConnPane(QtWidgets.QWidget):
             if not path:
                 return False
         try:
-            self._worker.start_logging(self._channels, path)
+            self._rec_gen = self._worker.start_logging(self._channels, path)
         except OSError as ex:
             QtWidgets.QMessageBox.critical(self, "Data logging",
                                            "Cannot write %s: %s" % (path, ex))
@@ -1660,16 +1814,23 @@ class ConnPane(QtWidgets.QWidget):
         self._say("Logging to %s" % path)
         return True
 
-    def _keep_log(self) -> bool:
-        """Put a finished log into the project it was recorded for (once)."""
+    def _keep_log(self, path, done=None):
+        """Put a finished log into the project it was recorded for (once).
+        True / False when settled here; None when the standalone logger is
+        writing it into the .ovt on a worker thread -- ``done(kept)`` follows
+        on the GUI thread."""
         keep = getattr(self, "_keep_ref", None)
-        if not keep or keep[1] != self._log_path:
+        if not keep or keep[1] != path:
             return False
         self._keep_ref = None
         ws, path = keep
         try:
+            later = getattr(self._window, "keep_log_async", None)
+            if later is not None:           # the standalone logger
+                got = later(ws, path, self, done)
+                return None if got is None else bool(got)
             own = getattr(self._window, "keep_log", None)
-            if own is not None:             # the standalone logger
+            if own is not None:
                 return bool(own(ws, path, self))
             from .. import gui_project as _gp
             return _gp.keep_log(ws.win, ws, path)
@@ -1684,24 +1845,52 @@ class ConnPane(QtWidgets.QWidget):
             self._worker.pause(on)
             self._say("Paused (session kept alive)." if on else "Logging resumed.")
 
-    def _stop_logging(self):
+    def _stop_logging(self, finish=True):
+        """Stop. Recording ends, the connection stays up and goes back to
+        browsing -- nothing here touches the link. The cheap part runs now
+        (close the file, flip the buttons); keeping the log and loading it
+        into the viewer follow from the event loop, after the buttons have
+        repainted. ``finish=False`` returns ``(path, rows)`` instead, for
+        the master Stop to finish every pane's log in one go."""
         if not self._logging and not self._log_path:
-            return
+            return None
         self._logging = False
         if self._worker is not None:
             self._worker.stop_logging()
         self._set_logging_ui(False)
-        if self._keep_log():
-            self._say("Logging stopped. %d rows kept in the project (saved "
-                      "with it)." % self._live.rows)
-        else:
-            self._say("Logging stopped. %d rows written to %s"
-                      % (self._live.rows, self._log_path))
-        if self._log_path:
-            self.log_finished.emit(self._log_path)
-            self._set_default_path()
+        path, self._log_path = self._log_path, ""
+        rows = self._live.rows
+        if not path:
+            return None
+        self._set_default_path()
+        self._say("Logging stopped. %d rows." % rows)
+        if not finish:
+            return path, rows
+        QtCore.QTimer.singleShot(0, self, lambda: self._finish_log(path, rows))
+        return None
 
-    def _on_logged(self, stamp, texts, values):
+    def _finish_log(self, path, rows, ended=False):
+        """Keep a stopped (or cut-off) log and hand it to the viewer."""
+        head = "Session ended." if ended else "Logging stopped."
+
+        def said(kept):
+            try:
+                if kept:
+                    self._say("%s %d rows kept in the project (saved with it)." % (head, rows))
+                else:
+                    self._say("%s %d rows written to %s" % (head, rows, path))
+            except RuntimeError:
+                pass                    # the window closed while it was kept
+        kept = self._keep_log(path, done=said)
+        if kept is None:
+            self._say("%s %d rows; putting them into the project..." % (head, rows))
+        else:
+            said(kept)
+        self.log_finished.emit(path)
+
+    def _on_logged(self, gen, stamp, texts, values):
+        if not self._logging or gen != self._rec_gen:
+            return                      # a row from before Stop, still in flight
         if self._t0 is None:
             self._t0 = stamp
         t = (stamp - self._t0).total_seconds()
@@ -1714,14 +1903,6 @@ class ConnPane(QtWidgets.QWidget):
         n = self._live.rows
         if n >= 2 and t > 0:
             self.rate.setText("%d rows, %.1f rows/s" % (n, (n - 1) / t))
-
-#: Rows the viewer table builds at once. QTableWidget allocates one item per
-#: cell up front, and ``resizeColumnsToContents`` then measures the text of
-#: every one. A 9130-row, 13-channel engine log is ~119,000 items; the 7301-row
-#: transmission log beside it another ~66,000. Stop built BOTH, synchronously,
-#: inside the click handler -- which is the hang, and the memory spike behind
-#: the crashes. The chart and the exports still use every row.
-VIEW_ROW_BUDGET = 4000
 
 #: Rows sampled to pick column widths, instead of scanning all of them.
 VIEW_WIDTH_SAMPLE = 150
@@ -2027,9 +2208,21 @@ class DataLogDialog(QtWidgets.QDialog):
                 p.pause_btn.setChecked(on)
 
     def _master_stop(self):
+        """Stop every recording first -- all files closed and all buttons
+        flipped before anything slow -- then keep the logs together from one
+        deferred call, after the window has repainted."""
+        stopped = []
         for p in self._panes:
             if p.is_logging():
-                p._stop_logging()
+                got = p._stop_logging(finish=False)
+                if got:
+                    stopped.append((p, got))
+        if stopped:
+            QtCore.QTimer.singleShot(0, self, lambda: self._finish_logs(stopped))
+
+    def _finish_logs(self, stopped):
+        for p, (path, rows) in stopped:
+            p._finish_log(path, rows)
 
     # ---- window events ------------------------------------------------
     def showEvent(self, ev):
@@ -2044,15 +2237,15 @@ class DataLogDialog(QtWidgets.QDialog):
                 p._sync_namer()
 
     def closeEvent(self, ev):
-        # Ask both to wind up BEFORE waiting on either: shutdown() waits up to
-        # 5 s, so closing a dual session used to serialise two of them and
-        # could sit there for ten seconds looking hung. A CAN teardown is the
-        # slow one (stopCommunication, TP 2.0 disconnect, J2534 close, often
-        # through the 32-bit bridge), and both can do it at once.
+        # Ask every worker to wind up BEFORE waiting on any, and wait against
+        # one shared deadline: closing a dual session used to wait 5 s per
+        # pane in turn and could sit there for ten seconds looking hung. A CAN
+        # teardown is the slow one (TP 2.0 disconnect, J2534 close, often
+        # through the 32-bit bridge), and both can do it at once. Past the
+        # deadline the transport is cut, then the reaper takes over.
         for p in self._panes:
             p.request_stop()
-        for p in self._panes:
-            p.shutdown()
+        ConnPane.wind_down(self._panes)
         super().closeEvent(ev)
 
     # ---- viewer -------------------------------------------------------
@@ -2079,11 +2272,20 @@ class DataLogDialog(QtWidgets.QDialog):
         self.view_chart.setMinimumHeight(220)
         self.view_chart.cursorChanged.connect(self._cursor_row)
         v.addWidget(self.view_chart, 2)
-        self.view_table = QtWidgets.QTableWidget(0, 1)
+        # A view over the parsed rows, not one item per cell: every row of a
+        # long drive log is shown and nothing is built up front.
+        self.view_model = _lv.LogTableModel(self)
+        self.view_table = QtWidgets.QTableView()
+        self.view_table.setModel(self.view_model)
         self.view_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.view_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.view_table.itemSelectionChanged.connect(self._row_selected)
+        self.view_table.verticalHeader().setDefaultSectionSize(
+            self.view_table.fontMetrics().height() + 6)
+        self.view_table.selectionModel().selectionChanged.connect(self._row_selected)
         v.addWidget(self.view_table, 3)
+        self._loader = _lv.LogLoader(self)
+        self._loader.loaded.connect(self._view_loaded)
+        self._loader.failed.connect(self._view_failed)
         return w
 
     def _open_log(self):
@@ -2162,14 +2364,20 @@ class DataLogDialog(QtWidgets.QDialog):
         path, self._pending_view = self._pending_view, None
         if not path:
             return
-        try:
-            log = _lf.load(path)
-        except Exception as ex:
-            QtWidgets.QMessageBox.critical(self, "Data log", "Cannot read %s: %s" % (path, ex))
-            return
-        self.show_log(log)
+        # parsed on a worker thread; _view_loaded shows it
+        self.view_info.setText("Reading %s..." % os.path.basename(path))
+        self._loader.load(path)
 
-    def show_log(self, log: _lf.DataLog):
+    def _view_loaded(self, got):
+        self.show_log(got.log, got.secs, got.columns)
+
+    def _view_failed(self, path, msg):
+        self.view_info.setText("No log loaded.")
+        QtWidgets.QMessageBox.critical(self, "Data log", "Cannot read %s: %s" % (path, msg))
+
+    def show_log(self, log: _lf.DataLog, secs=None, columns=None):
+        """Show ``log``: info line, chart and table. ``secs`` / ``columns``
+        are the chart series when the loader already worked them out."""
         self._viewed = log
         # re-label channels from the binary where the file only has generic
         # names. With two connections open, the right map is the one whose
@@ -2183,30 +2391,16 @@ class DataLogDialog(QtWidgets.QDialog):
         self.view_info.setText("%s - %d channels, %d rows, %.1f s (%s layout)" % (
             os.path.basename(log.path), len(log.channels), log.rows,
             (log.seconds()[-1] if log.rows else 0.0), log.layout))
-        secs = log.seconds()
+        if secs is None:
+            secs = log.seconds()
+        if columns is None:
+            columns = [log.column(i) for i in range(len(log.channels))]
         self.view_chart.window = 0.0
-        self.view_chart.set_data(secs, [log.column(i) for i in range(len(log.channels))],
+        self.view_chart.cursor = -1
+        self.view_chart.set_data(secs, columns,
                                  [c.title for c in log.channels], [c.unit for c in log.channels])
-        shown = min(log.rows, VIEW_ROW_BUDGET)
-        t = self.view_table
-        t.setUpdatesEnabled(False)
-        t.blockSignals(True)
-        try:
-            t.setColumnCount(1 + len(log.channels))
-            t.setHorizontalHeaderLabels(["Time (s)"] + [c.title for c in log.channels])
-            t.setRowCount(shown)
-            for r in range(shown):
-                t.setItem(r, 0, QtWidgets.QTableWidgetItem("%.3f" % secs[r]))
-                for i, txt in enumerate(log.texts[r]):
-                    t.setItem(r, 1 + i, QtWidgets.QTableWidgetItem(txt))
-        finally:
-            t.blockSignals(False)
-            t.setUpdatesEnabled(True)
-        self._size_view_columns(log, shown)
-        if shown < log.rows:
-            self.view_info.setText(self.view_info.text() +
-                                   "  -  table shows the first %d rows; the chart and the "
-                                   "exports use all %d" % (shown, log.rows))
+        self.view_model.set_log(log, secs)
+        self._size_view_columns(log)
         self.exp_vcds.setEnabled(True)
         self.exp_kw.setEnabled(True)
 
@@ -2227,33 +2421,32 @@ class DataLogDialog(QtWidgets.QDialog):
             return best
         return self.pane._namer
 
-    def _size_view_columns(self, log, shown):
+    def _size_view_columns(self, log):
         """Width each column from the header and a sample of rows.
 
         ``resizeColumnsToContents`` measures every cell in the table, which on
         a drive log is six figures' worth of text metrics and most of the
         freeze. A sample gives the same widths in practice, because the
         columns are numbers of near-constant length."""
-        t = self.view_table
+        t, m = self.view_table, self.view_model
         fm = t.fontMetrics()
-        step = max(1, shown // VIEW_WIDTH_SAMPLE)
-        for c in range(t.columnCount()):
-            head = t.horizontalHeaderItem(c)
-            w = fm.horizontalAdvance(head.text()) if head is not None else 60
-            for r in range(0, shown, step):
-                it = t.item(r, c)
-                if it is not None:
-                    w = max(w, fm.horizontalAdvance(it.text()))
+        rows = m.rowCount()
+        step = max(1, rows // VIEW_WIDTH_SAMPLE)
+        for c in range(m.columnCount()):
+            head = m.headerData(c, QtCore.Qt.Horizontal)
+            w = fm.horizontalAdvance(head) if head else 60
+            for r in range(0, rows, step):
+                w = max(w, fm.horizontalAdvance(m.text(r, c)))
             t.setColumnWidth(c, min(w + 24, 320))
 
     def _cursor_row(self, row):
         t = self.view_table
-        if 0 <= row < t.rowCount():
+        if 0 <= row < self.view_model.rowCount():
             t.selectRow(row)
-            t.scrollToItem(t.item(row, 0))
+            t.scrollTo(self.view_model.index(row, 0))
 
-    def _row_selected(self):
-        rows = {i.row() for i in self.view_table.selectedItems()}
+    def _row_selected(self, *_a):
+        rows = {i.row() for i in self.view_table.selectionModel().selectedIndexes()}
         if rows:
             self.view_chart.cursor = min(rows)
             self.view_chart.update()

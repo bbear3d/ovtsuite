@@ -199,3 +199,70 @@ def test_open_device_choices(monkeypatch):
             assert "32-bit" in str(ex)
         monkeypatch.setattr(J, "_runner_cache", ["py", "-3-32", "bridge.py"])
         assert J.usable(d)
+
+
+_CHATTY = r"""
+import sys
+for i in range(4000):                 # ~1 MB: far past any OS pipe buffer
+    sys.stderr.write("dll chatter %05d %s\n" % (i, "y" * 240))
+sys.stderr.flush()
+sys.stdout.write('{"ok": true, "r": {"device_id": 9}}\n')
+sys.stdout.flush()
+sys.stdin.readline()
+sys.stderr.write("bridge died: boom\n")
+sys.stderr.flush()
+"""
+
+_HANG = r"""
+import sys, time
+sys.stdout.write('{"ok": true, "r": {"device_id": 1}}\n')
+sys.stdout.flush()
+time.sleep(60)
+"""
+
+
+def test_bridge_stderr_is_drained_and_kept_for_the_error(tmp_path):
+    """A bridge that writes more to stderr than the pipe holds used to block
+    there while this side sat in readline() on its stdout: a hang with no
+    error. The drain keeps the tail for the message when the bridge dies."""
+    script = tmp_path / "chatty.py"
+    script.write_text(_CHATTY)
+    got = {}
+
+    def run():
+        try:
+            dev = J.BridgePassThru("x.dll", runner=[sys.executable, str(script)])
+            got["dev"] = dev
+            dev._call("battery_voltage")
+        except J.J2534Error as ex:
+            got["err"] = str(ex)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(30)
+    assert not t.is_alive(), "the bridge blocked on a full stderr pipe"
+    assert got["dev"].device_id == 9
+    assert "bridge died: boom" in got["err"]
+    assert len(got["dev"]._stderr) <= J.STDERR_KEEP
+
+
+def test_bridge_kill_unblocks_a_hung_call(tmp_path):
+    """The logger's last resort on Disconnect: a call into a DLL that never
+    returns is ended by killing the bridge, which the blocked reader sees as
+    EOF and an error -- the worker unwinds instead of hanging."""
+    script = tmp_path / "hang.py"
+    script.write_text(_HANG)
+    dev = J.BridgePassThru("x.dll", runner=[sys.executable, str(script)])
+    got = {}
+
+    def run():
+        try:
+            dev._call("battery_voltage")
+        except J.J2534Error as ex:
+            got["err"] = str(ex)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(0.3)
+    assert t.is_alive()
+    dev.kill()
+    t.join(10)
+    assert not t.is_alive() and "exited" in got["err"]

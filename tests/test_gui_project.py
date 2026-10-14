@@ -848,6 +848,15 @@ def _kept_log_bytes(tmp_path):
         return fh.read()
 
 
+def _until_viewed(dlg, timeout=5.0):
+    """The Log file tab reads a log on a worker thread; wait for it."""
+    import time
+    end = time.time() + timeout
+    while time.time() < end and dlg._viewed is None:
+        QtWidgets.QApplication.processEvents()
+        time.sleep(0.01)
+
+
 def test_logs_kept_in_a_project_can_be_viewed(G, win, car, tmp_path, monkeypatch):
     """A log kept in the project opens in the logger's Log file tab: from
     the Project panel (double-click, or Open in Data logging) and from the
@@ -866,7 +875,7 @@ def test_logs_kept_in_a_project_can_be_viewed(G, win, car, tmp_path, monkeypatch
     panel = gp.panel(win)
     panel._view_log(("log", doc, aid))
     dlg = win._datalog_dlg
-    QtWidgets.QApplication.processEvents()
+    _until_viewed(dlg)
     assert dlg.tabs.currentWidget() is dlg.viewer
     assert dlg._viewed is not None and dlg._viewed.rows == 5
     # the logger's Open log...: the project's logs, then From a file...
@@ -881,7 +890,7 @@ def test_logs_kept_in_a_project_can_be_viewed(G, win, car, tmp_path, monkeypatch
     assert len(acts) == 1 and menu.actions()[-1].text() == "From a file..."
     menu.close()
     acts[0].trigger()
-    QtWidgets.QApplication.processEvents()
+    _until_viewed(dlg)
     assert dlg.tabs.currentWidget() is dlg.viewer and dlg._viewed.rows == 5
     dlg.close()
     # the OVT Logger: the project opened in it, read from the .ovt

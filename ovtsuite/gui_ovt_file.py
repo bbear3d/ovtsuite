@@ -99,30 +99,50 @@ def is_open_elsewhere(path) -> bool:
     return True
 
 
+def update_project_quiet(path, change: Callable[[object], object]):
+    """:func:`update_project` without any dialog, for a worker thread: returns
+    ``(True, "")`` when saved, ``(None, "")`` when the main app has the
+    project open, ``(False, reason)`` when it failed. The lock is taken and
+    released on the calling thread."""
+    from .project import Project
+    lf = _lock_file(path)
+    if not lf.tryLock(0):
+        return None, ""
+    try:
+        proj = Project.load(path)
+        change(proj)
+        proj.save(path)
+        return True, ""
+    except Exception as ex:
+        return False, str(ex)
+    finally:
+        lf.unlock()
+
+
+def say_update_result(result, path, parent=None, title="Project",
+                      what="the change"):
+    """Tell the user why :func:`update_project_quiet` did not write (GUI
+    thread). ``result`` is its ``(done, reason)``."""
+    done, reason = result
+    if done is None:
+        QtWidgets.QMessageBox.information(
+            parent, title, "%s is open in %s, so %s was not written to it "
+            "here." % (os.path.basename(path), branding.APP_NAME, what))
+    elif not done:
+        QtWidgets.QMessageBox.warning(parent, title, "%s could not be written "
+                                      "to %s:\n%s" % (what[:1].upper() + what[1:],
+                                                      os.path.basename(path), reason))
+
+
 def update_project(path, change: Callable[[object], object], parent=None,
                    title="Project", what="the change") -> Optional[bool]:
     """Load the .ovt at ``path``, apply ``change(project)`` and save it.
     True when saved; None when the main app has it open (said: ``what`` is
     not written); False when it failed (said)."""
-    from .project import Project
-    lf = _lock_file(path)
-    if not lf.tryLock(0):
-        QtWidgets.QMessageBox.information(
-            parent, title, "%s is open in %s, so %s was not written to it "
-            "here." % (os.path.basename(path), branding.APP_NAME, what))
-        return None
-    try:
-        proj = Project.load(path)
-        change(proj)
-        proj.save(path)
-        return True
-    except Exception as ex:
-        QtWidgets.QMessageBox.warning(parent, title, "%s could not be written "
-                                      "to %s:\n%s" % (what[:1].upper() + what[1:],
-                                                      os.path.basename(path), ex))
-        return False
-    finally:
-        lf.unlock()
+    result = update_project_quiet(path, change)
+    say_update_result(result, path, parent, title, what)
+    return result[0]
 
 
-__all__ = ["open_version", "update_project", "is_open_elsewhere"]
+__all__ = ["open_version", "update_project", "update_project_quiet",
+           "say_update_result", "is_open_elsewhere"]

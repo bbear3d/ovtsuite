@@ -411,8 +411,10 @@ class PassThru:
 # A 64-bit Python cannot load a 32-bit DLL, and most 04.04 devices only ship
 # one.  BridgePassThru runs j2534_bridge.py under a 32-bit interpreter (or the
 # frozen j2534bridge32.exe beside the app) and proxies every call over pipes.
+import collections
 import json
 import subprocess
+import threading
 
 _runner_cache: Optional[List[str]] = None
 
@@ -565,6 +567,19 @@ class BridgeChannel:
             self.id = None
 
 
+#: Lines of the bridge's stderr kept for error messages.
+STDERR_KEEP = 64
+
+
+def _drain_stderr(stream, keep):
+    """Read ``stream`` to EOF into the bounded deque ``keep`` (daemon thread)."""
+    try:
+        for line in iter(stream.readline, b""):
+            keep.append(line)
+    except Exception:
+        pass
+
+
 class BridgePassThru:
     """:class:`PassThru` look-alike backed by a 32-bit helper process."""
 
@@ -583,6 +598,18 @@ class BridgePassThru:
             except OSError as ex:
                 raise J2534Error("cannot start the J2534 bridge (%s): %s" % (" ".join(runner), ex))
         self.proc = proc
+        # The bridge's stderr is drained continuously: left in its pipe, a
+        # chatty DLL (or a traceback) fills the OS buffer and the bridge then
+        # blocks writing to it -- with this side blocked reading its stdout.
+        # Bounded, kept for the error text when the bridge dies.
+        self._stderr = collections.deque(maxlen=STDERR_KEEP)
+        self._stderr_thread = None
+        err = getattr(proc, "stderr", None)
+        if err is not None:
+            self._stderr_thread = threading.Thread(
+                target=_drain_stderr, args=(err, self._stderr),
+                name="j2534-bridge-stderr", daemon=True)
+            self._stderr_thread.start()
         banner = self._recv()
         self.device_id = banner.get("device_id")
 
@@ -595,14 +622,10 @@ class BridgePassThru:
     def _recv(self):
         line = self.proc.stdout.readline()
         if not line:
-            err = b""
-            try:
-                err = self.proc.stderr.read() or b""
-            except Exception:
-                pass
             self.proc = None
+            err = self.stderr_text()
             raise J2534Error("J2534 bridge exited%s" % (
-                (": " + err.decode("utf-8", "replace").strip()[-400:]) if err else ""))
+                (": " + err[-400:]) if err else ""))
         r = json.loads(line.decode("utf-8"))
         if not r.get("ok"):
             raise J2534Error(r.get("err") or "bridge error")
@@ -618,6 +641,25 @@ class BridgePassThru:
         except (OSError, ValueError) as ex:
             raise J2534Error("J2534 bridge write failed: %s" % ex)
         return self._recv()
+
+    def stderr_text(self, wait: float = 0.5) -> str:
+        """What the bridge wrote to stderr lately (the last :data:`STDERR_KEEP`
+        lines). ``wait`` lets the drain catch up after the bridge exited."""
+        t = self._stderr_thread
+        if t is not None and wait:
+            t.join(wait)
+        return b"".join(self._stderr).decode("utf-8", "replace").strip()
+
+    def kill(self):
+        """Kill the bridge process -- the last resort when a call into it has
+        hung (a DLL that never returns). Safe from any thread: the caller
+        blocked in :meth:`_recv` reads EOF and gets a J2534Error."""
+        p = self.proc
+        if p is not None:
+            try:
+                p.kill()
+            except Exception:
+                pass
 
     def connect(self, protocol: int, baud: int, flags: int = 0) -> BridgeChannel:
         cid = self._call("connect", protocol=protocol, baud=baud, flags=flags)
@@ -676,7 +718,9 @@ class BridgePassThru:
     def ioctl(self, *a, **k):
         raise J2534Error("raw ioctls are not proxied through the bridge")
 
-    def close(self):
+    def close(self, timeout: float = 5.0):
+        """Disconnect the channels and let the bridge exit, killing it after
+        ``timeout`` seconds."""
         for ch in self.channels:
             if ch.id is not None:
                 try:
@@ -689,7 +733,7 @@ class BridgePassThru:
             try:
                 p.stdin.write(b'{"op": "close"}\n')
                 p.stdin.flush()
-                p.wait(timeout=5)
+                p.wait(timeout=timeout)
             except Exception:
                 try:
                     p.kill()

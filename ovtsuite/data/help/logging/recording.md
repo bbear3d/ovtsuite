@@ -24,13 +24,21 @@ records the log.
 4. **Pause** (a toggle) stops writing rows but keeps the session open with
    keep-alive messages — use it while you wait or turn round. Press it again
    to carry on in the same file.
-5. **Stop** ends the log. The status line says how many rows were written
-   and where (*... rows kept in the project (saved with it).* for a log kept
-   in the project), and the log opens in the [Log file](log-files.md) tab.
+5. **Stop** ends the log. The connection stays open and goes back to
+   browsing. The status line says how many rows were written and where
+   (*... rows kept in the project (saved with it).* for a log kept in the
+   project), and the log opens in the [Log file](log-files.md) tab. A row
+   that was being read as you pressed **Stop** is not added.
 
 You can stop and start again without disconnecting; each **Start logging**
-makes a new log. Closing the logger window stops logging, keeps the log and
-disconnects.
+makes a new log. **Disconnect** while logging stops the log the same way and
+then closes the session. Closing the logger window stops logging, keeps the
+log and disconnects; it waits at most a few seconds for the connections to
+close.
+
+In OVT Logger, a log kept in a project is written into the `.ovt` in the
+background: the status line says "putting them into the project..." until it
+is done.
 
 ## The log file name
 

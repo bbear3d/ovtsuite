@@ -22,7 +22,11 @@ on K-line — link speed. Set it, then press **Connect**.
    identification and the link speed.
 
 While connected, the connection row is locked; press **Disconnect** to change
-it.
+it. Disconnecting takes a second or two (the button reads
+**Disconnecting...** meanwhile). If the cable's driver has not let go after
+about 8 seconds, the logger closes the J2534 bridge, or cancels the K-line
+cable's read, itself. **Disconnect** while connecting stops the attempt
+without an error.
 
 ## Transport and cable
 
@@ -100,7 +104,8 @@ If the control unit stops answering during a session, the logger tries to
 reconnect for up to 10 seconds ("Lost the ECU ... - reconnecting for up to
 10 s..."), then carries on logging into the same file. If it cannot, it says
 "Could not reconnect within 10 seconds." and the session ends; the rows
-written so far are kept.
+written so far are kept. Pressing **Disconnect** during those 10 seconds ends
+the session at once, without the message.
 
 ## OVT Logger on its own
 
