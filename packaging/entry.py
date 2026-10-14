@@ -94,8 +94,24 @@ def _enable_fault_log():
             continue
 
 
+_app_mutex = None
+
+
+def _hold_app_mutex():
+    """Windows: hold the named mutex the installers' AppMutex looks for, so
+    setup (an update included) waits until every copy of the app and its
+    tools has closed. Released by Windows when the process exits."""
+    global _app_mutex
+    try:
+        from ovtsuite.updates import hold_app_mutex
+        _app_mutex = hold_app_mutex()
+    except Exception:
+        pass
+
+
 def main():
     _enable_fault_log()
+    _hold_app_mutex()
     try:
         sys.exit(_main() or 0)
     except SystemExit:

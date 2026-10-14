@@ -45,6 +45,14 @@ split through this one tool, so Windows and Linux make the same decisions:
         its scripts and icons, its settings): the build scripts skip an
         installer whose key matches the one it was last built from
 
+    python tools/build_modules.py release-sums --out dist/SHA256SUMS.txt
+            [--unsigned] FILE_OR_DIR...
+        the release's checksum list: the SHA-256 of every file given (a
+        folder: its .exe, .ovtmod, .deb, .rpm), merged into the list already
+        at --out (so the Windows and the Linux build can each add theirs), and
+        its Ed25519 signature SHA256SUMS.txt.sig with the module signing key,
+        which the app's updater checks (ovtsuite/updates.py)
+
     python tools/build_modules.py ensure-key
         create the signing key on first use (OVT_SIGNING_KEY, default
         ~/.ovt-signing/module-key.pem) and make the base app trust it (adds
@@ -424,6 +432,56 @@ def cmd_inno(args):
     return 0
 
 
+RELEASE_EXTS = (".exe", ".ovtmod", ".deb", ".rpm", ".zip", ".AppImage")
+
+
+def cmd_release_sums(args):
+    import hashlib
+    from ovtsuite import updates
+    files = []
+    for p in args.files:
+        if os.path.isdir(p):
+            files += [os.path.join(p, n) for n in sorted(os.listdir(p))
+                      if n.endswith(RELEASE_EXTS) and os.path.isfile(os.path.join(p, n))]
+        elif os.path.isfile(p):
+            files.append(p)
+        else:
+            sys.exit("no such file: %s" % p)
+    try:
+        with open(args.out, "rb") as fh:
+            sums = updates.parse_sums(fh.read())
+    except OSError:
+        sums = {}
+    for f in files:
+        h = hashlib.sha256()
+        with open(f, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        sums[os.path.basename(f)] = h.hexdigest()
+        print("  %s  %s" % (h.hexdigest()[:16], os.path.basename(f)))
+    data = updates.format_sums(sums).encode("utf-8")
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "wb") as fh:
+        fh.write(data)
+    sig = args.out + ".sig"
+    key = None
+    if not args.unsigned:
+        key = os.environ.get(signing.ENV_KEY) or signing.default_key_path()
+        if not os.path.exists(key):
+            print("WARNING: no signing key at %s -- %s is not signed (run "
+                  "'build_modules.py ensure-key')" % (key, os.path.basename(args.out)))
+            key = None
+    if key is None:
+        if os.path.exists(sig):
+            os.remove(sig)          # it would no longer match
+        print("%s: %d files, NOT signed" % (args.out, len(sums)))
+        return 0
+    with open(sig, "wb") as fh:
+        fh.write(signing.sign(data, key))
+    print("%s: %d files, signed (%s)" % (args.out, len(sums), os.path.basename(sig)))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -465,6 +523,11 @@ def main(argv=None):
     s.add_argument("--checksum-dir")
     s.add_argument("--out", default=os.path.join(ROOT, "build", "installer"))
     s.set_defaults(fn=cmd_inno)
+    s = sub.add_parser("release-sums")
+    s.add_argument("files", nargs="+")
+    s.add_argument("--out", required=True)
+    s.add_argument("--unsigned", action="store_true")
+    s.set_defaults(fn=cmd_release_sums)
     s = sub.add_parser("install-into")
     s.add_argument("dest")
     s.add_argument("--packages", default=DEFAULT_OUT)

@@ -167,6 +167,10 @@ See [Cables and interfaces](cables.md) for the cables themselves.
 
 ## Updating
 
+OVT-Suite checks for a newer version itself and, on Windows, can download
+and install it (and your modules' updates) for you: see
+[Checking for updates](updates.md). To update by hand:
+
 - **Windows:** run the new installer over the old one. It recognises the
   existing install and updates it in place, in the same folder; your
   settings, recent files and modules you installed for yourself are kept.

@@ -316,6 +316,8 @@ def test_every_routine_in_the_installer_is_called():
         if name in ISS_EVENTS:
             continue
         calls = len(re.findall(r"\b%s\s*\(" % name, code))
+        # a Check: function in a section entry is called by Inno Setup itself
+        calls += len(re.findall(r"^(?!\s*;)[^\n]*\bCheck:[^;\n]*\b%s\b" % name, text, re.M))
         assert calls > 1, "%s is defined in installer.iss and never called" % name
 
 

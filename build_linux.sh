@@ -777,6 +777,16 @@ EOF
     OUTPUTS+=("$RPM_OUT")
 fi
 
+# ------------------------------------------------------------------ checksums
+# The release's checksum list, for the in-app update check (ovtsuite/updates.py): these
+# packages' SHA-256 are merged into dist/SHA256SUMS.txt (beside whatever a Windows build
+# put there) and the list is signed with the module signing key (SHA256SUMS.txt.sig).
+# Upload both files with the release. See tools/build_modules.py release-sums.
+step "release checksums"
+sumopts=(--out "$ROOT/dist/SHA256SUMS.txt")
+[ "$UNSIGNED" = 1 ] && sumopts+=(--unsigned)
+"$VPY" "$ROOT/tools/build_modules.py" release-sums "${sumopts[@]}" "${OUTPUTS[@]}"
+
 # ------------------------------------------------------------------ done
 step "done"
 for f in "${OUTPUTS[@]}"; do

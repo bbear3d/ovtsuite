@@ -119,6 +119,12 @@ Compression={#SetupCompression}
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile={#ProductIcon}
+; Authenticode: build.ps1 -CodeSign passes /DSignTool=ovtsign and the
+; /Sovtsign=... signtool command line; setup.exe and its uninstaller are signed.
+#ifdef SignTool
+SignTool={#SignTool}
+SignedUninstaller=yes
+#endif
 PrivilegesRequiredOverridesAllowed=dialog
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible

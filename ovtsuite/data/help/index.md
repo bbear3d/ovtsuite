@@ -14,7 +14,7 @@ Climatronic.
 ## New to OVT-Suite?
 
 1. [Installing and updating](installing.md) — the installers, the modules,
-   cables on Linux.
+   cables on Linux; [checking for updates](updates.md) from inside the app.
 2. [Getting started](getting-started.md) — from importing your first file
    into a project to saving your first change.
 3. [Before you start](flashing/before-you-start.md) — read this before you

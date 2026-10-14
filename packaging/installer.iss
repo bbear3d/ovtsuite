@@ -68,6 +68,12 @@ SolidCompression=yes
 WizardStyle=modern
 ; the installer wizard executable wears the app icon too
 SetupIconFile=ovtsuite.ico
+; Authenticode: build.ps1 -CodeSign passes /DSignTool=ovtsign and the
+; /Sovtsign=... signtool command line; setup.exe and its uninstaller are signed.
+#ifdef SignTool
+SignTool={#SignTool}
+SignedUninstaller=yes
+#endif
 ; Per-user by default so no elevation prompt is needed; the user can still
 ; choose an all-users install, which does elevate.
 PrivilegesRequiredOverridesAllowed=dialog
@@ -78,6 +84,13 @@ DisableProgramGroupPage=yes
 AllowNoIcons=yes
 ; tell Explorer to refresh icons/handlers after the [Registry] associations
 ChangesAssociations=yes
+; Never replace the files of a running copy: setup asks to close the app and
+; its tools first (AppMutex, see tools.iss), and the Restart Manager closes
+; whatever else still holds a file. The in-app updater (ovtsuite/gui_update.py)
+; closes the app -- asking about unsaved work -- before it starts setup.
+AppMutex={#AppMutex}
+CloseApplications=yes
+RestartApplications=no
 ; The licence. With modules on board (the full installer, the tools' checksum
 ; modules) the License page is the module agreement, which must be accepted,
 ; and OVT-Suite's own MPL-2.0 follows as information; without, the MPL-2.0.
@@ -194,6 +207,10 @@ Root: HKA; Subkey: "Software\Classes\.bin\OpenWithProgids"; \
 Filename: "{app}\{#AppExeName}"; \
     Description: "Launch {#AppName}"; \
     Flags: nowait postinstall skipifsilent
+; An update started from inside the app runs silently with /RELAUNCH=1: start
+; the app again when it is done (as the user who started setup, not elevated).
+Filename: "{app}\{#AppExeName}"; \
+    Flags: nowait runasoriginaluser; Check: WizardSilent and RelaunchRequested
 
 [UninstallDelete]
 ; PyInstaller's one-folder layout leaves nothing behind, but the crash log
@@ -221,6 +238,13 @@ Type: filesandordirs; Name: "{app}\modules"
 #endif
 
 [Code]
+// /RELAUNCH=1 on the command line (the in-app updater): start the app after a
+// silent install. See [Run].
+function RelaunchRequested(): Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 // Every past release this installer may find in the field, newest first, as
 // product name and executable base name. GENERATED: tools/rename_package.py
 // adds a row on each rename, and tests/test_branding.py fails if this list and
