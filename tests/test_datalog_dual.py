@@ -265,7 +265,7 @@ def test_the_master_controls_fan_out_to_every_pane(dual):
         p.is_connected = lambda: True
         p.is_logging = lambda: True
         p._start = lambda quiet=False, _p=p: (calls.append(("start", _p.title())), True)[1]
-        p._stop_logging = lambda _p=p: calls.append(("stop", _p.title()))
+        p._stop_logging = lambda finish=True, _p=p: calls.append(("stop", _p.title()))
         p.disconnect_now = lambda _p=p: calls.append(("disc", _p.title()))
 
     d._master_start()
@@ -427,14 +427,19 @@ def test_the_queued_load_is_coalesced():
     assert "_view_queued = False" in body
 
 
-def test_the_table_is_bounded_and_says_so():
+def test_the_table_is_a_view_over_the_parsed_log():
+    """The 4000-row cap existed because the table built one item per cell
+    in the GUI thread. It is a model now, and the file is parsed on a worker:
+    nothing per cell is built, so every row is shown."""
     s = _src()
-    assert "VIEW_ROW_BUDGET" in s
+    assert "VIEW_ROW_BUDGET" not in s
+    assert "QTableWidgetItem" not in s[s.index("class DataLogDialog"):]
     body = s[s.index("    def show_log(self"):]
     body = body[:body.index("\n    def ")]
-    assert "min(log.rows, VIEW_ROW_BUDGET)" in body
+    assert "view_model.set_log" in body
     assert "resizeColumnsToContents" not in body, "that scans every cell"
-    assert "shows the first" in body, "truncating silently is worse than slowly"
+    drain = _method_code("DataLogDialog", "_drain_view")
+    assert "_lf.load" not in drain, "the parse belongs on the loader's thread"
 
 
 def test_logging_state_is_not_read_off_a_button():
@@ -452,7 +457,10 @@ def test_closing_asks_both_workers_before_waiting_on_either():
     s = _src()
     body = s[s.index("    def closeEvent(self, ev):"):]
     body = body[:body.index("super().closeEvent")]
-    assert body.index("request_stop") < body.index("p.shutdown()")
+    assert body.index("request_stop") < body.index("wind_down(")
+    # one shared deadline for all of them, then the transport is cut
+    wd = _method_code("ConnPane", "wind_down")
+    assert wd.count("CLOSE_WAIT_S") == 1 and "_abort_worker" in wd
 
 
 # ------------------------------------- remembering transport and cable (no Qt)

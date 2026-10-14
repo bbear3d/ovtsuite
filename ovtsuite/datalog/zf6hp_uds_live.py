@@ -177,19 +177,23 @@ class Zf6hpUdsLiveSession(_diag.DiagSession):
         self._speed, self._cap = speed, cap_high
         self.kw = None
         self.baud = 0
+        self._arm_stop(is_stop)
         # Open the TP 2.0 channel if the link built by the logger has not yet
         # (mirrors diag._connect_tcu: a bridge TP handle is lazy, a local
         # Tp20Channel starts closed).
         tp = getattr(self.k, "tp", None)
         if tp is not None and not getattr(tp, "opened", True):
             self.log("Opening the TP 2.0 channel to the transmission...")
+            self._check_stop(is_stop)
             self.k.wake_up()
-        d = _kwp.Kwp2000(self.k, 0x10, self.log)
+        d = self._new_kwp(0x10)
         d.P3, d.P4 = 0.025, 0.0
         d.fast = True
         self.kwp = d
+        self._check_stop(is_stop)
         self.identity = self._read_identity() or "ZF 6HP (GS19) transmission"
         self.log("Transmission: %s" % self.identity)
+        self._check_stop(is_stop)
         # Prove the block answers before the dialog says "connected".
         self.read_block()
         self.baud = 500000
@@ -199,6 +203,7 @@ class Zf6hpUdsLiveSession(_diag.DiagSession):
         """VW spare-part (F187) and hardware (F191) numbers, when served."""
         parts = []
         for did in (0xF187, 0xF191):
+            self._check_stop()
             try:
                 body = self.kwp.send_receive(0x22, bytes([did >> 8, did & 0xFF])).body
             except (_kwp.NegativeResponse, KLineError, KLineTimeout):
@@ -225,8 +230,10 @@ class Zf6hpUdsLiveSession(_diag.DiagSession):
             return None
         return [LiveCell(r) for r in decode_block(body)]
 
-    def read_groups(self, groups: Sequence[int]) -> Dict[int, Optional[List["LiveCell"]]]:
+    def read_groups(self, groups: Sequence[int],
+                    is_stop=None) -> Dict[int, Optional[List["LiveCell"]]]:
         # One block read serves every channel; they all live in GROUP.
+        self._check_stop(is_stop)
         cells = self.read_group(GROUP)
         return {g: cells for g in groups}
 

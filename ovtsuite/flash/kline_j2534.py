@@ -182,6 +182,7 @@ class J2534KLine:
         self._rx = bytearray()          # bytes ready to be read back
         self.last_sync = 0x55
         self._ch_proto = None           # protocol the current channel is open on
+        self.is_stop = None             # optional callable()->bool; init retries give up
 
     # -- channel --------------------------------------------------------------
     def _connect_channel(self):
@@ -245,6 +246,8 @@ class J2534KLine:
         req = START_COMM + bytes([_cks(START_COMM)])
         last = None
         for attempt in range(1, tries + 1):
+            if self.is_stop is not None and self.is_stop():
+                raise KLineError("J2534 K-line init: stop requested")
             try:
                 self._ch.clear_rx()
                 if self._fast:

@@ -35,6 +35,18 @@ class KLineTimeout(KLineError):
     pass
 
 
+class LinkStopped(KLineError):
+    """The caller asked the link to give up (``is_stop`` came true) while it was
+    retrying or waiting. A KLineError so the existing handlers unwind it."""
+    pass
+
+
+def check_stop(is_stop):
+    """Raise :class:`LinkStopped` when ``is_stop`` (an optional callable) says so."""
+    if is_stop is not None and is_stop():
+        raise LinkStopped("stop requested")
+
+
 def adjust_parity(b: int, even_parity: bool) -> int:
     """KWHack Utils.AdjustParity: set bit7 so the byte carries the requested
     parity across bits 0..6 (odd parity when even_parity is False)."""
@@ -88,6 +100,8 @@ class KLine:
         except Exception:
             pass
         self.last_sync = -1
+        #: optional callable()->bool; the wake-up retry loops give up when true
+        self.is_stop = None
 
     # -- lifecycle --------------------------------------------------
     def close(self):
@@ -99,6 +113,27 @@ class KLine:
             self.port.close()
         except Exception:
             pass
+
+    def cancel(self):
+        """Unblock a read or write in progress on another thread -- the last
+        resort when a logger Disconnect has waited too long. pyserial has
+        ``cancel_read``/``cancel_write``; a port without them is closed, which
+        fails the blocked call instead."""
+        port = self.port
+        cancelled = False
+        for name in ("cancel_read", "cancel_write"):
+            fn = getattr(port, name, None)
+            if fn is not None:
+                try:
+                    fn()
+                    cancelled = True
+                except Exception:
+                    pass
+        if not cancelled:
+            try:
+                port.close()
+            except Exception:
+                pass
 
     def __enter__(self):
         return self
@@ -204,6 +239,7 @@ class KLine:
         to the 5-baud slow init, retrying a few times like KWHack."""
         if self.prefer_fast_init:
             for attempt in range(1, _FAST_INIT_TRIES + 1):
+                check_stop(getattr(self, "is_stop", None))
                 try:
                     return self._fast_init(address)
                 except KLineError:
@@ -212,6 +248,7 @@ class KLine:
             # every fast-init attempt missed; fall back to the 5-baud slow init
         last = None
         for attempt in range(1, tries + 1):
+            check_stop(getattr(self, "is_stop", None))
             try:
                 return self._wake_up_once(address, even_parity)
             except KLineError as ex:
