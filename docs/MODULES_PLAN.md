@@ -112,8 +112,9 @@ so reading a spec imports nothing heavy.
 `is_edc15`, `is_zf6hp` and `is_zf8hp` now mean "a session that module built", so a limited
 session never reaches module code.
 
-Stored definitions (`defn`) digest only the base model code plus the session's own module. So
-installing or removing another module never invalidates them.
+Stored definitions (`defn`) digest only the base model code (`defn.MODEL_FILES` and
+`defn.MODEL_VERSION`) plus the session's own module. So installing or removing another module,
+or an app release that leaves model building alone, never invalidates them.
 
 **Once only:** files saved before the split open the slow way on first load, and are
 re-stored on their next save.

@@ -32,6 +32,11 @@ new features in their own modules.
   independent of the app's (stable modules 1.x, the rest 0.x). Raise it
   whenever that module's files change; the build warns when they changed and
   the version did not. See `docs/MODULES_PLAN.md`.
+* **Stored definitions** (`MODEL_VERSION` in `ovtsuite/defn.py`): bump it when
+  a change alters how a session's model is built or restored, so files and
+  projects carrying a stored definition rebuild it. Editing a file listed in
+  `defn.MODEL_FILES` fails `tests/test_defn.py` until its recorded hash is
+  updated -- decide then whether `MODEL_VERSION` needs the bump too.
 
 ## Help pages
 
