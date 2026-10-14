@@ -599,6 +599,20 @@ def check(snap: dict, platform: str, data: bytes) -> Optional[str]:
     return None
 
 
+def usable(blob: bytes, platform: str, data: bytes) -> Optional[str]:
+    """Why the snapshot ``blob`` would not be used for ``data``, or None when
+    :func:`restore` would take it -- the same checks, without decoding the
+    attributes or loading a knowledge base. For choosing among several."""
+    try:
+        snap = json.loads(bytes(blob).decode("utf-8"))
+        why = check(snap, platform, data)
+        if why:
+            return why
+        return _structure_ok(snap, _rows_to_entities(snap, None), data)
+    except Exception as ex:
+        return "unreadable snapshot (%s)" % ex
+
+
 def restore(session, container, data: bytes, rep=None) -> Optional[str]:
     """Populate ``session`` from the container's snapshot. Returns None on
     success, otherwise the reason it was not used (the caller then builds the
