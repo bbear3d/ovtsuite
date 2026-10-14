@@ -13,6 +13,7 @@ order: 80
 | "Could not connect: ..." | Is the ignition on, and is the right controller chosen in **ECU**? On K-line, try **Disable Fast Init** (or untick it, for an EDC16) and **Low** speed. On CAN, check the bit rate (500000 on these cars). |
 | The ECU will not hold Medium or High | The logger falls back to 10400 and says so; that cable or ECU cannot hold the faster rate. Logging still works, more slowly. |
 | The session keeps dropping | Each dropout is retried for 10 seconds. Check the cable and its connection; on K-line, try a lower **Speed**. |
+| **Disconnect** takes several seconds | The logger closes the session within about two seconds. If the cable's driver does not let go within about 8 seconds, it closes the J2534 bridge (or cancels the K-line cable's read) itself; a J2534 driver loaded directly cannot be interrupted, and is left to finish in the background. **Stop** never does this — it leaves the connection open. |
 | The transmission does not answer as **ZF6HP** | A 6HP28 does not serve the 6HP19's measuring blocks — use **ZF6HP-UDS**. |
 
 ## Cells and names
@@ -40,6 +41,6 @@ order: 80
 |---|---|
 | "Cannot read ...: not a KWHack data log" | The file is neither the native nor the VCDS CSV layout. |
 | A column is not on the chart | Only plain numbers are drawn; text values (and N/A) are not. A text cell that spells a number — the 6HP19's engaged gear, "3" — counts as a number (also in older logs, where it was written as `"3 "`); a letter such as "R" leaves a gap. |
-| The table stops partway | It holds the first 4000 rows; the chart and exports use the whole log. |
+| The tab says "Reading ..." for a while | A long log is still being read; the chart and table fill in when it is done. |
 
 See also the general [Troubleshooting](../troubleshooting.md) page.

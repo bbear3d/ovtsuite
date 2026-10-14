@@ -35,8 +35,9 @@ The **Log file** tab opens a log, charts it and shows its rows.
 - The time base is seconds from the first row; the table's first column,
   **Time (s)**, is the same.
 - A column whose cells are not plain numbers is not drawn.
-- The table holds the first 4000 rows of a long log (the line at the top says
-  so); the chart and the exports always use every row.
+- The table shows every row of the log, however long. A long log is read in
+  the background ("Reading ..." at the top right meanwhile), so the window
+  stays usable while it loads.
 
 ## Names in old or foreign logs
 
