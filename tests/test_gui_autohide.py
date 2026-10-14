@@ -111,5 +111,27 @@ def test_collapsed_state_and_width_are_remembered(app, win):
     _pump(app, 50)
     d2, _ = _dock(win)
     assert d2.is_collapsed() and d2.saved_width() == 380
-    d2.setFloating(True)                                # floating: expanded
-    assert not d2.is_collapsed()
+
+
+def test_never_closed_or_floated_but_moves_sides(app, win):
+    """Only expanded, collapsed or flown out: no close or float button, no
+    entry in the window's list of panels, closing collapses; it can still
+    go to the right-hand side."""
+    d, body = _dock(win)
+    F = QtWidgets.QDockWidget.DockWidgetFeature
+    assert d.features() == F.DockWidgetMovable
+    A = QtCore.Qt.DockWidgetArea
+    assert d.allowedAreas() == A.LeftDockWidgetArea | A.RightDockWidgetArea
+    buttons = [b for b in d.titleBarWidget().findChildren(QtWidgets.QToolButton)]
+    assert buttons == [d._collapse_btn]
+    menu = win.createPopupMenu()
+    assert d.toggleViewAction() not in [
+        a for a in (menu.actions() if menu else []) if a.isVisible()]
+    d.close()
+    _pump(app, 50)
+    assert d.isVisible() and d.is_collapsed()
+    d.expand()
+    win.addDockWidget(A.RightDockWidgetArea, d)
+    _pump(app, 50)
+    assert win.dockWidgetArea(d) == A.RightDockWidgetArea and d.isVisible()
+    assert d._collapse_btn.arrowType() == QtCore.Qt.ArrowType.RightArrow
