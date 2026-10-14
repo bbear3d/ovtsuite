@@ -785,6 +785,9 @@ def save_as_project(ws) -> bool:
     never saved starts from what was read."""
     if ws.primary is None:
         return False
+    if getattr(ws, "view_only", None):
+        from . import gui_viewonly as _vo
+        return _vo.refuse_save(ws)          # a saved version is no new project
     win = ws.win
     from . import container as _cont
     from .project import importers as _imp
@@ -1886,20 +1889,79 @@ def _saved_first(ws) -> bool:
 
 
 def _write_export(ws, name, filt, data):
+    path = _write_export_from(ws, name, filt, data)
+    if path:
+        ws.statusBar().showMessage("Exported %s" % os.path.basename(path), 6000)
+    return bool(path)
+
+
+def _write_export_from(parent, name, filt, data) -> Optional[str]:
+    """Ask where to export ``data`` (starting at ``name``) and write it.
+    Returns the path, or None (cancelled, or it failed -- said)."""
     from .recent import get_last_dir, set_last_dir
     path, _f = QtWidgets.QFileDialog.getSaveFileName(
-        ws, "Export", os.path.join(get_last_dir(), name), filt + ";;All files (*)")
+        parent, "Export", os.path.join(get_last_dir(), name),
+        filt + ";;All files (*)")
     if not path:
-        return False
+        return None
     try:
         with open(path, "wb") as fh:
             fh.write(data)
     except OSError as ex:
-        QtWidgets.QMessageBox.critical(ws, "Export", str(ex))
-        return False
+        QtWidgets.QMessageBox.critical(parent, "Export", str(ex))
+        return None
     set_last_dir(path)
-    ws.statusBar().showMessage("Exported %s" % os.path.basename(path), 6000)
-    return True
+    return path
+
+
+def export_version(parent, doc, sid, cid) -> Optional[str]:
+    """Project panel > a version > Export this version...: one part of the
+    set as it was at checkpoint ``cid`` (raw), or the set's original file
+    rebuilt with that version's content. Returns the path written."""
+    proj = doc.project
+    s = proj.set(sid)
+    c = s.checkpoint(cid)
+    if c is None:
+        return None
+    try:
+        state = proj.state(sid, cid)
+    except Exception as ex:
+        QtWidgets.QMessageBox.critical(parent, "Export version",
+                                       "That version could not be rebuilt: %s"
+                                       % ex)
+        return None
+    ver = ("as read" if c.kind == "read" and c.parent is None
+           else c.label or c.kind)
+    choices = [("raw", m) for m in s.members if state.get(m.id) is not None]
+    choices += [("orig", o) for o in s.originals]
+    if not choices:
+        return None
+    pick = choices[0]
+    if len(choices) > 1:
+        names = ["%s (.bin)" % x.label if k == "raw" else
+                 "Original file: %s" % x.filename for k, x in choices]
+        got, ok = QtWidgets.QInputDialog.getItem(
+            parent, "Export version", "What of %s @ %s?" % (s.name, ver),
+            names, 0, False)
+        if not ok:
+            return None
+        pick = choices[names.index(got)]
+    kind, x = pick
+    safe = "".join(ch if ch not in '\\/:*?"<>|' else "_" for ch in ver)
+    try:
+        if kind == "raw":
+            data = _ex.export_raw(proj, sid, x.id, checkpoint=cid)
+            return _write_export_from(
+                parent, "%s %s %s (%s).bin" % (doc.title, s.name, x.label, safe),
+                "Binary files (*.bin)", data)
+        data = _ex.export_original(proj, sid, x.id, checkpoint=cid)
+    except _ex.ExportRefused as ex:
+        QtWidgets.QMessageBox.information(parent, "Export version", str(ex))
+        return None
+    ext = os.path.splitext(x.filename)[1] or "." + x.format
+    return _write_export_from(
+        parent, "%s (%s)%s" % (os.path.splitext(x.filename)[0], safe, ext),
+        "%s files (*%s)" % (x.format.upper(), ext), data)
 
 
 # ---------------------------------------------------- project information
@@ -2533,6 +2595,11 @@ class ProjectPanel(AutoHideDock):
             m.addAction("New branch from this version...",
                         lambda: self._new_branch(d, sid, cid))
             m.addSeparator()
+            m.addAction("Open this version (read-only)",
+                        lambda: self._view_version(d, sid, bid, cid))
+            m.addAction("Export this version...",
+                        lambda: export_version(self, d, sid, cid))
+            m.addSeparator()
             rn = m.addAction("Rename...", lambda: self._rename_version(d, sid, cid))
             rn.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2))
         elif kind in ("logs", "patches", "attachments"):
@@ -2613,6 +2680,10 @@ class ProjectPanel(AutoHideDock):
             self._rename_set(data[1], data[2])
         elif data[0] == "branch":
             self._rename_branch(data[1], data[2], data[3])
+
+    def _view_version(self, d, sid, bid, cid):
+        from . import gui_viewonly as _vo
+        _vo.open_version(self.win, d, sid, bid, cid)
 
     def _rename_version(self, d, sid, cid):
         c = d.project.set(sid).checkpoint(cid)
