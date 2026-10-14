@@ -51,6 +51,7 @@ def persist(win, doc, wait: bool = False) -> bool:
     t = threading.Thread(target=job.run, name="ovt-defn")   # not a daemon
     doc.__dict__["_defn_thread"] = t
     doc.__dict__["_defn_job"] = job
+    doc.__dict__["_defn_win"] = win
     t.start()
     timer = QtCore.QTimer()
     timer.setInterval(POLL_MS)
@@ -72,12 +73,26 @@ def finish(doc) -> None:
     t = doc.__dict__.pop("_defn_thread", None)
     if t is not None:
         t.join()
-    doc.__dict__.pop("_defn_job", None)
+    job = doc.__dict__.pop("_defn_job", None)
+    win = doc.__dict__.pop("_defn_win", None)
     doc.__dict__.pop("_defn_timer", None)
     _record(doc)
+    if job is not None and win is not None and job.outcome == "written":
+        _resnapshot(win, doc)
     again = doc.__dict__.pop("_defn_again", None)
     if again is not None:
         persist(again[0], doc)
+
+
+def _resnapshot(win, doc) -> None:
+    """A recovery entry made before the write names the file's old hash, so
+    recovering it would warn that the file changed: take a fresh one."""
+    saver = getattr(doc, "saver", None)
+    if saver is None or getattr(saver, "_token", None) is None:
+        return                          # no snapshot taken yet
+    saver._token = None
+    from . import gui_project as _gp
+    _gp.autosave_soon(win, doc)
 
 
 def _record(doc) -> None:

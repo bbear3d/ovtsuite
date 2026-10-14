@@ -367,3 +367,22 @@ def test_quitting_waits_for_searches_once_not_one_by_one(app, monkeypatch):
     gs._hook_quit()
     gs._hook_quit()
     assert app.property("_ovt_search_join")
+
+
+def test_definition_write_retakes_the_recovery_snapshot(monkeypatch):
+    """A recovery entry taken before a cache-only write names the file's old
+    hash; once the write lands, the next autosave takes a fresh one."""
+    from ovtsuite import gui_defncache as dc, gui_project as gp
+
+    class Saver:
+        _token = ("old",)
+
+    class Doc:
+        saver = Saver()
+    calls = []
+    monkeypatch.setattr(gp, "autosave_soon", lambda win, doc: calls.append(doc))
+    doc = Doc()
+    dc._resnapshot("win", doc)
+    assert calls == [doc] and doc.saver._token is None
+    dc._resnapshot("win", doc)          # nothing snapshotted since: no-op
+    assert calls == [doc]
