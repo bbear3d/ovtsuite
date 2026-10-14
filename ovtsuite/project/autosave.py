@@ -17,7 +17,8 @@ state after a crash:
   checkpoints, ...).
 
 The writing happens on a background thread; the caller only freezes the
-bytes. The entry is held by an OS file lock for as long as its owner runs,
+bytes and never waits: snapshots taken while one is written coalesce into
+the newest, written next. The entry is held by an OS file lock for as long as its owner runs,
 so a live session (this process or another instance) is never offered for
 recovery -- only an entry whose owner died.
 
@@ -134,12 +135,35 @@ class _Cancelled(Exception):
     pass
 
 
-class _Job:
-    """A snapshot being written: ``cancel`` stops it at its next step (a
-    newer snapshot or a save made it out of date); with ``discard`` it also
-    removes the entry when it stops."""
+class _Frozen:
+    """What one snapshot writes, frozen on the thread that owns the project
+    (it has no locks): everything else happens on the writer thread."""
 
-    def __init__(self):
+    __slots__ = ("heads", "parts", "need_base", "rev", "info", "sha", "path",
+                 "gen", "seed")
+
+    def __init__(self, heads, parts, need_base, rev, info, sha, path, gen,
+                 seed):
+        self.heads = heads          # (sid, bid, head, label, base, new)
+        self.parts = parts          # (manifest, blobs) for base.ovt, or None
+        self.need_base = need_base
+        self.rev = rev              # project.revision when frozen
+        self.info = info
+        self.sha = sha              # the .ovt's recorded sha256, if known...
+        self.path = path            # ...else the writer hashes this file
+        self.gen = gen              # AutoSaver._gen when frozen
+        self.seed = seed            # the project's pack cache, to start ours
+
+
+class _Job:
+    """A snapshot being written: ``cancel`` stops it while it is still
+    computing (a newer snapshot supersedes it, or a save made it out of
+    date) -- never once it has started writing files, so the entry on disk
+    is always one whole snapshot; with ``discard`` it also removes the entry
+    when it stops."""
+
+    def __init__(self, frozen: _Frozen):
+        self.frozen = frozen
         self.cancel = threading.Event()
         self.discard = False
         self.thread: Optional[threading.Thread] = None
@@ -149,8 +173,18 @@ class _Job:
             raise _Cancelled()
 
 
+#: a newer snapshot cancels one still computing at most this many times in a
+#: row; after that the one running finishes first (the newest is written
+#: next), so a project slower to write than snapshots come is still written
+MAX_SUPERSEDE = 2
+
+
 class AutoSaver:
-    """Keeps the recovery entry of one open project."""
+    """Keeps the recovery entry of one open project.
+
+    Snapshots never wait for each other: there is one writer thread at a
+    time, and snapshots taken while it runs coalesce into a single pending
+    one that it writes next."""
 
     def __init__(self, project: Project, root: Optional[str] = None):
         self.project = project
@@ -160,8 +194,15 @@ class AutoSaver:
         self._token = None
         self._base_rev = None             # project.revision of base.ovt on disk
         self._started = now()
-        self._job: Optional[_Job] = None
-        self._mutex = threading.Lock()
+        self._job: Optional[_Job] = None  # the one being written
+        self._pending: Optional[_Frozen] = None   # the newest one waiting
+        self._superseded = 0              # running jobs cancelled in a row
+        #: bumped by saved/discard/reset: a job frozen before no longer
+        #: records its _base_rev or error
+        self._gen = 0
+        self._qlock = threading.Lock()    # _job, _pending, _superseded, _gen
+        self._mutex = threading.Lock()    # the entry's files
+        self._zcache: _ar.PackCache = {}  # base.ovt's entries, between writes
         self.last_error: Optional[str] = None
 
     # -- state the GUI asks about --------------------------------------
@@ -191,11 +232,32 @@ class AutoSaver:
         return True
 
     def snapshot(self, working: Working, *, wait: bool = False) -> None:
-        """Freeze the unsaved state now and write it on a background thread.
+        """Freeze the unsaved state now and write it on a background thread;
+        returns at once (with ``wait``: once it is written).
 
         ``working`` maps ``(set id, branch id)`` to the edited member images
         of that branch (members left out are unchanged). The bytes are taken
         exactly as given -- no checksum correction."""
+        f = self._freeze(working)
+        with self._qlock:
+            job = self._job
+            if job is None:
+                self._start(_Job(f))
+            else:
+                old = self._pending
+                if f.parts is None and old is not None \
+                        and old.parts is not None and old.rev == f.rev:
+                    f.parts, f.seed = old.parts, old.seed
+                self._pending = f       # written next, replacing any other
+                if not job.cancel.is_set() \
+                        and self._superseded < MAX_SUPERSEDE:
+                    self._superseded += 1
+                    job.cancel.set()    # out of date: stops if it still can
+        if wait:
+            self.flush()
+
+    def _freeze(self, working: Working) -> _Frozen:
+        """The part on the project's thread: only what reads the project."""
         p = self.project
         heads = []
         for (sid, bid), images in working.items():
@@ -212,92 +274,149 @@ class AutoSaver:
             heads.append((s.id, b.id, b.head, "%s / %s" % (s.name, b.name),
                           base, new))
         need_base = p.path is None or p.modified_since_save
-        parts = None
+        parts = seed = None
         if need_base and self._base_rev != p.revision:
             parts = p.snapshot_parts()
+            if not self._zcache:
+                seed = dict(getattr(p, "_zcache", None) or {})
+        sha = path = None
+        if not need_base:
+            disk = getattr(p, "_disk", None)
+            if disk is not None and disk.is_for(p.path):
+                sha = disk.sha256           # as loaded or last saved
+            else:
+                path = p.path
         info = {"version": ENTRY_VERSION, "app": p.app or _ar_app(),
                 "pid": os.getpid(), "started": self._started,
                 "updated": now(), "project_name": p.name,
                 "project_path": os.path.abspath(p.path) if p.path else None,
-                "base_sha256": None if need_base else _file_sha(p.path)}
-        rev = p.revision
-        old = self._job
-        if old is not None:
-            old.cancel.set()            # out of date: it stops, this one writes
-        job = _Job()
-        job.thread = threading.Thread(
-            target=self._write, name="ovt-autosave",
-            args=(job, heads, parts, need_base, rev, info), daemon=True)
-        self._job = job
-        job.thread.start()
-        if wait:
-            self.flush()
+                "base_sha256": None}
+        return _Frozen(heads, parts, need_base, p.revision, info, sha, path,
+                       self._gen, seed)
 
-    def _write(self, job, heads, parts, need_base, rev, info) -> None:
+    def _start(self, job: _Job) -> None:
+        self._job = job
+        job.thread = threading.Thread(target=self._run, args=(job,),
+                                      name="ovt-autosave", daemon=True)
+        job.thread.start()
+
+    def _run(self, job: _Job) -> None:
+        """The writer thread: this job, then the pending one, until none."""
+        try:
+            while True:
+                self._write(job)
+                with self._qlock:
+                    f, self._pending = self._pending, None
+                    if f is None:
+                        self._job = None
+                        return
+                    nxt = _Job(f)
+                    nxt.thread = job.thread
+                    self._job = job = nxt
+        except BaseException:                      # pragma: no cover
+            with self._qlock:
+                self._job = None
+            raise
+
+    def _write(self, job: _Job) -> None:
+        f = job.frozen
         try:
             with self._mutex:
                 try:
-                    self._write_entry(job, heads, parts, need_base, rev, info)
+                    self._write_entry(job, f)
+                    with self._qlock:
+                        self._superseded = 0
                 except _Cancelled:
                     pass
                 finally:
                     if job.discard:     # saved or closed meanwhile
                         self._remove_dir()
         except Exception as ex:                    # never take the app down
-            self.last_error = str(ex)
+            with self._qlock:
+                if f.gen == self._gen:
+                    self.last_error = str(ex)
 
-    def _write_entry(self, job, heads, parts, need_base, rev, info) -> None:
+    def _write_entry(self, job: _Job, f: _Frozen) -> None:
+        # computing -- stops here when out of date
         job.check()
-        working = []
-        keep = {ENTRY, LOCK, DISCARDED}
-        for sid, bid, head, label, base, new in heads:
+        working, files = [], []
+        for sid, bid, head, label, base, new in f.heads:
             recs = _d.diff(base, new)
+            job.check()
             if not recs:
                 continue
             name = "w_%s_%s.ovd" % (sid, bid)
-            keep.add(name)
             working.append({"set": sid, "branch": bid, "head": head,
                             "label": label, "delta": name,
                             "n_bytes": _d.changed_bytes(recs)})
+            files.append((name, _d.encode(recs)))
+        base_path = os.path.join(self.dir, BASE)
+        base_data = None
+        if f.need_base and f.parts is not None and not (
+                self._base_rev == f.rev and os.path.exists(base_path)):
+            if f.seed and not self._zcache:
+                self._zcache.update(f.seed)
+            manifest, blobs = f.parts
+            base_data = _ar.write(manifest, blobs, cache=self._zcache)
             job.check()
-            self._ensure_dir()
-            _write_atomic(os.path.join(self.dir, name), _d.encode(recs))
-        if not working and not need_base:
+        sha = None if f.need_base else (f.sha or _file_sha(f.path))
+        job.check()
+        # writing -- the whole snapshot, never stopped half way
+        if not working and not f.need_base:
             self._remove_dir()          # nothing unsaved
             return
+        keep = {ENTRY, LOCK}
+        if job.discard:
+            keep.add(DISCARDED)
         self._ensure_dir()
-        if need_base:
+        for name, data in files:
+            keep.add(name)
+            _write_atomic(os.path.join(self.dir, name), data)
+        base_rev = None
+        if f.need_base:
             keep.add(BASE)
-            if parts is not None:
-                manifest, blobs = parts
-                data = _ar.write(manifest, blobs)
-                job.check()
-                _write_atomic(os.path.join(self.dir, BASE), data)
-                self._base_rev = rev
-        info = dict(info, base=BASE if need_base else None,
-                    working=working)
-        job.check()
+            if base_data is not None:
+                _write_atomic(base_path, base_data)
+                base_rev = f.rev
+            elif os.path.exists(base_path):
+                base_rev = self._base_rev
+        info = dict(f.info, base=BASE if f.need_base else None,
+                    working=working, base_sha256=sha)
         _write_atomic(os.path.join(self.dir, ENTRY),
                       json.dumps(info, indent=1).encode("utf-8"))
-        for f in os.listdir(self.dir):     # stale deltas / base
-            if f not in keep and not f.endswith(".tmp"):
+        for name in os.listdir(self.dir):     # stale deltas / base
+            if name not in keep and not name.endswith(".tmp"):
                 try:
-                    os.remove(os.path.join(self.dir, f))
+                    os.remove(os.path.join(self.dir, name))
                 except OSError:
                     pass
-        if not need_base:
-            self._base_rev = None
-        self.last_error = None
+        with self._qlock:
+            if f.gen == self._gen:      # not saved or replaced meanwhile
+                self._base_rev = base_rev
+                self.last_error = None
 
     def flush(self, timeout: Optional[float] = None) -> bool:
-        """Wait for a snapshot in progress (at most ``timeout`` seconds).
-        True when none is running any more."""
-        job = self._job
-        if job is not None and job.thread is not None \
-                and job.thread.is_alive():
-            job.thread.join(timeout)
-            return not job.thread.is_alive()
-        return True
+        """Wait for the snapshots being written or pending (at most
+        ``timeout`` seconds). True when none is running any more."""
+        with self._qlock:
+            job = self._job
+        if job is None or job.thread is None:
+            return True
+        job.thread.join(timeout)
+        return not job.thread.is_alive()
+
+    def _outdate(self, discard: bool) -> None:
+        """Snapshots frozen until now are out of date: the pending one is
+        dropped, the running one stopped if it still can be."""
+        with self._qlock:
+            self._gen += 1
+            self._pending = None
+            self._superseded = 0
+            job = self._job
+            if job is not None:
+                if discard:
+                    job.discard = True
+                job.cancel.set()
 
     # -- lifecycle -------------------------------------------------------
     def saved(self, wait: float = WAIT_S) -> None:
@@ -306,10 +425,7 @@ class AutoSaver:
         at most ``wait`` seconds -- past that it removes the entry itself
         when it stops (and the next start removes it if the app is gone by
         then)."""
-        job = self._job
-        if job is not None:
-            job.discard = True
-            job.cancel.set()
+        self._outdate(discard=True)
         self.flush(wait)
         if self._mutex.acquire(timeout=max(wait, 0.01)):
             try:
@@ -331,6 +447,15 @@ class AutoSaver:
         self.saved(wait)
 
     close = discard
+
+    def reset(self, project: Project) -> None:
+        """``project`` replaces the one kept (merged with what another
+        program changed): the next snapshot starts over, without waiting for
+        one being written."""
+        self._outdate(discard=False)
+        self.project = project
+        self._token = None
+        self._base_rev = None
 
     def _remove_dir(self) -> None:
         if self._lock is not None:

@@ -286,6 +286,176 @@ def test_an_entry_discarded_mid_write_is_never_offered(tmp_path):
     assert not os.path.exists(saver.dir)
 
 
+
+def _stepped_diff(monkeypatch):
+    """``_d.diff`` that announces each call (``entered``) and waits for one
+    ``go`` release before computing."""
+    entered, go = threading.Semaphore(0), threading.Semaphore(0)
+    real = _as._d.diff
+    calls = []
+
+    def slow(a, b):
+        calls.append(b.get("flash", b"")[4:5])
+        entered.release()
+        assert go.acquire(timeout=10)
+        return real(a, b)
+    monkeypatch.setattr(_as._d, "diff", slow)
+    return entered, go, calls
+
+
+def _edited(flash, v):
+    return flash[:4] + bytes([v]) + flash[5:]
+
+
+def test_rapid_snapshots_never_wait_and_coalesce(tmp_path, monkeypatch):
+    root = str(tmp_path / "rec")
+    p, s, flash = _project()
+    p.save(str(tmp_path / "car.ovt"))
+    bid = p.set(s.id).active.id
+    saver = _as.AutoSaver(p, root)
+    entered, go, calls = _stepped_diff(monkeypatch)
+    saver.snapshot({(s.id, bid): {"flash": _edited(flash, 1)}})
+    assert entered.acquire(timeout=5)
+    t0 = time.monotonic()
+    for v in range(2, 30):                 # while the first one is stuck
+        saver.snapshot({(s.id, bid): {"flash": _edited(flash, v)}})
+    assert time.monotonic() - t0 < 1
+    for _ in range(5):
+        go.release()
+    assert saver.flush(5)
+    assert calls == [b"\x01", b"\x1d"]     # the first, then only the newest
+    _crash(saver)
+    proj, working, _w = _as.recover(_as.pending(root)[0])
+    assert working[(s.id, bid)]["flash"][4] == 29
+
+
+def test_supersede_does_not_starve_the_writer(tmp_path, monkeypatch):
+    root = str(tmp_path / "rec")
+    p, s, flash = _project()
+    p.save(str(tmp_path / "car.ovt"))
+    bid = p.set(s.id).active.id
+    saver = _as.AutoSaver(p, root)
+    entered, go, calls = _stepped_diff(monkeypatch)
+    written = []
+    real_write = _as._write_atomic
+
+    def record(path, data):
+        if path.endswith(_as.ENTRY):
+            written.append(json.loads(data)["working"][0]["n_bytes"])
+        real_write(path, data)
+    monkeypatch.setattr(_as, "_write_atomic", record)
+    saver.snapshot({(s.id, bid): {"flash": _edited(flash, 1)}})
+    for v in range(2, 2 + _as.MAX_SUPERSEDE):
+        assert entered.acquire(timeout=5)
+        saver.snapshot({(s.id, bid): {"flash": _edited(flash, v)}})
+        assert saver._job.cancel.is_set()       # superseded: it stops
+        go.release()
+    assert entered.acquire(timeout=5)
+    assert written == []                        # each one was cancelled
+    last = 2 + _as.MAX_SUPERSEDE
+    saver.snapshot({(s.id, bid): {"flash": _edited(flash, last)}})
+    assert not saver._job.cancel.is_set()       # this one gets to finish
+    go.release()
+    assert entered.acquire(timeout=5)           # ...then the newest runs
+    assert len(written) == 1
+    go.release()
+    assert saver.flush(5)
+    assert len(written) == 2
+    _crash(saver)
+    proj, working, _w = _as.recover(_as.pending(root)[0])
+    assert working[(s.id, bid)]["flash"][4] == last
+
+
+def test_a_late_job_does_not_restore_state_after_a_reset(tmp_path,
+                                                          monkeypatch):
+    root = str(tmp_path / "rec")
+    p, s, flash = _project()                    # untitled: base.ovt is kept
+    saver = _as.AutoSaver(p, root)
+    gate, entered = threading.Event(), threading.Event()
+    real_write = _as._write_atomic
+
+    def slow(path, data):
+        if path.endswith(_as.BASE) and not entered.is_set():
+            entered.set()
+            assert gate.wait(10)
+        real_write(path, data)
+    monkeypatch.setattr(_as, "_write_atomic", slow)
+    saver.snapshot({})
+    assert entered.wait(5)                      # writing: no longer stops
+    q, _s2, _f2 = _project()
+    saver.reset(q)                              # merged with the disk
+    gate.set()
+    assert saver.flush(5)
+    assert saver._base_rev is None              # the old project's base
+    saver.snapshot({}, wait=True)               # rebuilt for the new one
+    assert saver._base_rev == q.revision
+    _crash(saver)
+    proj, _working, _w = _as.recover(_as.pending(root)[0])
+    assert proj.uid == q.uid
+
+
+def test_a_late_job_after_saved_leaves_no_entry_or_state(tmp_path,
+                                                         monkeypatch):
+    root = str(tmp_path / "rec")
+    p, s, flash = _project()
+    saver = _as.AutoSaver(p, root)
+    gate, entered = threading.Event(), threading.Event()
+    real_write = _as._write_atomic
+
+    def slow(path, data):
+        if path.endswith(_as.BASE):
+            entered.set()
+            assert gate.wait(10)
+        real_write(path, data)
+    monkeypatch.setattr(_as, "_write_atomic", slow)
+    saver.snapshot({})
+    assert entered.wait(5)
+    saver.saved(wait=0.05)
+    gate.set()
+    assert saver.flush(5)
+    assert saver._base_rev is None and saver.last_error is None
+    assert not saver.active
+
+
+def test_the_project_file_is_hashed_off_the_gui_thread(tmp_path, monkeypatch):
+    root = str(tmp_path / "rec")
+    p, s, flash = _project()
+    p.save(str(tmp_path / "car.ovt"))
+    bid = p.set(s.id).active.id
+    threads = []
+    real = _as._file_sha
+
+    def spy(path):
+        threads.append(threading.current_thread())
+        return real(path)
+    monkeypatch.setattr(_as, "_file_sha", spy)
+    saver = _as.AutoSaver(p, root)
+    saver.snapshot({(s.id, bid): {"flash": _edited(flash, 1)}}, wait=True)
+    assert threads == []                        # the hash recorded at save
+    with open(os.path.join(saver.dir, _as.ENTRY)) as fh:
+        assert json.load(fh)["base_sha256"] == p._disk.sha256
+    p._disk = None                              # nothing recorded
+    saver.snapshot({(s.id, bid): {"flash": _edited(flash, 2)}}, wait=True)
+    assert threads and threading.main_thread() not in threads
+    with open(os.path.join(saver.dir, _as.ENTRY)) as fh:
+        assert json.load(fh)["base_sha256"] == _as._file_sha(p.path)
+
+
+def test_the_recovery_base_reuses_unchanged_entries(tmp_path, monkeypatch):
+    root = str(tmp_path / "rec")
+    p, s, flash = _project()                    # untitled: base.ovt is kept
+    saver = _as.AutoSaver(p, root)
+    saver.snapshot({}, wait=True)
+    n = _Count(monkeypatch)
+    p.name = "renamed"
+    p._touch()
+    saver.snapshot({}, wait=True)
+    assert n.n <= 2                 # the manifest/integrity only, not the blobs
+    _crash(saver)
+    proj, _working, _w = _as.recover(_as.pending(root)[0])
+    assert proj.name == "renamed"
+
+
 def test_a_scratch_container_write_is_uncompressed(tmp_path):
     from ovtsuite import changelog as _cl
     from ovtsuite import container as _c

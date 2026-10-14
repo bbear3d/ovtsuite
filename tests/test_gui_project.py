@@ -181,6 +181,33 @@ def test_crash_recovery_and_a_proper_exit(G, win, car):
         w2.close_discarding()
 
 
+def test_kept_logs_autosave_once_after_returning(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from ovtsuite import gui_project as gp
+    proj = ovt.Project("car")
+    s = proj.add_set("ECU", platform="unknown")
+    doc = gp.ProjectDoc(proj, None)
+    gp.docs(win).append(doc)
+    calls = []
+    monkeypatch.setattr(gp, "autosave", lambda w, d=None: calls.append(d))
+    try:
+        for i in range(2):                   # both panes of a logger stop
+            ws = SimpleNamespace(project_ref=SimpleNamespace(doc=doc,
+                                                             sid=s.id))
+            log = tmp_path / ("drive%d.csv" % i)
+            log.write_text("t,rpm\n0,800\n")
+            assert gp.keep_log(win, ws, str(log))
+        assert calls == []                   # not in the middle of Stop
+        assert len(proj.logs) == 2
+        QtWidgets.QApplication.processEvents()
+        assert calls == [doc]                # one snapshot for both
+        QtWidgets.QApplication.processEvents()
+        assert calls == [doc]
+    finally:
+        gp.docs(win).remove(doc)
+        doc.close()
+
+
 def test_save_as_project_from_a_plain_file(win, tmp_path, monkeypatch):
     _need(ZF)
     from ovtsuite import gui_project as gp
