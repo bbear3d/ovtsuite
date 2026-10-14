@@ -1490,9 +1490,10 @@ def keep_definition(ws) -> bool:
 
 
 def write_definitions(win, doc, at_exit: bool = False) -> bool:
-    """Write definitions stored since the last save into the .ovt -- only
-    when the project has nothing else unsaved, so no change the user did
-    not save goes in with them. True when the file was written.
+    """Write definitions stored since the last save into the .ovt -- with
+    the project's other unsaved changes left out of it (only the cache
+    entries go in then, :mod:`ovtsuite.gui_defncache`). True when the file
+    was written (or that write started).
 
     ``at_exit``: nothing is built (the tabs stored theirs while the user was
     idle, :func:`defer_definition`), and a big file is not rewritten -- the
@@ -1500,12 +1501,15 @@ def write_definitions(win, doc, at_exit: bool = False) -> bool:
     if not at_exit:
         for t in doc.tabs(win):
             keep_definition(t)
-    if not doc.__dict__.get("_cache_dirty") or not doc.path \
-            or doc.project.modified_since_save:
+    if not doc.__dict__.get("_cache_dirty") or not doc.path:
         return False
     try:
         if at_exit and os.path.getsize(doc.path) > EXIT_DEFN_MAX:
             return False
+        if doc.project.modified_since_save:
+            # the definitions alone, the other changes staying unsaved
+            from . import gui_defncache as _dc
+            return _dc.persist(win, doc, wait=at_exit)
         # refused (DiskChanged) when another program changed the file: the
         # definitions are only a cache, nothing is asked -- they are skipped
         job = doc.project.prepare_save(doc.path)
@@ -1522,17 +1526,31 @@ def write_definitions(win, doc, at_exit: bool = False) -> bool:
 
 def defer_definition(ws) -> None:
     """Store the tab's definition snapshot (:func:`keep_definition`) a few
-    seconds after it opened, when the user is idle -- in memory; the file
-    gets it with the next save, or on closing."""
+    seconds after it opened, when the user is idle. One that was rebuilt
+    goes into the file right away, alone (:mod:`ovtsuite.gui_defncache`)."""
     def later():
         if getattr(ws, "project_ref", None) is None or _sv.saving(ws.win) \
                 or QtWidgets.QApplication.activeModalWidget() is not None:
             return
-        keep_definition(ws)
+        if keep_definition(ws):
+            # rebuilt (the matcher ran): into the file now, not at the
+            # next save -- which may never come
+            from . import gui_defncache as _dc
+            _dc.persist(ws.win, ws.project_ref.doc)
     try:
         QtCore.QTimer.singleShot(DEFN_IDLE_MS, ws, later)
     except (RuntimeError, TypeError):
         pass
+
+
+def leaving(ws) -> None:
+    """The tab's binary goes (closed, replaced, the tab removed without
+    going into the history): keep its definition snapshot, and write it
+    into the .ovt when it is new."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is not None and keep_definition(ws):
+        from . import gui_defncache as _dc
+        _dc.persist(ws.win, ref.doc)
 
 
 def note_closing(win, ws, entry):

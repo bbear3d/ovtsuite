@@ -220,6 +220,127 @@ def test_an_exit_does_not_rewrite_a_big_project_for_its_cache(win, car,
     assert not doc.__dict__["_cache_dirty"]
 
 
+# -- a rebuilt definition snapshot goes into the file by itself -------------
+def _rebuilds(monkeypatch):
+    """``keep_definition`` stores a snapshot the project lacks, as one built
+    by the matcher would be (an unrecognised image has none to build)."""
+    from ovtsuite import gui_project as gp
+
+    def keep(ws):
+        ref = ws.project_ref
+        if ref is None or ws.primary is None or ws.is_dirty():
+            return False
+        proj = ref.doc.project
+        if proj.cache(ref.sid, ref.bid) == b"DEFN":
+            return False
+        proj.set_cache(ref.sid, ref.bid, b"DEFN")
+        ref.doc.__dict__["_cache_dirty"] = True
+        return True
+    monkeypatch.setattr(gp, "keep_definition", keep)
+    return gp
+
+
+def _until(cond, secs=30):
+    end = time.monotonic() + secs
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        QtWidgets.QApplication.processEvents()
+        time.sleep(0.01)
+
+
+def _disk_cache(path):
+    p = ovt.Project.load(path)
+    s = p.sets[0]
+    return p.cache(s.id, s.active.id), p.info
+
+
+def test_a_rebuilt_definition_is_written_alone_soon_after_opening(
+        G, win, car, monkeypatch):
+    from ovtsuite import gui_defncache as dc
+    from ovtsuite import gui_disksync as dsg
+    gp = _rebuilds(monkeypatch)
+    monkeypatch.setattr(gp, "DEFN_IDLE_MS", 0)
+    box = gp._sv._dialog
+    monkeypatch.setattr(gp._sv, "_dialog",
+                        lambda *a: pytest.fail("a Saving box for the cache"))
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    assert doc.project.set_info({"make": "VW"})     # the project's own edit
+    _until(lambda: _disk_cache(car)[0] == b"DEFN" and not dc.running(doc)
+           and "_defn_timer" not in doc.__dict__)
+    assert "make" not in _disk_cache(car)[1]        # not saved with it
+    assert doc.project.modified_since_save          # still unsaved ...
+    assert [e.doc for e in gp.unsaved_entries(win)] == [doc]   # ... and asked
+    assert not doc.__dict__.get("_cache_dirty")
+    assert doc.project.changed_on_disk() is None
+    monkeypatch.setattr(gp._sv, "_dialog", box)     # (the user's save may)
+    monkeypatch.setattr(dsg, "resolve",
+                        lambda *a: pytest.fail("taken as changed on disk"))
+    assert gp.save_selection(win, doc, [])
+    assert _disk_cache(car) == (b"DEFN", {"make": "VW"})
+    assert not doc.project.modified_since_save
+
+
+def test_a_rebuilt_definition_leaves_a_file_changed_on_disk_alone(
+        G, win, car, monkeypatch):
+    from ovtsuite import gui_defncache as dc
+    gp = _rebuilds(monkeypatch)
+    monkeypatch.setattr(gp, "DEFN_IDLE_MS", 1 << 30)
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    other = ovt.Project.load(car)
+    other.set_info({"vin": "X"})
+    other.save()
+    st = os.stat(car)
+    gp.leaving(_tab(win))
+    dc.finish(doc)
+    assert os.stat(car).st_mtime_ns == st.st_mtime_ns  # skipped, silently
+    assert doc.project.changed_on_disk() == "changed"  # the save still asks
+    assert doc.__dict__.get("_cache_dirty")             # for that save
+
+
+def test_closing_the_binary_keeps_its_rebuilt_definition(G, win, car,
+                                                         monkeypatch):
+    from ovtsuite import gui_defncache as dc
+    gp = _rebuilds(monkeypatch)
+    monkeypatch.setattr(gp, "DEFN_IDLE_MS", 1 << 30)
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    doc.project.set_info({"make": "VW"})
+    _tab(win).close_primary()
+    dc.finish(doc)
+    assert _disk_cache(car) == (b"DEFN", {})
+
+
+def test_a_tab_taken_away_keeps_its_rebuilt_definition(G, win, car,
+                                                       monkeypatch):
+    from ovtsuite import gui_defncache as dc
+    gp = _rebuilds(monkeypatch)
+    monkeypatch.setattr(gp, "DEFN_IDLE_MS", 1 << 30)
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    doc.project.set_info({"make": "VW"})
+    win._remove_workspace(_tab(win), remember=False)
+    assert doc not in gp.docs(win)
+    dc.finish(doc)
+    assert _disk_cache(car) == (b"DEFN", {})
+
+
+def test_dont_save_still_writes_a_rebuilt_definition(G, win, car,
+                                                     monkeypatch):
+    from ovtsuite import gui_defncache as dc
+    gp = _rebuilds(monkeypatch)
+    monkeypatch.setattr(gp, "DEFN_IDLE_MS", 1 << 30)
+    assert win.open_path(car)
+    doc = gp.docs(win)[0]
+    doc.project.set_info({"make": "VW"})
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(
+        lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Discard))
+    assert gp.close_project(win, doc)
+    dc.finish(doc)
+    assert _disk_cache(car) == (b"DEFN", {})
+
+
 def test_quitting_waits_for_searches_once_not_one_by_one(app, monkeypatch):
     from ovtsuite import gui_search as gs
     from ovtsuite import search as S

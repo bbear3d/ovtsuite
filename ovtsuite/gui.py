@@ -7767,6 +7767,7 @@ if HAVE_QT:
         def adopt_primary(self, loaded, path) -> bool:
             """Make an already-loaded session this tab's primary. The tables
             that were open stay open where the new file has them too."""
+            _gp.leaving(self)               # the old one's definition snapshot
             self.shutdown()                 # tool windows were the old file's
             open_tables = self._drop_tables()
             dropped = self._carry_comparison(loaded)
@@ -7967,6 +7968,7 @@ if HAVE_QT:
                         "discard them?") \
                         != QtWidgets.QMessageBox.StandardButton.Yes:
                     return
+            _gp.leaving(self)               # its definition snapshot stays
             self.shutdown()
             self._drop_tables()
             self.primary = None
@@ -8963,6 +8965,7 @@ if HAVE_QT:
                 QtWidgets.QMessageBox.critical(self, "Flashing",
                                                "Read image did not load: %s" % ex)
                 return False
+            _gp.leaving(self)               # the old one's definition snapshot
             self.shutdown()                 # tool windows were the old file's
             open_tables = self._drop_tables()
             dropped = self._carry_comparison(loaded)
@@ -9686,6 +9689,8 @@ if HAVE_QT:
                     _gp.note_closing(self, ws, gone)
                 elif gone is not None:
                     self.push_closed(gone)
+            else:
+                _gp.leaving(ws)             # its definition snapshot stays
             ws.shutdown()
             _gp.tab_removed(self, ws)       # a project closes with its last tab
             for other in self.workspaces():
