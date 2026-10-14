@@ -27,6 +27,7 @@ and sniffer use them too (the theme, for example).
 | **Ask for the vehicle details of a new project** | The **Project information** prompt for a new project. |
 | **Recent files listed** | How many projects **File > Open Recent** keeps. |
 | **Closed projects kept** | How many projects **File > Restore project from history** keeps. |
+| **Check for updates at start-up** | Look for a newer version a few seconds after the app starts, at most once a day. See [Checking for updates](updates.md). |
 
 ## Projects and saving
 

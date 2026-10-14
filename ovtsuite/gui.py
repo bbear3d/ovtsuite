@@ -10261,6 +10261,9 @@ if HAVE_QT:
             self._act(helpm, "Help contents\tF1",
                       lambda: self.open_help()).setToolTip(
                 "The help pages for the app and every installed module")
+            self._act(helpm, "Check for Updates...", self.check_updates).setToolTip(
+                "Look for a newer %s and newer versions of your modules"
+                % branding.APP_NAME)
             helpm.addSeparator()
             self._act(helpm, "About %s..." % branding.APP_NAME,
                       lambda: self.open_about(0)).setMenuRole(
@@ -10291,6 +10294,11 @@ if HAVE_QT:
             """Help > Help contents (or the page ``topic``)."""
             from .gui_help import show_help
             show_help(self, topic)
+
+        def check_updates(self):
+            """Help > Check for Updates... (gui_update)."""
+            from .gui_update import check_now
+            check_now(self)
 
         def open_about(self, tab=0):
             """Help > About (tab 0) or Credits & licences (tab 1)."""
@@ -10859,6 +10867,8 @@ def run(primary_path: Optional[str] = None,
         finally:
             gui_splash.end()
     QtCore.QTimer.singleShot(0, _startup)
+    from .gui_update import schedule_startup_check
+    schedule_startup_check(win)     # once a day, a few seconds after start-up
     return app.exec()
 
 

@@ -29,3 +29,8 @@
 #define SnifferAppId "OVTSuite.Sniffer"
 #define LoggerAppId  "OVTSuite.Logger"
 #define SimulatorAppId "OVTSuite.Simulator"
+
+; The named mutex every exe of the bundle holds while it runs (branding.APP_MUTEX,
+; created in packaging/entry.py): AppMutex makes setup wait for -- and ask the
+; user to close -- every running copy before it replaces files.
+#define AppMutex "OVTSuiteAppRunning"
