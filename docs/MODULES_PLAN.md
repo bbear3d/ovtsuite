@@ -52,7 +52,7 @@ built app before. It adds about 6 to 14 MB depending on platform.
 | Versioning | **Module API level** (`MODULE_API = 1`). Base-only releases do not force module rebuilds. |
 | Module versions | **Independent of the app's** (Bear, 2026-10-10). EDC15, EDC16 and ZF 6HP are stable at **1.0.0**; ZF 8HP, Aisin, VDO and HVAC are **0.1.0**. Each is set in its own `<id>/module.py`. |
 | Compatibility | **Newer apps load older modules** wherever possible (see "Backwards compatibility"). |
-| App version | **0.3.0** with the module split (Bear, 2026-10-10). From now on each major feature addition raises it by 0.0.1. |
+| App version | **0.3.0** with the module split (Bear, 2026-10-10). Version numbers are raised only for a release (Bear, 2026-10-14), by 0.0.1, once per release. |
 | Module installer location | **`dist\module-installers\`** (Windows setup.exe) and `dist/module-installers/` (Linux .deb), apart from the app's own installers. |
 | Protection | **Ed25519 signing, plus a licence slot** (not enforced yet). |
 | Aisin | **Ships now:** identification and the 09D checksum. It grows later. |
