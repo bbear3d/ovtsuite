@@ -141,7 +141,9 @@ def decode_cell(fid: int, a: int, b: int):
     elif f == 38:
         v, u = (b - 128) * 0.001 * a, "Deg k/w"
     elif f == 39:
-        v, u = b / 256.0 * a, "mg/h"
+        # VAG tools print these three "mg/H": H is Hub, the stroke -- an
+        # injected (or air) quantity per stroke, never milligrams per hour.
+        v, u = b / 256.0 * a, "mg/stroke"
     elif f == 40:
         v, u = b * 0.1 + 25.5 * a - 400, "A"
     elif f == 41:
@@ -161,11 +163,11 @@ def decode_cell(fid: int, a: int, b: int):
     elif f == 48:
         v, u = b + a * 255, ""
     elif f == 49:
-        v, u = b / 4.0 * a * 0.1, "mg/h"
+        v, u = b / 4.0 * a * 0.1, "mg/stroke"
     elif f == 50:
         v, u = ((b - 128) / 0.01 if a == 0 else (b - 128) / (0.01 * a)), "mbar"
     elif f == 51:
-        v, u = ((b - 128) / 255.0) * a, "mg/h"
+        v, u = ((b - 128) / 255.0) * a, "mg/stroke"
     elif f == 52:
         v, u = b * 0.02 * a - a, "Nm"
     elif f == 53:
