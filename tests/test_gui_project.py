@@ -702,6 +702,29 @@ def test_a_binary_no_module_supports_says_so_once_per_set(G, win, tmp_path,
     assert len(told) == 1
 
 
+def test_a_save_without_a_definition_drops_the_branchs_old_one(G, win,
+                                                               tmp_path,
+                                                               monkeypatch):
+    """A save that produced no definition snapshot (here: a plain image,
+    which carries none) must not leave the branch's previous one behind."""
+    from ovtsuite import gui_project as gp
+    monkeypatch.setattr(G.Workspace, "_explain_limited_support",
+                        lambda self, loaded: None)
+    from ovtsuite.project import Project
+    from ovtsuite.project import importers as imp
+    proj = Project("Bench")
+    s = imp.import_bytes(proj, bytes(range(256)) * 1024, "mystery.bin")
+    path = str(tmp_path / "bench.ovt")
+    proj.save(path)
+    assert gp.open_project(win, path)
+    ws = win.current
+    ref = ws.project_ref
+    ref.doc.project.set_cache(ref.sid, ref.bid, b"stale")
+    _poke(ws)
+    assert gp._commit(ws)
+    assert ref.doc.project.cache(ref.sid, ref.bid) is None
+
+
 def _kept_log_bytes(tmp_path):
     from datetime import datetime, timedelta
     from ovtsuite.datalog import logfile as L

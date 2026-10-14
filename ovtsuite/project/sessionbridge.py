@@ -81,6 +81,32 @@ def working_file(project: Project, sid: str, state: Images, *,
     return fmt.ext, cont.to_bytes()
 
 
+def definition_for(project: Project, sid: str, branch: str,
+                   state: Images) -> Optional[bytes]:
+    """The definition cache to open ``state`` of ``branch`` with: the
+    branch's own, or -- when it has none, or its own would be rejected -- one
+    of its sibling branches' (``Project.cache_candidates``). With a single
+    candidate it is passed on unchecked (the session's own checks decide);
+    with several, the first that ``ovtsuite.defn.usable`` accepts for this
+    image, which costs far less than the matching it saves."""
+    try:
+        cands = project.cache_candidates(sid, branch)
+    except (KeyError, AttributeError):
+        return None
+    if len(cands) <= 1:
+        return cands[0] if cands else None
+    m = _main_member(project, sid)
+    data = state.get(m.id) if m is not None else None
+    if data is None:
+        return cands[0]
+    from .. import defn as _defn
+    platform = project.set(sid).platform
+    for blob in cands:
+        if _defn.usable(blob, platform, bytes(data)) is None:
+            return blob
+    return cands[0]
+
+
 def read_back(project: Project, sid: str, path: str) -> Tuple[Images, Optional[bytes]]:
     """The member images (and definition cache) of a working file a session
     just saved. A region the session added that the set has no member for

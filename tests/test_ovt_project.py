@@ -667,3 +667,63 @@ def test_merging_versions_keeps_the_newest_and_its_bytes():
     b = p.fork(s.id, "Side", at=chain[2])
     with pytest.raises(ValueError):
         p.merge_checkpoints(s.id, [head, chain[2]])         # a branch starts there
+
+
+# -- definition cache: forks and sibling branches ------------------------------
+
+def test_a_fork_takes_its_source_branchs_definition_cache():
+    p, s, root, stock, flash, ee = _new_project()
+    p.set_cache(s.id, stock.id, b"DEFN-stock")
+    b = p.fork(s.id, "Stage 1")
+    assert p.cache(s.id, b.id) == b"DEFN-stock"
+    # a fork of a version the active branch is not at still gets one
+    p.commit(s.id, None, {"flash": _edit(flash, (0x10, b"\x01"))}, label="x")
+    c = p.fork(s.id, "Side", at=root.id)
+    assert p.cache(s.id, c.id) == b"DEFN-stock"
+    # it survives a round trip, and deleting the branch drops it
+    q = ovt.Project.from_bytes(p.to_bytes())
+    assert q.cache(s.id, c.id) == b"DEFN-stock"
+    q.delete_branch(s.id, c.id)
+    assert not any(k.endswith("/%s.defn" % c.id) for k in q._blobs)
+
+
+def test_a_branch_without_a_cache_falls_back_to_a_siblings():
+    p, s, root, stock, flash, ee = _new_project()
+    a = p.fork(s.id, "A")
+    b = p.fork(s.id, "B")
+    assert p.cache(s.id, a.id) is None and p.best_cache(s.id, a.id) is None
+    p.commit(s.id, a.id, {"flash": _edit(flash, (1, b"\x01"))}, label="a")
+    p.commit(s.id, b.id, {"flash": _edit(flash, (2, b"\x02"))}, label="b")
+    s.checkpoint(a.head).ts = "2026-01-01T00:00:00"
+    s.checkpoint(b.head).ts = "2026-02-01T00:00:00"
+    p.set_cache(s.id, a.id, b"DEFN-a")
+    p.set_cache(s.id, b.id, b"DEFN-b")
+    assert p.best_cache(s.id, a.id) == b"DEFN-a"           # its own first
+    # stock has none: the most recently saved sibling's, then the other
+    assert p.cache_candidates(s.id, stock.id) == [b"DEFN-b", b"DEFN-a"]
+    assert p.best_cache(s.id, stock.id) == b"DEFN-b"
+
+
+def test_the_working_file_definition_skips_a_rejected_one(monkeypatch):
+    from ovtsuite import defn as D
+    from ovtsuite.project import sessionbridge as sb
+    p, s, root, stock, flash, ee = _new_project()
+    other = p.fork(s.id, "Other")
+    state = p.head_state(s.id)
+    assert sb.definition_for(p, s.id, stock.id, state) is None
+    p.set_cache(s.id, stock.id, b"own")
+    # one candidate: passed on unchecked (the session decides)
+    monkeypatch.setattr(D, "usable", lambda *a: pytest.fail("checked"))
+    assert sb.definition_for(p, s.id, stock.id, state) == b"own"
+    p.set_cache(s.id, other.id, b"sibling")
+    seen = []
+
+    def usable(blob, platform, data):
+        seen.append((blob, platform, data))
+        return "image structure changed" if blob == b"own" else None
+    monkeypatch.setattr(D, "usable", usable)
+    assert sb.definition_for(p, s.id, stock.id, state) == b"sibling"
+    assert seen[0] == (b"own", "unknown", flash)
+    # none usable: its own goes in, and the session says why it was not used
+    monkeypatch.setattr(D, "usable", lambda *a: "built by different code")
+    assert sb.definition_for(p, s.id, stock.id, state) == b"own"

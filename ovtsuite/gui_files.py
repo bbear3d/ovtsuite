@@ -495,7 +495,8 @@ def compare_with_project(ws, path, sid, bid, cid=None) -> bool:
     QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
     try:
         state = proj.state(sid, cid)
-        ext, blob = _sb.working_file(proj, sid, state, defn=proj.cache(sid, bid))
+        ext, blob = _sb.working_file(
+            proj, sid, state, defn=_sb.definition_for(proj, sid, bid, state))
         work = _sb.write_working_file(_cmp_tmp(win), label, ext, blob)
     except Exception as ex:
         QtWidgets.QApplication.restoreOverrideCursor()

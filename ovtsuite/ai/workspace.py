@@ -248,8 +248,9 @@ class FileWorkspace:
         b = s.branch(t.branch)
         state = proj.state(sid, b.head)
         log = _sb.history_text(proj, sid, b.head)
-        ext, data = _sb.working_file(proj, sid, state, defn=proj.cache(sid, b.id),
-                                     log=log)
+        ext, data = _sb.working_file(
+            proj, sid, state, defn=_sb.definition_for(proj, sid, b.id, state),
+            log=log)
         work = _sb.write_working_file(self._tmpdir(), s.name, ext, data, log=log)
         session = self._session_for_path(work)
         note = apply_definition(proj, sid, session)
