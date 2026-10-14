@@ -151,6 +151,7 @@ The status bar describes the file in the active tab, for example:
 | `checksums: valid` | The file's checksums are correct. |
 | `checksums: NEED FIX (auto on save)` | The checksums do not match the data — normal after an edit, and also common in files read with other tools. Saving corrects them; nothing needs doing by hand. |
 | `checksums: CANNOT VERIFY` | The checksum layout of this image could not be worked out, so the app cannot say whether they are right and will not write them. |
+| `0x1A2B3C` (right) | Where the selected cell is stored in the binary: a value, an axis point, or a cell of the comparison block (in the comparison's binary). Several cells show the lowest and highest address and how many cells, `0x1A2B3C–0x1A2B5A (16 cells)`. Blank for the corner, the comparison banner, an axis the definition gives as numbers, and comparison values resampled onto this table's axes (they are stored nowhere). While a byte is picked in the [Hex editor](editor/hex-editor.md) it shows that byte's offset instead. |
 | **AI: 1 proposal** (right) | An AI has proposed a change to an open tab. Click it to review it. See [Proposals and plans](ai/proposals.md). |
 
 No checksum part at all means no installed module can check this kind of

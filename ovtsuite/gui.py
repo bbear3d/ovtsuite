@@ -3783,6 +3783,11 @@ if HAVE_QT:
                     ", differ" if self.model.buf[a] != _c[a] else "")
             self.info.setText("Offset 0x%X (%d)   byte %d (0x%02X)%s%s%s"
                               % (a, a, b, b, extra, where, cmp_))
+            from . import gui_address           # the main window's too
+            picked = {self._addr_of(i)
+                      for i in self.view.selectionModel().selectedIndexes()
+                      if i.column() < HexModel.COLS}    # (not the text)
+            gui_address.show_hex(self, picked if len(picked) > 1 else [a])
             # reflect the covering table in the dropdown (blank if none).
             # setCurrentIndex does not emit 'activated', so this won't re-jump.
             idx = self._jump_index.get(reg[1], 0) if reg else 0
@@ -6316,6 +6321,8 @@ if HAVE_QT:
             self.model = TableModel(primary)
             self.table = QtWidgets.QTableView()
             self.table.setModel(self.model)
+            from . import gui_address as _gaddr  # the status bar's address
+            _gaddr.watch(self)
             self.table.setItemDelegate(OptionsDelegate(self.table))
             self.table.setAlternatingRowColors(True)
             self.table.horizontalHeader().setMinimumSectionSize(_MIN_CELL_W)
@@ -9563,6 +9570,9 @@ if HAVE_QT:
             # would be drawn over it
             self.statusBar().messageChanged.connect(
                 lambda msg: self._status_label.setVisible(not msg))
+            # the selected cells' address, at the right
+            from . import gui_address
+            gui_address.install(self)
             self._prev_ws = None
             self._make_actions()
             self._add_workspace(primary, comparison)
