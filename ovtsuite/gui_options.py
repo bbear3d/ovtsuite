@@ -187,7 +187,8 @@ class OptionsDialog(QtWidgets.QDialog):
         body.addWidget(self.stack, 1)
         names = list(_opt.PAGES)
         names.insert(names.index(_opt.TOOLBAR) + 1, SHORTCUTS_PAGE)
-        names.insert(names.index(_opt.MODULES) + 1, AI_PAGE)
+        if AI_PAGE not in names:            # it has options of its own now
+            names.insert(names.index(_opt.MODULES) + 1, AI_PAGE)
         names.append(ADVANCED_PAGE)
         for name in names:
             w = self._build_page(name)

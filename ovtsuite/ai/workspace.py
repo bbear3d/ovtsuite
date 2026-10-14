@@ -21,6 +21,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+import threading
 from typing import Dict, List, Optional
 
 from .describe import Index
@@ -118,12 +119,36 @@ class Target:
         return d
 
 
+#: (path) -> ((size, mtime_ns), sha256): a proposal's target is matched on
+#: the hash of the file's bytes, and the app asks after every open tab
+_SHA_CACHE: Dict[str, tuple] = {}
+_SHA_LOCK = threading.Lock()
+
+
 def file_sha256(path: str) -> str:
+    """SHA-256 of the file, worked out once per version (size + mtime)."""
+    try:
+        st = os.stat(path)
+        stamp = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        stamp = None
+    key = os.path.normcase(os.path.abspath(path))
+    if stamp is not None:
+        with _SHA_LOCK:
+            hit = _SHA_CACHE.get(key)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
-    return h.hexdigest()
+    out = h.hexdigest()
+    if stamp is not None:
+        with _SHA_LOCK:
+            if len(_SHA_CACHE) > 256:
+                _SHA_CACHE.clear()
+            _SHA_CACHE[key] = (stamp, out)
+    return out
 
 
 class FileWorkspace:

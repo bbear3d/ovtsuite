@@ -46,6 +46,13 @@ GUI_TOOLS = ("list_open", "current_view", "list_proposals", "show_map",
              "show_category", "filter_tree")
 
 
+def split_tool(tool) -> bool:
+    """A tool that takes what it needs from a tab on the GUI thread and
+    computes on its own (``core_tools.SPLIT_TOOLS``, ``Context.on_gui``)."""
+    from .core_tools import SPLIT_TOOLS
+    return tool in SPLIT_TOOLS
+
+
 def live_path() -> str:
     override = os.environ.get(ENV_DIR)
     if override:
@@ -194,7 +201,8 @@ class BridgeServer:
     def call(self, tool, args, client: str = "mcp"):
         if not isinstance(tool, str) or not isinstance(args, dict):
             return False, {"error": "bad call"}
-        ctx = Context(workspace=self.workspace, client="mcp:%s" % client)
+        ctx = Context(workspace=self.workspace, client="mcp:%s" % client,
+                      on_gui=self.run_on_gui)
         if self.on_activity is not None:
             try:
                 self.on_activity(client, tool)
@@ -210,17 +218,23 @@ class BridgeServer:
             except Exception as ex:
                 return False, {"error": "the app could not run %s: %s" % (tool, ex)}
             return box.get("r", (False, {"error": "the app did not answer"}))
+        if split_tool(tool) and self._is_tab(args):
+            # a snapshot on the GUI thread, the work on this one
+            return self.registry.call(tool, ctx, args)
         with self._lock:                 # one disk load at a time
             return self.registry.call(tool, ctx, args)
+
+    def _is_tab(self, args) -> bool:
+        h = args.get("handle")
+        is_tab = getattr(self.workspace, "is_tab", None)
+        return bool(h and is_tab is not None and is_tab(h))
 
     def _on_gui(self, tool, args) -> bool:
         if tool in GUI_TOOLS:
             return True
-        if tool == "open_file":
+        if tool == "open_file" or split_tool(tool):
             return False
-        h = args.get("handle")
-        is_tab = getattr(self.workspace, "is_tab", None)
-        return bool(h and is_tab is not None and is_tab(h))
+        return self._is_tab(args)
 
 
 # ===================================================================== client

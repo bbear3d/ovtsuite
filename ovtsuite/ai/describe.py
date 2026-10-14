@@ -74,9 +74,11 @@ class Index:
     one -- a structurally found ZF schedule -- uses its label. Where two share
     an id, each gets ``@0x<addr>`` appended."""
 
-    def __init__(self, session):
+    def __init__(self, session, entities=None):
+        """``entities``: ``all_entities(session)`` already taken (on the GUI
+        thread), so the index can be built on another."""
         self.session = session
-        ents = all_entities(session)
+        ents = list(entities) if entities is not None else all_entities(session)
         base: Dict[str, list] = {}
         for e in ents:
             base.setdefault(self._base_id(e), []).append(e)

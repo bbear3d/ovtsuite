@@ -57,6 +57,7 @@ EDITOR = "Editor"
 APPEARANCE = "Appearance"
 TOOLBAR = "Toolbar"
 MODULES = "Modules"
+AI = "AI"
 
 OPTIONS: Tuple[Option, ...] = (
     # -- General -----------------------------------------------------------
@@ -119,6 +120,11 @@ OPTIONS: Tuple[Option, ...] = (
            "(development)", MODULES,
            help="Also in Tools > Modules. Only for modules you build "
            "yourself: an unsigned module is not checked."),
+    # -- AI ------------------------------------------------------------------
+    Option("ai/chat_history_mb", 50, "Maximum saved chat history", AI, "int",
+           "The assistant keeps your chats so you can reopen them. Above this "
+           "size the chats used longest ago are deleted (never the open one).",
+           minimum=1, maximum=10000, suffix=" MB"),
 )
 
 BY_KEY: Dict[str, Option] = {o.key: o for o in OPTIONS}

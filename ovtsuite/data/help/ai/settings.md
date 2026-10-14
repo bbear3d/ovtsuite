@@ -96,7 +96,10 @@ cannot do that answers all at once instead, without any setting to change.
   request sent to an AI service this session, newest first, exactly as sent:
   pick one on the left to see the whole request — the question, what the AI
   looked up, and the answer's status. API keys are never shown or logged.
-  An AI app connected over MCP sends its own requests; see that app.
+  An AI app connected over MCP sends its own requests; see that app. The
+  list keeps the last 60 requests, fewer when they are large (each request of
+  a long chat carries the whole conversation); a very large one is shown cut
+  short.
 
 What goes to the service is what the AI reads to answer: the question, what
 **Include** shares, and the results of what it looks up — parameter values,

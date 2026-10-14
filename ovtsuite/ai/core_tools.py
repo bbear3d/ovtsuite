@@ -12,10 +12,12 @@ the tool will NOT do, because that is what keeps an assistant from guessing.
 from __future__ import annotations
 
 import re
+import threading
 from typing import Optional
 
 from . import describe as D
 from . import proposals as P
+from . import snapshot as SN
 from .tools import Registry, ToolError
 
 H = {"type": "string", "description": "Target handle from open_file / list_open (e.g. \"h1\")."}
@@ -54,6 +56,85 @@ def _cmp_info(t) -> Optional[str]:
     if t.comparison is None:
         return None
     return t.cmp_label or "comparison"
+
+
+#: Tools that take a snapshot of a tab on the GUI thread (``ctx.on_gui``)
+#: and do their work on the caller's thread (see :mod:`.snapshot`).
+SPLIT_TOOLS = ("identify", "list_maps", "find_maps", "diff", "checksum_status",
+               "log_summary", "log_window")
+
+
+def _index_of(t):
+    """``(index, entities, make)`` -- see ``TabTarget.index_snapshot``; a
+    file target (not shared with the GUI) builds its index here."""
+    snap = getattr(t, "index_snapshot", None)
+    if snap is None:
+        idx = t.index
+        return idx, idx.ordered, None
+    return snap()
+
+
+def _pairs(t, cmp, ents=None):
+    """``[(a, b)]``: with ``ents`` each of this target's entities and its
+    counterpart in ``cmp``; without, each of ``cmp``'s and its counterpart
+    here. Cached on a tab (``TabTarget.pairs`` / ``counterparts``)."""
+    if ents is not None:
+        f = getattr(t, "counterparts", None)
+        if f is not None:
+            return f(cmp, ents)
+        return [(e, t.counterpart(e)) for e in ents]
+    f = getattr(t, "pairs", None)
+    if f is not None:
+        return f(cmp)
+    s = t.session
+    out = []
+    for e in list(cmp.entities):
+        try:
+            out.append((e, cmp.counterpart(s, e)))
+        except Exception:
+            out.append((e, None))
+    return out
+
+
+def _checksum_take(s):
+    """GUI thread: ``("done", report)`` when the session remembers the
+    report for its current bytes, else ``("verify", job)`` -- a copy of the
+    bytes and what verifying them needs."""
+    cs = s.checksum_provider()
+    if cs is None:
+        return "done", None
+    keyf = getattr(s, "_checksum_key", None)
+    if keyf is None:
+        return "done", s.checksum_status()
+    key = keyf(cs)
+    cached = getattr(s, "_checksum_cache", None)
+    if cached is not None and cached[0] == key:
+        return "done", cached[1]
+    return "verify", (cs, bytearray(s.binfile.data), s._checksum_opts(), key, s)
+
+
+def _checksum_run(ctx, handle, taken):
+    """Any thread: the report for what :func:`_checksum_take` took; it is
+    handed back to the session (on its thread) so the app reuses it."""
+    what, job = taken
+    if what == "done":
+        return job
+    from ..modules import api as _modapi
+    cs, data, opts, key, s = job
+    rep = None
+    try:
+        if cs.is_supported(data):
+            rep = cs.verify(data, **opts)
+    except _modapi.ChecksumError:
+        rep = None
+
+    def keep():
+        s._checksum_cache = (key, rep)
+    try:
+        SN.on_gui(ctx, handle, keep)
+    except Exception:
+        pass
+    return rep
 
 
 def register(reg: Registry) -> None:
@@ -120,6 +201,16 @@ def register(reg: Registry) -> None:
               {"type": "object", "required": ["handle"], "properties": {"handle": H}},
               title="Identify")
     def identify(ctx, handle):
+        d, taken = SN.on_gui(ctx, handle, lambda: _identify(ctx, handle))
+        if d["checksum"] is None:
+            try:
+                d["checksum"] = D.checksum_json(_checksum_run(ctx, handle, taken))
+            except Exception as ex:
+                d["checksum"] = {"ok": None, "report": "checksum check failed: %s" % ex}
+        d["comparison"] = d.pop("_comparison")
+        return d
+
+    def _identify(ctx, handle):
         t = _target(ctx, handle)
         s = t.session
         ident = getattr(s, "binary_identity", None)
@@ -139,12 +230,14 @@ def register(reg: Registry) -> None:
                 d[k] = v
         if t.notes:
             d["notes"] = list(t.notes)
+        d["checksum"] = None
+        taken = ("done", None)
         try:
-            d["checksum"] = D.checksum_json(s.checksum_status())
+            taken = _checksum_take(s)
         except Exception as ex:
             d["checksum"] = {"ok": None, "report": "checksum check failed: %s" % ex}
-        d["comparison"] = _cmp_info(t)
-        return d
+        d["_comparison"] = _cmp_info(t)
+        return d, taken
 
     @reg.tool("file_information",
               "What the app's File information panel says about the target: identification read "
@@ -225,26 +318,41 @@ def register(reg: Registry) -> None:
               title="List maps")
     def list_maps(ctx, handle, category=None, kind=None, changed_only=False,
                   offset=0, limit=100):
-        t = _target(ctx, handle)
         limit = max(1, min(500, int(limit)))
-        cmp = t.comparison if changed_only else None
-        if changed_only and cmp is None:
-            raise ToolError("changed_only needs a comparison (set_comparison, or a project set)")
         cat = (category or "").lower()
-        rows = []
-        for e in t.index.ordered:
+
+        def wanted(e):
             if kind and e.kind != kind:
-                continue
+                return False
             if cat:
                 path = " / ".join(getattr(e, "category_path", None) or e.categories or [])
                 if cat not in path.lower():
-                    continue
-            if changed_only and not D.changed(e, t.counterpart(e)):
-                continue
-            rows.append(e)
+                    return False
+            return True
+
+        def take():
+            t = _target(ctx, handle)
+            cmp = t.comparison if changed_only else None
+            if changed_only and cmp is None:
+                raise ToolError("changed_only needs a comparison (set_comparison, "
+                                "or a project set)")
+            idx, ents, make = _index_of(t)
+            if not changed_only:
+                return idx, make, [(e, None) for e in ents if wanted(e)], None
+            pairs = [(e, cp) for e, cp in _pairs(t, cmp, ents) if wanted(e)]
+            fz = SN.Frozen()
+            fz.add(e for e, _cp in pairs)
+            fz.add(cp for _e, cp in pairs)
+            return idx, make, pairs, fz
+        idx, make, pairs, fz = SN.on_gui(ctx, handle, take)
+        idx = idx or make()
+        if fz is None:
+            rows = [e for e, _cp in pairs]
+        else:                       # the values compared here, on the copies
+            rows = [e for e, cp in pairs if D.changed(fz.entity(e), fz.entity(cp))]
         page = rows[int(offset):int(offset) + limit]
         return {"total": len(rows), "offset": int(offset),
-                "maps": [D.summary(t.index, e) for e in page]}
+                "maps": [D.summary(idx, e) for e in page]}
 
     @reg.tool("find_maps",
               "Search parameters by name, symbol, description, category or units, using the app's own search "
@@ -257,17 +365,24 @@ def register(reg: Registry) -> None:
     def find_maps(ctx, handle, query, match="fuzzy", limit=25):
         from .. import search as S
         from ..tiers import tier_name
-        t = _target(ctx, handle)
+        def take():
+            t = _target(ctx, handle)
+            src = getattr(t, "search_source", None)
+            idx, _ents, make = _index_of(t)
+            return t.label, (src() if src is not None else t.session), idx, make
+        label, session, idx, make = SN.on_gui(ctx, handle, take)
+        idx = idx or make()
         eng = _engine(S, tier_name)
         opts = S.SearchOptions(mode="text", match=match,
                                max_results=max(1, min(200, int(limit))))
         try:
-            hits = eng.run(query, opts, [S.Source(t.label, t.session)])
+            with _ENGINE_LOCK:             # its caches are shared by every caller
+                hits = eng.run(query, opts, [S.Source(label, session)])
         except S.QueryError as ex:
             raise ToolError(str(ex))
         out = []
         for h in hits[:opts.max_results]:
-            d = D.summary(t.index, h.entity)
+            d = D.summary(idx, h.entity)
             if h.where:
                 d["matched"] = h.where
             out.append(d)
@@ -297,23 +412,38 @@ def register(reg: Registry) -> None:
               title="Diff")
     def diff(ctx, handle, limit=200):
         from .. import patch as _patch
-        t = _target(ctx, handle)
-        cmp = t.comparison
-        if cmp is None:
-            raise ToolError("no comparison: use set_comparison, or open a project set")
+
+        def take():
+            t = _target(ctx, handle)
+            cmp = t.comparison
+            if cmp is None:
+                raise ToolError("no comparison: use set_comparison, or open a project set")
+            idx, _ents, make = _index_of(t)
+            pairs = [(a, b) for a, b in _pairs(t, cmp) if b is not None]
+            fz = SN.Frozen()
+            fz.add(a for a, _b in pairs)
+            fz.add(b for _a, b in pairs)
+            return idx, make, pairs, fz, _cmp_info(t)
+        idx, make, pairs, fz, info = SN.on_gui(ctx, handle, take)
+        idx = idx or make()
         # the comparison is the "from" side: entries carry what changed TO
-        entries = _patch.diff_entities(cmp, t.session)
+        # (what patch.diff_entities(cmp, session) does, on the copies)
+        entries = []
+        for a, b in pairs:
+            pe = _patch._candidate(fz.entity(a), fz.entity(b))
+            if pe is not None:
+                entries.append(pe)
         out = []
         for pe in entries[:max(1, int(limit))]:
             try:
-                e = t.index.resolve(pe.name)
-                eid, ttl = t.index.eid(e), D.title(e)
+                e = idx.resolve(pe.name)
+                eid, ttl = idx.eid(e), D.title(e)
             except ToolError:
                 eid, ttl = pe.name, pe.label or pe.name
             out.append({"id": eid, "title": ttl,
                         "changed_cells": pe.changed_cells,
                         "total_cells": pe.total_cells, "first_change": pe.first_change})
-        return {"comparison": _cmp_info(t), "changed": len(entries),
+        return {"comparison": info, "changed": len(entries),
                 "first_change_reads": "comparison -> current", "maps": out,
                 "truncated": len(entries) > len(out)}
 
@@ -346,8 +476,8 @@ def register(reg: Registry) -> None:
               {"type": "object", "required": ["handle"], "properties": {"handle": H}},
               title="Checksum status")
     def checksum_status(ctx, handle):
-        t = _target(ctx, handle)
-        rep = D.checksum_json(t.session.checksum_status())
+        taken = SN.on_gui(ctx, handle, lambda: _checksum_take(_target(ctx, handle).session))
+        rep = D.checksum_json(_checksum_run(ctx, handle, taken))
         if rep is None:
             return {"supported": False,
                     "why": "no installed module can check this binary's checksum"}
@@ -411,20 +541,26 @@ def register(reg: Registry) -> None:
         "path": {"type": "string", "description": "Or: absolute path of a log file (.csv)."}}}
 
     def _log(ctx, handle=None, log=None, path=None):
+        """The parsed log (kept: see logs.CACHE_SIZE). Only finding a
+        project's log touches the tab; parsing happens on this thread."""
         from . import logs as L
         if path:
             import os
-            return L.load_path(os.path.abspath(os.path.expanduser(path)))
+            return L.load_path_cached(os.path.abspath(os.path.expanduser(path)))
         if not (handle and log):
             raise ToolError("give handle + log (from list_logs) or path")
-        t = _target(ctx, handle)
-        if t.kind != "project-set":
-            raise ToolError("%s is not a project: give the log's path instead" % handle)
-        p = t.project
-        a = next((x for x in p.logs if log in (x.id, x.filename)), None)
-        if a is None:
-            raise ToolError("no log %r in the project; list_logs shows them" % log)
-        return L.load_bytes(p.log_bytes(a.id), a.filename)
+
+        def take():
+            t = _target(ctx, handle)
+            if t.kind != "project-set":
+                raise ToolError("%s is not a project: give the log's path instead" % handle)
+            p = t.project
+            a = next((x for x in p.logs if log in (x.id, x.filename)), None)
+            if a is None:
+                raise ToolError("no log %r in the project; list_logs shows them" % log)
+            return p.log_bytes(a.id), a.filename, "%s/%s" % (p.uid, a.id)
+        data, filename, aid = SN.on_gui(ctx, handle, take)
+        return L.load_bytes_cached(bytes(data), filename, aid)
 
     @reg.tool("list_logs",
               "The data logs kept in a project (all sets), newest last: id, file name, when added.",
@@ -446,7 +582,7 @@ def register(reg: Registry) -> None:
     def log_summary(ctx, handle=None, log=None, path=None):
         from . import logs as L
         lg = _log(ctx, handle, log, path)
-        return L.summary(lg)
+        return L.summary_cached(lg)
 
     @reg.tool("log_window",
               "Channels of a data log over a time range, down-sampled to at most 200 rows: for looking "
@@ -602,6 +738,7 @@ def register(reg: Registry) -> None:
 
 
 _ENGINE = {}
+_ENGINE_LOCK = threading.Lock()
 _HELP = {}
 
 
