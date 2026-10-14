@@ -16,7 +16,7 @@ over 63. The checksum is the 8-bit sum of everything before it.
 """
 import time
 
-from .transport import KLineError, KLineTimeout
+from .transport import KLineError, KLineTimeout, check_stop
 
 TESTER = 0xF1
 
@@ -27,6 +27,9 @@ SVC_REQ_DOWNLOAD = 0x34
 SVC_TRANSFER = 0x36
 SVC_START_ROUTINE_LID = 0x31
 NRC_PENDING = 0x78
+#: responsePending frames one request may draw before it is given up on -- the
+#: same bound the CAN transports use, so a stuck ECU cannot loop forever.
+MAX_PENDING = 64
 
 
 class NegativeResponse(KLineError):
@@ -86,6 +89,8 @@ class Kwp2000:
         # fast timing (live data): the whole frame in one write, echoes
         # drained together -- KWHack's "batched send"
         self.fast = False
+        #: optional callable()->bool; a responsePending wait gives up when true
+        self.is_stop = None
 
     def send(self, service, body=b"", exclude_addresses=False):
         frame = build_frame(service, body, exclude_addresses, dest=self.controller)
@@ -115,6 +120,7 @@ class Kwp2000:
     def send_receive(self, service, body=b"", exclude_addresses=False):
         self.send(service, body, exclude_addresses)
         msg = self.receive()
+        pending = 0
         while True:
             if msg.src is not None:
                 if msg.src != self.controller:
@@ -123,6 +129,11 @@ class Kwp2000:
                     raise KLineError("Unexpected DestAddress 0x%02X" % msg.dest)
             if msg.service == 0x7F:
                 if len(msg.body) >= 2 and msg.body[0] == service and msg.body[1] == NRC_PENDING:
+                    pending += 1
+                    if pending > MAX_PENDING:
+                        raise KLineTimeout("KWP2000: ECU stayed in responsePending "
+                                           "to service 0x%02X" % service)
+                    check_stop(getattr(self, "is_stop", None))
                     msg = self.receive()
                     continue
                 raise NegativeResponse(service, msg.body[1] if len(msg.body) > 1 else 0)

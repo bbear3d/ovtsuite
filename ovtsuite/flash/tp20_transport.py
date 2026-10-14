@@ -626,6 +626,9 @@ class CanKLine:
         self._tx = bytearray()          # bytes written but not yet a whole frame
         self._rx = bytearray()          # bytes ready to be read back
         self.last_sync = 0x55
+        #: optional callable()->bool; a responsePending wait gives up when true.
+        #: (A local Tp20Channel has its own ``tp.is_stop`` for its frame waits.)
+        self.is_stop = None
 
     # -- lifecycle --
     def wake_up(self, address=0x01, even_parity=False, tries=3):
@@ -744,6 +747,8 @@ class CanKLine:
         here.  Each pending frame refreshes the wait (0x78 = keep waiting, like
         P3max), bounded so a stuck ECU can't loop forever."""
         for _ in range(64):
+            if self.is_stop is not None and self.is_stop():
+                raise KLineError("CanKLine: aborted (stop requested)")
             resp = self.tp.recv(int(self._timeout * 1000))
             if len(resp) == 3 and resp[0] == 0x7F and resp[2] == 0x78:
                 self._log("KWP responsePending (7F %02X 78); awaiting real response" % resp[1])
