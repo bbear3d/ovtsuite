@@ -199,6 +199,45 @@ def same_extent(e, cp) -> bool:
             and (int(e.end) - int(e.addr)) == (int(cp.end) - int(cp.addr)))
 
 
+def axis_changes(e, cp):
+    """The axis breakpoints that differ between two same-shaped tables, as
+    ``[(axis, index, mine, theirs)]`` with ``axis`` "x" or "y" in ``e``'s own
+    terms; ``[]`` when they match or the shapes differ (the overlay resamples
+    those, and ``cells_differ`` judges the result).
+
+    A table's axes sit outside its Z bytes (a ZF shift map's pedal axis is
+    just before the map), so comparing Z alone called a map whose only edit
+    was its breakpoints identical. A 1-D run stored the other way round is
+    turned first, as ``transfer.build_overlay`` does; a side with no axis
+    has nothing to differ.
+    """
+    from .model import values_equal
+    try:
+        px, py = e.x_values(), e.y_values()
+        ox, oy = cp.x_values(), cp.y_values()
+    except Exception:
+        return []
+    er, ec, orr, oc = int(e.rows), int(e.cols), int(cp.rows), int(cp.cols)
+    if (1 in (er, ec) and 1 in (orr, oc) and (er, ec) != (1, 1)
+            and (orr, oc) != (1, 1) and (er == 1) != (orr == 1)):
+        ox, oy, orr, oc = oy, ox, oc, orr
+    if (er, ec) != (orr, oc):
+        return []
+    out = []
+    for name, mine, theirs in (("x", px, ox), ("y", py, oy)):
+        if not mine or not theirs or len(mine) != len(theirs):
+            continue
+        for i, (a, b) in enumerate(zip(mine, theirs)):
+            if not values_equal(a, b, 1e-6):
+                out.append((name, i, a, b))
+    return out
+
+
+def axes_differ(e, cp) -> bool:
+    """Whether any axis breakpoint differs (see :func:`axis_changes`)."""
+    return bool(axis_changes(e, cp))
+
+
 def _cell_step(e) -> float:
     """Physical size of one raw step for this entity, used as the tolerance.
 
@@ -248,9 +287,3 @@ def cells_differ(e, cp) -> bool:
             if abs(float(mine) - float(other)) > tol:
                 return True
     return False
-from .msblock import MeasuringBlocks
-from .gears import GearRatios
-from .variant import vss_pulse_settings
-from .signals import SignalCatalog, observed_ids, EMPTY_IDS
-from functools import lru_cache as _lru_cache
-from .signal_names import translate_german as _tr_de

@@ -103,6 +103,11 @@ class PatchEntry:
     tier: int = 0
     source_grade: str = ""          # comparison entity's own provenance
     changed_cells: Optional[int] = None   # None when the two shapes differ
+    #: axis breakpoints that differ (same shape only). Nonzero means the
+    #: captured ``x_axis`` / ``y_axis`` are part of the change and are written
+    #: on apply; a patch from before this field (0) writes cells only, as it
+    #: always did.
+    changed_axes: int = 0
     total_cells: int = 0
     first_change: str = ""
     selected: bool = True
@@ -250,6 +255,7 @@ def _candidate(e: Entity, cp: Entity) -> Optional[PatchEntry]:
 
     same_shape = (e.rows, e.cols) == (cp.rows, cp.cols)
     cvals = cp.values()
+    axes = []
     if same_shape:
         pvals = e.values()
         n = 0
@@ -261,8 +267,18 @@ def _candidate(e: Entity, cp: Entity) -> Optional[PatchEntry]:
                     if not first:
                         first = "[%d,%d] %s -> %s" % (
                             r, c, _fmt(pvals[r][c]), _fmt(cvals[r][c]))
-        if n == 0:
+        # The axes sit outside the Z bytes: a map whose only edit is its
+        # breakpoints is a change too (it used to show up as unnamed bytes).
+        from .diff import axis_changes
+        axes = axis_changes(e, cp)
+        if n == 0 and not axes:
             return None
+        if axes:
+            ax, i, a, b = axes[0]
+            note = "%s axis[%d] %s -> %s" % (ax.upper(), i, _fmt(a), _fmt(b))
+            if len(axes) > 1:
+                note += " (+%d more)" % (len(axes) - 1)
+            first = "%s; %s" % (first, note) if first else note
         changed_cells = n
     else:
         changed_cells = None
@@ -274,6 +290,7 @@ def _candidate(e: Entity, cp: Entity) -> Optional[PatchEntry]:
                       units=e.units, label=e.label, description=e.description,
                       categories=list(e.categories), tier=e.tier,
                       source_grade=cp.source, changed_cells=changed_cells,
+                      changed_axes=len(axes),
                       total_cells=cp.rows * cp.cols, first_change=first)
 
 
@@ -334,6 +351,22 @@ def _region_exempt_ranges(name: str, data: bytes) -> List[Tuple[int, int]]:
     return []
 
 
+def _axis_spans(entities) -> List[Tuple[int, int]]:
+    """``[(start, end)]`` of the axis breakpoints the entities store in the
+    image."""
+    out = []
+    for e in entities:
+        for ax in (getattr(e, "x", None), getattr(e, "y", None)):
+            a = getattr(ax, "addr", None)
+            n = int(getattr(ax, "count", 0) or 0)
+            if a is None or n <= 0:
+                continue
+            w = 4 if getattr(ax, "is_float", False) else max(
+                1, int(getattr(ax, "bits", 16) or 16) // 8)
+            out.append((a, a + n * w))
+    return out
+
+
 def diff_gaps(primary, comparison, *,
               exclude_checksums: bool = True) -> List[Tuple[int, int]]:
     """Byte ranges inside ``primary``'s own calibration region where the two
@@ -359,6 +392,17 @@ def diff_gaps(primary, comparison, *,
     from .diff import _byte_ranges
     spans = sorted((e.addr, e.end) for e in primary.entities
                    if getattr(e, "addr", None) is not None)
+    # An entity's axes are stored outside [addr, end) -- before the map on
+    # EDC16 and ZF -- and belong to it just the same: a changed breakpoint
+    # is that parameter's change (diff_entities), not undefined data.
+    spans = sorted(spans + _axis_spans(primary.entities))
+    merged: List[Tuple[int, int]] = []
+    for s0, s1 in spans:                # overlapping spans as one, for bisect
+        if merged and s0 <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], s1))
+        else:
+            merged.append((s0, s1))
+    spans = merged
     starts = [s for s, _ in spans]
     import bisect
 
@@ -568,6 +612,32 @@ def _reconcile(target: Entity, entry: PatchEntry, session) -> List[Tuple[int, in
     return out
 
 
+def _apply_axes(target: Entity, entry: PatchEntry, session) -> str:
+    """Write ``entry``'s captured breakpoints onto ``target``'s axes, when
+    the shapes match. Returns a warning, or "" when all went in."""
+    if (target.rows, target.cols) != (entry.rows, entry.cols):
+        return ("%s: its axes changed in the patch, but this target's map is "
+                "%dx%d (captured %dx%d), so only its values were written"
+                % (entry.name, target.rows, target.cols, entry.rows,
+                   entry.cols))
+    skipped = 0
+    for ax, want in ((getattr(target, "x", None), entry.x_axis),
+                     (getattr(target, "y", None), entry.y_axis)):
+        if not want:
+            continue
+        if ax is None or getattr(ax, "addr", None) is None:
+            skipped += 1                # an axis the definition supplies
+            continue
+        have = (target.x_values() if ax is target.x else target.y_values())
+        for i, v in enumerate(want[:len(have)]):
+            if not values_equal(have[i], v, 1e-9):
+                session.edit_axis(ax, i, v)
+    if skipped:
+        return ("%s: this target has an axis that is not stored in the image; "
+                "it was left as it is" % entry.name)
+    return ""
+
+
 @dataclass
 class ApplyResult:
     applied: List[str] = field(default_factory=list)
@@ -658,6 +728,10 @@ def apply_patch(patch: Patch, target, *,
                     bytes(target.original[te.addr:te.end]):
                 res.conflicts += 1
             target.edit_cells(te, cells)
+            if pe.changed_axes:
+                note = _apply_axes(te, pe, target)
+                if note:
+                    res.warnings.append(note)
             if not placement_trusted(te):
                 res.warnings.append(
                     "%s applied at a %r (unestablished) target address, "
