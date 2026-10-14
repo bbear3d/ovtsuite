@@ -100,7 +100,10 @@ page lists the app's defaults.
 (see [Modules](modules.md)). It is only for modules you build yourself.
 **Module manager...** opens that window. The AI assistant's settings have a
 window of their own: **AI settings...** opens it (see [AI settings and
-privacy](ai/settings.md)).
+privacy](ai/settings.md)). **Maximum saved chat history** (50 MB unless you
+change it) is how much room the assistant's saved chats may take; above it
+the chats used longest ago are deleted, never the one open in the panel (see
+[Chat history](ai/assistant.md#chat-history)).
 
 ## Advanced
 

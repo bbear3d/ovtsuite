@@ -90,6 +90,25 @@ class HttpClient:
     def __init__(self, timeout: float = 120.0, on_send=None):
         self.timeout = timeout
         self.on_send = on_send
+        #: a threading.Event: once set, a stream in progress stops at its
+        #: next line (and :meth:`abort` cuts the connection under it)
+        self.cancel = None
+        self._open = None                 # the response being read, for abort()
+
+    def _cancelled(self) -> bool:
+        return self.cancel is not None and self.cancel.is_set()
+
+    def abort(self) -> None:
+        """Stop: close the connection a stream is reading from, from any
+        thread, so a reply being written ends now rather than at its end."""
+        resp = self._open
+        if resp is None:
+            return
+        try:
+            sock = resp.fp.raw._sock               # http.client internals
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
 
     def request(self, method: str, url: str, headers: Dict[str, str],
                 body: Optional[dict] = None, log_url: Optional[str] = None):
@@ -100,7 +119,8 @@ class HttpClient:
         req = urllib.request.Request(url, data=data, headers=h, method=method)
         t0 = time.time()
         rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "method": method,
-               "url": log_url or url, "body": body}
+               "url": log_url or url, "body": body,
+               "size": len(data or b"")}
         try:
             with urllib.request.urlopen(req, timeout=self.timeout,
                                         context=_ssl_context()) as resp:
@@ -141,7 +161,8 @@ class HttpClient:
         req = urllib.request.Request(url, data=data, headers=h, method=method)
         t0 = time.time()
         rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "method": method,
-               "url": log_url or url, "body": body, "stream": True}
+               "url": log_url or url, "body": body, "stream": True,
+               "size": len(data or b"")}
         try:
             resp = urllib.request.urlopen(req, timeout=self.timeout, context=_ssl_context())
         except urllib.error.HTTPError as ex:
@@ -169,10 +190,14 @@ class HttpClient:
             self._log(rec)
             return "json", out
 
+        self._open = resp
+
         def events():
             ev, buf, n = "", [], 0
             try:
                 for raw in resp:
+                    if self._cancelled():
+                        raise ProviderError("cancelled", "stopped")
                     line = raw.decode("utf-8", "replace").rstrip("\r\n")
                     if not line:
                         if buf:
@@ -188,13 +213,21 @@ class HttpClient:
                         ev = v
                     elif k == "data":
                         buf.append(v)
+                if self._cancelled():           # cut off by abort(): not an answer
+                    raise ProviderError("cancelled", "stopped")
                 if buf:
                     n += 1
                     yield ev or "message", "\n".join(buf)
-            except (socket.timeout, OSError) as ex:
+            except (socket.timeout, OSError, ValueError) as ex:
+                if self._cancelled():
+                    raise ProviderError("cancelled", "stopped")
                 raise ProviderError(OFFLINE, "the stream was cut off: %s" % ex)
             finally:
-                resp.close()
+                self._open = None
+                try:
+                    resp.close()
+                except Exception:
+                    pass
                 rec.update(status=resp.status, seconds=round(time.time() - t0, 2),
                            response={"streamed_events": n})
                 self._log(rec)
