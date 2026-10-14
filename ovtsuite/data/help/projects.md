@@ -178,7 +178,8 @@ use **Overwrite** or **Save mine as a copy**.
 - **Patches** made in a project tab can be kept in it (see
   [Patches](editor/patches.md#patches-kept-in-the-project)).
 - **Reads** from a control unit go into a project: with a project tab in
-  front you are asked **Add to <project>** or **New project** (see
+  front you are asked **Add to <project>** or **New project**, and can
+  **Export to file...** instead of opening it (see
   [Reading](flashing/reading.md#where-the-read-goes)).
 - After a successful **write**, the version written is marked as last
   flashed: the Project panel shows *⚡ flashed <date>* on it, and the set's
@@ -226,7 +227,18 @@ Right-click an item for what can be done with it:
 - **Branch** -- open it, make it the active branch (the one a first open
   shows), rename, **New branch from here**, delete (its history stays).
 - **Version** -- compare with it, **Revert the branch to this version** (adds
-  a new version; nothing is lost), **New branch from this version**.
+  a new version; nothing is lost), **New branch from this version**,
+  **Rename...** (or select it and press **F2**; leave the name empty to give
+  it back its automatic name). The new name shows in **Version history** too,
+  and a name given or cleared there shows here.
+  **Export this version...** saves that version as it was saved: one part
+  of the set as a raw `.bin` (you pick which, for a set of several), or the
+  set's original file (`.dim`, `.sgo` ...) rebuilt with that version's
+  content. **Open this version (read-only)** opens it in a tab of its own,
+  titled *<project> – <set> @ <version> (read-only)*: look at its tables,
+  compare it, export it -- but nothing in it can be edited or saved, it is
+  not added to Open Recent, and closing it asks nothing. To work on it, use
+  **Revert the branch to this version** or **New branch from this version**.
 - **Log** -- **Open in Data logging**, **Export...**, **Pin** / **Unpin**,
   **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
 - **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,
@@ -235,7 +247,8 @@ Right-click an item for what can be done with it:
 - **Logs** / **Patches** / **Attachments** (the headings) -- add one.
 
 Each project lists its **Logs**, **Patches** and **Attachments** under its
-sets.
+sets, newest first (as do **File > Export** and the pickers that offer
+them); sets and branches stay in the order they were made.
 
 ## WinOLS projects and definitions
 

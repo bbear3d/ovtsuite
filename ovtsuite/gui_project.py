@@ -638,6 +638,25 @@ def after_history_dialog(ws):
         refresh_panel(ws.win)
 
 
+def rename_version(win, doc, sid, cid, name) -> None:
+    """Name checkpoint ``cid`` of set ``sid`` ("" gives it back its automatic
+    name); every open tab of the set -- its Version history, and a
+    comparison against that version -- sees the new name."""
+    tabs = [t for t in doc.tabs(win) if t.project_ref.sid == sid]
+    for t in tabs:
+        after_history_dialog(t)             # names typed in the dialog first
+    doc.project.set_checkpoint_label(sid, cid, name)
+    c = doc.project.set(sid).checkpoint(cid)
+    for t in tabs:
+        _resync_log(t)
+        ver = getattr(t.comparison, "version_of", None) \
+            if t.comparison is not None else None
+        if isinstance(ver, dict) and ver.get("id") == cid:
+            ver["label"] = c.label or c.kind
+        win._workspace_changed(t)
+    refresh_panel(win)
+
+
 def merge_versions(win, doc, sid, cids, label="") -> str:
     """Merge adjacent saved versions of set ``sid`` into one
     (``Project.merge_checkpoints``); every open tab of the set sees the new
@@ -777,6 +796,9 @@ def save_as_project(ws) -> bool:
     never saved starts from what was read."""
     if ws.primary is None:
         return False
+    if getattr(ws, "view_only", None):
+        from . import gui_viewonly as _vo
+        return _vo.refuse_save(ws)          # a saved version is no new project
     win = ws.win
     from . import container as _cont
     from .project import importers as _imp
@@ -842,32 +864,89 @@ def save_as_project(ws) -> bool:
 
 
 # ------------------------------------------------------------- reads
+def _read_prompt_skipped() -> bool:
+    """Unattended runs (the test suite): no prompt when there is no project
+    to add the read to -- it opens as a new project, as it always did."""
+    return os.environ.get("OVT_NO_READ_PROMPT", "").strip() not in ("", "0")
+
+
+def ask_read(win, title, text, informative="", add_label=None, export=None):
+    """The "Read complete" prompt: ``"add"`` (to the project in front, offered
+    when ``add_label`` is given), ``"new"`` (a new project), ``"export"`` (the
+    read was saved to a file by ``export()``, which returns True when it
+    saved) or None (discard the read -- confirmed first: a read is not easily
+    repeated)."""
+    if add_label is None and _read_prompt_skipped():
+        return "new"
+    SB = QtWidgets.QMessageBox.StandardButton
+    Role = QtWidgets.QMessageBox.ButtonRole
+    while True:
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Question,
+                                    title, text, SB.Cancel, win)
+        if informative:
+            box.setInformativeText(informative)
+        add = (box.addButton(add_label, Role.AcceptRole)
+               if add_label is not None else None)
+        new = box.addButton("New project" if add is not None
+                            else "Open as a new project",
+                            Role.AcceptRole if add is None else Role.ActionRole)
+        exp = (box.addButton("Export to file...", Role.ActionRole)
+               if export is not None else None)
+        box.setDefaultButton(add if add is not None else new)
+        box.exec()
+        hit = box.clickedButton()
+        if add is not None and hit is add:
+            return "add"
+        if hit is new:
+            return "new"
+        if exp is not None and hit is exp:
+            if export():
+                return "export"
+            continue                    # the save was cancelled: ask again
+        if QtWidgets.QMessageBox.question(
+                win, title, "Discard this read? It is not saved anywhere.",
+                SB.Yes | SB.No, SB.No) == SB.Yes:
+            return None
+
+
+def export_read(win, data, name, eeprom=None, source=None) -> bool:
+    """Save a read to a file (an .ovt project, or the raw image) instead of
+    opening it. True when it was saved."""
+    from . import read_export as _rx
+    written = _rx.ask_save_read(win, data, name, eeprom=eeprom, source=source,
+                                title="Export the read")
+    if written and getattr(win, "statusBar", None) is not None:
+        try:
+            win.statusBar().showMessage(
+                "Read saved to %s" % ", ".join(os.path.basename(w)
+                                               for w in written), 8000)
+        except Exception:
+            pass
+    return bool(written)
+
+
 def open_read(win, data, name, eeprom=None, source=None):
     """A read from a module goes straight into a project, with the read itself
     as the as-read original (the root of its history): into the active tab's
-    project when the user says so, else a new, untitled project. It is in
-    the crash-recovery store at once, before anything is saved. Returns the
-    tab, or None."""
+    project when the user says so, else a new, untitled project -- or, when
+    the user says so, only to a file (Export to file...). It is in the
+    crash-recovery store at once, before anything is saved. Returns the tab,
+    or None (nothing opened: exported, discarded or failed)."""
     from .platforms.identify import identify
     from .project import importers as _imp
     cur = win.current
-    target = None
-    if getattr(cur, "project_ref", None) is not None:
-        doc = cur.project_ref.doc
-        SB = QtWidgets.QMessageBox.StandardButton
-        box = QtWidgets.QMessageBox(
-            QtWidgets.QMessageBox.Icon.Question, "Read complete",
-            "Add this read to the project %s?" % doc.title, SB.Cancel, win)
-        add = box.addButton("Add to %s" % doc.title,
-                            QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        new = box.addButton("New project",
-                            QtWidgets.QMessageBox.ButtonRole.ActionRole)
-        box.setDefaultButton(add)
-        box.exec()
-        if box.clickedButton() is add:
-            target = doc
-        elif box.clickedButton() is not new:
-            target = None
+    ref = getattr(cur, "project_ref", None)
+    here = ref.doc if ref is not None else None
+    choice = ask_read(
+        win, "Read complete",
+        "Add this read to the project %s?" % here.title if here is not None
+        else "The read is complete. Open it as a new project?",
+        add_label="Add to %s" % here.title if here is not None else None,
+        export=lambda: export_read(win, data, name, eeprom=eeprom,
+                                   source=source))
+    if choice in (None, "export"):
+        return None
+    target = here if choice == "add" else None
     try:
         if target is not None:
             proj = target.project
@@ -917,29 +996,24 @@ def open_eeprom_read(win, data, name, source=None):
     cur = win.current
     ref = getattr(cur, "project_ref", None)
     target = None
+    s = None
     if ref is not None:
         doc = ref.doc
         s = ref.set if ref.set.platform == "edc15" else next(
             (x for x in doc.project.sets if x.platform == "edc15"), None)
-        if s is not None:
-            SB = QtWidgets.QMessageBox.StandardButton
-            box = QtWidgets.QMessageBox(
-                QtWidgets.QMessageBox.Icon.Question, "EEPROM read complete",
-                "Add this EEPROM read to %s (%s)?" % (doc.title, s.name),
-                SB.Cancel, win)
-            box.setInformativeText(
-                "It becomes a new branch, \"%s\", with the flash of the "
-                "version in front and this EEPROM." % label)
-            add = box.addButton("Add to %s" % doc.title,
-                                QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-            new = box.addButton("New project",
-                                QtWidgets.QMessageBox.ButtonRole.ActionRole)
-            box.setDefaultButton(add)
-            box.exec()
-            if box.clickedButton() is add:
-                target = (doc, s)
-            elif box.clickedButton() is not new:
-                return None
+    choice = ask_read(
+        win, "EEPROM read complete",
+        "Add this EEPROM read to %s (%s)?" % (doc.title, s.name)
+        if s is not None else
+        "The EEPROM read is complete. Open it as a new project?",
+        informative="It becomes a new branch, \"%s\", with the flash of the "
+        "version in front and this EEPROM." % label if s is not None else "",
+        add_label="Add to %s" % doc.title if s is not None else None,
+        export=lambda: export_read(win, data, name, source=source))
+    if choice in (None, "export"):
+        return None
+    if choice == "add":
+        target = (doc, s)
     if target is not None:
         doc, s = target
         proj = doc.project
@@ -1121,6 +1195,10 @@ def _open_new_doc(win, proj, ws=None):
     except Exception:
         pass
     show_panel(win)
+    if first is not None:
+        # project tab loads keep the file information quiet (load_into)
+        from . import gui_files as _gf
+        _gf._info_on_open(win, first)
     return first
 
 
@@ -1246,9 +1324,14 @@ def add_files(win, doc) -> bool:
         return False
     set_last_dir(paths[0])
     sets = _import_paths(win, doc.project, paths)
+    first = None
     for s in sets:
-        open_branch(win, doc, s.id, s.active.id)
+        t = open_branch(win, doc, s.id, s.active.id)
+        first = first or t
     refresh_panel(win)
+    if first is not None:
+        from . import gui_files as _gf
+        _gf._info_on_open(win, first)
     return bool(sets)
 
 
@@ -1874,20 +1957,79 @@ def _saved_first(ws) -> bool:
 
 
 def _write_export(ws, name, filt, data):
+    path = _write_export_from(ws, name, filt, data)
+    if path:
+        ws.statusBar().showMessage("Exported %s" % os.path.basename(path), 6000)
+    return bool(path)
+
+
+def _write_export_from(parent, name, filt, data) -> Optional[str]:
+    """Ask where to export ``data`` (starting at ``name``) and write it.
+    Returns the path, or None (cancelled, or it failed -- said)."""
     from .recent import get_last_dir, set_last_dir
     path, _f = QtWidgets.QFileDialog.getSaveFileName(
-        ws, "Export", os.path.join(get_last_dir(), name), filt + ";;All files (*)")
+        parent, "Export", os.path.join(get_last_dir(), name),
+        filt + ";;All files (*)")
     if not path:
-        return False
+        return None
     try:
         with open(path, "wb") as fh:
             fh.write(data)
     except OSError as ex:
-        QtWidgets.QMessageBox.critical(ws, "Export", str(ex))
-        return False
+        QtWidgets.QMessageBox.critical(parent, "Export", str(ex))
+        return None
     set_last_dir(path)
-    ws.statusBar().showMessage("Exported %s" % os.path.basename(path), 6000)
-    return True
+    return path
+
+
+def export_version(parent, doc, sid, cid) -> Optional[str]:
+    """Project panel > a version > Export this version...: one part of the
+    set as it was at checkpoint ``cid`` (raw), or the set's original file
+    rebuilt with that version's content. Returns the path written."""
+    proj = doc.project
+    s = proj.set(sid)
+    c = s.checkpoint(cid)
+    if c is None:
+        return None
+    try:
+        state = proj.state(sid, cid)
+    except Exception as ex:
+        QtWidgets.QMessageBox.critical(parent, "Export version",
+                                       "That version could not be rebuilt: %s"
+                                       % ex)
+        return None
+    ver = ("as read" if c.kind == "read" and c.parent is None
+           else c.label or c.kind)
+    choices = [("raw", m) for m in s.members if state.get(m.id) is not None]
+    choices += [("orig", o) for o in s.originals]
+    if not choices:
+        return None
+    pick = choices[0]
+    if len(choices) > 1:
+        names = ["%s (.bin)" % x.label if k == "raw" else
+                 "Original file: %s" % x.filename for k, x in choices]
+        got, ok = QtWidgets.QInputDialog.getItem(
+            parent, "Export version", "What of %s @ %s?" % (s.name, ver),
+            names, 0, False)
+        if not ok:
+            return None
+        pick = choices[names.index(got)]
+    kind, x = pick
+    safe = "".join(ch if ch not in '\\/:*?"<>|' else "_" for ch in ver)
+    try:
+        if kind == "raw":
+            data = _ex.export_raw(proj, sid, x.id, checkpoint=cid)
+            return _write_export_from(
+                parent, "%s %s %s (%s).bin" % (doc.title, s.name, x.label, safe),
+                "Binary files (*.bin)", data)
+        data = _ex.export_original(proj, sid, x.id, checkpoint=cid)
+    except _ex.ExportRefused as ex:
+        QtWidgets.QMessageBox.information(parent, "Export version", str(ex))
+        return None
+    ext = os.path.splitext(x.filename)[1] or "." + x.format
+    return _write_export_from(
+        parent, "%s (%s)%s" % (os.path.splitext(x.filename)[0], safe, ext),
+        "%s files (*%s)" % (x.format.upper(), ext), data)
 
 
 # ---------------------------------------------------- project information
@@ -2108,13 +2250,22 @@ def kept(doc, kind) -> list:
             "attachment": doc.project.attachments}[kind]
 
 
+def newest_first(items) -> list:
+    """Kept logs / patches / attachments for display: newest first (by when
+    they were added, then by their place in the list). The stored lists keep
+    their order -- the log cap relies on it."""
+    return [a for _i, a in sorted(enumerate(items),
+                                  key=lambda p: (p[1].added or "", p[0]),
+                                  reverse=True)]
+
+
 def export_kept(win, kind) -> Optional[str]:
     """File > Export > Data log / Patch / Attachment: pick one of the
     project's, write it to a file."""
     ref = getattr(win.current, "project_ref", None)
     if ref is None:
         return None
-    items = kept(ref.doc, kind)
+    items = newest_first(kept(ref.doc, kind))
     if not items:
         return None
     a = items[0]
@@ -2123,7 +2274,7 @@ def export_kept(win, kind) -> Optional[str]:
                  for x in items]
         pick, ok = QtWidgets.QInputDialog.getItem(
             win, "Export", "Which %s of %s?" % (kind, ref.doc.title), names,
-            len(names) - 1, False)
+            0, False)
         if not ok:
             return None
         a = items[names.index(pick)]
@@ -2274,6 +2425,9 @@ class ProjectPanel(AutoHideDock):
         self.tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
         self.tree.itemDoubleClicked.connect(self._double)
+        f2 = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2), self.tree)
+        f2.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        f2.activated.connect(self._f2)
         self.set_body(self.tree)
         self.setMinimumWidth(self.minimum_body_width())
 
@@ -2355,7 +2509,7 @@ class ProjectPanel(AutoHideDock):
                     if kind == "logs" and d.project.max_logs else "")])
                 li.setData(0, _ROLE, (kind, d))
                 top.addChild(li)
-                for a in lst:
+                for a in newest_first(lst):
                     ai = QtWidgets.QTreeWidgetItem(["%s%s" % (
                         "📌 " if a.pinned else "", a.filename)])
                     where = ""
@@ -2514,6 +2668,14 @@ class ProjectPanel(AutoHideDock):
                         lambda: self._revert(d, sid, bid, cid))
             m.addAction("New branch from this version...",
                         lambda: self._new_branch(d, sid, cid))
+            m.addSeparator()
+            m.addAction("Open this version (read-only)",
+                        lambda: self._view_version(d, sid, bid, cid))
+            m.addAction("Export this version...",
+                        lambda: export_version(self, d, sid, cid))
+            m.addSeparator()
+            rn = m.addAction("Rename...", lambda: self._rename_version(d, sid, cid))
+            rn.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2))
         elif kind in ("logs", "patches", "attachments"):
             m.addAction("Add %s..." % _ATT_ITEM[kind],
                         lambda: self._add_att(d, kind))
@@ -2579,6 +2741,33 @@ class ProjectPanel(AutoHideDock):
             self, "Rename", "Name:", text=s.name)
         if ok and name.strip():
             self._do(d, lambda: d.project.rename_set(sid, name.strip()))
+
+    def _f2(self):
+        """F2: rename the selected version (or set, or branch)."""
+        item = self.tree.currentItem()
+        data = item.data(0, _ROLE) if item is not None else None
+        if not data:
+            return
+        if data[0] == "ck":
+            self._rename_version(data[1], data[2], data[4])
+        elif data[0] == "set":
+            self._rename_set(data[1], data[2])
+        elif data[0] == "branch":
+            self._rename_branch(data[1], data[2], data[3])
+
+    def _view_version(self, d, sid, bid, cid):
+        from . import gui_viewonly as _vo
+        _vo.open_version(self.win, d, sid, bid, cid)
+
+    def _rename_version(self, d, sid, cid):
+        c = d.project.set(sid).checkpoint(cid)
+        if c is None:
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Rename version",
+            "Name (leave it empty for the automatic name):", text=c.label)
+        if ok:
+            rename_version(self.win, d, sid, cid, name)
 
     def _rename_branch(self, d, sid, bid):
         b = d.project.set(sid).branch(bid)
