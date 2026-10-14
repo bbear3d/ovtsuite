@@ -38,7 +38,9 @@ Click a byte to read it in the line at the bottom: its offset in hex and
 decimal, its value, the 16-bit value of it and the next byte (this byte
 high), the parameter
 it belongs to, and — with a comparison — both binaries' bytes. Hover over a
-byte for the parameter name and its address range.
+byte for the parameter name and its address range. The main window's
+status bar shows the picked byte's offset at its right (the first and last
+of several picked bytes, and how many), until the hex editor closes.
 
 ## Moving around
 
