@@ -171,3 +171,35 @@ def test_open_a_version_read_only(win, tab, monkeypatch):
                         lambda *a: pytest.fail("asked on close"))
     assert win.close_tab(ws)
     assert win.closed_entry(ws) is None
+
+
+# -- kept files newest first ----------------------------------------------------
+
+def test_kept_files_are_listed_newest_first(win, tab, monkeypatch):
+    from ovtsuite import gui_project as gp
+    proj = tab.project_ref.doc.project
+    for n in ("a.csv", "b.csv", "c.csv"):
+        proj.add_log(n, b"t,rpm\n0,800\n", set_id=tab.project_ref.sid)
+    proj.logs[0].added = "2026-01-02T00:00:00"      # a, then b and c tied
+    proj.logs[1].added = proj.logs[2].added = "2026-01-01T00:00:00"
+    stored = [a.filename for a in proj.logs]
+    assert [a.filename for a in gp.newest_first(proj.logs)] == \
+        ["a.csv", "c.csv", "b.csv"]
+    assert [a.filename for a in proj.logs] == stored     # never reordered
+    panel = gp.panel(win)
+    panel.refresh()
+    it = QtWidgets.QTreeWidgetItemIterator(panel.tree)
+    shown = []
+    while it.value() is not None:
+        data = it.value().data(0, gp._ROLE)
+        if data and data[0] == "log":
+            shown.append(next(a.filename for a in proj.logs if a.id == data[2]))
+        it += 1
+    assert shown == ["a.csv", "c.csv", "b.csv"]
+    # File > Export > Data log offers the newest first, and picks it by default
+    offered = []
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getItem", staticmethod(
+        lambda *a, **k: offered.append((a[3], a[4])) or ("", False)))
+    gp.export_kept(win, "log")
+    names, default = offered[0]
+    assert names[0].startswith("a.csv") and default == 0
