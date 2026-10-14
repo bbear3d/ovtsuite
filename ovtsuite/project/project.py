@@ -181,6 +181,32 @@ class Project:
         self._touch()
         return m
 
+    def adopt_platform(self, sid: str, platform: str) -> BinarySet:
+        """A set stored as ``unknown`` (imported by an app that had no
+        detector for it) that the base app now identifies as ``platform``:
+        describe it as an import would today -- the set's platform and kind,
+        its unidentified members', and a ``raw`` main image becomes ``flash``.
+
+        It is a correction, not an edit, so the project is NOT marked
+        modified: it is written with the next save, and until then every
+        open simply identifies the set again."""
+        from .importers import _endian, _module_ref
+        from .model import PLATFORM_SET_KIND
+        s = self.set(sid)
+        old = s.platform
+        s.platform = platform
+        if s.kind == PLATFORM_SET_KIND.get(old, "other"):
+            s.kind = PLATFORM_SET_KIND.get(platform, s.kind)
+        for m in s.members:
+            if m.platform in ("", "unknown", old):
+                m.platform = platform
+                m.module = _module_ref(platform)
+                m.endian = _endian(platform)
+        raw = next((m for m in s.members if m.role == "raw"), None)
+        if raw is not None and not any(m.role == "flash" for m in s.members):
+            raw.role = "flash"
+        return s
+
     # ============================================================== history
     def _check_images(self, s: BinarySet, images: Images):
         for mid in images:
