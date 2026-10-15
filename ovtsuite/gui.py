@@ -7980,7 +7980,9 @@ if HAVE_QT:
             rep = self.primary.last_checksum
             name = self.primary.binfile.name
             if rep is None:
-                v3 = any(getattr(d, "v3", False)
+                # an MSA15 / EDC15V or first-EDC15P image whose checksum
+                # routine is not one the app reads
+                v3 = any(getattr(d, "v3", False) or str(getattr(d, "sig", "")).startswith("P2")
                          for d in getattr(self.primary, "datasets", None) or ())
                 self.statusBar().showMessage(
                     "Saved %s%s" % (name, " - checksums NOT corrected (this "

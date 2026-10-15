@@ -117,7 +117,7 @@ def _record(w, typ, name, desc, org, size, folder, cols, rows, addr, factor,
     w.raw(b"\x01\x01\x01")
     if w.ver >= 397:
         w.u32(-1)
-        w.raw(b"\0" * {597: 64, 479: 48, 397: 36}[w.ver])
+        w.raw(b"\0" * {597: 64, 503: 60, 479: 48, 397: 36}[w.ver])
 
 
 def _maps(w):
@@ -174,7 +174,7 @@ def _folders(w):
         w.u8(1)
         w.u32(1)
         w.u8(1)
-        w.raw(b"\0" * {114: 0, 117: 0, 292: 15, 397: 25, 479: 25, 597: 25}[w.ver])
+        w.raw(b"\0" * {114: 0, 117: 0, 292: 15, 397: 25, 479: 25, 503: 25, 597: 25}[w.ver])
 
 
 def make_ols(ver, image=None):
@@ -214,7 +214,7 @@ def make_kp(ver):
     return bytes(w.out)
 
 
-VERSIONS = (117, 292, 397, 479, 597)
+VERSIONS = (117, 292, 397, 479, 503, 597)
 
 
 @pytest.mark.parametrize("ver", VERSIONS)
@@ -262,6 +262,23 @@ def test_a_winols_map_pack_is_a_definition_only():
     assert wf.kind == "kp" and len(wf.records) == 3 and not wf.image
     assert wf.folders[6] == "Temperature"
     assert definitions.detect(data) == "kp"
+
+
+def test_an_ols_5_map_pack_of_format_503_reads_whole():
+    """A WinOLS 5.0 map pack (format 503, the Lupo 3L 045906019K pack): its
+    record tail is 60 bytes -- between 479's 48 and 597's 64 -- and every
+    one of its 102 maps reads, in order, to the end of the list."""
+    p = os.path.join(REF, "EDC15", "045906019K_354603.kp")
+    if not os.path.exists(p):
+        pytest.skip("045906019K_354603.kp not present")
+    data = open(p, "rb").read()
+    assert winols.format_version(data) == 503
+    wf = winols.parse(data)
+    assert wf.kind == "kp" and not wf.problems and len(wf.records) == wf.declared == 102
+    first = wf.records[0]
+    assert first.description == "driver wish (gas)"
+    assert (first.cols, first.rows, first.addr) == (8, 12, 0x4C8F6)
+    assert len(winols.to_definition(wf).tables) == 102
 
 
 def test_a_little_endian_curve_reads_with_its_axis():

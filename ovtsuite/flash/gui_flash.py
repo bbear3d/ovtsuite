@@ -3551,6 +3551,15 @@ class FlashDialog(QtWidgets.QDialog):
                 raise RuntimeError(
                     "The current file isn't recognized as an EDC15 (V4.1) image.")
             cs = self._checksum_or_confirm("edc15")
+            if cs is not None and not cs.is_supported(raw):
+                # (the first EDC15P software's "P2" sets: no checksum routine
+                # the app reads -- written as edited, the ECU would not start)
+                raise RuntimeError(
+                    "The checksums of this EDC15 image are not ones the app can "
+                    "correct (%s), so it is not written: an image with wrong "
+                    "checksums does not start." % (
+                        "the first EDC15P software, \"P2\" datasets"
+                        if _platforms.edc15.datasets_p2(raw) else "unknown checksum routine"))
             if cs is not None and cs.is_supported(raw):
                 try:
                     raw = cs.correct(raw)

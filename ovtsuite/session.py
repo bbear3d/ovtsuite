@@ -320,6 +320,9 @@ class TunerSession:
         #: True when the file on disk is a byte-swapped MSA15 / EDC15V image
         #: (opened swapped back; save() writes a plain file swapped again)
         self._byte_swapped = False
+        #: the native container holds the image byte-swapped (a project's
+        #: working file of a byte-swapped read): saved back the same way
+        self._stored_swapped = False
         with open(path, "rb") as _fh:
             _head = _fh.read(0x30)   # sgo.detect() needs this many to check
         if _head[:4] in _dim.MAGICS:
@@ -439,6 +442,21 @@ class TunerSession:
             else:
                 self.binfile = BinaryFile.from_bytes(
                     bytes(_ext), os.path.basename(path))
+                # A project keeps a byte-swapped MSA15 / EDC15V read as it
+                # came, so its working .edc15 holds it that way too: edited
+                # in the ECU's byte order, written back as stored.
+                from .platforms import edc15 as _e15p
+                if self._container.kind == "edc15" and \
+                        _e15p.byte_swapped(self.binfile.data):
+                    self.binfile = BinaryFile.from_bytes(
+                        _e15p.swap16(bytes(self.binfile.data)),
+                        os.path.basename(path), endian="<")
+                    self._byte_swapped = self._stored_swapped = True
+                    self.load_note = (
+                        "This image is stored byte-swapped (the two bytes of "
+                        "every 16-bit word exchanged, as some readers save an "
+                        "MSA15 / EDC15V flash). It is shown in the ECU's own "
+                        "byte order and kept the way it is stored.")
         else:
             self.binfile = BinaryFile.load(path)
             # An MSA15 / EDC15V image some readers save with the two bytes of
@@ -1453,6 +1471,9 @@ class TunerSession:
             self._hvac.image[:n] = data[:n]
             self._hvac.fill_container(
                 c, fix_checksum=self.checksum_provider() is not None)
+        elif self._stored_swapped and fmt.kind == "edc15":
+            from .platforms import edc15 as _e15p
+            c.add(_cont.BLOCK_EXTERNAL, _e15p.swap16(bytes(data)))
         else:
             c.add(_cont.BLOCK_EXTERNAL, data)
         if fmt.kind == "vdo":

@@ -8,7 +8,7 @@
 Both start with the same header -- ``u32 11, "WinOLS File\\0"``, ``u32``
 format version -- and keep their maps as one list of records, written field
 after field with no padding. The record layout was reconstructed from
-projects of format versions 114, 117, 292, 397, 479 and 597 (OLS 4 ... 5.x);
+projects of format versions 114, 117, 292, 397, 479, 503 and 597 (OLS 4 ... 5.x);
 every record of every sample parses in sequence and the list ends exactly
 where the next section starts, so nothing here searches or guesses: a record
 is read field by field, and a list that does not parse to its declared count
@@ -30,7 +30,7 @@ translations, from format 397)::
              str label, str units, f64 factor, f64 offset,
              u32 address, u32 end, 24 / 32 bytes
              axis X, axis Y
-             record tail (format >= 397: + u32, 36 / 48 / 64 bytes)
+             record tail (format >= 397: + u32, 36 / 48 / 60 / 64 bytes)
     axis     mlstr label, str units, f64 factor, f64 offset,
              u32 source (0 none, 1/3 in the binary, 4 values here,
              8 texts), u32 address, u32 data organisation, u32 size,
@@ -105,6 +105,7 @@ class _Profile:
 # (an unseen version is usually one of these layouts).
 PROFILES = (
     _Profile("597", False, True, True, 117, 32, 14, True, 4, 64, True, 25),
+    _Profile("503", False, True, True, 117, 32, 14, True, 4, 60, True, 25),
     _Profile("479", False, True, True, 117, 32, 14, True, 4, 48, True, 25),
     _Profile("397", True, True, True, 117, 32, 14, True, 0, 36, False, 25),
     _Profile("292", True, True, False, 61, 32, 14, False, 0, -1, False, 15),
