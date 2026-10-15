@@ -28,7 +28,7 @@ The window lists what the new release brings:
 |---|---|
 | **Update** | The app itself, and every module you have installed that has a newer version in the release. Modules you do not have are not listed. |
 | **Installed** / **New** | The version you have and the new one. |
-| **Installed by** | How the update is installed on Windows: the **app installer**, a **module package** (installed inside the app), or the **module installer**. |
+| **Installed by** | How the update is installed on Windows: **update packages** (small, see below), the **app installer**, a **module package** (installed inside the app), or the **module installer**. |
 
 Below it are the release notes. The buttons:
 
@@ -65,12 +65,45 @@ of yours is closed without asking.
 6. Module packages are installed for you, then the installer runs on its own
    (no questions) and OVT-Suite starts again when it is done.
 
+### Update packages
+
+From 0.4.8 on, each release also publishes a small **update package** with
+just the files that changed since the release before it. When every release
+between yours and the new one has one, the app downloads those instead of the
+whole installer — the window shows **update packages: N steps, X MB** — and
+applies them one after the other, so being several versions behind is still
+a short download.
+
+- Each package is checked like any download (the signed checksum list of its
+  own release), and must also carry its **own signature**; an unsigned one is
+  never used.
+- **Before** anything closes, the app checks that the files it would replace
+  are exactly the ones your version installed. If any is not — or a package
+  is missing, damaged or bigger than the installer — it quietly uses the full
+  installer instead.
+- After OVT-Suite has closed, a small helper puts the new files in place,
+  keeping a copy of each file it replaces. If anything goes wrong, **every
+  file is put back** and your version keeps working; at the next start the
+  app says what happened, and **Help > Check for Updates** then installs that
+  release with the full installer.
+- When it worked, OVT-Suite starts again and its status bar says so. Apps &
+  features shows the new version.
+
+Update packages are used for an install **for you only** (the default). An
+install **for all users** (in Program Files) is updated with the installer,
+which asks for administrator rights.
+
 When only modules have a newer version and they come as packages, they are
 installed straight away without closing the app; restart it to use them.
 
 The installers themselves also wait for every running copy of OVT-Suite to
 close before they replace any file, so running a setup program by hand while
 the app is open is safe too.
+
+## OVT Flasher, Logger, Sniffer and OVT Tools
+
+A standalone tool installed with its own setup program is told about the
+update, and updated with its own new setup program from the release page.
 
 ## Linux and other copies
 

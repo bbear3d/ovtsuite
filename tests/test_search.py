@@ -532,3 +532,39 @@ def test_shipped_index_agrees_with_the_live_labels_where_it_applies():
     assert len(hit) >= 0.95 * len(ents), (len(hit), len(ents))
     wrong = [e.name for e in hit if titles[S.title_key(e)] != gui._english(e)]
     assert not wrong, wrong[:5]
+
+
+# -- wildcards (* and ?) ---------------------------------------------------------
+
+def test_wildcard_body_and_regex():
+    from ovtsuite import search as S
+    assert S.wildcard_regex("plain") is None
+    p = S.wildcard_regex("acc*map")
+    assert p.search("xx_AccPed_trqEngLim_MAP") and not p.search("AccPed_C")
+    assert S.wildcard_regex("n?_max").search("n2_Max")
+    assert not S.wildcard_regex("n?_max").search("n12_max_")
+    # literal everywhere else: regex characters mean themselves
+    assert S.wildcard_regex("a.b*").search("a.bc")
+    assert not S.wildcard_regex("a.b*").search("axbc")
+    # with a separator a wildcard stays inside one field
+    sep = S.wildcard_regex("boost*limit", sep="\0")
+    assert sep.search("boost pressure limit\0x")
+    assert not sep.search("boost\0limit")
+
+
+def test_wildcards_in_parameter_searches(world):
+    eng, src, *_ = world
+    sym = ("symbol",)
+    fuzzy = S.SearchOptions(fields=sym)
+    assert names(eng.run("Inj*Trbn", fuzzy, [src])) == ["InjCrv_tPreTrbn_C"]
+    # a wildcard word and a fuzzy word together: both must match
+    assert names(eng.run("*Boost* airctl", fuzzy, [src])) == [
+        "AirCtl_rBoostLimit_C"]
+    exact = S.SearchOptions(match="exact", fields=sym)
+    assert names(eng.run("injcrv_?pre", exact, [src])) == ["InjCrv_tPreTrbn_C"]
+    whole = S.SearchOptions(match="exact", whole_word=True, fields=sym)
+    # whole words: a wildcard stays inside one word (_ separates words)
+    assert names(eng.run("InjC*", whole, [src])) == ["InjCrv_tPreTrbn_C"]
+    assert names(eng.run("InjC??", whole, [src])) == ["InjCrv_tPreTrbn_C"]
+    assert names(eng.run("InjC*Trbn", whole, [src])) == []
+    assert names(eng.run("InjC*Trbn", exact, [src])) == ["InjCrv_tPreTrbn_C"]

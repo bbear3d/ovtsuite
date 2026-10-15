@@ -24,6 +24,11 @@ os.environ.setdefault("OVT_NO_INFO_PROMPT", "1")
 # Likewise the "Read complete" prompt when there is no project to add a read
 # to: the read opens as a new project (gui_project.ask_read).
 os.environ.setdefault("OVT_NO_READ_PROMPT", "1")
+# And the definition placement review shown when a definition is attached
+# whose tables moved or could not all be confirmed (gui_defplace.review).
+os.environ.setdefault("OVT_NO_PLACE_PROMPT", "1")
+# Definition placements are not remembered on disk between test runs.
+os.environ.setdefault("OVT_PLACEMENT_CACHE", "")
 
 # The GUI tests run on Qt's offscreen platform, which ships no fonts: every
 # character is drawn as a wide placeholder box, so text measured ~twice its

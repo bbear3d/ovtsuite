@@ -42,7 +42,15 @@ FAMILIES = ("p350", "p475_83", "p475_84_mf", "p475_84_hq", "p447",
             # 2026-10-13, so it competes in detection like the others. It wins
             # every 1 MB U1 image (0.79-0.99 vs p350's ~0.5), including ones
             # with no readable dataset id; 2 MB images score ~0.
-            "u1_379u85b6")
+            "u1_379u85b6",
+            # EDC16U1 V10 TDI (P216, A2L C216U5.K.T.1): the other V10
+            # datasets (070906016AA P21665KX, the Phaeton) are no exact match
+            # but score 0.45-0.54 against it where every other family scores
+            # under 0.1, and its placements agree with the structural map
+            # finder on every tuning map but one
+            "p216_5kt1",
+            # EDC16U1 R5 2.5 TDI (070906016N, A2L R5-TDI / project C213)
+            "p213_r5tdi")
 
 
 @dataclass

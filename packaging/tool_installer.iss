@@ -13,10 +13,13 @@
 ;            /DOutputDir=..\dist /DOutputName=OVTFlasher-0.3.0-setup ^
 ;            packaging\tool_installer.iss
 ;
-; It ships the same one-folder build as the main installer, minus OVTSuite.exe
-; and the other tools' launchers: what is installed can only start its tool.
-; Each product has its own AppId, so it installs, upgrades and uninstalls on
-; its own, beside or without the main app.
+; It ships the same one-folder build as the main installer, minus the other
+; tools' launchers, the full modules and the app manifest. OVTSuite.exe IS
+; shipped: the tool exes are small launchers that start "OVTSuite.exe --tool
+; <name>" from their own folder (packaging/launcher/Launcher.cs), and the code
+; lives in that one exe. No shortcut points at it: what is installed opens its
+; tool. Each product has its own AppId, so it installs, upgrades and
+; uninstalls on its own, beside or without the main app.
 ;
 ; MODULES: the tools work for every control module, but correcting a checksum
 ; needs that module (docs/MODULES_PLAN.md). When build.ps1 passes
@@ -85,9 +88,10 @@
   #define ShortcutDir "{autoprograms}"
 #endif
 
-; Everything in the build except the main app and the launchers of tools this
-; product does not include. Leading "\" anchors each to the build's top level.
-#define Excl "\" + MainExe
+; Everything in the build except the launchers of tools this product does not
+; include -- never MainExe, which every launcher starts. Leading "\" anchors
+; each to the build's top level.
+#define Excl "\modules"
 #if !WithFlasher
   #define Excl Excl + ",\" + FlasherExe
 #endif
@@ -97,9 +101,11 @@
 #if !WithLogger
   #define Excl Excl + ",\" + LoggerExe
 #endif
-; the build's modules folder holds every FULL module; this product takes only
-; their checksum variants, as components (ModulesInclude below)
-#define Excl Excl + ",\modules"
+; (\modules above: the build's modules folder holds every FULL module; this
+; product takes only their checksum variants, as components -- ModulesInclude)
+; the app manifest describes the whole app (delta updates, docs/UPDATES.md);
+; a tool install is not updated that way -- its own setup replaces it
+#define Excl Excl + ",\app-manifest.json,\app-manifest.json.sig"
 
 [Setup]
 AppId={{{#ProductGuid}}

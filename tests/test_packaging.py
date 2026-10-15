@@ -149,7 +149,7 @@ def test_installers_keep_modules_out_of_the_base_payload():
     text = _read("packaging", "installer.iss")
     assert re.search(r'^Source: "\{#SourceDir\}\\\*"; Excludes: "\\modules"', text, re.M)
     tools = _read("packaging", "tool_installer.iss")
-    assert '#define Excl Excl + ",\\modules"' in tools
+    assert '#define Excl "\\modules"' in tools
     for text in (text, tools):
         assert "#include ModulesInclude" in text
     mod = _read("packaging", "module_installer.iss")

@@ -212,10 +212,30 @@ Filename: "{app}\{#AppExeName}"; \
 Filename: "{app}\{#AppExeName}"; \
     Flags: nowait runasoriginaluser; Check: WizardSilent and RelaunchRequested
 
+[InstallDelete]
+; A delta update (in-app, docs/UPDATES.md) changes the app folder without this
+; setup: files it added are not in this setup's uninstall log, and a file a
+; later release dropped is still there. The code and libraries all live in
+; _internal, so a full install starts that folder afresh -- never {app}\modules,
+; which holds the modules (components, module installers, in-app installs).
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\.update-backup"
+Type: filesandordirs; Name: "{app}\.update-stage"
+
 [UninstallDelete]
 ; PyInstaller's one-folder layout leaves nothing behind, but the crash log
 ; written by packaging/entry.py lives outside {app}.
 Type: filesandordirs; Name: "{localappdata}\OVTSuite"
+; What a delta update may have added that this setup never installed: files
+; in _internal, a new launcher exe, its manifest, its working folders.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\.update-backup"
+Type: filesandordirs; Name: "{app}\.update-stage"
+; (named: a bare *.exe would take Inno's own unins000.exe with it)
+Type: files; Name: "{app}\OVT*.exe"
+Type: files; Name: "{app}\j2534bridge32.exe"
+Type: files; Name: "{app}\app-manifest.json"
+Type: files; Name: "{app}\app-manifest.json.sig"
 ; Modules in the app's own folder go with it (a module installed by its own
 ; installer is uninstalled first, by UninstallModules in [Code], so its entry
 ; in Apps & features goes too). Modules installed per user from inside the

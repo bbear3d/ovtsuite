@@ -51,6 +51,40 @@ def _main_member(project: Project, sid: str):
     return s.members[0] if s.members else None
 
 
+def apply_packaged_definition(project: Project, sid: str, session, progress=None) -> str:
+    """The set's packaged third-party definition (XDF, A2L, ...) on
+    ``session``: its tables beside a module's (in a group of their own), or
+    as the whole parameter tree of a binary no module reads -- each placed
+    where the evidence puts it, with the options and the reference image the
+    project keeps for it (:func:`ovtsuite.xdf_session.placed_definition`).
+    Returns a note ("" when there is no definition)."""
+    main = _main_member(project, sid)
+    if main is None or not main.definition:
+        return ""
+    data = project.definition_bytes(sid, main.id)
+    if not data:
+        return "The packaged definition is missing from the project."
+    from .. import xdf_session
+    d = main.definition
+    opts = d.get("place") or {}
+    ref = project.definition_reference(sid, main.id)
+    try:
+        if getattr(session, "support", "") == "full" and d.get("use") != "instead":
+            # a module defines it: the file's tables go beside the module's
+            # (their own group), never instead of them
+            label = os.path.basename(d.get("path", "")) or None
+            xdf_session.add_definition(session, data, d.get("type"), label=label,
+                                       options=opts, reference=ref)
+        else:
+            xdf_session.apply_definition(session, data, d.get("type"),
+                                         options=opts, reference=ref)
+    except xdf_session.Unsupported as ex:
+        return str(ex)
+    except Exception as ex:
+        return "The packaged definition could not be read: %s" % ex
+    return getattr(session, "definition_notes", "") + "."
+
+
 def set_platform(project: Project, sid: str, state: Images) -> str:
     """Set ``sid``'s platform, for its working file. A set stored as
     ``unknown`` -- imported before the base app had a detector for it -- is

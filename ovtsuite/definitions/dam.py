@@ -223,9 +223,44 @@ class _Layout:
 
     def __init__(self, table: TableDef, kind: int, addr: int,
                  xhead: Optional[int] = None, yhead: Optional[int] = None,
-                 transpose: bool = False):
+                 transpose: bool = False, xsrc: Optional[int] = None,
+                 ysrc: Optional[int] = None):
         self.table, self.kind, self.addr = table, kind, addr
         self.xhead, self.yhead, self.transpose = xhead, yhead, transpose
+        #: RAM addresses of the axes' inputs (``/SRC``), stored at the start
+        #: of each axis block
+        self.xsrc, self.ysrc = xsrc, ysrc
+
+    def evidence(self, read):
+        """``(checked, passed)``: the facts the DAMOS states about this
+        table's blocks in the image -- each block starts with its input's
+        RAM address, then a point count of at most ``/FKX`` / ``/FKY``."""
+        t = self.table
+        e = t.z.endian or "<"
+        heads = []
+        if self.kind in (2, 3, 6):
+            heads.append((self.addr, self.xsrc, t.cols if self.kind != 6 else t.cols))
+            if self.kind == 3:
+                n = self._count(read, self.addr, e)
+                if n is None:
+                    return (2 + (self.xsrc is not None), 0)
+                heads.append((self.addr + 4 + n * t.x.values.size, self.ysrc, t.rows))
+        else:
+            if self.xhead is not None:
+                heads.append((self.xhead, self.xsrc, t.cols))
+            if self.yhead is not None:
+                heads.append((self.yhead, self.ysrc, t.rows))
+        checked = passed = 0
+        for head, src, mx in heads:
+            checked += 1
+            n = read(head + 2, 2, False, e)
+            if n is not None and 0 < n <= max(1, mx):
+                passed += 1
+            if src is not None:
+                checked += 1
+                if read(head, 2, False, e) == src:
+                    passed += 1
+        return checked, passed
 
     @staticmethod
     def _count(read, head, endian):
@@ -487,9 +522,9 @@ def load(data: bytes, title: str = "") -> Definition:
                 continue
             t = TableDef(name=p.name, kind="curve", z=z, description=p.desc,
                          categories=cat, cols=max(1, p.fk.get("X", 1)),
-                         decimals=unit(xu).decimals)
+                         decimals=unit(xu).decimals, record=addr)
             t.x = AxisDef(1, values=copy.copy(z))
-            t.dynamic = _Layout(t, 6, addr)
+            t.dynamic = _Layout(t, 6, addr, xsrc=src_addr.get(p.spec("X")[2]))
             defn.tables.append(t)
             continue
         if p.kind == 12 and 0 < wt <= 256:
@@ -535,9 +570,14 @@ def load(data: bytes, title: str = "") -> Definition:
         if group:
             t.dynamic = _Layout(t, p.kind, addr, xhead=pba + xa.addr,
                                 yhead=pba + ya.addr if two else None,
-                                transpose=two and transpose)
+                                transpose=two and transpose,
+                                xsrc=src_addr.get(xsrc),
+                                ysrc=src_addr.get(ysrc) if two else None)
         else:
-            t.dynamic = _Layout(t, p.kind, addr, transpose=two and transpose)
+            t.dynamic = _Layout(t, p.kind, addr, transpose=two and transpose,
+                                xsrc=src_addr.get(xsrc),
+                                ysrc=src_addr.get(ysrc) if two else None)
+            t.record = addr
         defn.tables.append(t)
     # Where the description sits in an image, found from the image itself:
     # a curve's, map's or shared axis' block starts with the RAM address of

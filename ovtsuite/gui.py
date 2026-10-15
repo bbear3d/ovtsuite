@@ -3699,6 +3699,38 @@ if HAVE_QT:
             self.view.scrollTo(
                 idx, QtWidgets.QAbstractItemView.PositionAtCenter)
 
+        def select_range(self, start, end):
+            """Show bytes ``[start, end)`` of the external flash, selected
+            and scrolled into view (the parameter tree's Show in hex
+            editor): the primary image's flash region is brought up first."""
+            if getattr(self, "region_box", None) is not None \
+                    and self.region_box.currentIndex() != 0:
+                self.region_box.setCurrentIndex(0)
+            if getattr(self, "show_box", None) is not None \
+                    and self.show_box.currentIndex() != 0:
+                self.show_box.setCurrentIndex(0)
+            n = len(self.model.shown())
+            start = max(0, min(int(start), n - 1))
+            end = max(start + 1, min(int(end), n))
+            cols = HexModel.COLS
+            sel = QtCore.QItemSelection()
+            r0, r1 = start // cols, (end - 1) // cols
+            for r in range(r0, r1 + 1):
+                c0 = start % cols if r == r0 else 0
+                c1 = (end - 1) % cols if r == r1 else cols - 1
+                sel.select(self.model.index(r, c0), self.model.index(r, c1))
+            sm = self.view.selectionModel()
+            first = self.model.index(r0, start % cols)
+            sm.setCurrentIndex(first, QtCore.QItemSelectionModel.NoUpdate)
+            sm.select(sel, QtCore.QItemSelectionModel.ClearAndSelect)
+            self.view.scrollTo(self.model.index(r1, (end - 1) % cols),
+                               QtWidgets.QAbstractItemView.EnsureVisible)
+            self.view.scrollTo(first, QtWidgets.QAbstractItemView.PositionAtTop
+                               if r1 - r0 > 20 else
+                               QtWidgets.QAbstractItemView.EnsureVisible)
+            self.info.setText("0x%06X–0x%06X selected (%d bytes)"
+                              % (start, end - 1, end - start))
+
         def _advance_cursor(self):
             """Move to the next byte and open its editor (called after a full
             byte is typed), wrapping across rows and skipping the ASCII column.
@@ -4718,171 +4750,8 @@ if HAVE_QT:
                 self._reload()
                 self._after_write()
 
-    class Surface3DView(QtWidgets.QWidget):
-        """A rotatable 3-D surface of a map, drawn with QPainter (no external
-        deps, so it survives the frozen build). Height and colour both encode
-        the cell value; drag to orbit, wheel to zoom, and the buttons in the
-        dialog reset the view or change the height exaggeration."""
-
-        def __init__(self, vals, xs, ys, zunits="", parent=None, zrange=None):
-            super().__init__(parent)
-            self.vals = vals
-            self.rows = len(vals)
-            self.cols = len(vals[0]) if vals else 0
-            self.xs = xs
-            self.ys = ys
-            self.zunits = zunits
-            flat = [v for row in vals for v in row]
-            self.vmin = min(flat) if flat else 0.0
-            self.vmax = max(flat) if flat else 1.0
-            if zrange is not None:              # shared with a sibling view
-                self.vmin, self.vmax = zrange
-            self.linked = []                    # sibling views that follow
-            self.yaw = -0.7
-            self.pitch = 0.62
-            self.zoom = 1.0
-            self.zscale = 0.9
-            self.wire = False
-            self._last = None
-            self.setMinimumSize(420, 320)
-            self.setMouseTracking(True)
-            self.setFocusPolicy(QtCore.Qt.StrongFocus)
-
-        def reset_view(self):
-            self.yaw, self.pitch, self.zoom = -0.7, 0.62, 1.0
-            self._moved()
-
-        def follow(self, other):
-            """Adopt another view's orbit and zoom (no signal, no loop)."""
-            self.yaw, self.pitch, self.zoom = other.yaw, other.pitch, other.zoom
-            self.update()
-
-        def _moved(self):
-            self.update()
-            for v in self.linked:
-                v.follow(self)
-
-        def set_zscale(self, z):
-            self.zscale = z
-            self.update()
-
-        def set_wire(self, on):
-            self.wire = bool(on)
-            self.update()
-
-        # -- projection -------------------------------------------------
-        def _rot(self, x, y, z):
-            import math
-            cy, sy = math.cos(self.yaw), math.sin(self.yaw)
-            x1 = x * cy - y * sy
-            y1 = x * sy + y * cy
-            cp, sp = math.cos(self.pitch), math.sin(self.pitch)
-            y2 = y1 * cp - z * sp
-            z2 = y1 * sp + z * cp
-            return x1, y2, z2          # x1 screen-x, z2 screen-up, y2 depth
-
-        def mousePressEvent(self, ev):
-            self._last = ev.position()
-
-        def mouseMoveEvent(self, ev):
-            if self._last is not None:
-                d = ev.position() - self._last
-                self.yaw += d.x() * 0.01
-                self.pitch = max(0.05, min(1.55, self.pitch - d.y() * 0.01))
-                self._last = ev.position()
-                self._moved()
-
-        def mouseReleaseEvent(self, _ev):
-            self._last = None
-
-        def wheelEvent(self, ev):
-            self.zoom *= 1.0 + (ev.angleDelta().y() / 1200.0)
-            self.zoom = max(0.3, min(4.0, self.zoom))
-            self._moved()
-
-        def paintEvent(self, _ev):
-            p = QtGui.QPainter(self)
-            p.setRenderHint(QtGui.QPainter.Antialiasing)
-            p.fillRect(self.rect(), self.palette().base())
-            if self.rows < 2 or self.cols < 2:
-                p.drawText(self.rect(), QtCore.Qt.AlignCenter,
-                           "Not a 2-D map")
-                return
-            import math
-            W, H = self.width(), self.height()
-            span = self.vmax - self.vmin or 1.0
-            R, C = self.rows, self.cols
-            # model points, normalised into a unit-ish cube
-            P = [[None] * C for _ in range(R)]
-            for r in range(R):
-                for c in range(C):
-                    x = (c / (C - 1) - 0.5)
-                    y = (r / (R - 1) - 0.5)
-                    z = ((self.vals[r][c] - self.vmin) / span - 0.5) \
-                        * self.zscale
-                    P[r][c] = self._rot(x, y, z)
-            scale = min(W, H) * 0.62 * self.zoom
-            cx, cy = W * 0.5, H * 0.52
-            if self.linked:
-                # linked views centre on the shared cube, not on their own
-                # data, so the two surfaces sit at comparable heights
-                corners = [self._rot(x, y, z) for x in (-0.5, 0.5)
-                           for y in (-0.5, 0.5)
-                           for z in (-0.5 * self.zscale, 0.5 * self.zscale)]
-                xs2 = [c[0] for c in corners]
-                zs2 = [c[2] for c in corners]
-            else:
-                xs2 = [pt[0] for row in P for pt in row]
-                zs2 = [pt[2] for row in P for pt in row]
-            offx = (max(xs2) + min(xs2)) / 2
-            offz = (max(zs2) + min(zs2)) / 2
-
-            def scr(pt):
-                return QtCore.QPointF(cx + (pt[0] - offx) * scale,
-                                      cy - (pt[2] - offz) * scale)
-            light = (0.4, -0.5, 0.75)
-            ln = math.sqrt(sum(v * v for v in light))
-            light = tuple(v / ln for v in light)
-            quads = []
-            for r in range(R - 1):
-                for c in range(C - 1):
-                    a, b = P[r][c], P[r][c + 1]
-                    d, e = P[r + 1][c], P[r + 1][c + 1]
-                    depth = (a[1] + b[1] + d[1] + e[1]) / 4
-                    hv = (self.vals[r][c] + self.vals[r][c + 1]
-                          + self.vals[r + 1][c] + self.vals[r + 1][c + 1]) / 4
-                    quads.append((depth, a, b, e, d, hv))
-            quads.sort(key=lambda q: q[0], reverse=True)   # far first
-            for depth, a, b, e, d, hv in quads:
-                # face normal (in rotated space) for simple shading
-                ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
-                vx, vy, vz = d[0] - a[0], d[1] - a[1], d[2] - a[2]
-                nx = uy * vz - uz * vy
-                ny = uz * vx - ux * vz
-                nz = ux * vy - uy * vx
-                nl = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
-                bright = 0.55 + 0.45 * abs((nx * light[0] + ny * light[1]
-                                            + nz * light[2]) / nl)
-                t = (hv - self.vmin) / span
-                col = TableModel._heat(t)
-                col = QtGui.QColor.fromHsvF(
-                    col.hueF(), col.saturationF(),
-                    max(0.0, min(1.0, col.valueF() * bright)))
-                poly = QtGui.QPolygonF([scr(a), scr(b), scr(e), scr(d)])
-                if self.wire:
-                    p.setBrush(QtCore.Qt.NoBrush)
-                    p.setPen(QtGui.QPen(col, 1))
-                else:
-                    p.setBrush(col)
-                    p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 60), 0.4))
-                p.drawPolygon(poly)
-            # axis hint
-            p.setPen(self.palette().text().color())
-            p.drawText(8, H - 10,
-                       "Z %s..%s %s   X:%d  Y:%d   (drag to rotate, "
-                       "wheel to zoom)"
-                       % (_fmt(self.vmin), _fmt(self.vmax), self.zunits,
-                          C, R))
+    # the 3-D surface (Ctrl+3) lives in gui_surface3d; the names stay here
+    from .gui_surface3d import Surface3DView, SurfacePanel  # noqa: E402,F401
 
 
     class SweepDialog(QtWidgets.QDialog):
@@ -5222,67 +5091,6 @@ if HAVE_QT:
                     pass
             self.refresh_from_session()
             QtWidgets.QMessageBox.information(self, "Apply sweep patch", done)
-
-    class Surface3DDialog(QtWidgets.QDialog):
-        """Wraps Surface3DView with reset / wireframe / height controls."""
-
-        def __init__(self, vals, xs, ys, title, zunits="", parent=None,
-                     cmp_vals=None, cmp_name=""):
-            super().__init__(parent)
-            self.setWindowTitle("3-D surface — %s" % title)
-            self.setWindowIcon(app_icon())
-            v = QtWidgets.QVBoxLayout(self)
-            # with a comparison: two surfaces side by side on ONE z scale and
-            # colour ramp, orbit and zoom linked, so shapes compare directly
-            zrange = None
-            if cmp_vals:
-                flat = [x for row in vals for x in row] + [x for row in cmp_vals for x in row]
-                zrange = (min(flat), max(flat))
-            self.view = Surface3DView(vals, xs, ys, zunits, self, zrange=zrange)
-            self.views = [self.view]
-            if cmp_vals:
-                self.resize(1180, 560)
-                row = QtWidgets.QHBoxLayout()
-                self.cmp_view = Surface3DView(cmp_vals, xs, ys, zunits, self,
-                                              zrange=zrange)
-                self.view.linked.append(self.cmp_view)
-                self.cmp_view.linked.append(self.view)
-                self.views.append(self.cmp_view)
-                for vw, lbl in ((self.view, "Primary"),
-                                (self.cmp_view, "Comparison - %s" % (cmp_name or ""))):
-                    col = QtWidgets.QVBoxLayout()
-                    cap = QtWidgets.QLabel(lbl)
-                    cap.setStyleSheet("font-weight: bold;")
-                    col.addWidget(cap)
-                    col.addWidget(vw, 1)
-                    row.addLayout(col, 1)
-                v.addLayout(row, 1)
-            else:
-                self.resize(720, 560)
-                v.addWidget(self.view, 1)
-            bar = QtWidgets.QHBoxLayout()
-            reset = QtWidgets.QPushButton("Reset view")
-            reset.clicked.connect(self.view.reset_view)
-            bar.addWidget(reset)
-            wire = QtWidgets.QCheckBox("Wireframe")
-            wire.toggled.connect(lambda on: [vw.set_wire(on) for vw in self.views])
-            bar.addWidget(wire)
-            bar.addWidget(QtWidgets.QLabel("Height:"))
-            hs = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            hs.setRange(10, 200)
-            # start where the surface is drawn, so the first move is no jump
-            hs.setValue(round(self.view.zscale * 100))
-            self.height_slider = hs
-            hs.setMaximumWidth(160)
-            hs.valueChanged.connect(
-                lambda x: [vw.set_zscale(x / 100.0) for vw in self.views])
-            bar.addWidget(hs)
-            bar.addStretch(1)
-            close = QtWidgets.QPushButton("Close")
-            close.clicked.connect(self.accept)
-            bar.addWidget(close)
-            v.addLayout(bar)
-
 
     class DiffListDialog(QtWidgets.QDialog):
         """Lists every parameter that differs between the primary and the
@@ -6331,11 +6139,16 @@ if HAVE_QT:
             self.tree.itemSelectionChanged.connect(self._on_select)
             self.tree.itemDoubleClicked.connect(self._on_tree_double)
             self._tree_middle = _TreeMiddleClick(self.tree, self._on_tree_middle)
-            _gui_ai.attach_tree(self)       # right-click: AI actions
+            from . import gui_paramenu as _gpm
+            _gpm.attach(self)               # right-click: the parameter menu
             self.tree.viewport().installEventFilter(self._tree_middle)
 
             self.filter = QtWidgets.QLineEdit()
             self.filter.setPlaceholderText("Filter parameters...")
+            self.filter.setToolTip(
+                "Keep the parameters whose name, symbol, description or "
+                "coding contains this text.\n* matches any run of characters, "
+                "? any one character (accped*map).")
             self.filter.textChanged.connect(self._populate)
 
             # Task-group filter. Filled from the groups the open file
@@ -6417,6 +6230,8 @@ if HAVE_QT:
                 after=lambda _f: self.table.resizeColumnsToContents())
             from . import gui_cellkeys as _gck      # cell keys (Edit > Cells)
             _gck.attach(self)
+            from . import gui_tablesel as _gts      # one half selected at once
+            _gts.attach(self)
 
             self.title = QtWidgets.QLabel("Select a parameter")
             self.title.setStyleSheet("font-weight: bold;")
@@ -6511,11 +6326,7 @@ if HAVE_QT:
             eb.addStretch()                 # its own group: wraps as a pair
             eb.addWidget(self.heat_chk)
             self.surf_btn = QtWidgets.QPushButton("3D surface")
-            self.surf_btn.setToolTip("Rotatable 3-D surface of the current map "
-                                     "(with the comparison alongside when one "
-                                     "is loaded)  Ctrl+3")
-            self.surf_btn.setShortcut("Ctrl+3")
-            self.surf_btn.clicked.connect(self.open_surface)
+            self.surf_btn.setShortcut("Ctrl+3")     # a toggle: gui_surface3d
             eb.addWidget(self.surf_btn)
 
             # the comparison (when loaded) is shown INSIDE this same grid,
@@ -6531,7 +6342,8 @@ if HAVE_QT:
             rv.addWidget(self.title)
             rv.addWidget(self.desc)
             rv.addWidget(self.editbar)
-            rv.addWidget(self.table, 1)
+            from . import gui_surface3d as _s3d     # 3-D surface above it
+            rv.addWidget(_s3d.attach(self), 1)
 
             split = QtWidgets.QSplitter()
             split.addWidget(left)
@@ -6682,10 +6494,17 @@ if HAVE_QT:
                     csum = "  checksums: %s" % (
                         "CANNOT VERIFY" if getattr(rep, "unreadable", "")
                         else "valid" if rep.ok else "NEED FIX (auto on save)")
+                elif any(getattr(d, "v3", False)
+                         for d in getattr(self.primary, "datasets", None) or ()):
+                    # MSA15 / EDC15V software whose checksum routine the app
+                    # does not read: say so rather than nothing (Verify
+                    # checksums explains)
+                    csum = "  checksums: NOT CHECKED"
             fam = self.primary.family
             if getattr(self.primary, "is_edc15", False):
-                fam = "EDC15 %s, %d datasets" % (fam,
-                                                 len(self.primary.datasets))
+                v3 = any(getattr(d, "v3", False) for d in self.primary.datasets)
+                fam = "%s %s, %d datasets" % ("MSA15/EDC15V" if v3 else "EDC15", fam,
+                                              len(self.primary.datasets))
             return "%s%s  [%s, %d parameters]%s%s" % (
                 self.primary.binfile.name, dirty, fam, n, cmp_, csum)
 
@@ -7250,6 +7069,9 @@ if HAVE_QT:
             want_tier = self.tier_box.currentData()
             adv = self.advanced.isChecked()
             needle = self.filter.text().lower().strip()
+            # * and ? are wildcards, within one field of the row's text
+            from .search import wildcard_regex as _wildcard
+            wild = _wildcard(needle, sep="\0")
             diff_only = (self.diff_only.isChecked()
                          and self.comparison is not None)
             changed = self._changed_set() if diff_only else None
@@ -7265,6 +7087,8 @@ if HAVE_QT:
                     return False
                 if diff_only and id(e) not in changed:
                     return False
+                if wild is not None:
+                    return wild.search(texts[id(e)]) is not None
                 return not needle or needle in texts[id(e)]
 
             def walk(node) -> int:
@@ -7668,7 +7492,8 @@ if HAVE_QT:
                    "verified": "value-verified",
                    "placed": "placed by the ECU's pointer table",
                    "bracketed": "bracketed (layout unchanged around it)",
-                   "projected": "PROJECTED - offset model only; check before writing"
+                   "projected": "PROJECTED - offset model only; check before writing",
+                   "structure": "found by structure (no definition places it) - check before writing"
                    }.get(e.source, e.source)
             if getattr(e, "note", ""):
                 src += ": " + e.note
@@ -8155,7 +7980,12 @@ if HAVE_QT:
             rep = self.primary.last_checksum
             name = self.primary.binfile.name
             if rep is None:
-                self.statusBar().showMessage("Saved %s" % name, 6000)
+                v3 = any(getattr(d, "v3", False)
+                         for d in getattr(self.primary, "datasets", None) or ())
+                self.statusBar().showMessage(
+                    "Saved %s%s" % (name, " - checksums NOT corrected (this "
+                                    "software's checksum routine is not one the "
+                                    "app reads)" if v3 else ""), 10000 if v3 else 6000)
                 return
             slots = getattr(rep, "slots", None) or []
             names = ", ".join(str(getattr(sl, "name", sl)) for sl in slots)
@@ -8746,23 +8576,8 @@ if HAVE_QT:
             self.model.set_zmode(self.model.zmode, self._vehicle())
 
         def open_surface(self):
-            e = self.model.entity
-            if e is None:
-                QtWidgets.QMessageBox.information(
-                    self, "3D surface", "Select a parameter first.")
-                return
-            if self.model.rowCount() and e.rows >= 2 and e.cols >= 2:
-                cmp_vals = self.model._cmp if self.model._cmp else None
-                Surface3DDialog(self.model._vals, self.model._x,
-                                self.model._y, e.title, e.units, self,
-                                cmp_vals=cmp_vals,
-                                cmp_name=self.model.cmp_name).exec()
-            else:
-                QtWidgets.QMessageBox.information(
-                    self, "3D surface",
-                    "The 3-D surface needs a 2-D map (more than one row and "
-                    "column). '%s' is a %dx%d table." % (e.title, e.rows,
-                                                         e.cols))
+            from . import gui_surface3d as _s3d     # the panel above the table
+            return _s3d.open_for(self)
 
         def open_logtune(self):
             if self.primary is None:
@@ -9101,7 +8916,7 @@ if HAVE_QT:
                         self._eeprom_dirty = True
                     return changed
                 _extra.append(("EEPROM (EDC15)", _eebuf, _ee_writer))
-            self.open_tool("hex", lambda: HexDialog(
+            return self.open_tool("hex", lambda: HexDialog(
                 self.primary, self.comparison, self, extra_regions=_extra))
 
         def _apply_spans(self):
@@ -9834,6 +9649,8 @@ if HAVE_QT:
             bar.setTabData(i, ws.tint())
             bar.update()
             if ws is self.current:
+                from . import gui_undomenu as _gum
+                _gum.sync(self)             # Undo / Redo follow the history
                 if ws.project_ref is not None:
                     self.setWindowTitle(branding.title(_gp.window_title(ws)))
                 else:
@@ -10259,8 +10076,13 @@ if HAVE_QT:
                 "one window can't be opened in the other)" % branding.APP_NAME)
             self._act(m, "Exit", self.close)
             e = bar.addMenu("&Edit")
-            self._act(e, "Undo", self._on_ws("undo"), "Ctrl+Z", needs_file=True)
-            self._act(e, "Redo", self._on_ws("redo"), "Ctrl+Y", needs_file=True)
+            from . import gui_undomenu as _gum  # toolbar history drop-downs
+            _gum.register(
+                self,
+                self._act(e, "Undo", self._on_ws("undo"), "Ctrl+Z",
+                          needs_file=True),
+                self._act(e, "Redo", self._on_ws("redo"), "Ctrl+Y",
+                          needs_file=True))
             e.addSeparator()
             self._act(e, "Find...", self.search_dock.open, "Ctrl+F")
             # the toolbar's Find button shows / hides the panel
@@ -10504,6 +10326,8 @@ if HAVE_QT:
                 a.setEnabled(ok)
             from . import gui_viewonly as _vo
             _vo.restrict_actions(self, ws)
+            from . import gui_undomenu as _gum
+            _gum.sync(self)
 
         def _rebuild_recent(self):
             from . import gui_files as _gf

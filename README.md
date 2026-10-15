@@ -555,7 +555,12 @@ Repeat builds are incremental.
 Both builds also write `dist/SHA256SUMS.txt` and its signature
 `dist/SHA256SUMS.txt.sig` (the module signing key); upload them with every
 release, as the in-app updater checks its downloads against them
-(`tools/build_modules.py release-sums`). `.\build.ps1 -CodeSign` (with
+(`tools/build_modules.py release-sums`). A signed Windows build also makes
+`dist/OVTSuite-Update-<previous>-to-<version>.zip`, a delta update package
+against the newest release older than it kept in `Reference/AppReleases`, and
+then keeps its own manifest there (a rebuild of the same version replaces both;
+the first archived release, 0.4.8, makes none): upload the package with the
+release too ([docs/UPDATES.md](docs/UPDATES.md)). `.\build.ps1 -CodeSign` (with
 `OVT_CODESIGN_ARGS`) also Authenticode-signs the executables and installers.
 
 **Tests:** `python -m pytest tests/<file>.py -q`. The GUI tests are marked

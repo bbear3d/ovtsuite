@@ -157,6 +157,17 @@ EXCLUDES = [
 # in System32.
 binaries = []
 
+# -- one copy of the code ------------------------------------------------------
+# The code is in ONE place: the PYZ archive appended to OVTSuite.exe (the
+# default). The standalone tools' exes (OVTFlasher.exe ... OVTMcp.exe) are not
+# made here: they are tiny launchers that start "OVTSuite.exe --tool <name>"
+# (packaging/launcher/Launcher.cs, compiled and copied into dist\OVTSuite by
+# build.ps1 through tools/build_launchers.py; packaging/entry.py dispatches).
+# Every PyInstaller EXE() would embed its own copy of the PYZ (PyInstaller 6
+# adds the PYZ to each EXE's PKG; MERGE() shares binaries and data, never the
+# PYZ), and noarchive -- thousands of .pyc files in _internal -- slowed every
+# start. docs/UPDATES.md, "One copy of the code".
+
 ICON = ROOT / "packaging" / "ovtsuite.ico"
 VERSION_FILE = ROOT / "packaging" / "version_info.txt"
 
@@ -309,45 +320,6 @@ exe_kwargs = dict(
     version=str(VERSION_FILE) if VERSION_FILE.exists() else None,
 )
 
-def _tool_exes():
-    """Windows: one launcher per standalone tool (OVTFlasher.exe, ...) beside
-    OVTSuite.exe. Each is the same bootloader + PYZ + entry script under the
-    tool's name, icon and version description -- a few MB each, sharing the
-    one _internal folder -- and packaging/entry.py runs only that tool when
-    started under that name. The tool-only installers ship one of these instead
-    of OVTSuite.exe; the main installer's shortcuts point at them so each shows
-    its own icon everywhere Windows draws one."""
-    if not sys.platform.startswith("win"):
-        return []
-    from ovtsuite import branding
-    out = []
-    vdir = ROOT / "build"
-    vdir.mkdir(exist_ok=True)
-    for tool, name in branding.TOOL_EXES.items():
-        kw = dict(exe_kwargs, name=name)
-        ico = ROOT / "packaging" / ("ovtsuite_%s.ico" % tool)
-        if ico.exists():
-            kw["icon"] = str(ico)
-        if VERSION_FILE.exists():
-            # Task Manager and Explorer show FileDescription: say which tool
-            text = VERSION_FILE.read_text(encoding="utf-8-sig")
-            text = (text.replace("'FileDescription', 'OVT-Suite'",
-                                 "'FileDescription', '%s'" % branding.TOOL_NAMES[tool])
-                        .replace("'InternalName', 'OVTSuite'", "'InternalName', '%s'" % name)
-                        .replace("'OriginalFilename', 'OVTSuite.exe'",
-                                 "'OriginalFilename', '%s.exe'" % name))
-            vfile = vdir / ("version_info_%s.txt" % tool)
-            vfile.write_text(text, encoding="utf-8")
-            kw["version"] = str(vfile)
-        out.append(EXE(pyz, a.scripts, [], exclude_binaries=True, **kw))
-    # OVTMcp.exe: the MCP server for AI clients (packaging/entry.py). Always a
-    # console exe -- an MCP client talks to it over stdin/stdout, which a
-    # windowed exe does not have. Not a "tool": no shortcut, no installer.
-    kw = dict(exe_kwargs, name=branding.MCP_EXE, console=True)
-    out.append(EXE(pyz, a.scripts, [], exclude_binaries=True, **kw))
-    return out
-
-
 if ONEFILE:
     exe = EXE(
         pyz, a.scripts, a.binaries, a.zipfiles, a.datas, [],
@@ -357,7 +329,7 @@ if ONEFILE:
 else:
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **exe_kwargs)
     coll = COLLECT(
-        exe, *_tool_exes(), a.binaries, a.zipfiles, a.datas,
+        exe, a.binaries, a.zipfiles, a.datas,
         strip=False, upx=False, upx_exclude=[],
         name="OVTSuite",
     )

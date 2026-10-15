@@ -119,13 +119,27 @@ def rows_for_session(session, eeprom=None):
         rows.extend(_vdo_summary(session))
         return rows
     if getattr(session, "is_edc15", False):
-        rows.append(("Platform", "EDC15 (C167)"))
-        rows.append(("Family / KB", str(session.family)))
         dss = getattr(session, "datasets", []) or []
+        v3 = any(getattr(d, "v3", False) for d in dss)
+        rows.append(("Platform", "MSA15 / EDC15V (C167, %s datasets)"
+                     % dss[0].sig if v3 and dss else "EDC15 (C167)"))
+        if getattr(session, "_byte_swapped", False):
+            rows.append(("Byte order", "file stored byte-swapped; shown in the "
+                         "ECU's order, saved back as it came"))
+        kb = getattr(session, "kb", None)
+        rows.append(("Family / KB", "%s  (%s)" % (session.family, kb.title)
+                     if kb is not None and getattr(kb, "title", "") else str(session.family)))
+        filled = getattr(session, "filled_by_structure", 0)
+        if filled:
+            rows.append(("  found by structure", "%d tuning map(s) the definition "
+                         "does not name (all datasets)" % filled))
         rows.append(("Datasets", str(len(dss))))
         for d in dss:
             ident = (getattr(d, "ident", "") or "").strip()
             dsv = getattr(d, "dsv", None)
+            if getattr(d, "v3", False):
+                rows.append(("  dataset %s" % d.label, "0x%05X  %s" % (d.start, ident)))
+                continue
             rows.append(("  dataset %s" % getattr(d, "label", getattr(d, "index", "?")),
                          "0x%05X  coding %s  %s" % (d.start, dsv if dsv is not None else "?", ident)))
         try:
@@ -266,11 +280,18 @@ def rows_for_session(session, eeprom=None):
         fam = str(session.family)
         _fam_proj = {"p350": "P350", "p475_83": "P475", "p475_84_mf": "P475",
                      "p475_84_hq": "P475", "p447": "P447"}
-        if proj and _fam_proj.get(fam) and _fam_proj[fam] != proj:
+        if getattr(session, "found_by_structure", False):
+            rows.append(("Family / KB", "none matches -- the common tuning maps "
+                         "were found by their structure (check before writing)"))
+        elif proj and _fam_proj.get(fam) and _fam_proj[fam] != proj:
             rows.append(("Family / KB", "%s  (fingerprint match; dataset is %s -- "
                          "parameters may be misplaced, no KB for this project)" % (fam, proj)))
         else:
             rows.append(("Family / KB", fam))
+        filled = getattr(session, "filled_by_structure", 0)
+        if filled:
+            rows.append(("  found by structure", "%d tuning map(s) the definition lacks"
+                         % filled))
         if proj:
             rows.append(("Dataset project", proj))
         if region:
@@ -333,7 +354,7 @@ def rows_for_session(session, eeprom=None):
         len(ents), ", ".join("%d %s" % (n, k) for k, n in kinds.most_common()))))
     prov = Counter(getattr(e, "source", "?") for e in ents)
     order = ["anchored", "struct", "verified", "placed", "bracketed", "segmented",
-             "projected", "carried"]
+             "structure", "projected", "carried"]
     rows.append(("Placement", ", ".join(
         "%d %s" % (prov[k], k) for k in order + sorted(set(prov) - set(order)) if prov.get(k))))
     if prov.get("projected"):
@@ -341,7 +362,11 @@ def rows_for_session(session, eeprom=None):
                      "check before writing" % prov["projected"]))
     try:
         rep = session.checksum_status()
-        if rep is None:
+        if rep is None and any(getattr(d, "v3", False)
+                               for d in getattr(session, "datasets", None) or ()):
+            rows.append(("Checksums", "checksum routine not recognised - "
+                         "not checked, not corrected on save"))
+        elif rep is None:
             rows.append(("Checksums", "no supported layout"))
         else:
             rows.append(("Checksums",

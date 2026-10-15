@@ -177,34 +177,7 @@ def test_a_bare_file_path_opens_in_the_gui(tmp_path, monkeypatch):
     assert seen == [str(f)]
 
 
-# ---------------------------------------------------------------- tool launchers
-def _entry_module():
-    import importlib.util
-    path = os.path.join(os.path.dirname(__file__), "..", "packaging", "entry.py")
-    spec = importlib.util.spec_from_file_location("ovt_frozen_entry", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-@pytest.mark.parametrize("exe, tool", [
-    (r"C:\Program Files\OVT Flasher\OVTFlasher.exe", "flasher"),
-    ("/opt/ovt/OVTSniffer", "sniffer"),
-    (r"C:\x\ovtlogger.EXE", "logger"),
-    (r"C:\x\OVTSuite.exe", None),
-])
-def test_a_launcher_runs_only_its_tool(exe, tool):
-    assert _entry_module()._tool_for_exe(exe) == tool
-
-
-def test_a_tool_launcher_passes_its_arguments_to_the_tool(monkeypatch):
-    entry = _entry_module()
-    seen = []
-    monkeypatch.setattr(cli, "main", lambda argv: seen.append(argv) or 0)
-    monkeypatch.setattr(sys, "executable", r"C:\OVT\OVTLogger.exe")
-    monkeypatch.setattr(sys, "argv", [r"C:\OVT\OVTLogger.exe", "car.bin"])
-    assert entry._main() == 0
-    assert seen == [["--logger", "car.bin"]]
+# (the launchers' --tool dispatch in packaging/entry.py: tests/test_launcher.py)
 
 
 def test_the_logger_names_cells_from_a_project_and_keeps_the_log_in_it(

@@ -512,6 +512,37 @@ class _Dynamic:
         self.m, self.lay, self.addr, self.table = m, lay, addr, table
         self.std, self.com, self.order = std, com, order
 
+    def evidence(self, read):
+        """``(checked, passed)``: each point count the layout stores
+        (``NO_AXIS_PTS_X/Y``) is between 1 and the axis' declared maximum."""
+        t = self.table
+        maxc = {"X": t.cols, "Y": t.rows if t.kind == "map" else 1}
+        placed = _place(self.m, self.lay, maxc, maxc["X"] * maxc["Y"])
+        checked = passed = 0
+        for ax in ("X", "Y"):
+            if ax == "Y" and t.kind != "map":
+                continue
+            key = "NO_AXIS_PTS_" + ax
+            n = None
+            if self.std.get(ax) and key in placed:
+                off, dt = placed[key]
+                size, signed, _f = _dsize(dt)
+                n = read(self.addr + off, size, signed, self.order)
+            elif ax in self.com:
+                ap_addr, ap_lay = self.com[ax]
+                ap_placed = _place(self.m, ap_lay, {"X": maxc[ax]}, 0)
+                if "NO_AXIS_PTS_X" not in ap_placed:
+                    continue
+                off, dt = ap_placed["NO_AXIS_PTS_X"]
+                size, signed, _f = _dsize(dt)
+                n = read(ap_addr + off, size, signed, self.order)
+            else:
+                continue
+            checked += 1
+            if n is not None and 1 <= n <= maxc[ax]:
+                passed += 1
+        return checked, passed
+
     def __call__(self, read):
         import copy
         t = self.table
@@ -657,6 +688,7 @@ def _characteristic(m: _Module, b: Block, order: str, warnings: List[str],
         has_counts = any(it.kind.startswith("NO_AXIS_PTS_") for it in lay.items)
         if has_counts or com:
             t.dynamic = _Dynamic(m, lay, addr, t, std, com, corder)
+    t.record = addr
     return t
 
 

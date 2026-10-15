@@ -102,8 +102,16 @@ attached by itself).
   whether to **Show them beside the module's** (the default, and what an
   imported WinOLS project does) or **Use them instead** (the module still
   corrects the checksums; its tuning tools that rely on its own map list are
-  unavailable meanwhile). Removing the definition in the Project panel goes
-  back to the module's alone.
+  unavailable meanwhile). Switch between the two later with **Hide the
+  module's built-in maps** on the set's menu in the Project panel; removing
+  the definition there goes back to the module's alone.
+
+Each of the definition's tables is placed where evidence in the binary
+confirms it -- also when the definition was made for another software
+version, whose tables have moved -- and what nothing confirms is left out
+unless you ask for it. When not every table is where the file says,
+attaching it shows what was found first. See [Placing a definition
+file](definitions.md).
 
 German texts in a definition -- descriptions, axis names, categories -- are
 shown in English: a description of the Bosch EDC15 DAMOS the app ships

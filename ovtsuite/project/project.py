@@ -637,6 +637,9 @@ class Project:
         path = "sets/%s/defs/%s/%s" % (s.id, m.id, name)
         if m.definition and m.definition.get("path") != path:
             self._blobs.pop(m.definition.get("path"), None)
+        if m.definition and m.definition.get("reference"):
+            # another definition: the image the old one was made for goes too
+            self._blobs.pop(m.definition["reference"], None)
         self._blobs[path] = bytes(data)
         m.definition = {"path": path,
                         "type": (type_ or posixpath.splitext(name)[1][1:]).lower()}
@@ -655,8 +658,88 @@ class Project:
         m = self.set(sid).member(mid)
         if m is not None and m.definition:
             self._blobs.pop(m.definition.get("path", ""), None)
+            if m.definition.get("reference"):
+                self._blobs.pop(m.definition["reference"], None)
             m.definition = None
             self._touch()
+
+    def set_definition_options(self, sid: str, mid: str, options: Optional[dict]) -> None:
+        """How the member's definition is placed on its image
+        (``definition["place"]``, see :func:`ovtsuite.xdf_session.
+        placed_definition`): ``base``, ``relocate``, ``unverified``."""
+        m = self.set(sid).member(mid)
+        if m is None or not m.definition:
+            raise KeyError(mid)
+        opts = {k: v for k, v in (options or {}).items() if v is not None}
+        if opts:
+            m.definition["place"] = opts
+        else:
+            m.definition.pop("place", None)
+        self._touch()
+
+    def set_definition_use(self, sid: str, mid: str, instead: bool) -> None:
+        """Whether the member's definition is shown instead of the maps a
+        module defines (``definition["use"] == "instead"``: the module's
+        built-in maps are hidden) or beside them."""
+        m = self.set(sid).member(mid)
+        if m is None or not m.definition:
+            raise KeyError(mid)
+        if bool(instead) == (m.definition.get("use") == "instead"):
+            return
+        if instead:
+            m.definition["use"] = "instead"
+        else:
+            m.definition.pop("use", None)
+        self._touch()
+
+    def set_definition_reference(self, sid: str, mid: str, filename: Optional[str],
+                                 data: Optional[bytes]) -> None:
+        """The image the member's definition was made for (an A2L's HEX):
+        what places its tables on another software. ``data`` None removes it."""
+        s = self.set(sid)
+        m = s.member(mid)
+        if m is None or not m.definition:
+            raise KeyError(mid)
+        old = m.definition.pop("reference", None)
+        if old:
+            self._blobs.pop(old, None)
+        if data is not None:
+            path = "sets/%s/defs/%s/reference/%s" % (s.id, m.id, _safe_name(filename or "reference"))
+            self._blobs[path] = bytes(data)
+            m.definition["reference"] = path
+        self._touch()
+
+    def definition_reference(self, sid: str, mid: str) -> Optional[bytes]:
+        m = self.set(sid).member(mid)
+        if m is None or not m.definition or not m.definition.get("reference"):
+            return None
+        return self._blobs.get(m.definition["reference"])
+
+    # ==================================================== user parameters
+    @staticmethod
+    def _user_params_path(sid):
+        return "sets/%s/user/params.json" % sid
+
+    def user_params(self, sid: str) -> list:
+        """The parameters the user defined for set ``sid``
+        (:mod:`ovtsuite.userparams` specs); ``[]`` when none."""
+        from .. import userparams as _up
+        s = self.set(sid)
+        return _up.loads(self._blobs.get(self._user_params_path(s.id)))
+
+    def set_user_params(self, sid: str, specs) -> None:
+        """Keep ``specs`` as set ``sid``'s user parameters (none: removed)."""
+        from .. import userparams as _up
+        s = self.set(sid)
+        p = self._user_params_path(s.id)
+        data = _up.dumps(specs) if specs else None
+        if self._blobs.get(p) == data:
+            return
+        if data is None:
+            self._blobs.pop(p, None)
+        else:
+            self._blobs[p] = data
+        self._touch()
 
     # ================================================== definition cache
     def set_cache(self, sid: str, branch: str, data: Optional[bytes]) -> None:

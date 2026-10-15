@@ -11,6 +11,11 @@ a binary opens straight in the hex editor. Edits made here are ordinary edits: t
 can be undone with **Edit > Undo** in the main window, they show in the
 table view, and the checksums are corrected when you save.
 
+To go straight to a parameter's bytes, right-click it in the parameter tree
+> **Show in hex editor** and pick its data or an axis: the editor opens with
+exactly those bytes selected. See [The parameter menu and
+Properties](parameter-menu.md).
+
 ![The hex editor, with a comparison loaded](../images/main-hex.png)
 
 The editor belongs to its tab: it stays open beside the main window,

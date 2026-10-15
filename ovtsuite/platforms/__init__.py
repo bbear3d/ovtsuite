@@ -56,7 +56,7 @@ MODULES: Dict[str, ModuleInfo] = {m.id: m for m in (
                "EDC16 engine ECUs: definitions, maps, checksum, EEPROM/immo editor.",
                ("edc16",)),
     ModuleInfo("edc15", "Bosch EDC15",
-               "EDC15 engine ECUs: definitions, maps, checksum, EEPROM editor.",
+               "EDC15VM+/P and MSA15/EDC15V engine ECUs: definitions, maps, checksum, EEPROM editor.",
                ("edc15",)),
     ModuleInfo("zf6hp", "ZF 6HP",
                "ZF 6HP19/26/28 TCUs: definitions, shift/TCC tools, checksum.",

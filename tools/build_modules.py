@@ -413,6 +413,12 @@ def cmd_inno(args):
                        'Types: %s'
                        % (r["id"], r["name"], r["version"], what.replace('"', "'"),
                           "full custom" if types else "full compact custom"))
+        # an upgrade replaces each module's folder rather than layering the
+        # new release over the old one (stale files would otherwise stay)
+        out += ["", "[InstallDelete]"]
+        for r in mine:
+            out.append('Type: filesandordirs; Name: "{app}\\modules\\%s"; '
+                       'Components: mod_%s' % (r["id"], r["id"]))
         out += ["", "[Files]"]
         for r in mine:
             out.append('Source: "%s\\*"; DestDir: "{app}\\modules\\%s"; '

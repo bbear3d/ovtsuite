@@ -79,6 +79,9 @@ def rebuild(win) -> None:
                 continue                    # a module's item that is not there
             tb.addAction(a)
             last_sep = False
+            if aid in ("edit/undo", "edit/redo"):
+                from . import gui_undomenu as _gum   # the history drop-down
+                _gum.decorate(win, tb, a)
             if a.menu() is not None:
                 btn = tb.widgetForAction(a)
                 if isinstance(btn, QtWidgets.QToolButton):
@@ -94,7 +97,8 @@ def rebuild(win) -> None:
                 if isinstance(btn, QtWidgets.QToolButton):
                     btn.setToolButtonStyle(
                         QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-            elif not a.isSeparator():
+            elif not a.isSeparator() and a.objectName() not in (
+                    "edit/undo", "edit/redo"):     # (worked out when shown)
                 _tooltip(win, a)
         tb.setVisible(bool(_opt.get("toolbar/visible")))
     finally:

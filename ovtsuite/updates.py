@@ -22,6 +22,11 @@ equals the signed checksum list's -- or, without a list, GitHub's own
 ``digest`` for the asset; a file neither vouches for is reported as
 unverified and the user decides. A ``.ovtmod`` is checked again by the module
 installer (signature and every file).
+
+From 0.4.8 on a release may also carry ``OVTSuite-Update-<from>-to-<to>.zip``,
+a signed delta package: an installed copy a few releases behind updates with a
+chain of them instead of the full installer (:mod:`ovtsuite.delta_update`,
+docs/UPDATES.md); :func:`fetch_releases` lists the releases to chain.
 """
 
 import hashlib
@@ -42,6 +47,9 @@ from . import branding
 LAST_CHECK_KEY = "updates/last_check"
 SKIP_KEY = "updates/skip"
 OPTION_KEY = "updates/check_at_startup"
+#: the release a delta update failed to install here: it is installed with the
+#: full installer next time (ovtsuite/gui_update.py)
+DELTA_FAILED_KEY = "updates/delta_failed"
 
 #: the automatic check runs at most this often (seconds)
 CHECK_INTERVAL = 24 * 3600
@@ -192,10 +200,7 @@ def _urlopen(url: str, timeout: float, accept: str):
     return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
 
 
-def fetch_latest(timeout: float = 15.0, url: Optional[str] = None) -> Release:
-    """The latest published release (GitHub's ``/releases/latest`` leaves out
-    drafts and prereleases). Raises :class:`UpdateError`."""
-    url = url or latest_url()
+def _get_json(url: str, timeout: float):
     try:
         with _urlopen(url, timeout, "application/vnd.github+json") as resp:
             raw = resp.read()
@@ -209,9 +214,54 @@ def fetch_latest(timeout: float = 15.0, url: Optional[str] = None) -> Release:
     except (urllib.error.URLError, OSError) as ex:
         raise UpdateError("could not reach GitHub: %s" % getattr(ex, "reason", ex))
     try:
-        return Release.from_json(json.loads(raw.decode("utf-8")))
+        return json.loads(raw.decode("utf-8"))
     except ValueError:
         raise UpdateError("GitHub answered with something that is not JSON")
+
+
+def fetch_latest(timeout: float = 15.0, url: Optional[str] = None) -> Release:
+    """The latest published release (GitHub's ``/releases/latest`` leaves out
+    drafts and prereleases). Raises :class:`UpdateError`."""
+    return Release.from_json(_get_json(url or latest_url(), timeout))
+
+
+PER_PAGE = 100
+
+
+def releases_url(page: int = 1, per_page: int = PER_PAGE,
+                 url: str = branding.SOURCE_URL) -> str:
+    return "https://api.github.com/repos/%s/%s/releases?per_page=%d&page=%d" % (
+        repo_slug(url) + (per_page, page))
+
+
+def fetch_releases(older_than: str = "", timeout: float = 15.0, max_pages: int = 10,
+                   get=None) -> List[Release]:
+    """Every published release, newest first, page by page (100 a page) --
+    for chaining delta updates (:mod:`ovtsuite.delta_update`). Stops at the
+    last page, or at the first page that reaches back to ``older_than`` (the
+    installed version: nothing older is needed). Raises
+    :class:`UpdateError`."""
+    get = get or (lambda u: _get_json(u, timeout))
+    out: List[Release] = []
+    for page in range(1, max_pages + 1):
+        rows = get(releases_url(page))
+        if not isinstance(rows, list):
+            raise UpdateError("GitHub answered with something that is not a release list")
+        reached = False
+        for j in rows:
+            try:
+                r = Release.from_json(j)
+            except UpdateError:
+                continue
+            out.append(r)
+            try:
+                if older_than and compare_versions(r.version, older_than) <= 0:
+                    reached = True
+            except ValueError:
+                pass
+        if len(rows) < PER_PAGE or reached:
+            break
+    return out
 
 
 def fetch_text(url: str, timeout: float = 30.0, limit: int = 1 << 20) -> bytes:
@@ -307,6 +357,9 @@ class Offer:
     current: str
     base: bool                          # the app itself is newer
     modules: List[ModuleUpdate]
+    #: the chain of delta packages from this version to the release's, when
+    #: one is published (delta_update.Chain; found for an installed copy)
+    delta: Optional[object] = None
 
     @property
     def any(self) -> bool:
@@ -370,22 +423,47 @@ def installed_modules() -> List[InstalledModule]:
 
 def install_kind() -> str:
     """``"inno"``: a Windows build installed by its setup.exe (it can update
-    itself); ``"frozen"``: another built copy (the Linux packages, a zip);
+    itself); ``"tools"``: a standalone tool installed by its own setup (OVT
+    Flasher, OVT Tools ...: the app's installer is not its update);
+    ``"frozen"``: another built copy (the Linux packages, a zip);
     ``"source"``: run from source or pip (notify only)."""
     if not getattr(sys, "frozen", False):
         return "source"
     app_dir = os.path.dirname(os.path.abspath(sys.executable))
-    if sys.platform == "win32" and _inno_installed(app_dir):
-        return "inno"
+    if sys.platform == "win32":
+        return classify_install(app_dir, _registry_location_matches(app_dir))
     return "frozen"
 
 
 INNO_APP_ID = "{94760517-1A60-48C1-8353-767DA53A52EB}"     # = AppId in installer.iss
 
 
+def classify_install(app_dir: str, registered: bool = False) -> str:
+    """How the Windows copy in ``app_dir`` was installed. A folder with an
+    Inno uninstaller is the app's own install only when the app's exe and
+    its manifest (app-manifest.json) are there too, or the app's uninstall
+    entry names the folder: the tool-only installers (packaging/
+    tool_installer.iss) ship OVTSuite.exe for their launchers but leave the
+    manifest out, and have AppIds of their own -- running the app's setup for
+    one of them would install the whole app somewhere else."""
+    unins = os.path.isfile(os.path.join(app_dir, "unins000.exe"))
+    main = os.path.isfile(os.path.join(app_dir, branding.EXE_NAME + ".exe"))
+    # a tool install has OVTSuite.exe too (its launchers start it), but never
+    # the app manifest, which only the app's own installer ships
+    manifest = os.path.isfile(os.path.join(app_dir, "app-manifest.json"))
+    if registered or (unins and main and manifest):
+        return "inno"
+    if unins:
+        return "tools"
+    return "frozen"
+
+
 def _inno_installed(app_dir: str) -> bool:
-    if os.path.isfile(os.path.join(app_dir, "unins000.exe")):
-        return True
+    return classify_install(app_dir, _registry_location_matches(app_dir)) == "inno"
+
+
+def _registry_location_matches(app_dir: str) -> bool:
+    """The app's own uninstall entry (its AppId) names ``app_dir``."""
     try:
         import winreg
     except ImportError:
@@ -695,13 +773,21 @@ def _is_base_installer(path: str) -> bool:
                          % re.escape(branding.EXE_NAME), n))
 
 
-def launch_chain(installers, folder: str) -> None:
-    """Write the batch file and start it, detached and without a window."""
-    import subprocess
-    script = chain_script(installers, os.path.abspath(sys.executable), os.getpid(), folder)
+def write_chain(installers, folder: str) -> str:
+    """Write the batch file into ``folder``; returns its path."""
+    from .launcher import relaunch_exe      # a tool comes back as the tool
+    script = chain_script(installers, relaunch_exe(), os.getpid(), folder)
+    os.makedirs(folder, exist_ok=True)
     bat = os.path.join(folder, "install-update.cmd")
     with open(bat, "w", encoding="utf-8", newline="") as fh:
         fh.write(script)
+    return bat
+
+
+def launch_chain(installers, folder: str) -> None:
+    """Write the batch file and start it, detached and without a window."""
+    import subprocess
+    bat = write_chain(installers, folder)
     flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
              | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     cmd = [os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe"),

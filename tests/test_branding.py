@@ -497,9 +497,13 @@ def test_each_tool_is_the_same_in_the_package_and_the_installers(tool, app_id):
         assert os.path.exists(os.path.join(ROOT, d, ico)), d
 
 
-def test_tool_installers_leave_the_main_app_out():
+def test_tool_installers_ship_the_main_exe_but_not_the_app():
     text = open(TOOL_ISS, encoding="utf-8").read()
-    assert '#define Excl "\\" + MainExe' in text
+    # OVTSuite.exe is shipped (every launcher starts it); the full modules
+    # and the app manifest are not
+    assert '#define Excl "\\modules"' in text
+    assert '",\\" + MainExe' not in text
+    assert ",\\app-manifest.json" in text
     assert 'Excludes: "{#Excl}"' in text
     assert _iss_defines(TOOL_ISS)["MainExe"] == branding.EXE_NAME + ".exe"
     # four products, four distinct, fixed AppIds -- and none is the main app's

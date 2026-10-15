@@ -203,3 +203,21 @@ def test_kept_files_are_listed_newest_first(win, tab, monkeypatch):
     gp.export_kept(win, "log")
     names, default = offered[0]
     assert names[0].startswith("a.csv") and default == 0
+
+
+def test_a_new_project_compares_with_nothing_until_its_first_save(win):
+    """A project that is still only its original has nothing to compare: the
+    tab compared the original with itself (and a coding-copy pairing bug made
+    a stock Touran 03G906021MP show 116 changed tables). The first save brings
+    the comparison with the original."""
+    from ovtsuite import gui_project as gp
+    assert win.load_from_image(READ, "read")
+    ws = win.current
+    assert ws.project_ref is not None
+    assert ws.comparison is None
+    ws.primary.edit_bytes(0x10, b"\x55")
+    assert gp._commit(ws)
+    ref = ws.project_ref
+    root = ref.set.root_of(ref.branch.head)
+    assert ws.comparison is not None
+    assert ws.comparison.version_of["id"] == root.id != ref.branch.head

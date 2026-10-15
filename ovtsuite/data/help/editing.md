@@ -38,6 +38,11 @@ The list runs from when the tab was opened and is not cleared by saving,
 so you can still undo past a save; the tab is then marked as changed again.
 It holds the last 500 changes, and is cleared when the tab is closed.
 
+On the toolbar, the arrow beside **Undo** and **Redo** drops down the list of
+steps, newest first, named by the parameter they changed. Pick one to undo (or
+redo) every step down to it at once. Hover over either button to see the step
+it would take next; they are greyed out when there is nothing to undo or redo.
+
 ## Saving
 
 Everything is saved as an **OVT project** (`.ovt`): see
