@@ -73,7 +73,12 @@ other unsaved changes, which stay unsaved, or close without saving. It is
 not written into a file another program changed meanwhile, nor into a signed
 project (that would break its signature). A new branch
 starts with the tree of the branch it came from, and a branch without one
-borrows a sibling branch's when it still fits the binary. A binary saved in
+borrows a sibling branch's when it still fits the binary. When a tree has to
+be worked out for a modified version, it is worked out on the set's original
+version -- where no edited map can mislead the search -- and used for the
+modified one, unless a table's header (its size or an axis count) was changed
+there; then the modified version is searched on its own. The status bar says
+"parameters located on the original version" when that happened. A binary saved in
 the project as *unknown* by an older version of the app is recognised again
 when it opens, and the project records what it is the next time it is saved.
 
@@ -227,10 +232,21 @@ Right-click an item for what can be done with it:
   becomes a set), save, rename, set how many logs are kept, close.
 - **Set** -- rename; **Attach a definition** (XDF, A2L, KP, OLS or DAM) to a
   binary no module recognises, so it opens with that definition's tables and
-  values in the main view instead of only the hex editor; remove it again.
+  values in the main view instead of only the hex editor; **Definition
+  placement...** to see how its tables were placed, give the offset or the
+  image it was made for ([Placing a definition
+  file](editor/definitions.md)); **Hide the module's built-in maps** (when a
+  module also defines the binary) to show only the definition's maps, or
+  untick it to show them beside the module's again; remove it again.
   The set's tooltip names the definition it has.
 - **Branch** -- open it, make it the active branch (the one a first open
   shows), rename, **New branch from here**, delete (its history stays).
+- **Branch** or **Version** -- **Compare with project**: a binary version
+  from *another* project as this branch's comparison. Pick one of the other
+  open projects, a recent one, or **Browse...**; the branch's tab opens if it
+  is not open, and you are asked which binary and version of that project
+  (only binaries of the same kind are offered). A branch of the other project
+  that is open in a tab, at its latest version, is compared live.
 - **Version** -- compare with it, **Revert the branch to this version** (adds
   a new version; nothing is lost), **New branch from this version**,
   **Rename...** (or select it and press **F2**; leave the name empty to give
@@ -299,8 +315,11 @@ read from the binary, each axis is named after the measured value it uses,
 and conversions such as a frequency stored as a period show (and edit) in
 their physical units.
 
-A definition is only used when no module knows the binary -- a module's own
-map tree always wins.
+When a module knows the binary, its own map tree stays: the definition's
+tables are added beside it, in a group of their own (or used instead, if
+you choose so when attaching it). Each table is placed where evidence in
+the binary confirms it -- see [Placing a definition
+file](editor/definitions.md).
 
 German in a definition is shown in English. A description the app knows --
 every description of the Bosch EDC15 DAMOS it ships translations for -- gets

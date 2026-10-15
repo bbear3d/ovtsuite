@@ -62,6 +62,8 @@ CLUSTER_FIRMWARE = 24
 #: parameters from a definition file packaged with an unrecognised binary
 #: (an XDF in an .ovt project, see ovtsuite.xdf_session)
 DEFINITION = 60
+#: parameters the user defined themselves (ovtsuite.userparams)
+USER = 61
 
 # shared tail
 DTC = 70
@@ -90,6 +92,7 @@ GROUP_NAMES: Dict[int, str] = {
     CLUSTER_IDENTITY: "Identity & immobilizer",
     CLUSTER_FIRMWARE: "Firmware patch module",
     DEFINITION: "From the definition file",
+    USER: "User defined",
     DTC: "Fault codes (DTCs)",
     CODING: "Coding variants",
     VEHICLE: "Vehicle & swap config",
@@ -138,6 +141,8 @@ GROUP_HELP: Dict[int, str] = {
     DEFINITION: "Every table and value of the definition file packaged with "
                 "this binary in its project (an XDF), grouped by its own "
                 "categories.",
+    USER: "Parameters you defined yourself (right-click > Add parameter...), "
+          "kept with the project.",
     DTC: "Fault-path enables, classes and debounce -- what sets a code "
          "and what the ECU does about it.",
     CODING: "The second copy of every table the ECU switches by coding "

@@ -585,7 +585,12 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
 
 
 def load(data: bytes, title: str = "") -> Definition:
-    return to_definition(parse(data), title)
+    wf = parse(data)
+    defn = to_definition(wf, title)
+    if wf.image:
+        # an .ols carries the image its maps were made on (file offsets)
+        defn.reference = (bytes(wf.image), 0)
+    return defn
 
 
 __all__ = ["is_winols", "parse", "load", "to_definition", "read_header",

@@ -52,7 +52,9 @@ def _ws(w):
 
 def _split(ws, left):
     from PySide6 import QtWidgets
-    sp = ws.findChild(QtWidgets.QSplitter)
+    inner = getattr(ws, "surface_split", None)   # the 3-D surface's, not it
+    sp = next((x for x in ws.findChildren(QtWidgets.QSplitter)
+               if x is not inner), None)
     if sp is not None:
         sp.setSizes([left, 2000])
 
@@ -177,7 +179,7 @@ def tree_differ(ctx):
 
 @shot("main-table", "data/help", size=(1300, 600),
       what="A map: table tabs, title and notes, the edit bar, axes, a selection",
-      crop=lambda w: w.current.table.parentWidget())
+      crop=lambda w: w.current.editbar.parentWidget())
 def table(ctx):
     w = ctx.main_window(ctx.ref("edc16_lq"))
     ws = _ws(w)
@@ -203,7 +205,7 @@ def heatmap(ctx):
 
 @shot("main-compare", "data/help", size=(1300, 1000),
       what="A tuned map with the stock file underneath, changed cells marked",
-      crop=lambda w: w.current.table.parentWidget())
+      crop=lambda w: w.current.editbar.parentWidget())
 def compare(ctx):
     w, ws = _tuned_pair(ctx)
     _split(ws, 300)
@@ -287,17 +289,16 @@ def hex_editor(ctx):
     return ctx.keep(dlg)
 
 
-@shot("main-3d", "data/help", size=(1180, 600),
-      what="3D surface of a map and its comparison")
+@shot("main-3d", "data/help", size=(1300, 900),
+      what="The 3D surface above the table: a map and its comparison",
+      crop=lambda w: w.current.editbar.parentWidget())
 def surface(ctx):
     w, ws = _q_pair(ctx)
+    _split(ws, 300)
     ctx.open_table(w, MAP)
     ws.open_surface()
-    from ovtsuite import gui
-    from PySide6 import QtWidgets
-    dlg = next(d for d in QtWidgets.QApplication.topLevelWidgets()
-               if isinstance(d, gui.Surface3DDialog) and d.isVisible())
-    return ctx.keep(dlg)
+    ws.surface_split.setSizes([480, 400])
+    return w
 
 
 def _saved_history(ctx):

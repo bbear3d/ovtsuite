@@ -169,6 +169,43 @@ _BOUND_L = r"(?<![A-Za-z0-9])"
 _BOUND_R = r"(?![A-Za-z0-9])"
 
 
+def has_wildcards(text: str) -> bool:
+    """True when ``text`` uses a name wildcard (``*`` or ``?``)."""
+    return "*" in text or "?" in text
+
+
+def wildcard_body(pattern: str, sep: Optional[str] = None,
+                  word: bool = False) -> str:
+    """Regex source for a wildcard ``pattern``: ``*`` is any run of
+    characters, ``?`` any one character, everything else literal. With
+    ``sep``, neither wildcard matches that character (so a match stays
+    inside one field of a joined string); with ``word``, they match letters
+    and digits only (whole-word searches: a wildcard stays in one word). Not
+    anchored: like the plain text it replaces, a pattern may match anywhere."""
+    anyc = ("[A-Za-z0-9]" if word else
+            "[^%s]" % re.escape(sep) if sep else ".")
+    out = []
+    for ch in pattern:
+        if ch == "*":
+            if not out or out[-1] != anyc + "*":
+                out.append(anyc + "*")
+        elif ch == "?":
+            out.append(anyc)
+        else:
+            out.append(re.escape(ch))
+    return "".join(out)
+
+
+def wildcard_regex(pattern: str, case_sensitive: bool = False,
+                   sep: Optional[str] = None) -> Optional["re.Pattern"]:
+    """The compiled :func:`wildcard_body` of ``pattern``, or None when it
+    has no wildcard (the caller then matches the plain text as before)."""
+    if not has_wildcards(pattern):
+        return None
+    return re.compile(wildcard_body(pattern, sep),
+                      (0 if case_sensitive else re.IGNORECASE) | re.DOTALL)
+
+
 def char_mask(s: str) -> int:
     """Bit set of the characters in ``s`` (ASCII by value, the rest folded
     into one bit). A cheap necessary condition for a subsequence match."""
@@ -336,16 +373,26 @@ class _TextMatcher:
             except re.error as ex:
                 raise QueryError("Bad regular expression: %s" % ex)
         elif opts.match == "exact":
-            body = re.escape(self.q)
+            # * and ? are wildcards (docs/SEARCH.md); the rest is literal
+            body = wildcard_body(self.q, word=opts.whole_word) \
+                if has_wildcards(self.q) else re.escape(self.q)
             if opts.whole_word:
                 body = _BOUND_L + body + _BOUND_R
             self.pat = re.compile(body, flags)
         else:                               # fuzzy: words, any order
             self.tokens = self.q.split()
             if opts.whole_word:
-                self.tpats = [re.compile(_BOUND_L + re.escape(t) + _BOUND_R,
-                                         flags) for t in self.tokens]
-            else:
+                self.tpats = [re.compile(_BOUND_L + (
+                    wildcard_body(t, word=True) if has_wildcards(t)
+                    else re.escape(t))
+                    + _BOUND_R, flags) for t in self.tokens]
+            elif any(has_wildcards(t) for t in self.tokens):
+                # a word with * or ? matches as a pattern; the others still
+                # match fuzzily (tpats[i] None)
+                self.tpats = [re.compile(wildcard_body(t), flags)
+                              if has_wildcards(t) else None
+                              for t in self.tokens]
+            if not opts.whole_word:
                 # masks are of lowered text, so lower the token for the mask
                 # even when the comparison itself is case-sensitive
                 self.tmasks = [char_mask(t.lower()) for t in self.tokens]
@@ -379,7 +426,7 @@ class _TextMatcher:
                 ent = d.f.get(name)
                 if ent is None:
                     continue
-                if self.tpats:
+                if self.tpats and self.tpats[ti] is not None:
                     m = self.tpats[ti].search(ent[0])
                     if m is None:
                         continue

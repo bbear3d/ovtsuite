@@ -11,7 +11,7 @@ mode, options, scope and history are also remembered between runs.
 
 | Mode | Query | Notes |
 |---|---|---|
-| **Parameters** | words in any order (`boost limit`) | live as you type; ranked |
+| **Parameters** | words in any order (`boost limit`); `*` and `?` wildcards (`AccPed*MAP`, `n?_Max`) | live as you type; ranked. A word with a wildcard matches as a pattern (anywhere in the field), the others fuzzily; in exact mode the whole query is the pattern; regex mode is unchanged |
 | **Values** | `1500`, `10..20`, `>=5`, `!=0`, `nan` | Enter; display units or the raw stored value; optional ± tolerance; axes optional |
 | **Address** | `0x1A2B3C`, `1A2B3C-1A2BFF`, `0x1A2B3C+16` | live; an address *inside* a table resolves to the exact cell or axis element |
 | **Bytes in parameter** | hex with `??` wildcards, ASCII, integer, float | looks only inside the table currently shown; whole-image byte search is the hex editor's job |

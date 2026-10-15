@@ -418,11 +418,11 @@ def import_comparison_dialog(win) -> bool:
     return bool(paths) and compare_with_file(win, paths[0])
 
 
-def compare_with_file(win, path: str) -> bool:
-    """``path`` as the active tab's comparison: a project asks which of its
-    binaries and versions; a recent ``<project>#ovt:<set>/<branch>@<version>``
-    names one."""
-    cur = win.current
+def compare_with_file(win, path: str, ws=None) -> bool:
+    """``path`` as the comparison of tab ``ws`` (the active tab when None): a
+    project asks which of its binaries and versions; a recent
+    ``<project>#ovt:<set>/<branch>@<version>`` names one."""
+    cur = ws if ws is not None else win.current
     if cur is None or cur.primary is None:
         return False
     got = _gp.parse_ref(path)

@@ -23,7 +23,8 @@ From top to bottom:
 | Parameter tree (left) | Every parameter of the file, grouped by what a tuner uses it for. See [the parameter tree](#the-parameter-tree). |
 | Table tabs (right, top) | The tables you have open in this file. See [table tabs](#table-tabs). |
 | Title and notes | The name, kind, size and units of the table on screen, and what it is. |
-| Edit bar | **Modify selection**, **Fill**, **Smooth**, **Heatmap** and **3D surface** -- plus, on the tables that need them, **Show Z as** and **Vehicle…** (ZF 6HP speed maps) and **Copy to other bank**. |
+| Edit bar | **Modify selection**, **Fill**, **Smooth**, **Heatmap** and **3D surface** (shows or hides the surface above the grid) -- plus, on the tables that need them, **Show Z as** and **Vehicle…** (ZF 6HP speed maps) and **Copy to other bank**. |
+| 3D surface | Above the grid when **3D surface** (Ctrl+3) is on: the map as a surface you can turn and edit, with a splitter to share the room with the grid. See [3D surface](editor/3d-surface.md). |
 | Grid | The table itself, with its axes, and the comparison file's copy underneath when one is open. |
 | Status bar | The file, its definition, the comparison and the checksum state. See [the status bar](#the-status-bar). |
 | Find panel | Opens along the bottom with **Edit > Find...** (Ctrl+F). See [The Find panel](editor/search.md). |
@@ -79,6 +80,7 @@ how it was located in this file.
 | Click a parameter | Opens it in the **preview** table tab (the italic one), replacing what the preview showed. |
 | Double-click a parameter | Opens it in a table tab that stays open. |
 | Middle-click a parameter | Opens it in a new table tab beside the one showing, and leaves the preview alone. |
+| Right-click a parameter or a heading | The parameter menu: open, show in the hex editor, copy, **Properties...**, **Add parameter...** and more. See [The parameter menu and Properties](editor/parameter-menu.md). |
 
 ### Narrowing the tree
 
@@ -86,7 +88,7 @@ how it was located in this file.
 |---|---|
 | Group list (**All groups**) | Shows one group only. Hover over a group in the list to read what it holds. |
 | **Advanced** | Also shows the supporting groups that a tune does not normally touch: **Other engine maps**, **Other gearbox maps**, **Sensors & models**, **Internals / OBD**, **Adaptation**, **Unverified placement** and the cluster's **Firmware patch module**. They are hidden otherwise to keep the tree short. Picking one of them in the group list shows it whether **Advanced** is ticked or not. The setting is remembered. |
-| **Filter parameters...** | Type to keep only the parameters whose name, symbol, description or coding matches. Matching rows are expanded; clear the box to collapse the tree again. Typing a coding, such as `coding 158031`, finds the tables that coding selects. |
+| **Filter parameters...** | Type to keep only the parameters whose name, symbol, description or coding matches. Matching rows are expanded; clear the box to collapse the tree again. Typing a coding, such as `coding 158031`, finds the tables that coding selects. `*` stands for any run of characters and `?` for any one character: `accped*map` finds every accelerator-pedal map, `n?_max` finds `n1_max` and `n2_max`. |
 | **Show only parameters that differ from the comparison** | Available when a comparison is open. Keeps only the parameters whose data differs between the two files — including the ones in the supporting groups, even when **Advanced** is off, so no difference is hidden. |
 
 The three work together: for example **Power** in the group list, `boost` in

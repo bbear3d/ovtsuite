@@ -28,6 +28,8 @@ from .signal_names import english_units, phrase_english
 
 #: definition types :func:`apply_definition` understands
 SUPPORTED = ("xdf", "a2l", "kp", "ols", "dam")
+#: the group tables nothing confirms are listed under (when shown at all)
+UNVERIFIED = "Unverified - check before writing"
 
 
 class Unsupported(ValueError):
@@ -169,6 +171,12 @@ def entities(defn, binfile) -> List[Entity]:
             e.rows = e.cols = 1
         e.category_path = [category_text(t.categories[0])] if t.categories \
             else ["Values" if t.kind == "constant" else "Tables"]
+        if getattr(t, "note", ""):
+            e.note = t.note
+        if getattr(t, "placement", "") == "unverified":
+            # shown only when asked for: kept apart, so it is not mistaken
+            # for a table something confirmed
+            e.category_path = [UNVERIFIED] + e.category_path
         if e.addr < 0 or e.end > size:
             outside += 1
             continue                    # outside this binary: not this file's
@@ -177,17 +185,53 @@ def entities(defn, binfile) -> List[Entity]:
     return out
 
 
-def apply_definition(session, data: bytes, type_: str) -> int:
-    """Give ``session`` (an unrecognised binary) the parameters of the
-    definition ``data`` of type ``type_``. Returns how many there are."""
+def _load(data: bytes, type_: str) -> Definition:
     type_ = (type_ or "").lower().lstrip(".")
     if type_ and type_ not in SUPPORTED:
         raise Unsupported("%s definitions do not build a parameter tree"
                           % type_.upper())
     try:
-        defn = _load_definition(data, type_ or None)
+        return _load_definition(data, type_ or None)
     except DefinitionError as ex:
         raise Unsupported(str(ex))
+
+
+def placed_definition(data: bytes, type_: str, image: bytes,
+                      options: Optional[dict] = None,
+                      reference: Optional[bytes] = None, progress=None):
+    """The definition ``data`` placed on ``image``: ``(definition, placement)``
+    -- the definition a copy whose tables sit where the evidence puts them
+    (:mod:`ovtsuite.definitions.place`), the ones nothing confirms left out
+    unless ``options["unverified"]``.
+
+    ``options`` (a member's ``definition["place"]``): ``base`` -- use this
+    offset (definition address - file offset) instead of finding one;
+    ``relocate`` False -- every table at that one offset (graded, never
+    moved); ``unverified`` -- show the tables nothing confirms too.
+    ``reference``: the image the definition was made for (an Intel HEX or a
+    binary; a WinOLS project carries its own)."""
+    import hashlib
+    from .definitions import place as _place
+    opts = dict(options or {})
+    defn = _load(data, type_)
+    ref = None
+    if reference:
+        ref = _place.reference_from_file(reference, defn)
+    base = opts.get("base")
+    pl = _place.placed(defn, bytes(image),
+                       key="%s:%s" % (type_, hashlib.sha1(bytes(data)).hexdigest()),
+                       reference=ref, base=None if base is None else int(base),
+                       relocate=bool(opts.get("relocate", True)), progress=progress)
+    return _place.relocated(defn, pl, bool(opts.get("unverified"))), pl
+
+
+def apply_definition(session, data: bytes, type_: str,
+                     options: Optional[dict] = None,
+                     reference: Optional[bytes] = None) -> int:
+    """Give ``session`` (an unrecognised binary) the parameters of the
+    definition ``data`` of type ``type_``, each where the evidence places it
+    (:func:`placed_definition`). Returns how many there are."""
+    defn, pl = placed_definition(data, type_, session.binfile.data, options, reference)
     session.binfile.endian = defn.byte_order()
     ents = entities(defn, session.binfile)
     session.entities = ents
@@ -196,12 +240,15 @@ def apply_definition(session, data: bytes, type_: str) -> int:
     session.support = "definition"
     session.family = defn.title or "definition"
     session.unsupported_reason = None
-    session.definition_notes = describe(defn, len(ents))
+    session.definition_placement = pl
+    session.definition_notes = describe(defn, len(ents), pl)
     session.has_definition_file = bool(ents)
     return len(ents)
 
 
-def add_definition(session, data: bytes, type_: str, label: str = "") -> int:
+def add_definition(session, data: bytes, type_: str, label: str = "",
+                   options: Optional[dict] = None,
+                   reference: Optional[bytes] = None) -> int:
     """Add the tables and values of the definition ``data`` to a session a
     module already defines, beside the module's own -- under their own group
     (``From <label>``), never replacing or renaming the module's. A table at
@@ -209,23 +256,17 @@ def add_definition(session, data: bytes, type_: str, label: str = "") -> int:
     two describe the same bytes, so an edit in either shows in both.
     Returns how many were added. The module's definition snapshot leaves
     them out (``source == "definition"``); they are added again on open."""
-    type_ = (type_ or "").lower().lstrip(".")
-    if type_ and type_ not in SUPPORTED:
-        raise Unsupported("%s definitions do not build a parameter tree"
-                          % type_.upper())
-    try:
-        defn = _load_definition(data, type_ or None)
-    except DefinitionError as ex:
-        raise Unsupported(str(ex))
+    defn, pl = placed_definition(data, type_, session.binfile.data, options, reference)
     ents = entities(defn, session.binfile)
-    head = "From %s" % (label or defn.title or type_.upper() or "definition")
+    head = "From %s" % (label or defn.title or (type_ or "").upper() or "definition")
     for e in ents:
         e.category_path = [head] + list(e.category_path or [])
     drop_added_definition(session)
     session.entities = list(session.entities) + ents
     for e in ents:
         session.by_key[("definition", e.name, e.addr)] = e
-    session.definition_notes = describe(defn, len(ents))
+    session.definition_placement = pl
+    session.definition_notes = describe(defn, len(ents), pl)
     session.has_definition_file = bool(ents)
     return len(ents)
 
@@ -239,11 +280,13 @@ def drop_added_definition(session) -> None:
                           if getattr(v, "source", "") != "definition"}
 
 
-def describe(defn: Definition, n: int) -> str:
-    """One line on what a definition gave: how many parameters, and what it
-    left out and why."""
+def describe(defn: Definition, n: int, placement=None) -> str:
+    """One line on what a definition gave: how many parameters, how they
+    were placed, and what it left out and why."""
     outside, other = getattr(defn, "_skipped", (0, 0))
     bits = ["%d parameters from the %s definition" % (n, defn.type.upper())]
+    if placement is not None:
+        bits.append(placement.summary())
     if outside:
         bits.append("%d outside this binary" % outside)
     if other:
@@ -251,5 +294,5 @@ def describe(defn: Definition, n: int) -> str:
     return "; ".join(bits)
 
 
-__all__ = ["SUPPORTED", "Unsupported", "entities", "apply_definition",
-           "add_definition", "drop_added_definition", "describe"]
+__all__ = ["SUPPORTED", "UNVERIFIED", "Unsupported", "entities", "placed_definition",
+           "apply_definition", "add_definition", "drop_added_definition", "describe"]

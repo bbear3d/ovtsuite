@@ -293,7 +293,7 @@ def test_a_6hp_version_pairs_every_schedule_with_the_loaded_file(tmp_path):
 
 #: ``MODEL_VERSION`` and the hash of ``defn.MODEL_FILES`` it was recorded with.
 #: See test_the_model_files_are_unchanged_or_model_version_was_considered.
-RECORDED_MODEL = (1, "f2abfae681ecece4b213e55622a8d8f0074dd101")
+RECORDED_MODEL = (2, "b7ff8a7215586e792747ec0057523c8165fc5f3c")
 
 
 def test_the_model_files_are_unchanged_or_model_version_was_considered():
@@ -380,3 +380,107 @@ def test_the_data_digest_skips_the_search_index(monkeypatch, tmp_path):
     kb.write_bytes(b"kb2")
     _fresh_digests(monkeypatch)
     assert D.data_digest() != a
+
+
+def _installed(monkeypatch, version="1.0.11", variant="full"):
+    """Make the edc16 module look installed from a package."""
+    from types import SimpleNamespace
+    from ovtsuite.modules import loader
+    man = SimpleNamespace(id="edc16", version=version, variant=variant)
+    monkeypatch.setattr(loader, "manifest",
+                        lambda mid: man if mid == "edc16" else None)
+    _fresh_digests(monkeypatch)
+    return man
+
+
+def test_an_installed_module_is_judged_by_its_version_only(monkeypatch, tmp_path):
+    """Two computers with the same installer must agree: an installed
+    module's files are not hashed (stray or extra files in its folder, its
+    install location), only its id, version and variant."""
+    from ovtsuite import datafiles
+    from ovtsuite.modules import loader
+    man = _installed(monkeypatch)
+    hashed = []
+    monkeypatch.setattr(D, "_hash_source", lambda ps: hashed.append(ps) or "x")
+    monkeypatch.setattr(datafiles, "listing",
+                        lambda mid=None: hashed.append(mid) or [])
+    monkeypatch.setattr(D, "_module_of",
+                        lambda p: __import__("types").SimpleNamespace(
+                            id="edc16", version="1.0.11"))
+    monkeypatch.setattr(loader, "module_roots",
+                        lambda: {"edc16": str(tmp_path / "a")})
+    code, data = D.code_digest("edc16"), D.data_digest("edc16")
+    # the same module installed somewhere else, with other files beside it
+    monkeypatch.setattr(loader, "module_roots",
+                        lambda: {"edc16": str(tmp_path / "b")})
+    _fresh_digests(monkeypatch)
+    assert (D.code_digest("edc16"), D.data_digest("edc16")) == (code, data)
+    # neither the module's source nor its data files were read
+    assert "edc16" not in hashed
+    assert not [f for h in hashed if isinstance(h, list) for f in h
+                if str(tmp_path) in f]
+    # ... and a new release of the module is a different model
+    man.version = "1.0.12"
+    _fresh_digests(monkeypatch)
+    assert D.code_digest("edc16") != code
+    assert D.data_digest("edc16") != data
+
+
+def test_a_rejected_snapshot_says_which_code_differs(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(D, "_module_of", lambda p: SimpleNamespace(
+        id="edc16", version="1.0.11"))
+    _installed(monkeypatch, "1.0.10")
+    snap = {"format": D.FORMAT, "platform": "edc16", "image_len": 4,
+            "code": D.code_digest("edc16"),
+            "code_parts": D.code_parts("edc16")}
+    _installed(monkeypatch, "1.0.11")
+    why = D.check(snap, "edc16", b"\0" * 4)
+    assert why.startswith("built by different code")
+    assert "edc16 1.0.10, here edc16 1.0.11" in why
+
+
+def test_resetting_the_registry_forgets_the_digests():
+    from ovtsuite.modules import registry
+    D._DIGEST_CACHE["code|x"] = "stale"
+    registry.reset()
+    assert "code|x" not in D._DIGEST_CACHE
+
+
+# -- locating parameters on a project's original version (defn.rebase) ----------
+
+def _snap_of(data, ents, platform="edc16"):
+    return json.dumps({
+        "format": D.FORMAT, "platform": platform, "image_len": len(data),
+        "code": D.code_digest(platform), "data": D.data_digest(platform),
+        "mask": D.mask_digest(data, ents), "efields": D._EF, "afields": D._AF,
+        "ents": [D._erow(e) for e in ents]}).encode()
+
+
+def _one_map():
+    from ovtsuite.model import Axis, Entity
+    # header (2 count words) at 0x100, X axis 0x104..0x10C, Z 0x10C..0x114
+    return Entity("M", "curve", 1, [], "", "", 0x10C, 1, 4, 16, False, "X",
+                  "kb", x=Axis(0x104, 4, 16))
+
+
+def test_rebase_carries_a_definition_to_an_edited_version():
+    old = bytes(range(256)) * 4
+    e = _one_map()
+    new = bytearray(old)
+    new[0x10C:0x114] = b"\xff" * 8          # map values edited
+    new[0x3F0:0x3F4] = b"\x01\x02\x03\x04"  # a checksum far from any table
+    snap = _snap_of(old, [e])
+    assert D.usable(snap, "edc16", bytes(new)) is not None   # as stored: no
+    out = D.rebase(snap, "edc16", old, bytes(new))
+    assert out is not None
+    assert D.usable(out, "edc16", bytes(new)) is None
+
+
+def test_rebase_refuses_when_a_header_changed():
+    old = bytes(range(256)) * 4
+    e = _one_map()
+    new = bytearray(old)
+    new[0x101] = 6                          # the count word before the axis
+    assert D.rebase(_snap_of(old, [e]), "edc16", old, bytes(new)) is None
+    assert D.rebase(_snap_of(old, [e]), "edc16", old, bytes(new[:-1])) is None

@@ -86,6 +86,10 @@ class TableDef:
     #: image lays it out, where ``read(addr, size, signed, endian)`` reads
     #: an integer at a definition address (None outside the image)
     dynamic: Optional[object] = field(default=None, repr=False, compare=False)
+    #: definition address where the table's record starts (its stored point
+    #: counts or header, ahead of the axes) when the format says so (A2L,
+    #: DAMOS); None: the first stored element
+    record: Optional[int] = None
 
 
 @dataclass
@@ -106,6 +110,9 @@ class Definition:
     #: own place in an image from what the image structurally holds (a
     #: DAMOS: every map header starts with its input's RAM address)
     locate: Optional[object] = field(default=None, repr=False, compare=False)
+    #: the image the definition was made for, when the file carries it (a
+    #: WinOLS project): ``(bytes, base)``, definition address - base = offset
+    reference: Optional[tuple] = field(default=None, repr=False, compare=False)
 
     def base_in(self, data) -> int:
         """The base for this image: found in it when the definition can,

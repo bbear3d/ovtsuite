@@ -98,13 +98,18 @@ def _poke(ws, off=0x100):
     return b ^ 0xFF
 
 
-def test_first_open_shows_every_set_compared_with_its_original(win, car):
+def test_a_set_is_compared_with_its_original_from_its_first_save(win, car):
+    """A new project's sets are still only their originals: nothing to
+    compare until the first save, then each is compared with the original."""
     assert win.open_path(car)
     tabs = _project_tabs(win)
     assert sorted(t.project_ref.set.name for t in tabs) == ["ECU", "TCU"]
     assert {t.platform() for t in tabs} == {"edc16", "zf6hp"}
     for t in tabs:
         assert "A6 ▸ " in win.tabs.tabText(win.tabs.indexOf(t))
+        assert t.comparison is None
+        _poke(t)
+        assert t.save(tab_only=True)
         root = t.project_ref.set.roots()[0]
         assert t.cmp_version["id"] == root.id          # the as-read original
     assert win.open_path(car)                          # already open: no new tabs
@@ -337,11 +342,49 @@ def test_a_definition_beside_the_modules_maps(win, car, tmp_path, monkeypatch):
     assert snap["n_main"] == n_module
 
 
+def test_the_modules_maps_can_be_hidden_and_shown_again(win, car, tmp_path,
+                                                        monkeypatch):
+    """Project panel > Hide the module's built-in maps: only the attached
+    definition's maps; unticked, the module's come back beside them."""
+    from ovtsuite import gui_project as gp
+    win.open_path(car)
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    n_module = len(ecu.primary.entities)
+    xdf = tmp_path / "mine.xdf"
+    xdf.write_bytes(b"""<?xml version="1.0"?><XDFFORMAT version="1.80">
+ <XDFHEADER><deftitle>Mine</deftitle></XDFHEADER>
+ <XDFCONSTANT uniqueid="0x2"><title>My constant</title>
+  <EMBEDDEDDATA mmedaddress="0x300" mmedelementsizebits="16" />
+  <MATH equation="X" /></XDFCONSTANT></XDFFORMAT>""")
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", lambda self: 0)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "clickedButton",
+                        lambda self: self.defaultButton())
+    ref = ecu.project_ref
+    doc, sid = ref.doc, ref.sid
+    assert gp.attach_definition(win, doc, sid, str(xdf))
+    assert gp.module_defines(win, doc, sid)
+    assert gp.hide_builtin_maps(win, doc, sid, True)
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    assert ecu.primary.support == "definition"
+    assert [e.name for e in ecu.primary.entities] == ["My constant"]
+    main = gp._sb._main_member(doc.project, sid)
+    assert main.definition["use"] == "instead"
+    assert gp.module_defines(win, doc, sid)          # still the module's binary
+    assert not gp.hide_builtin_maps(win, doc, sid, True)      # no change
+    assert gp.hide_builtin_maps(win, doc, sid, False)
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    assert ecu.primary.support == "full"
+    assert len(ecu.primary.entities) == n_module + 1
+    assert "use" not in main.definition
+
+
 def test_the_comparison_shares_the_tabs_definition(win, car):
     """The as-read comparison is a sibling of the tab's session -- no second
     identification and match."""
     win.open_path(car)
     for t in _project_tabs(win):
+        _poke(t)
+        assert t.save(tab_only=True)        # a comparison from the first save
         assert t.comparison.defn_state == "shared"
 
 
@@ -729,13 +772,14 @@ def test_patches_from_the_tabs_own_history_start_at_the_original(G, win, car,
     from ovtsuite import history, patch
     win.open_path(car)
     ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
-    assert ecu.comparison is not None and ecu.comparison.version_of
-    assert ecu.comparison.binfile.name.endswith("ECU - original")
+    assert ecu.comparison is None                # nothing saved yet
     e = next(e for e in ecu.primary.entities
              if e.kind == "map" and not getattr(e, "text_kind", ""))
     before = e.cell(0, 0)
     ecu.primary.edit_cells(e, [(0, 0, before + 1)])
     assert ecu.save(tab_only=True)
+    assert ecu.comparison is not None and ecu.comparison.version_of
+    assert ecu.comparison.binfile.name.endswith("ECU - original")
     dlg = G.HistoryPatchDialog(ecu.primary, ecu)
     assert dlg.from_box.itemData(0) == history.ORIGINAL
     assert dlg.from_box.itemText(0) == "The original as read"

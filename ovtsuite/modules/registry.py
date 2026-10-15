@@ -38,6 +38,9 @@ def reset() -> None:
     sv = sys.modules.get(_PKG + ".speedview")
     if sv is not None:
         sv._EXT = False
+    dm = sys.modules.get(_PKG + ".defn")
+    if dm is not None:
+        dm.reset_digests()      # the stored-definition digests name modules
 
 
 def _discover() -> Dict[str, _api.ModuleSpec]:

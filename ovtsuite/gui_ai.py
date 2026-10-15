@@ -2191,23 +2191,10 @@ if HAVE_QT:
                 x.setToolTip("Load a comparison first")
 
     def attach_tree(ws):
-        """The parameter tree's right-click menu (it had none)."""
-        tree = ws.tree
-        tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-
-        def menu_at(pos):
-            item = tree.itemAt(pos)
-            e = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item is not None else None
-            if e is not None and not hasattr(e, "rows"):
-                e = None
-            if getattr(ws, "primary", None) is None:
-                return
-            m = QtWidgets.QMenu(tree)
-            if e is not None:
-                m.addAction("Open in a new table tab", lambda: ws.open_table(e, new_tab=True))
-            _ai_actions(ws, m, e)
-            m.exec(tree.viewport().mapToGlobal(pos))
-        tree.customContextMenuRequested.connect(menu_at)
+        """The parameter tree's right-click menu -- now the full parameter
+        menu (ovtsuite.gui_paramenu), which carries the AI actions."""
+        from . import gui_paramenu
+        gui_paramenu.attach(ws)
 
     def extend_menu(ws, menu, e):
         """The table's right-click menu gets the AI actions too."""

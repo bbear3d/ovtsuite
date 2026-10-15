@@ -95,6 +95,7 @@ This is a fixed-offset structural test, not an extension or content guess
 | `sets/<set>/deltas/<ckpt>.ovd` | the delta of a non-root checkpoint (section 4) |
 | `sets/<set>/originals/<id>/<filename>` | an original container, byte-for-byte |
 | `sets/<set>/defs/<filename>` | a packaged definition (XDF / A2L / KP / OLS / DAM) |
+| `sets/<set>/defs/<member>/reference/<filename>` | optional: the image a packaged definition was made for (an A2L's Intel HEX, or a binary), used to place its tables on another software |
 | `sets/<set>/cache/<branch>.defn` | optional definition snapshot cache (advisory, `ovtsuite.defn`) |
 | `logs/<id>/<filename>` | a datalog |
 | `attachments/<id>/<filename>` | any attachment |
@@ -179,7 +180,7 @@ first saved.
 | `endian`, `word` | byte order and word size for a raw member's hex view / definition |
 | `platform` | base catalogue id; `unknown` for an unrecognised binary |
 | `module` | id + version of the module that wrote it (empty for raw) -- lets the base app name the missing module without re-identifying |
-| `definition` | `{"path": "sets/<set>/defs/x.xdf", "type": "xdf"}` -- a packaged third-party definition. A raw member **with** a definition opens in the main parameter view; **without** one it opens in the hex editor |
+| `definition` | `{"path": "sets/<set>/defs/x.xdf", "type": "xdf"}` -- a packaged third-party definition. A raw member **with** a definition opens in the main parameter view; **without** one it opens in the hex editor. Optional (ancillary): `"use": "instead"` (shown instead of a module's tree); `"place": {"base": int, "relocate": false, "unverified": true}` -- how its tables are placed (`ovtsuite.definitions.place`: `base` = definition address - file offset, given instead of found; `relocate` false = never moved from that offset; `unverified` = also show tables nothing confirms); `"reference": "<blob path>"` -- the image it was made for |
 | `meta` | platform facts with no other home (the old `BLOCK_META`: HVAC part number and section map, VDO ROM/coding, 8HP block map) |
 
 A member written by a module that is not installed is opened read-only in the
@@ -444,6 +445,16 @@ Qt). Help page: `ovtsuite/data/help/projects.md`.
     sizes and values (WinOLS leaves the 18 reciprocal conversions raw).
   A table stored in the other byte order than the session reads, or outside
   the binary, is left out and counted in the status message.
+  Each table is **placed with evidence** (`ovtsuite/definitions/place.py`,
+  help page `editor/definitions.md`): the format's record facts (A2L stored
+  point counts, DAMOS `[input][count]` heads, rising axes), the original
+  image's bytes (an OLS carries it; an A2L's HEX can be added -- the
+  member's `definition["reference"]`), and the records' order (a confirmed
+  table places the next one). Tables of another software version that moved
+  are followed; what nothing confirms is left out unless
+  `definition["place"]["unverified"]`. Attaching shows the result first
+  (`gui_defplace.PlacementDialog`) unless every table is where the file says;
+  Project panel > set > **Definition placement...** reopens it.
 * **Saving**: Save = the whole project (every edited tab becomes a checkpoint
   on its branch, one write of the `.ovt`); **Save tab only** commits just the
   current tab. The tab's session saves to its working file first -- the usual

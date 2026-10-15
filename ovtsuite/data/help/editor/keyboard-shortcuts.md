@@ -99,11 +99,29 @@ undo step.
 | Left at the start / Right at the end of the text (while editing) | Keep the value and move to the cell on the left / right. |
 | Esc | Leave the cell as it was. |
 | = | A sum for every selected cell, typed in a box at the cell: `+5`, `-5`, `*1.05`, `/2`, `=120`, `+3%`, or an expression in `x`, the cell's value (`x*1.1+2`). Enter applies it, Esc cancels. Values are as shown (in a ZF converted view, engine rpm or road speed). |
-| Ctrl+3 | **3D surface** |
+| Ctrl+3 | Show / hide the **3D surface** above the table |
 | Enter in the **Modify selection** box | **Apply** |
 
 Mouse: double-click a cell to edit it; right-click for **Copy**,
 **Paste** and copying from another tab.
+
+## In the 3D surface
+
+| Keys / mouse | Action |
+|---|---|
+| Click a point | Select its cell (in the table too). |
+| Shift+click, Shift+drag, Shift+arrows | Extend the selection. |
+| Ctrl+click | Add a cell to the selection, or take it out. |
+| Ctrl+drag up/down on a selected point | Raise / lower every selected cell (one undo step; Esc cancels). |
+| Arrows | Move the current cell. |
+| Ctrl+arrows, drag | Rotate and tilt. |
+| + / -, mouse wheel | Zoom. |
+| Home | Reset the view. |
+| Edit > Cells keys, Ctrl+Z, Ctrl+Y | As in the table. |
+| Esc | Cancel a Ctrl+drag. |
+| Ctrl+3 | Hide the surface. |
+
+See [3D surface](3d-surface.md).
 
 ## In the tree and the tabs
 

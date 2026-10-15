@@ -110,9 +110,10 @@
       modules-checksum   one installer per module, checksum-only variant
       flasher   OVT Flasher only        sniffer   OVT Sniffer only
       logger    OVT Logger only         tools     all three tools, no main app
-    The tool installers ship the same build minus OVTSuite.exe (and the other
-    tools' launchers), install to their own folder, and upgrade/uninstall on
-    their own, so they can sit beside the main app or replace it.
+    The tool installers ship the same build minus the other tools' launchers
+    and the full modules (OVTSuite.exe included: every launcher starts it),
+    install to their own folder, and upgrade/uninstall on their own, so they
+    can sit beside the main app or replace it.
 
 .PARAMETER Modules
     Which modules to package, comma-separated module ids, or all (default):
@@ -145,6 +146,35 @@
     unless -Unsigned, its Ed25519 signature dist\SHA256SUMS.txt.sig with the
     module signing key. Upload both with the release: the app's update check
     verifies every download against them.
+
+    DELTA UPDATES (docs\UPDATES.md). Every one-folder build writes
+    dist\OVTSuite\app-manifest.json (+ .sig): the SHA-256 of every file the
+    installer ships. A signed build then, automatically (no switch needed):
+
+      * removes the delta packages an earlier build left in dist\,
+      * makes dist\OVTSuite-Update-<previous>-to-<version>.zip, where
+        <previous> is the highest release archived in Reference\AppReleases
+        that is older than this version (never this version itself, never a
+        prerelease): the files that changed, signed,
+      * keeps this build's manifest as Reference\AppReleases\<version>\,
+        replacing the one an earlier build of the same version left there.
+
+    So building the same version again (files changed, version not raised
+    yet) rebuilds its delta against the new build and replaces its archived
+    manifest. With nothing older archived (0.4.8, the first release with an
+    archived manifest) it only archives; deltas start with the next release.
+    Upload the delta with the release; installed copies update with a chain
+    of these instead of the full installer.
+
+.PARAMETER DeltaFrom
+    Override which releases to make delta packages from: versions archived in
+    Reference\AppReleases (e.g. 0.4.8,0.4.9 -- a direct delta from an older
+    release shortens chains), manifest files/folders, or 'none'. Default: the
+    newest archived release older than this build. Skipped with -Unsigned.
+
+.PARAMETER NoDelta
+    Make no delta packages and leave Reference\AppReleases alone: a test
+    build that is not going to be released, of a version already archived.
 
 .PARAMETER Clean
     Delete build\, dist\ and the build environment before starting, so every
@@ -208,7 +238,9 @@ param(
     [switch]$Update,
     [switch]$FastInstaller,
     [switch]$RebuildInstallers,
-    [switch]$HelpShots
+    [switch]$HelpShots,
+    [string[]]$DeltaFrom = @(),
+    [switch]$NoDelta
 )
 # 'main' is the old name of the full installer
 $Installers = @($Installers | ForEach-Object { if ($_ -eq 'main') { 'full' } else { $_ } } |
@@ -883,9 +915,37 @@ if ($HelpShots) {
 #     freezes that staged copy, never the source tree's package.
 # --------------------------------------------------------------------------
 $BuildModules = Join-Path $Root 'tools\build_modules.py'
+$AppRelease   = Join-Path $Root 'tools\app_release.py'
+$AppArchive   = Join-Path $Root 'Reference\AppReleases'
 $ModulesOut   = Join-Path $DistDir 'modules'
 $ModuleList   = ($Modules -join ',')
 if ($ModuleList -eq '') { $ModuleList = 'all' }
+
+function Invoke-AppRelease([string[]]$Arguments, [string]$What) {
+    # tools\app_release.py (delta updates): streamed like build_modules.py
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = 0
+    try {
+        & $EnvPy $AppRelease @Arguments 2>&1 | ForEach-Object {
+            $line = "$_"
+            if ($line.StartsWith('WARNING: ')) { Write-Warn $line.Substring(9) } else { Write-Ok $line }
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($code -ne 0) { throw "$What failed (exit $code)" }
+}
+
+function Write-AppManifest {
+    # dist\OVTSuite\app-manifest.json: after everything that changes a shipped
+    # file (the bridge copy, Authenticode), before the installers pack it.
+    # Deterministic, so an unchanged build does not rebuild its installers.
+    $a = @('manifest', (Join-Path $DistDir 'OVTSuite'), '--version', $AppVersion)
+    if ($Unsigned) { $a += '--unsigned' }
+    Invoke-AppRelease $a 'app manifest'
+}
 
 function Invoke-BuildModules([string[]]$Arguments, [string]$What) {
     # streamed and indented, with the same stderr guard as the layout step
@@ -1028,6 +1088,34 @@ if ($FreezeKey -and $FreezeKey -eq $LastFreeze -and (Test-Path $ExeBuilt)) {
 }
 
 # --------------------------------------------------------------------------
+# 5a. Tool launchers: OVTFlasher.exe, OVTSniffer.exe, OVTLogger.exe,
+#     OVTSimulator.exe, OVTMcp.exe -- a few KB each, starting
+#     "OVTSuite.exe --tool <name>" (packaging\launcher\Launcher.cs). Compiled
+#     with the .NET Framework's own csc.exe only when their inputs change, and
+#     the cached (signed, after -CodeSign) copies reused, so an unchanged
+#     launcher keeps its bytes and stays out of the delta packages.
+# --------------------------------------------------------------------------
+$BuildLaunchers = Join-Path $Root 'tools\build_launchers.py'
+$LauncherCache  = Join-Path $WorkDir 'launchers'
+function Invoke-BuildLaunchers([string[]]$Arguments, [string]$What) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = 0
+    try {
+        & $EnvPy $BuildLaunchers @Arguments 2>&1 | ForEach-Object { Write-Ok "$_" }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($code -ne 0) { throw "$What failed (exit $code)" }
+}
+if (-not $OneFile) {
+    Write-Step 'Tool launchers'
+    Invoke-BuildLaunchers @('build', '--into', (Join-Path $DistDir 'OVTSuite'),
+                            '--cache', $LauncherCache) 'tool launchers'
+}
+
+# --------------------------------------------------------------------------
 # 5b. 32-bit J2534 bridge (j2534bridge32.exe)
 # --------------------------------------------------------------------------
 # Most J2534 04.04 devices (Scanmatik 2 PRO, ...) ship only a 32-bit DLL, which
@@ -1123,6 +1211,14 @@ if (-not $OneFile) {
     }
     Invoke-BuildModules @('inno', '--full-dir', $AppModules, '--checksum-dir', $ChecksumDir,
                           '--out', $InstallerWork) 'installer module lists'
+}
+
+# --------------------------------------------------------------------------
+# 5d. App manifest (delta updates, docs\UPDATES.md)
+# --------------------------------------------------------------------------
+if (-not $OneFile) {
+    Write-Step 'App manifest'
+    Write-AppManifest
 }
 
 # --------------------------------------------------------------------------
@@ -1231,6 +1327,11 @@ if ($NoInstaller) {
                 $code = Invoke-NativeStreaming $SignTool (@('sign') + $signArgs + @($exe.FullName))
                 if ($code -ne 0) { throw "signtool failed on $($exe.Name) (exit $code)" }
             }
+            # the signed launchers become the cached ones: the next build
+            # copies the same bytes, and they stay out of the next delta
+            Invoke-BuildLaunchers @('adopt', '--from', $Built, '--cache', $LauncherCache) 'tool launchers'
+            # the signatures changed the exes: the manifest must say so
+            Write-AppManifest
             # ISCC: /S<name>=<command>, $q a quote, $f the file to sign
             $SignDefs = @('/DSignTool=ovtsign',
                           ('/Sovtsign=$q' + $SignTool + '$q sign ' + ($signArgs -join ' ') + ' $f'))
@@ -1273,9 +1374,11 @@ if ($NoInstaller) {
                     }
                 }
                 default {
-                    $exe = @{ flasher = @('OVTFlasher.exe'); sniffer = @('OVTSniffer.exe');
-                              logger = @('OVTLogger.exe');
-                              tools = @('OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe') }[$which]
+                    # every launcher starts OVTSuite.exe: a tool installer ships it too
+                    $exe = @{ flasher = @('OVTSuite.exe', 'OVTFlasher.exe');
+                              sniffer = @('OVTSuite.exe', 'OVTSniffer.exe');
+                              logger = @('OVTSuite.exe', 'OVTLogger.exe');
+                              tools = @('OVTSuite.exe', 'OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe') }[$which]
                     $base = @{ flasher = 'OVTFlasher'; sniffer = 'OVTSniffer'; logger = 'OVTLogger';
                                tools = 'OVTTools' }[$which]
                     $defs = @("/DTool=$which") + $FtdiDefs
@@ -1299,7 +1402,7 @@ if ($NoInstaller) {
             $gone = @($needs | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Built $_)) })
             if ($gone.Count) {
                 throw ("the build has no " + ($gone -join ', ') + " - the tool launchers come " +
-                       "from packaging\ovtsuite.spec; rebuild without -OneFile")
+                       "from tools\build_launchers.py (step 'Tool launchers'); rebuild without -OneFile")
             }
             # every literal Source file and every .ico either script names
             $inputs = @(Get-ChildItem -LiteralPath (Split-Path $Iss) -Filter '*.iss' |
@@ -1358,12 +1461,41 @@ if ($NoInstaller) {
 }
 
 # --------------------------------------------------------------------------
+# 6a. Delta update packages: dist\OVTSuite-Update-<from>-to-<version>.zip, and
+#     this build's manifest kept in Reference\AppReleases for the next one
+# --------------------------------------------------------------------------
+$DeltasBuilt = @()
+if (-not $OneFile -and (Test-Path (Join-Path $DistDir 'OVTSuite\app-manifest.json'))) {
+    if ($NoDelta) {
+        Write-Step 'Skipping delta update packages (-NoDelta; Reference\AppReleases left alone)'
+    } else {
+        # tools\app_release.py auto: drops the earlier build's packages from
+        # dist\, makes the delta from the newest archived release OLDER than
+        # this version (a rebuild of this version never makes one from itself),
+        # then archives this build's manifest, replacing that of an earlier
+        # build of the same version. Unsigned: none made, nothing archived.
+        $title = 'Delta update packages'
+        if ($Unsigned) { $title += ' (none: -Unsigned, the app refuses unsigned ones)' }
+        Write-Step $title
+        $dArgs = @('auto', (Join-Path $DistDir 'OVTSuite'), '--out', $DistDir, '--archive', $AppArchive)
+        foreach ($f in @($DeltaFrom | ForEach-Object { "$_" -split ',' } | Where-Object { "$_".Trim() })) {
+            $dArgs += @('--from', $f.Trim())
+        }
+        if ($Unsigned) { $dArgs += '--unsigned' }
+        Invoke-AppRelease $dArgs 'delta update packages'
+        # this version's packages only (auto removed every earlier one)
+        $DeltasBuilt = @(Get-ChildItem -LiteralPath $DistDir -Filter "OVTSuite-Update-*-to-$AppVersion.zip" -File |
+                         ForEach-Object { $_.FullName })
+    }
+}
+
+# --------------------------------------------------------------------------
 # 6b. Release checksums: dist\SHA256SUMS.txt (+ .sig, the module signing key)
 # --------------------------------------------------------------------------
 # What the in-app update check verifies downloads against (ovtsuite\updates.py).
 # Entries are merged by file name, so build_linux.sh can add its packages to the
 # same list; upload SHA256SUMS.txt and SHA256SUMS.txt.sig with the release.
-$SumFiles = @($InstallersBuilt)
+$SumFiles = @($InstallersBuilt) + @($DeltasBuilt)
 if (-not $BaseOnly -and (Test-Path $ModulesOut)) {
     $SumFiles += @(Get-ChildItem -LiteralPath $ModulesOut -Filter '*.ovtmod' | ForEach-Object { $_.FullName })
 }
@@ -1400,7 +1532,7 @@ if (-not $BaseOnly -and (Test-Path $ModulesOut)) {
         Write-Host ("    {0}  ({1:N1} MB)" -f $pk.FullName, ($pk.Length / 1MB)) -ForegroundColor Green
     }
 }
-foreach ($made in $InstallersBuilt) {
+foreach ($made in @($InstallersBuilt) + @($DeltasBuilt)) {
     $isize = (Get-Item $made).Length / 1MB
     Write-Host ("    {0}  ({1:N1} MB)" -f $made, $isize) -ForegroundColor Green
 }

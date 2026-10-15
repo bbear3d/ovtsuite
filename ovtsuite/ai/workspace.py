@@ -313,24 +313,28 @@ class FileWorkspace:
 
 def apply_definition(proj, sid, session) -> str:
     """A packaged third-party definition (XDF ...) on the set's main member,
-    applied the way the app's project tabs apply it (gui_project). Returns a
-    note, "" when there is none."""
-    from ..project import sessionbridge as _sb
-    main = _sb._main_member(proj, sid)
-    if main is None or not main.definition:
-        return ""
-    data = proj.definition_bytes(sid, main.id)
-    if not data:
-        return "The packaged definition is missing from the project."
-    from .. import xdf_session
+    then the user's own parameters, applied the way the app's project tabs
+    apply them (gui_project). Returns a note, "" when there is none."""
+    note = _apply_packaged(proj, sid, session)
+    from .. import userparams as _up
     try:
-        if getattr(session, "support", "") == "full" and \
-                main.definition.get("use") != "instead":
-            label = os.path.basename(main.definition.get("path", "")) or None
-            xdf_session.add_definition(session, data, main.definition.get("type"),
-                                       label=label)
-        else:
-            xdf_session.apply_definition(session, data, main.definition.get("type"))
+        more = _up.apply_from_project(proj, sid, session)
     except Exception as ex:
-        return "The packaged definition could not be read: %s" % ex
+        more = "the user parameters could not be read: %s" % ex
+    return "; ".join(x for x in (note, more) if x)
+
+
+def _apply_packaged(proj, sid, session) -> str:
+    """The packaged definition, placed with the options and reference image
+    the project keeps. Returns a note: why it could not be applied, or --
+    when some of its tables moved or are left out as unverified -- how it
+    was placed; "" otherwise."""
+    from ..project import sessionbridge as _sb
+    note = _sb.apply_packaged_definition(proj, sid, session)
+    pl = getattr(session, "definition_placement", None)
+    if pl is None:
+        return note                     # none, or it could not be read
+    c = pl.counts()
+    if c["unverified"] or c["moved"] or c["region"]:
+        return "definition placed: " + pl.summary()
     return ""

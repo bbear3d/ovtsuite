@@ -155,8 +155,8 @@ The **Options** menu:
 
 | Item | What it does |
 |---|---|
-| **Fuzzy -- words in any order, best first** | The default for **Parameters**. |
-| **Exact text** | The text exactly as typed, anywhere in a field. |
+| **Fuzzy -- words in any order, best first** | The default for **Parameters**. A word with a wildcard -- `*` for any run of characters, `?` for any one -- matches as a pattern: `AccPed*MAP boost`. |
+| **Exact text** | The text exactly as typed, anywhere in a field. `*` and `?` are wildcards here too. |
 | **Regular expression** | A regular expression. An invalid one is reported in the status. |
 | **Match case** | Upper and lower case must match. For **Parameters**, and for ASCII byte patterns. |
 | **Whole words only** | Each word must be a whole word. An underscore separates words, so `InjCrv` is a whole word in `InjCrv_tPreTrbn_C`. |

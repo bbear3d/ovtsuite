@@ -8,6 +8,10 @@
 Sets a HiDPI-friendly policy, then hands off to the CLI (which dispatches to
 the GUI for `ovtsuite gui ...`, or with no arguments launches the GUI file
 picker). A crash log is written next to the executable.
+
+``OVTSuite.exe --tool <name> [args...]`` runs one standalone tool instead:
+what the Windows launchers (OVTFlasher.exe, ..., OVTMcp.exe; ovtsuite/
+launcher.py) start. ``--apply-update`` is the delta-update helper.
 """
 
 import os
@@ -15,39 +19,32 @@ import sys
 import traceback
 
 
-def _tool_for_exe(executable):
-    """The standalone tool an executable launches, by its file name
-    (``OVTFlasher.exe`` -> ``"flasher"``), or None for the main app."""
-    from ovtsuite import branding
-    # either separator: the same check runs on a Windows path from anywhere
-    name = os.path.splitext(executable.replace("\\", "/").rsplit("/", 1)[-1])[0].lower()
-    for tool, exe in branding.TOOL_EXES.items():
-        if exe.lower() == name:
-            return tool
-    return None
-
-
-def _is_mcp_exe(executable):
-    from ovtsuite import branding
-    name = os.path.splitext(executable.replace("\\", "/").rsplit("/", 1)[-1])[0]
-    return name.lower() == branding.MCP_EXE.lower()
+def _tool_from_argv(argv):
+    """``(tool, rest)`` for ``OVTSuite.exe --tool <name> [args...]`` -- what
+    the launchers OVTFlasher.exe ... OVTMcp.exe start (ovtsuite/launcher.py,
+    packaging/launcher/Launcher.cs) -- else ``(None, argv)``. Raises
+    launcher.UnknownTool."""
+    from ovtsuite import launcher
+    return launcher.split_tool_argv(argv)
 
 
 def _main():
-    argv = sys.argv[1:]
-    # OVTMcp.exe: the MCP server for AI clients. A console exe, because the
-    # windowed OVTSuite.exe has no usable stdin/stdout to speak the protocol on.
-    if _is_mcp_exe(sys.executable):
-        from ovtsuite.cli import main
-        return main(["mcp"] + argv)
-    # OVTFlasher.exe / OVTSniffer.exe / OVTLogger.exe: the same bundle under
-    # another name, so the tool-only installers can ship a launcher that opens
-    # nothing but its tool -- arguments are passed to it (a file to write, logs
-    # to name cells from), never to the main window.
-    tool = _tool_for_exe(sys.executable)
+    from ovtsuite import launcher
+    try:
+        tool, argv = _tool_from_argv(sys.argv[1:])
+    except launcher.UnknownTool as ex:
+        _report_usage_error(str(ex))
+        return 2
+    launcher.set_current(tool)
+    # OVTFlasher.exe / OVTSniffer.exe / OVTLogger.exe / OVTSimulator.exe: the
+    # tool alone, with no main window -- the launcher's arguments are passed to
+    # it (a file to write, logs to name cells from). OVTMcp.exe: the MCP server
+    # for AI clients, on the stdin/stdout the console launcher hands down.
+    # The tool's AppUserModelID and icon are set by its window code from the
+    # tool name (gui._run_tool), as when the tool had an exe of its own.
     if tool is not None:
         from ovtsuite.cli import main
-        return main(["--" + tool] + argv)
+        return main(launcher.cli_argv(tool, argv))
     # bare launch (double-clicked exe) -> open the main window empty. The user
     # loads a binary from File > Open (Ctrl+O) or File > Open Recent; forcing a
     # file dialog up front is what blocked the window from ever opening on its
@@ -109,7 +106,33 @@ def _hold_app_mutex():
         pass
 
 
+def _apply_update(argv):
+    """``OVTSuite.exe --apply-update <plan.json>``: the delta-update helper
+    (ovtsuite/delta_update.py), started by the app from a temporary copy of
+    its folder. It must NOT hold the app mutex -- it waits for every copy of
+    the app to release it -- and opens no window."""
+    from ovtsuite.delta_update import helper_main
+    return helper_main(argv)
+
+
+def _report_usage_error(message):
+    """A bad --tool: on stderr, and on screen (a windowed exe has no console)."""
+    print("%s: %s" % (os.path.basename(sys.executable), message), file=sys.stderr)
+    if getattr(sys, "frozen", False):
+        _show_crash(message, title="Not a tool")
+
+
+def _is_mcp(argv):
+    try:
+        from ovtsuite import launcher
+        return launcher.split_tool_argv(argv)[0] == launcher.MCP
+    except Exception:
+        return False
+
+
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "--apply-update":
+        sys.exit(_apply_update(sys.argv[2:]))
     _enable_fault_log()
     _hold_app_mutex()
     try:
@@ -126,11 +149,13 @@ def main():
             print("crash log written to %s" % log, file=sys.stderr)
             break
         traceback.print_exc()
-        _show_crash(traceback.format_exc())
+        # the MCP server runs headless for an AI client: stderr is its log
+        if not _is_mcp(sys.argv[1:]):
+            _show_crash(traceback.format_exc())
         sys.exit(1)
 
 
-def _show_crash(text):
+def _show_crash(text, title="Could not start"):
     """A windowed build has no console: without this a start that fails
     just does not open, with nothing on screen and nothing on the command
     line. Show the error (best effort -- Qt itself may be what failed)."""
@@ -139,7 +164,7 @@ def _show_crash(text):
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         box = QtWidgets.QMessageBox()
         box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
-        box.setWindowTitle("Could not start")
+        box.setWindowTitle(title)
         last = text.strip().splitlines()[-1] if text.strip() else "unknown error"
         box.setText("The app could not start:\n\n%s" % last)
         box.setDetailedText(text)

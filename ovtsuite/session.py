@@ -200,6 +200,14 @@ class CommandStack:
     def redo_label(self) -> Optional[str]:
         return self._undone[-1].label if self._undone else None
 
+    def undo_labels(self) -> List[str]:
+        """Every undoable command's label, the next one to undo first."""
+        return [c.label for c in reversed(self._done)]
+
+    def redo_labels(self) -> List[str]:
+        """Every redoable command's label, the next one to redo first."""
+        return [c.label for c in reversed(self._undone)]
+
     def top(self) -> Optional[Command]:
         """The most recently done command, or None. A read-only peek --
         ``ovtsuite.patch`` uses it to persist what a ``transaction()`` block
@@ -309,6 +317,9 @@ class TunerSession:
         self._region_edits = {}
         self._region_saved = {}       # region bytes as last saved (history)
         self._hvac = None            # HvacImage when this .sgo is a Climatronic
+        #: True when the file on disk is a byte-swapped MSA15 / EDC15V image
+        #: (opened swapped back; save() writes a plain file swapped again)
+        self._byte_swapped = False
         with open(path, "rb") as _fh:
             _head = _fh.read(0x30)   # sgo.detect() needs this many to check
         if _head[:4] in _dim.MAGICS:
@@ -430,6 +441,21 @@ class TunerSession:
                     bytes(_ext), os.path.basename(path))
         else:
             self.binfile = BinaryFile.load(path)
+            # An MSA15 / EDC15V image some readers save with the two bytes of
+            # every word exchanged: edited in the ECU's byte order, saved back
+            # the way it came (see save()).
+            from .platforms import edc15 as _e15p
+            if _e15p.byte_swapped(self.binfile.data):
+                self.binfile = BinaryFile.from_bytes(
+                    _e15p.swap16(bytes(self.binfile.data)),
+                    os.path.basename(path), endian="<")
+                self._byte_swapped = True
+                self.load_note = (
+                    "This file is stored byte-swapped (the two bytes of every "
+                    "16-bit word exchanged, as some readers save an MSA15 / "
+                    "EDC15V flash). It is shown in the ECU's own byte order "
+                    "and saved back byte-swapped, like the original; Save As "
+                    "a native .edc15 container stores the ECU's byte order.")
         self.path = path
         data = bytes(self.binfile.data)
         # Platform, from format-defined markers rather than the file size --
@@ -730,6 +756,26 @@ class TunerSession:
     def redo(self) -> Optional[str]:
         cmd = self.undo_stack.redo(self.binfile)
         return cmd.label if cmd is not None else None
+
+    def undo_steps(self, n: int) -> List[str]:
+        """Undo the last ``n`` commands; the labels of those undone."""
+        out = []
+        for _ in range(max(0, n)):
+            lab = self.undo()
+            if lab is None:
+                break
+            out.append(lab)
+        return out
+
+    def redo_steps(self, n: int) -> List[str]:
+        """Redo the next ``n`` commands; the labels of those redone."""
+        out = []
+        for _ in range(max(0, n)):
+            lab = self.redo()
+            if lab is None:
+                break
+            out.append(lab)
+        return out
 
     @property
     def can_undo(self) -> bool:
@@ -1297,6 +1343,10 @@ class TunerSession:
                     patched = _sgo.replace_section(patched, 0x404000, _win)
             data = _sgo.to_bytes(patched)
             self._sgo_container = patched
+        elif self._byte_swapped:
+            # a plain file of a byte-swapped original: written the same way
+            from .platforms import edc15 as _e15p
+            data = _e15p.swap16(data)
         directory = _os.path.dirname(_os.path.abspath(out)) or "."
         tmp = _os.path.join(directory, ".%s.tmp" % _os.path.basename(out))
         with open(tmp, "wb") as fh:
@@ -1759,14 +1809,27 @@ class TunerSession:
             return None
         if not copies:
             return main                     # not switched there: one table
+        # The same copy by name first: a copy is named after its own
+        # address, so in a file of the same layout (another version of this
+        # one -- what a project tab compares against) it IS the counterpart.
+        # Without this, a copy whose codings are a subset of the main copy's
+        # tied with it on overlap and paired with the MAIN table: a Touran
+        # 03G906021MP compared with itself showed all 116 such copies changed.
+        same_name = next((x for x in copies if x.name == entity.name), None)
+        if same_name is not None:
+            return same_name
+        if entity.name == base and main is not None:
+            return main
         mine = _coding_values(getattr(entity, "coding", ""))
         cands = ([main] if main is not None else []) + copies
 
-        def overlap(x):
-            return len(mine & _coding_values(getattr(x, "coding", "")))
+        def rank(x):
+            theirs = _coding_values(getattr(x, "coding", ""))
+            # most codings in common; then the closest set (fewest extra)
+            return (len(mine & theirs), -len(mine ^ theirs))
 
-        best = max(cands, key=overlap)
-        if overlap(best) > 0:
+        best = max(cands, key=rank)
+        if rank(best)[0] > 0:
             return best
 
         def tx(codes):
@@ -1867,7 +1930,7 @@ def find_by_ref(session, ref) -> Optional[Entity]:
 GRADE_RANK = {
     "anchored": 6, "verified": 6, "struct": 6, "measured": 6,
     "placed": 5,          # the program's own pointer table put it here
-    "bracketed": 4, "segmented": 3, "projected": 2, "carried": 1, "": 0,
+    "bracketed": 4, "segmented": 3, "structure": 3, "projected": 2, "carried": 1, "": 0,
 }
 
 

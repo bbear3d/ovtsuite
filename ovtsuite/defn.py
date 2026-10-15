@@ -122,10 +122,42 @@ def data_digest(platform: Optional[str] = None) -> str:
     if key not in _DIGEST_CACHE:
         from . import datafiles
         m = _module_of(platform)
-        files = [p for n, p in datafiles.listing(m.id if m is not None else None)
-                 if n not in _NOT_MODEL_DATA]
-        _DIGEST_CACHE[key] = _hash_files(sorted(files))
+        ident = installed_identity(m)
+        if ident is not None:
+            # an installed module's data is whatever its signed manifest
+            # lists for that version (checked at every start): the version
+            # IS the data, wherever and however it was installed
+            _DIGEST_CACHE[key] = hashlib.sha1(
+                ("installed|" + ident).encode()).hexdigest()
+        else:
+            files = [p for n, p in datafiles.listing(
+                         m.id if m is not None else None)
+                     if n not in _NOT_MODEL_DATA]
+            _DIGEST_CACHE[key] = _hash_files(sorted(files))
     return _DIGEST_CACHE[key]
+
+
+def installed_identity(m) -> Optional[str]:
+    """``"<id> <version> <variant>"`` of module ``m`` when it was installed
+    from a package (a release: an .ovtmod or a setup), else None (an in-tree
+    module in a source checkout, whose files change without a new version).
+
+    A release's version is raised whenever its files change (the build warns
+    otherwise) and its manifest's hashes are checked when the app starts, so
+    for an installed module the version decides whether a stored definition
+    still applies -- not a hash of the files on this disk, which picked up
+    whatever else was in the folder and differed between two computers with
+    the same installer."""
+    if m is None:
+        return None
+    try:
+        from .modules import loader
+        man = loader.manifest(m.id)
+    except Exception:
+        return None
+    if man is None:
+        return None
+    return "%s %s %s" % (man.id, man.version, man.variant)
 
 
 #: Bump when the way the BASE app builds or restores a model changes in a way
@@ -136,7 +168,7 @@ def data_digest(platform: Optional[str] = None) -> str:
 #: its recorded hash is updated -- that is the prompt to decide whether this
 #: wants bumping too. A frozen build has no source to hash, so there this
 #: number (with each module's own version) is ALL that tells builds apart.
-MODEL_VERSION = 1
+MODEL_VERSION = 2
 
 #: The base files that build, shape or restore a session's model -- traced
 #: from ``TunerSession.__init__`` through a module's ``build`` / ``load_kb``
@@ -205,19 +237,42 @@ def code_digest(platform: Optional[str] = None) -> str:
     ``MODEL_VERSION`` and the module's version."""
     key = "code|%s" % (platform or "")
     if key not in _DIGEST_CACHE:
+        p = code_parts(platform)
+        _DIGEST_CACHE[key] = hashlib.sha1(
+            ("%d|%s|%s|%d" % (p["model"], p["base"], p["module"],
+                              FORMAT)).encode()
+        ).hexdigest()
+    return _DIGEST_CACHE[key]
+
+
+def code_parts(platform: Optional[str] = None) -> dict:
+    """What :func:`code_digest` hashes, kept apart so a snapshot can say
+    WHICH part differs when it is passed over: ``model`` (MODEL_VERSION),
+    ``base`` (the MODEL_FILES hash, "" in a frozen build) and ``module``
+    (an installed module's id, version and variant; an in-tree module's id,
+    version and source hash)."""
+    key = "parts|%s" % (platform or "")
+    if key not in _DIGEST_CACHE:
         from .modules import loader
         m = _module_of(platform)
         mod = ""
         if m is not None:
-            root = loader.module_roots().get(m.id, _PKG)
-            files = _py_files(os.path.join(root, m.id))
-            mod = "%s %s %s" % (m.id, m.version,
-                                _hash_source(files) if files else "")
-        _DIGEST_CACHE[key] = hashlib.sha1(
-            ("%d|%s|%s|%d" % (MODEL_VERSION, model_files_digest(), mod,
-                              FORMAT)).encode()
-        ).hexdigest()
-    return _DIGEST_CACHE[key]
+            ident = installed_identity(m)
+            if ident is not None:
+                mod = "installed " + ident
+            else:
+                root = loader.module_roots().get(m.id, _PKG)
+                files = _py_files(os.path.join(root, m.id))
+                mod = "%s %s %s" % (m.id, m.version,
+                                    _hash_source(files) if files else "")
+        _DIGEST_CACHE[key] = {"model": MODEL_VERSION,
+                              "base": model_files_digest(), "module": mod}
+    return dict(_DIGEST_CACHE[key])
+
+
+def reset_digests() -> None:
+    """Forget the digests (modules were installed, removed or hidden)."""
+    _DIGEST_CACHE.clear()
 
 
 def ui_digest() -> str:
@@ -515,6 +570,11 @@ def outside_params(merged, addr: int) -> bool:
     return k < 0 or addr >= merged[k][1]
 
 
+#: provenances of entities added on top of the model each time a file opens
+#: (a packaged definition's, the user's own) -- never in a snapshot
+_ADDED_ON_OPEN = ("definition", "user")
+
+
 def build(session, data: bytes) -> Optional[bytes]:
     """The snapshot of ``session`` as bytes, or None when it has none to give
     (unsupported platform, or a value the vocabulary cannot carry)."""
@@ -524,10 +584,11 @@ def build(session, data: bytes) -> Optional[bytes]:
     for k in list(getattr(session, "_lazy", None) or ()):
         getattr(session, k)             # decode what was left for later
     try:
-        # a packaged definition's tables (xdf_session.add_definition) are
-        # added again on every open -- the snapshot is the module's alone
+        # a packaged definition's tables (xdf_session.add_definition) and
+        # the user's own parameters (userparams) are added again on every
+        # open -- the snapshot is the module's alone
         main = [e for e in session.entities
-                if getattr(e, "source", "") != "definition"]
+                if getattr(e, "source", "") not in _ADDED_ON_OPEN]
         variants = None
         if session.platform == "edc16":
             variants = list(session.variant_entities())
@@ -557,11 +618,12 @@ def build(session, data: bytes) -> Optional[bytes]:
         # encoding it registers it after the tree's own.
         by_key = [[enc.enc(k), enc.enc(e)["$e"]]
                   for k, e in session.by_key.items()
-                  if getattr(e, "source", "") != "definition"]
+                  if getattr(e, "source", "") not in _ADDED_ON_OPEN]
         snap = {
             "format": FORMAT, "platform": session.platform,
             "image_len": len(data),
             "code": code_digest(session.platform),
+            "code_parts": code_parts(session.platform),
             "data": data_digest(session.platform),
             "mask": mask_digest(data, ents),
             "kb_delta": getattr(session, "kb_delta", 0),
@@ -591,12 +653,41 @@ def check(snap: dict, platform: str, data: bytes) -> Optional[str]:
     if snap.get("image_len") != len(data):
         return "image length changed"
     if snap.get("code") != code_digest(platform):
-        return "built by different code"
+        return "built by different code%s" % _code_why(snap, platform)
     if snap.get("data") != data_digest(platform):
         return "knowledge base changed"
     if snap.get("efields") != _EF or snap.get("afields") != _AF:
         return "entity layout changed"
     return None
+
+
+def _code_why(snap: dict, platform: str) -> str:
+    """`` (what differs)`` between the code a snapshot was built by and this
+    app's, when the snapshot recorded it ("" for an older one)."""
+    was = snap.get("code_parts")
+    if not isinstance(was, dict):
+        return ""
+    now = code_parts(platform)
+    why = []
+    if was.get("model") != now["model"]:
+        why.append("model version %s, here %s" % (was.get("model"), now["model"]))
+    if was.get("base") != now["base"]:
+        why.append("base model code %s, here %s" % (
+            (was.get("base") or "frozen build")[:12],
+            (now["base"] or "frozen build")[:12]))
+    if was.get("module") != now["module"]:
+        why.append("module %s, here %s" % (
+            _short_mod(was.get("module")), _short_mod(now["module"])))
+    return " (%s)" % "; ".join(why) if why else ""
+
+
+def _short_mod(m) -> str:
+    m = (m or "").split()
+    if not m:
+        return "none"
+    if m[0] == "installed":
+        return " ".join(m[1:3])
+    return "%s %s from source" % tuple((m + ["?"])[:2])
 
 
 def usable(blob: bytes, platform: str, data: bytes) -> Optional[str]:
@@ -688,6 +779,57 @@ def _rows_to_entities(snap: dict, binfile) -> List[Entity]:
         kw["binfile"] = binfile
         ents.append(Entity(**kw))
     return ents
+
+
+#: How close before a parameter's first byte a change counts as a change to
+#: its header (the count words / descriptors a layout is parsed from).
+HEADER_NEAR = 16
+
+
+def rebase(blob: bytes, platform: str, old: bytes, new: bytes,
+           near: int = HEADER_NEAR) -> Optional[bytes]:
+    """The snapshot ``blob`` of image ``old``, made to describe ``new`` --
+    another version of the same file -- or None when it can't be trusted to.
+
+    Lets a project locate parameters on a set's ORIGINAL version (where no
+    edited value can mislead detection) and open a modified version with
+    that result. Cell values and checksums may differ; a change to any byte
+    just before a parameter (its header: a map's dimensions, an axis count)
+    may have moved or reshaped it, so then None, and the version is
+    identified on its own."""
+    try:
+        snap = json.loads(bytes(blob).decode("utf-8"))
+        if len(old) != len(new) or check(snap, platform, old):
+            return None
+        ents = _rows_to_entities(snap, None)
+        if _structure_ok(snap, ents, old):
+            return None
+    except Exception:
+        return None
+    import bisect
+    merged = param_spans(ents)
+    mstarts = [m[0] for m in merged]
+    starts = sorted({e.addr for e in ents} | {
+        ax.addr for e in ents for ax in (e.x, e.y)
+        if ax is not None and ax.addr is not None})
+    mo, mn = memoryview(old), memoryview(new)
+    n, blk = len(old), 4096
+    for b0 in range(0, n, blk):
+        b1 = min(n, b0 + blk)
+        if mo[b0:b1] == mn[b0:b1]:
+            continue
+        for i in range(b0, b1):
+            if old[i] == new[i]:
+                continue
+            j = bisect.bisect_right(mstarts, i) - 1
+            if j >= 0 and i < merged[j][1]:
+                continue                # a cell or breakpoint: a value
+            k = bisect.bisect_right(starts, i)
+            if k < len(starts) and starts[k] - i <= near:
+                return None             # a header changed: re-identify
+    snap["mask"] = mask_digest(new, ents)
+    return json.dumps(snap, separators=(",", ":"),
+                      allow_nan=True).encode("utf-8")
 
 
 def _structure_ok(snap: dict, ents: List[Entity], data: bytes) -> Optional[str]:

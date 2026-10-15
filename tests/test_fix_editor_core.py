@@ -337,11 +337,12 @@ def test_scale_selection_acts_on_the_table_on_screen(G, win, monkeypatch):
 
 def test_3d_height_slider_starts_where_the_surface_is(G):
     vals = [[1.0, 2.0], [3.0, 4.0]]
-    dlg = G.Surface3DDialog(vals, [0, 1], [0, 1], "t")
-    assert dlg.height_slider.value() == round(dlg.view.zscale * 100)
-    dlg.height_slider.setValue(dlg.height_slider.value())
-    assert dlg.view.zscale == pytest.approx(0.9)
-    dlg.close()
+    panel = G.SurfacePanel()
+    panel.set_values(vals)
+    assert panel.height_slider.value() == round(panel.view.zscale * 100)
+    panel.height_slider.setValue(panel.height_slider.value())
+    assert panel.view.zscale == pytest.approx(0.9)
+    panel.close()
 
 
 

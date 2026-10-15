@@ -224,6 +224,10 @@ class FunctionsProvider(ChecksumProvider):
         fn = getattr(self._f, "exempt_ranges", None)
         return fn(data) if fn is not None else []
 
+    def unsupported_text(self, data) -> str:
+        fn = getattr(self._f, "unsupported_text", None)
+        return fn(data) if fn is not None else ""
+
 
 class SimpleReport:
     """A checksum report for providers whose code returns a bare bool/dict."""

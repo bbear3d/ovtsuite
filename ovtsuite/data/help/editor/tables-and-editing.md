@@ -93,8 +93,10 @@ heatmap setting; a newly opened table starts with the setting you used last.
 
 ![The same map with Heatmap ticked](../images/main-heatmap.png)
 
-The **3D surface** button (Ctrl+3) draws the map as a surface you can
-rotate; see [3D surface](3d-surface.md).
+The **3D surface** button (Ctrl+3) shows the map as a surface above the
+table, in the same tab, and hides it again; you can rotate it, and pick and
+drag points on it to edit the map, and it follows the table as you work. See
+[3D surface](3d-surface.md).
 
 **Zoom:** hold Ctrl and turn the mouse wheel over the table, or press
 **Ctrl+=** / **Ctrl+-**, to make the cells bigger or smaller; **Ctrl+0** goes

@@ -60,17 +60,19 @@ LOGGER_APP_ID = EXE_NAME + ".Logger"
 SIMULATOR_APP_ID = EXE_NAME + ".Simulator"
 
 #: The standalone tools' own executables and display names. The Windows build
-#: emits one small launcher exe per tool beside the main one (same bundle, same
-#: _internal folder); packaging/entry.py routes on the exe's name, so each runs
-#: only its tool. They are what the shortcuts point at, and what the tool-only
-#: installers (packaging/tool_installer.iss) ship instead of the main app.
+#: puts one small launcher exe per tool beside the main one (packaging/launcher/
+#: Launcher.cs): it starts ``OVTSuite.exe --tool <name>`` and packaging/entry.py
+#: runs only that tool (ovtsuite/launcher.py). They are what the shortcuts point
+#: at, and what the tool-only installers (packaging/tool_installer.iss) ship
+#: with OVTSuite.exe.
 TOOL_EXES = {"flasher": "OVTFlasher", "sniffer": "OVTSniffer", "logger": "OVTLogger",
              "simulator": "OVTSimulator"}
 TOOL_NAMES = {"flasher": "OVT Flasher", "sniffer": "OVT Sniffer", "logger": "OVT Logger",
               "simulator": "OVT Simulator"}
 
 #: Console launcher for the MCP server (``ovtsuite mcp``) in the Windows
-#: bundle: the main exe is windowed and has no usable stdin/stdout.
+#: bundle: the main exe is windowed, so an MCP client starts this console
+#: program, which runs ``OVTSuite.exe --tool mcp`` on its own stdin/stdout.
 MCP_EXE = "OVTMcp"
 
 #: Windows: the named mutex every exe of the bundle holds while it runs

@@ -91,6 +91,8 @@ REF_BINARIES = {
     # 379U85B6: since 2026-10-13 from the Bosch A2L for 03G906016FK 9971
     # (99.5 % on all U85B6 files), generate_kb_definition.py
     "u1_379u85b6": "u1_379u85b6_ref.bin",
+    "p216_5kt1": "p216_5kt1_ref.bin",       # V10 TDI 070906016D 367461
+    "p213_r5tdi": "p213_r5tdi_ref.bin",     # R5 TDI 070906016N (VW-T5.ols image)
     # P447HAXE: since 2026-10-13 from the Bosch A2L C447HAXE_00 (address-exact
     # on all 39 HAXE files), tools/generate_kb_definition.py
     "p447_haxe": "p447_haxe_ref.bin",
@@ -108,6 +110,10 @@ REF_BINARIES = {
     "p475_u8d3": "p475_u8d3_ref.bin",   # P475U8D3 (parent p350, 512/5 files consistent)
     "p475_uabc": "p475_uabc_ref.bin",   # P475UABC (parent p447_906016, 539/3 files consistent)
     "p475_aas8": "p475_aas8_ref.bin",   # P475AAS8 (parent p447_906016, 834/3 files consistent)
+    # P529U8C4 (038906016AR SW 1037501461, 1 MB EDC16U1 1.9 TDI): no definition
+    # exists; matcher-verified seed rows from the U85B6 A2L KB plus the layout
+    # walk, tools/extend_subfamily_kb.py --new
+    "p529_u8c4": "p529_u8c4_ref.bin",
     "p213_u8c3": "p213_u8c3_ref.bin",   # P213U8C3 (parent p350, 485/2 files consistent)
     # U8A7 (P350U8A7 + P475U8A7, 11 files with one pointer table): built by
     # tools/generate_derived_kb.py -- p350 translated through the ECU pointer

@@ -320,9 +320,13 @@ def load_into(ws, doc, sid, bid) -> bool:
             ws, "Open from project", "That branch can't be opened: %s" % ex)
         return False
     log = _sb.history_text(proj, sid, b.head)
-    ext, data = _sb.working_file(
-        proj, sid, state, defn=_sb.definition_for(proj, sid, bid, state),
-        log=log)
+    defn = _sb.definition_for(proj, sid, bid, state)
+    located = None
+    if not _defn_fits(proj, sid, state, defn):
+        located = _locate_on_original(ws, doc, sid, b, state)
+        if located is not None:
+            defn = located
+    ext, data = _sb.working_file(proj, sid, state, defn=defn, log=log)
     work = _sb.write_working_file(doc.tmpdir, "%s - %s" % (doc.title, s.name),
                                   ext, data, log=log)
     try:
@@ -330,6 +334,9 @@ def load_into(ws, doc, sid, bid) -> bool:
     except Exception as ex:
         QtWidgets.QMessageBox.critical(ws, "Open from project", str(ex))
         return False
+    if located is not None and getattr(loaded, "defn_state", "") == "used":
+        # stored as this branch's own once the tab is idle (keep_definition)
+        loaded._defn_from_original = True
     why = _apply_definition(proj, sid, loaded)
     quiet = getattr(ws, "_quiet", False)
     ws._quiet = True                    # one project, not one popup per set
@@ -352,41 +359,94 @@ def load_into(ws, doc, sid, bid) -> bool:
     remove_recent(work)                 # the working file is never "recent"
     ws._rebuild_recent()
     _name(ws)
+    # Compared with the set's original -- once there is something else to
+    # compare: a branch that is still only its original (a new project) has
+    # no comparison until its first save (_commit sets it then).
     root = s.root_of(b.head)
-    if root is not None:
+    if root is not None and root.id != b.head:
         compare_with_checkpoint(ws, root.id, quiet=True)
     ws.win._workspace_changed(ws)
     ws.statusBar().showMessage(why or
-        "Opened %s ▸ %s · %s" % (doc.title, s.name, b.name), 8000)
+        "Opened %s ▸ %s · %s%s" % (
+            doc.title, s.name, b.name,
+            " (parameters located on the original version)"
+            if getattr(loaded, "_defn_from_original", False) else ""), 8000)
     return True
 
 
-def _apply_definition(proj, sid, session) -> str:
-    """A packaged definition gives an unrecognised binary its parameter tree
-    (ovtsuite.xdf_session). Returns a note for the status bar ("" if none)."""
+def _defn_fits(proj, sid, state, blob) -> bool:
+    """True when the stored definition ``blob`` will open ``state``."""
+    if not blob:
+        return False
     main = _sb._main_member(proj, sid)
-    if main is None or not main.definition:
-        return ""
-    data = proj.definition_bytes(sid, main.id)
-    if not data:
-        return "The packaged definition is missing from the project."
-    from . import xdf_session
+    data = state.get(main.id) if main is not None else None
+    if data is None:
+        return True                     # nothing to judge by: let it try
+    from . import defn as _defn
+    return _defn.usable(blob, _sb.set_platform(proj, sid, state),
+                        bytes(data)) is None
+
+
+def _locate_on_original(ws, doc, sid, branch, state):
+    """A definition for ``state`` (the branch head) made by identifying the
+    branch's ORIGINAL version -- its root checkpoint -- so edited maps can't
+    mislead detection. None when there is no separate original, it can't be
+    rebuilt or identified, or the head's structure differs from it (a header
+    edited): the head is then identified on its own, as before."""
+    proj = doc.project
+    s = proj.set(sid)
     try:
-        if getattr(session, "support", "") == "full" and \
-                main.definition.get("use") != "instead":
-            # a module defines it: the file's tables go beside the module's
-            # (their own group), never instead of them
-            label = os.path.basename(main.definition.get("path", "")) or None
-            xdf_session.add_definition(session, data,
-                                       main.definition.get("type"), label=label)
-        else:
-            xdf_session.apply_definition(session, data,
-                                         main.definition.get("type"))
-    except xdf_session.Unsupported as ex:
-        return str(ex)
+        root = s.root_of(branch.head)
+        if root is None or root.id == branch.head:
+            return None
+        main = _sb._main_member(proj, sid)
+        if main is None:
+            return None
+        head = state.get(main.id)
+        rstate = proj.state(sid, root.id)
+        orig = rstate.get(main.id)
+        if head is None or orig is None or len(head) != len(orig) \
+                or bytes(head) == bytes(orig):
+            return None
+        from . import defn as _defn
+        platform = _sb.set_platform(proj, sid, state)
+        if not _defn.supports(platform):
+            return None
+        ext, blob = _sb.working_file(proj, sid, rstate)
+        path = _sb.write_working_file(
+            doc.tmpdir, "%s - %s (original)" % (doc.title, s.name), ext, blob)
+        sess = ws._load_session(path, title="Locating parameters on the "
+                                            "original version")
+        if getattr(sess, "support", "") != "full":
+            return None
+        snap = _defn.build(sess, bytes(orig))
+        if not snap:
+            return None
+        return _defn.rebase(snap, platform, bytes(orig), bytes(head))
+    except Exception:
+        return None
+
+
+def _apply_definition(proj, sid, session) -> str:
+    """What the project adds to the set's model on every open: a packaged
+    definition (an unrecognised binary's parameter tree, or tables beside a
+    module's -- ovtsuite.xdf_session), then the user's own parameters
+    (ovtsuite.userparams). Returns a note for the status bar ("" if none)."""
+    note = _apply_packaged(proj, sid, session)
+    from . import userparams as _up
+    try:
+        more = _up.apply_from_project(proj, sid, session)
     except Exception as ex:
-        return "The packaged definition could not be read: %s" % ex
-    return getattr(session, "definition_notes", "") + "."
+        more = "The user parameters could not be read: %s" % ex
+    return "; ".join(x.rstrip(".") for x in (note, more) if x) + \
+        ("." if note or more else "")
+
+
+def _apply_packaged(proj, sid, session) -> str:
+    """A packaged definition gives an unrecognised binary its parameter tree
+    (ovtsuite.xdf_session), each table where the evidence places it. Returns
+    a note for the status bar ("" if none)."""
+    return _sb.apply_packaged_definition(proj, sid, session)
 
 
 def _session_at(ws, cid, label):
@@ -593,6 +653,11 @@ def _commit(ws, label="") -> bool:
     proj.set_cache(ref.sid, ref.bid, defn or None)
     _resync_log(ws)
     _name(ws)
+    # the first save of a new project: now there is an original to compare with
+    if ws.comparison is None:
+        root = ref.set.root_of(ref.branch.head)
+        if root is not None and root.id != ref.branch.head:
+            compare_with_checkpoint(ws, root.id, quiet=True)
     return True
 
 
@@ -839,6 +904,10 @@ def save_as_project(ws) -> bool:
             s = _imp.import_bytes(proj, data, os.path.basename(work),
                                   sidecar_log=log)
         _apply_info(proj, info)
+        # parameters the user defined in the tab go with it into the project
+        from . import userparams as _up
+        if _up.specs(ws.primary):
+            proj.set_user_params(s.id, _up.specs(ws.primary))
         job = proj.prepare_save(path)
         _sv.run(win, job.run)               # the window waits, painting
         job.finish()
@@ -1264,10 +1333,24 @@ def open_definition(win, path, kind) -> bool:
     set_last_dir(binp)
     from .project import importers as _imp
     try:
-        proj, _s = _imp.import_file(binp, definition_path=path)
+        proj, s = _imp.import_file(binp, definition_path=path)
     except Exception as ex:
         QtWidgets.QMessageBox.critical(win, "Open definition", str(ex))
         return False
+    main = _sb._main_member(proj, s.id)
+    if main is not None and main.definition:
+        # where its tables are in this binary, checked before it opens
+        from . import gui_defplace
+        b = s.branch(s.active_branch) or s.branches[0]
+        image = proj.state(s.id, b.head).get(main.id)
+        if image is not None:
+            got = gui_defplace.review(
+                win, name=os.path.basename(path), kind=kind,
+                data=proj.definition_bytes(s.id, main.id), image=bytes(image),
+                target=s.name, accept_text="Open")
+            if got is None:
+                return False
+            _keep_placement(proj, s.id, main.id, *got)
     return _open_new_doc(win, proj) is not None
 
 
@@ -1377,8 +1460,124 @@ def attach_definition(win, doc, sid, path) -> bool:
         if box.clickedButton() not in (use, keep):
             return False
         instead = box.clickedButton() is use
+    # where its tables are in this binary, checked before it goes in
+    got = review_definition(win, doc, sid, os.path.basename(path), kind, data,
+                            accept_text="Attach",
+                            builtin=instead if tab is not None and
+                            getattr(tab.primary, "support", "") == "full" else None)
+    if got is None:
+        return False
+    opts, ref = got
+    instead = opts.pop("hide_builtin", instead)
     doc.project.add_definition(sid, main.id, os.path.basename(path), data, kind,
                                instead_of_module=instead)
+    _keep_placement(doc.project, sid, main.id, opts, ref)
+    reload_set(win, doc, sid)
+    refresh_panel(win)
+    return True
+
+
+def _set_image(win, doc, sid) -> Optional[bytes]:
+    """The bytes a definition is placed on: the open tab's, else the head of
+    the set's active branch."""
+    tab = next((t for t in doc.tabs(win) if t.project_ref.sid == sid
+                and t.primary is not None), None)
+    if tab is not None:
+        return bytes(tab.primary.binfile.data)
+    proj = doc.project
+    s = proj.set(sid)
+    main = _sb._main_member(proj, sid)
+    b = s.branch(s.active_branch) or (s.branches[0] if s.branches else None)
+    if main is None or b is None:
+        return None
+    data = proj.state(sid, b.head).get(main.id)
+    return bytes(data) if data is not None else None
+
+
+def _keep_placement(proj, sid, mid, opts, ref):
+    opts = {k: v for k, v in (opts or {}).items() if k != "hide_builtin"}
+    proj.set_definition_options(sid, mid, opts)
+    old = proj.definition_reference(sid, mid)
+    if ref is None:
+        if old is not None:
+            proj.set_definition_reference(sid, mid, None, None)
+    elif old != ref[1]:
+        proj.set_definition_reference(sid, mid, ref[0], ref[1])
+
+
+def module_defines(win, doc, sid) -> bool:
+    """Whether a module defines set ``sid``'s binary (its built-in maps)."""
+    tab = next((t for t in doc.tabs(win) if t.project_ref.sid == sid
+                and t.primary is not None), None)
+    main = _sb._main_member(doc.project, sid)
+    if tab is not None:
+        if getattr(tab.primary, "support", "") == "full":
+            return True
+        # a definition shown instead of the module's: the module is still there
+        return bool(main is not None and main.definition and
+                    main.definition.get("use") == "instead" and main.module_id)
+    return bool(main is not None and main.module_id)
+
+
+def hide_builtin_maps(win, doc, sid, hide: bool) -> bool:
+    """Project panel > Hide the module's built-in maps: the set's own
+    definition instead of the module's maps, or beside them."""
+    main = _sb._main_member(doc.project, sid)
+    if main is None or not main.definition:
+        return False
+    if hide == (main.definition.get("use") == "instead"):
+        return False
+    doc.project.set_definition_use(sid, main.id, hide)
+    reload_set(win, doc, sid)
+    refresh_panel(win)
+    return True
+
+
+def review_definition(win, doc, sid, name, kind, data, options=None, reference=None,
+                      accept_text="OK", always=False, builtin=None):
+    """The placement dialog (gui_defplace) for a definition on set ``sid``'s
+    binary. ``(options, reference)`` when accepted, else None."""
+    from . import gui_defplace
+    image = _set_image(win, doc, sid)
+    if image is None:
+        return {}, reference            # nothing to place it on yet
+    return gui_defplace.review(win, name=name, kind=kind, data=data, image=image,
+                               target=doc.project.set(sid).name, options=options,
+                               reference=reference, accept_text=accept_text,
+                               always=always, builtin=builtin)
+
+
+def definition_placement(win, doc, sid) -> bool:
+    """Project panel > Definition placement...: review how the set's
+    definition is placed, change the offset, the original image or whether
+    unverified tables are shown."""
+    proj = doc.project
+    main = _sb._main_member(proj, sid)
+    if main is None or not main.definition:
+        return False
+    data = proj.definition_bytes(sid, main.id)
+    if not data:
+        return False
+    ref = proj.definition_reference(sid, main.id)
+    refname = os.path.basename(main.definition.get("reference", "")) if ref else ""
+    got = review_definition(win, doc, sid, os.path.basename(main.definition.get("path", "")),
+                            main.definition.get("type", ""), data,
+                            options=main.definition.get("place") or {},
+                            reference=(refname, ref) if ref else None, always=True,
+                            builtin=(main.definition.get("use") == "instead")
+                            if module_defines(win, doc, sid) else None)
+    if got is None:
+        return False
+    opts, newref = got
+    hide = opts.pop("hide_builtin", None)
+    before = (dict(main.definition.get("place") or {}), ref,
+              main.definition.get("use") == "instead")
+    if before == (opts, newref[1] if newref else None,
+                  before[2] if hide is None else hide):
+        return True                     # nothing changed
+    _keep_placement(proj, sid, main.id, opts, newref)
+    if hide is not None:
+        proj.set_definition_use(sid, main.id, hide)
     reload_set(win, doc, sid)
     refresh_panel(win)
     return True
@@ -1461,7 +1660,8 @@ def keep_definition(ws) -> bool:
     if ref is None or s is None or ws.is_dirty() \
             or getattr(s, "support", "") != "full":
         return False
-    if getattr(s, "defn_state", "") == "used":
+    if getattr(s, "defn_state", "") == "used" \
+            and not getattr(s, "_defn_from_original", False):
         return False                    # it came from the stored one
     try:
         import zlib
@@ -1485,6 +1685,7 @@ def keep_definition(ws) -> bool:
     except Exception:
         return False
     s.defn_state = "used"               # stored now: not built again here
+    s._defn_from_original = False
     ref.doc.__dict__["_cache_dirty"] = True
     return True
 
@@ -1529,8 +1730,15 @@ def defer_definition(ws) -> None:
     seconds after it opened, when the user is idle. One that was rebuilt
     goes into the file right away, alone (:mod:`ovtsuite.gui_defncache`)."""
     def later():
-        if getattr(ws, "project_ref", None) is None or _sv.saving(ws.win) \
-                or QtWidgets.QApplication.activeModalWidget() is not None:
+        if getattr(ws, "project_ref", None) is None:
+            return
+        if _sv.saving(ws.win) or QtWidgets.QApplication.activeModalWidget() is not None:
+            # busy (a save, a dialog -- the next set of the project opening):
+            # not idle yet, so try again rather than give up until a save
+            try:
+                QtCore.QTimer.singleShot(max(DEFN_IDLE_MS, 500), ws, later)
+            except (RuntimeError, TypeError):
+                pass
             return
         if keep_definition(ws):
             # rebuilt (the matcher ran): into the file now, not at the
@@ -2674,6 +2882,17 @@ class ProjectPanel(AutoHideDock):
                 m.addSeparator()
                 m.addAction("Attach a definition (XDF, A2L, KP, OLS, DAM)...",
                             lambda: self._attach_def(d, sid))
+                pa = m.addAction("Definition placement...",
+                                 lambda: self._place_def(d, sid))
+                pa.setEnabled(bool(main.definition))
+                if main.definition and module_defines(self.win, d, sid):
+                    hb = m.addAction("Hide the module's built-in maps")
+                    hb.setCheckable(True)
+                    hb.setChecked(main.definition.get("use") == "instead")
+                    hb.setToolTip("Show only the attached definition's maps. The "
+                                  "module still corrects the checksums.")
+                    hb.toggled.connect(
+                        lambda on: self._hide_builtin(d, sid, on))
                 rm = m.addAction("Remove the definition",
                                  lambda: self._remove_def(d, sid))
                 rm.setEnabled(bool(main.definition))
@@ -2683,6 +2902,8 @@ class ProjectPanel(AutoHideDock):
             m.addAction("Make it the active branch",
                         lambda: self._do(d, lambda: d.project.set_active(sid, bid)))
             m.addAction("Rename...", lambda: self._rename_branch(d, sid, bid))
+            from . import gui_projcompare as _gpc  # another project's version
+            _gpc.add_menu(m, self.win, d, sid, bid)
             m.addAction("New branch from here...",
                         lambda: self._new_branch(d, sid, d.project.set(sid)
                                                  .branch(bid).head))
@@ -2702,6 +2923,8 @@ class ProjectPanel(AutoHideDock):
                 m.addSeparator()
             m.addAction("Compare with this version",
                         lambda: self._double(item))
+            from . import gui_projcompare as _gpc  # another project's version
+            _gpc.add_menu(m, self.win, d, sid, bid)
             m.addAction("Revert the branch to this version...",
                         lambda: self._revert(d, sid, bid, cid))
             m.addAction("New branch from this version...",
@@ -2918,6 +3141,14 @@ class ProjectPanel(AutoHideDock):
         set_last_dir(path, "definition")
         attach_definition(self.win, d, sid, path)
         self._changed(d)
+
+    def _hide_builtin(self, d, sid, on):
+        if hide_builtin_maps(self.win, d, sid, on):
+            self._changed(d)
+
+    def _place_def(self, d, sid):
+        if definition_placement(self.win, d, sid):
+            self._changed(d)
 
     def _remove_def(self, d, sid):
         main = _sb._main_member(d.project, sid)

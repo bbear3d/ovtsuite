@@ -68,6 +68,11 @@ together. Cells whose values differ are orange in both copies. Hover over a
 primary cell to read the comparison's value, or over a comparison cell to
 read the primary's.
 
+A selection stays on one side of the banner: cells are selected in the
+primary's copy or in the comparison's, never both at once. A drag that crosses
+the banner stops at it, and clicking in the other copy starts a new selection
+there -- so **Copy** takes cells from one table only.
+
 The comparison's copy is laid out on the primary's grid, which depends on how
 the two tables match. The banner and the **comparison:** line in the notes
 above the grid say which case it is:

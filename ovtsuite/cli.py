@@ -17,8 +17,10 @@ def _edc15_identify(b):
     # Injection system and dataset geometry are independent (038906012FD is a
     # VP37 engine on the rev.1 "P" geometry), so report what each actually says.
     inj = S.injection_of(data)
-    print("platform: EDC15%s (C167, little-endian, %d KB)"
-          % ({"PD": "P (unit injector, PD)",
+    v3 = any(d.v3 for d in dss)
+    print("platform: %s (C167, little-endian, %d KB)"
+          % ("MSA15 / EDC15V (VP37 rotary pump)" if v3 else "EDC15" + {
+              "PD": "P (unit injector, PD)",
               "VP37": "VM+ (VP37 rotary pump)"}.get(inj, " (injection system unknown)"),
              len(b) // 1024))
     # The geometry line used to say "checksum rev.N table". There are no tables
@@ -29,6 +31,10 @@ def _edc15_identify(b):
     fam = match15.detect_family(data, dss)
     print("family:   %s" % (fam or "unknown (no EDC15 knowledge base matches)"))
     for d in dss:
+        if d.v3:
+            print("dataset %d: 0x%05X-0x%05X  %-9s %s  %s"
+                  % (d.index, d.start, d.end, d.label, d.sig, d.ident.strip()))
+            continue
         print("dataset %d: 0x%05X-0x%05X  %-4s coding(cowFUN_DSV)=%s  %s"
               % (d.index, d.start, d.end, d.label,
                  d.dsv if d.dsv is not None else "?", d.ident.strip()))
@@ -42,8 +48,8 @@ def _edc15_identify(b):
     if checksum15.is_supported(data):
         rep = checksum15.verify(data)
         state = "CANNOT VERIFY" if rep.unreadable else ("OK" if rep.ok else "MISMATCH")
-        print("checksums:     %s (V4.1, %d ranges from the image's own verify driver)"
-              % (state, len(rep.checks)))
+        print("checksums:     %s (%s, %d ranges from the image's own verify driver)"
+              % (state, "MSA15/EDC15V" if v3 else "V4.1", len(rep.checks)))
 
 
 def _zf6hp_identify(b):

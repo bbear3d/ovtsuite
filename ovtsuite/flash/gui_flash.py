@@ -3537,6 +3537,12 @@ class FlashDialog(QtWidgets.QDialog):
                                else "Open or read a file first, then write it.")
         raw = bytes(prim.binfile.data)
         if self._ecu() == "EDC15":
+            if _platforms.edc15.is_v3(raw):
+                raise RuntimeError(
+                    "This is an MSA15 / EDC15V image (256 KB). The flasher writes "
+                    "EDC15VM+ / EDC15P ECUs (512 KB) only; write an MSA15 / EDC15V "
+                    "file with your own programmer. Save it first: saving corrects "
+                    "its checksums.")
             if len(raw) != _edc15.FLASH_SIZE:
                 raise RuntimeError(
                     "An EDC15 flash image must be exactly 512 KB (0x80000 bytes); this "

@@ -9,9 +9,9 @@
 ; *_APP_ID ids -- which tests/test_branding.py checks, since Inno Setup cannot
 ; import the package.
 ;
-; The exes are launchers the Windows build emits beside OVTSuite.exe (see
-; _tool_exes in ovtsuite.spec); packaging/entry.py runs only the matching tool
-; when started under one of these names. The AppUserModelIDs are what the tool
+; The exes are small launchers the Windows build puts beside OVTSuite.exe
+; (packaging/launcher/Launcher.cs, tools/build_launchers.py): each starts
+; "OVTSuite.exe --tool <name>", and packaging/entry.py runs only that tool. The AppUserModelIDs are what the tool
 ; process sets too: a shortcut carrying the same id is what gives the tool its
 ; own taskbar button and makes a pin relaunch the tool, not the main app.
 
