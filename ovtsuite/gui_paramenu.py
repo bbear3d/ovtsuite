@@ -281,7 +281,6 @@ class ParameterPropertiesDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.resize(720, 560)
         p = properties(ws, e)
         v = QtWidgets.QVBoxLayout(self)
 
@@ -325,12 +324,10 @@ class ParameterPropertiesDialog(QtWidgets.QDialog):
                 self.table.setCellWidget(i, len(cols) - 1, b)
                 self.hex_buttons.append(b)
         self.table.resizeColumnsToContents()
+        self.table.resizeRowsToContents()   # rows as tall as their buttons
         self.table.horizontalHeader().setStretchLastSection(True)
-        h = self.table.horizontalHeader().height() + 4 + sum(
-            self.table.rowHeight(i) for i in range(self.table.rowCount()))
-        self.table.setMaximumHeight(h + 8)
         sv.addWidget(self.table)
-        v.addWidget(st)
+        v.addWidget(st, 1)                  # a taller window: more Storage
 
         if p["values"]:
             vals = QtWidgets.QGroupBox("Values")
@@ -342,7 +339,6 @@ class ParameterPropertiesDialog(QtWidgets.QDialog):
                     QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
                 vf.addRow(k + ":", lbl)
             v.addWidget(vals)
-        v.addStretch(1)
 
         btns = QtWidgets.QHBoxLayout()
         self.copy_btn = QtWidgets.QPushButton("Copy all")
@@ -358,6 +354,28 @@ class ParameterPropertiesDialog(QtWidgets.QDialog):
         close.clicked.connect(self.close)
         btns.addWidget(close)
         v.addLayout(btns)
+        self.setSizeGripEnabled(True)
+        self._fit_storage()
+
+    def _fit_storage(self):
+        """Wide enough for every Storage column and tall enough for every
+        row (a few at most), within the screen; the window stays resizable."""
+        t = self.table
+        frame = 2 * t.frameWidth()
+        width = frame + t.verticalScrollBar().sizeHint().width() + sum(
+            t.columnWidth(c) for c in range(t.columnCount()))
+        rows = min(t.rowCount(), 8)         # more than that: it scrolls
+        height = frame + t.horizontalHeader().sizeHint().height() + sum(
+            t.rowHeight(i) for i in range(rows))
+        t.setMinimumHeight(height)
+        t.setMinimumWidth(min(width, 900))
+        screen = self.screen().availableGeometry() if self.screen() else None
+        hint = self.sizeHint()
+        w, h = max(720, hint.width()), max(560, hint.height())
+        if screen is not None:
+            w = min(w, int(screen.width() * 0.9))
+            h = min(h, int(screen.height() * 0.9))
+        self.resize(w, h)
 
     def copy_all(self):
         QtWidgets.QApplication.clipboard().setText(

@@ -293,7 +293,7 @@ def test_a_6hp_version_pairs_every_schedule_with_the_loaded_file(tmp_path):
 
 #: ``MODEL_VERSION`` and the hash of ``defn.MODEL_FILES`` it was recorded with.
 #: See test_the_model_files_are_unchanged_or_model_version_was_considered.
-RECORDED_MODEL = (2, "b7ff8a7215586e792747ec0057523c8165fc5f3c")
+RECORDED_MODEL = (2, "18fbf5316e1ce227fb32cbbd41e4adcdc8f37d58")
 
 
 def test_the_model_files_are_unchanged_or_model_version_was_considered():
