@@ -26,11 +26,21 @@ platform knowledge, so the platform's module supplies it through the
 ``injection`` hook as :class:`InjectionModel` objects; everything here is
 generic. No Qt: the GUI (``gui_eoi``) and tests use it alike.
 
-What is *not* modelled: SOI corrections for air temperature, altitude and
-dynamics, the fuel-temperature quantity correction, and the camshaft-offset
-term of the selector input (zero on every reference file). The numbers are
-those of steady running at sea level with fuel at its reference temperature,
-and the GUI says so.
+SOI corrections that are table sets of their own over another operating
+condition -- intake air temperature, atmospheric pressure -- are added to the
+base set when the platform supplies them (:class:`Correction`), at the
+conditions set on the :class:`Calculator` (default: 20 °C air, sea level);
+the limiter applies after them, as the ECU does. A set the ECU uses *instead
+of* the base set in some running state (EDC16 dynamic SOI while smoke-limited,
+gear-dependent base maps) is a :class:`SoiSet` the view can switch to. Every
+set is blended the same way -- table n plus the fraction of n+1, the
+fraction being the low byte of the selector's 8.8 output (038906019GQ
+0x3961A-0x39692 with the internal-ROM MUL/DIVL helper 10F2H; 03G906016KN set
+routine 0x5E6FC) -- not an equal average of two tables. What is *not*
+modelled: the start-phase terms, the fuel-temperature quantity correction, and
+the camshaft-offset term of the selector input (zero on every reference
+file). The numbers are those of steady running with fuel at its reference
+temperature, and the GUI says so.
 """
 
 from __future__ import annotations
@@ -150,6 +160,54 @@ def members(idx: float, count: int) -> List[Tuple[int, float]]:
     return [(n, 1.0 - f), (n + 1, f)]
 
 
+#: Operating conditions a :class:`Correction` can depend on, besides coolant:
+#: key -> (label, units, default, low, high). The defaults are steady running
+#: at sea level on a mild day.
+CONDITIONS: Dict[str, Tuple[str, str, float, float, float]] = {
+    "air": ("Intake air", "°C", 20.0, -40.0, 120.0),
+    "baro": ("Air pressure", "hPa", 1013.0, 500.0, 1100.0),
+    "q_start": ("Start quantity", "mg/stroke", 40.0, 0.0, 150.0),
+}
+
+
+@dataclass
+class Correction:
+    """An SOI term the ECU adds to the base set before the limiter: a table
+    set on the SOI tables' inputs, in the SOI tables' own units and sign,
+    picked by a selector curve over the operating condition ``cond`` (a
+    :data:`CONDITIONS` key) -- EDC15 ``fnwSWAD*KR`` by atmospheric pressure,
+    ``fnwSWLT*KR`` by air temperature."""
+    cond: str
+    set: TableSet
+
+
+@dataclass
+class SoiSet:
+    """Another start-of-injection table set the ECU uses *instead of* the
+    base set in some running state -- EDC16 ``InjCrv_phiDyn0..4_GMAP`` while
+    the smoke limit is the binding torque limit, or the gear-dependent base
+    maps ``InjCrv_phiBasGear12/34/56_MAP`` when warm. The corrections and the
+    limiter apply to it as to the base set. ``when`` says, in plain words,
+    when the ECU reads it."""
+    key: str
+    label: str
+    set: TableSet
+    when: str = ""
+    #: what picks the table number: "" = coolant, else a CONDITIONS key
+    #: (the start sets: atmospheric pressure)
+    selector_cond: str = ""
+    #: the tables' second input: "q" (quantity) or "coolant" (the start
+    #: sets are engine speed x coolant); with "coolant" the grid runs over
+    #: coolant and the quantity comes from ``quantity`` or the
+    #: ``q_start`` condition
+    second: str = "q"
+    #: whether the corrections are added (not while starting)
+    corrections: bool = True
+    #: a map of the quantity on (engine speed, coolant) for a "coolant" set
+    #: (EDC15 start-quantity base map); None: the ``q_start`` condition
+    quantity: Optional[object] = None
+
+
 @dataclass
 class InjectionModel:
     """What a platform module tells the base app about one dataset.
@@ -175,6 +233,20 @@ class InjectionModel:
     #: tables the platform needs but this definition does not place: the view
     #: shows them instead of a result (never a guess)
     missing: Tuple[str, ...] = ()
+    #: SOI terms added before the limiter (see :class:`Correction`)
+    corrections: Tuple[Correction, ...] = ()
+    #: sets that replace the base SOI set in some running state (see
+    #: :class:`SoiSet`); the base set is ``soi``
+    soi_sets: Tuple[SoiSet, ...] = ()
+
+    def soi_set(self, key: Optional[str]) -> TableSet:
+        """The SOI table set ``key`` names (None / "base": the base set)."""
+        if not key or key == "base":
+            return self.soi
+        for s in self.soi_sets:
+            if s.key == key:
+                return s.set
+        raise KeyError("no SOI set %r" % key)
 
     @property
     def label(self) -> str:
@@ -194,6 +266,7 @@ class Cell:
     duration: float                    # crank degrees
     eoi: float                         # deg ATDC (negative = BTDC)
     soi_btdc: float = 0.0              # the SOI as degrees BTDC
+    soi_cor: float = 0.0               # of the SOI: the corrections, deg (own units)
 
 
 @dataclass
@@ -207,21 +280,81 @@ class Grid:
 
 
 class Calculator:
-    """Works out SOI, duration and EOI for one :class:`InjectionModel`."""
+    """Works out SOI, duration and EOI for one :class:`InjectionModel`.
 
-    def __init__(self, model: InjectionModel):
+    ``conditions`` holds the operating conditions the model's corrections are
+    read at (:data:`CONDITIONS` keys; defaults filled in). ``soi_set`` picks
+    the SOI table set (:attr:`InjectionModel.soi_sets` key; default the base
+    set): everything below -- grid, plans, solver -- works on that set."""
+
+    def __init__(self, model: InjectionModel,
+                 conditions: Optional[Dict[str, float]] = None,
+                 soi_set: Optional[str] = None):
         self.model = model
-        self.soi_t = [Table(e) if e is not None else None for e in model.soi.tables]
+        self.soi_key = soi_set or "base"
+        self.soi_ts = model.soi_set(soi_set)
+        self.sset = next((x for x in model.soi_sets if x.key == self.soi_key), None)
+        self.q_map = (Table(self.sset.quantity)
+                      if self.sset is not None and self.sset.quantity is not None else None)
+        self.soi_t = [Table(e) if e is not None else None for e in self.soi_ts.tables]
         self.dur_t = [Table(e) if e is not None else None for e in model.duration.tables]
-        self.soi_sel = Table(model.soi.selector) if model.soi.selector is not None else None
+        self.soi_sel = Table(self.soi_ts.selector) if self.soi_ts.selector is not None else None
         self.dur_sel = Table(model.duration.selector)
         self.lim = Table(model.limiter) if model.limiter is not None else None
+        self.cor = [(c, [Table(e) for e in c.set.tables],
+                     Table(c.set.selector) if c.set.selector is not None else None)
+                    for c in model.corrections]
+        self.conditions = {k: v[2] for k, v in CONDITIONS.items()}
+        self.conditions.update(conditions or {})
 
     def refresh(self) -> None:
         """Re-read every table (after an edit or an undo)."""
-        for t in self.soi_t + self.dur_t + [self.soi_sel, self.dur_sel, self.lim]:
+        extra = [t for _c, ts, sel in self.cor for t in ts + [sel]]
+        for t in self.soi_t + self.dur_t + [self.soi_sel, self.dur_sel, self.lim] + extra:
             if t is not None:
                 t.refresh()
+
+    @property
+    def conds(self) -> List[str]:
+        """The conditions this model's corrections depend on, in order."""
+        out: List[str] = []
+        for c, _ts, _sel in self.cor:
+            if c.cond not in out:
+                out.append(c.cond)
+        return out
+
+    # -- what the grid's second axis means ----------------------------------
+    @property
+    def by_coolant(self) -> bool:
+        """The SOI set's second input is coolant (a start set): the grid runs
+        over engine speed x coolant at the start quantity."""
+        return self.sset is not None and self.sset.second == "coolant"
+
+    def clt(self, coolant: float, x2: float) -> float:
+        """The coolant at grid point (., x2)."""
+        return x2 if self.by_coolant else coolant
+
+    def fuel_q(self, rpm: float, x2: float) -> float:
+        """The injected quantity at grid point (rpm, x2)."""
+        if not self.by_coolant:
+            return x2
+        if self.q_map is not None:
+            return self.q_map.at(rpm, x2)
+        return self.conditions.get("q_start", CONDITIONS["q_start"][2])
+
+    @property
+    def uses_corrections(self) -> bool:
+        return bool(self.cor) and (self.sset is None or self.sset.corrections)
+
+    @property
+    def conditions_used(self) -> List[str]:
+        """The CONDITIONS keys this calculation reads."""
+        out = list(self.conds) if self.uses_corrections else []
+        if self.sset is not None and self.sset.selector_cond:
+            out.append(self.sset.selector_cond)
+        if self.by_coolant and self.q_map is None:
+            out.append("q_start")
+        return [k for i, k in enumerate(out) if k not in out[:i]]
 
     # -- sign -------------------------------------------------------------
     def btdc(self, soi: float) -> float:
@@ -235,23 +368,50 @@ class Calculator:
         n = len(self.soi_t)
         if self.soi_sel is None:
             return [(n - 1, 1.0)]
-        idx = min(self.soi_sel.curve(coolant), self.model.soi.last)
+        x = coolant
+        if self.sset is not None and self.sset.selector_cond:
+            k = self.sset.selector_cond
+            x = self.conditions.get(k, CONDITIONS[k][2])
+        idx = min(self.soi_sel.curve(x), self.soi_ts.last)
         out = members(idx, n)
         if any(self.soi_t[i] is None for i, _ in out):
             raise ValueError("SOI table %d is not in this definition"
                              % next(i for i, _ in out if self.soi_t[i] is None))
         return out
 
+    def correction_members(self, k: int) -> List[Tuple[int, float]]:
+        """Tables of correction ``k`` at the current conditions."""
+        c, ts, sel = self.cor[k]
+        if sel is None:
+            return [(len(ts) - 1, 1.0)]
+        x = self.conditions.get(c.cond, CONDITIONS.get(c.cond, ("", "", 0.0))[2])
+        return members(min(sel.curve(x), c.set.last), len(ts))
+
+    def correction(self, rpm: float, q: float) -> float:
+        """Sum of the corrections at (rpm, q) and the current conditions
+        (own units)."""
+        tot = 0.0
+        for k, (_c, ts, _sel) in enumerate(self.cor):
+            tot += sum(ts[i].at(rpm, q) * w for i, w in self.correction_members(k))
+        return tot
+
     def soi(self, coolant: float, rpm: float, q: float,
             mem=None, limit: bool = True) -> Tuple[float, bool]:
-        """SOI (own units) at a point, after the limiter. ``(value, limited)``."""
+        """SOI (own units) at a point: the base set, plus the corrections,
+        then the limiter. ``(value, limited)``."""
         mem = mem if mem is not None else self.soi_members(coolant)
         s = sum(self.soi_t[i].at(rpm, q) * w for i, w in mem)
+        if self.uses_corrections:
+            s += self.correction(rpm, self.fuel_q(rpm, q))
         if limit and self.lim is not None:
-            cap = self.lim.at(rpm, coolant)          # rpm x coolant
+            cap = self.cap(coolant, rpm, q)
             if self.btdc(s) > self.btdc(cap):
                 return cap, True
         return s, False
+
+    def cap(self, coolant: float, rpm: float, x2: float) -> float:
+        """The limiter's SOI (own units) at grid point (rpm, x2)."""
+        return self.lim.at(rpm, self.clt(coolant, x2))   # rpm x coolant
 
     def index(self, soi: float) -> float:
         return min(max(self.dur_sel.curve(soi), 0.0), self.model.duration.last)
@@ -275,9 +435,10 @@ class Calculator:
     def cell(self, coolant: float, rpm: float, q: float, mem=None) -> Cell:
         sm = mem if mem is not None else self.soi_members(coolant)
         s, lim = self.soi(coolant, rpm, q, sm)
-        d, idx, dm = self.duration(s, rpm, q)
+        fq = self.fuel_q(rpm, q)
+        d, idx, dm = self.duration(s, rpm, fq)
         return Cell(rpm, q, s, sm, lim, idx, dm, d, self.eoi(s, d),
-                    self.btdc(s))
+                    self.btdc(s), self.correction(rpm, fq) if self.uses_corrections else 0.0)
 
     def reference(self, coolant: float) -> Table:
         """The SOI table whose breakpoints the grid uses: the one with most
@@ -303,7 +464,14 @@ class Calculator:
         for r in range(len(t.vals)):
             for c in range(len(t.vals[0])):
                 rpm, q = t.point(r, c)
-                s, _ = self.soi(coolant, rpm, q, mem)
+                if self.by_coolant:
+                    # a start set: only the cells around the start quantity
+                    if not any((rr, cc) == (r, c) for rr, cc, _w in
+                               t.weights(rpm, self.fuel_q(rpm, coolant))):
+                        continue
+                    s, _ = self.soi(coolant, rpm, coolant, mem)
+                else:
+                    s, _ = self.soi(coolant, rpm, q, mem)
                 for i, w in members(self.index(s), len(self.dur_t)):
                     if i == k:
                         out[r][c] = w
@@ -318,9 +486,11 @@ class Calculator:
         [lo_btdc, hi_btdc] reaches it. EOI falls as SOI advances (the
         duration's change with SOI is far below one degree per degree), so
         bisection on the BTDC value is enough."""
+        fq = self.fuel_q(rpm, q)
+
         def f(b):
             s = self.native(b)
-            d, _, _ = self.duration(s, rpm, q)
+            d, _, _ = self.duration(s, rpm, fq)
             return d - b - target_eoi
         flo, fhi = f(lo_btdc), f(hi_btdc)
         if flo == 0:
@@ -439,7 +609,7 @@ def plan_target_eoi(calc: Calculator, coolant: float,
                 plan.unreached.append((rpm, q))
                 continue
             if calc.lim is not None:
-                cap = calc.lim.at(rpm, coolant)
+                cap = calc.cap(coolant, rpm, q)
                 if calc.btdc(want) > calc.btdc(cap):
                     want = cap
                     plan.limited.append((rpm, q))
@@ -503,10 +673,11 @@ def plan_duration(calc: Calculator, coolant: float,
     acc: Dict[int, Dict[Tuple[int, int], List[float]]] = {}
     for rpm, q, new in points:
         s, _ = calc.soi(coolant, rpm, q, mem)
-        cur, _, dm = calc.duration(s, rpm, q)
+        fq = calc.fuel_q(rpm, q)
+        cur, _, dm = calc.duration(s, rpm, fq)
         delta = new - cur
         for i, _w in dm:
-            for r, c, w in calc.dur_t[i].weights(rpm, q):
+            for r, c, w in calc.dur_t[i].weights(rpm, fq):
                 a = acc.setdefault(i, {}).setdefault((r, c), [0.0, 0.0])
                 a[0] += w * delta
                 a[1] += w
@@ -526,6 +697,8 @@ def plan_collapse(calc: Calculator, keep: int, coolant: float) -> Plan:
     """Write into duration table ``keep`` the duration the ECU uses today at
     each of its breakpoints at ``coolant``, and point the selector at
     ``keep`` everywhere. The other tables are left as they are (unused)."""
+    if calc.by_coolant:
+        raise ValueError("collapse works from a running SOI set, not the start set")
     t = calc.dur_t[keep]
     mem = calc.soi_members(coolant)
     plan = Plan("End of injection: one duration table (%s)" % t.e.name)
@@ -570,7 +743,8 @@ def selector_problems(model: InjectionModel) -> List[str]:
     (EDC15 does not clamp the duration selector and reads past its pointer
     list -- the result is garbage -- so this must be fixed, not tolerated.)"""
     out = []
-    for ts in (model.duration, model.soi):
+    for ts in ((model.duration, model.soi) + tuple(s.set for s in model.soi_sets)
+               + tuple(c.set for c in model.corrections)):
         sel = ts.selector
         if sel is None:
             continue
@@ -632,7 +806,7 @@ def fmt_angle(v: float, nd: int = 1) -> str:
     return "%.*f° %s" % (nd, abs(v), "ATDC" if v > 0 else "BTDC")
 
 
-__all__ = ["Table", "TableSet", "InjectionModel", "Calculator", "Cell", "Grid",
+__all__ = ["Table", "TableSet", "SoiSet", "Correction", "CONDITIONS", "InjectionModel", "Calculator", "Cell", "Grid",
            "Plan", "members", "plan_target_eoi", "plan_duration", "plan_soi",
            "plan_table", "advance_for_target",
            "plan_collapse", "collapse_error", "selector_problems", "apply",

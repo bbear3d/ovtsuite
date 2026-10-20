@@ -54,7 +54,8 @@ def _g():
 
 
 def _num(v: float, nd: int = 2) -> str:
-    return ("%.*f" % (nd, v)).rstrip("0").rstrip(".") if nd else "%d" % v
+    t = ("%.*f" % (nd, v)).rstrip("0").rstrip(".") if nd else "%d" % round(v)
+    return "0" if t in ("-0", "") else t
 
 
 def availability(ws) -> Optional[str]:
@@ -76,8 +77,9 @@ def involved(ws, e) -> bool:
     if s is None or e is None or getattr(s, "platform", "") not in ("edc15", "edc16"):
         return False
     for m in _eoi.models(s):
-        for t in (m.soi.tables + m.duration.tables
-                  + [m.soi.selector, m.duration.selector]):
+        ts = [m.soi, m.duration] + [x.set for x in m.soi_sets] + \
+            [c.set for c in m.corrections]
+        for t in [x for s_ in ts for x in s_.tables + [s_.selector]]:
             if t is e:
                 return True
     return False
@@ -133,7 +135,36 @@ class EoiDialog(QtWidgets.QDialog):
         self.coolant.setToolTip("The coolant temperature picks which start-of-"
                                 "injection tables the ECU blends.")
         top.addWidget(self.coolant)
-        top.addSpacing(12)
+        # the SOI table set: the base set, or one the ECU uses instead in
+        # some running state (EDC16 dynamic SOI, gear maps)
+        self.set_lbl = QtWidgets.QLabel("SOI set")
+        self.soi_box = QtWidgets.QComboBox()
+        self.soi_box.setToolTip("Which start-of-injection tables to work from: "
+                                "the base set, or one the ECU uses instead in "
+                                "some running state.")
+        top.addWidget(self.set_lbl)
+        top.addWidget(self.soi_box)
+        # the conditions the model's SOI corrections depend on (air
+        # temperature, air pressure); shown for a model that has them
+        self.cond: Dict[str, tuple] = {}
+        for key, (label, units, dflt, lo, hi) in _eoi.CONDITIONS.items():
+            lbl = QtWidgets.QLabel(label)
+            sp = QtWidgets.QDoubleSpinBox()
+            sp.setRange(lo, hi)
+            sp.setDecimals(0)
+            sp.setSingleStep(5.0 if units == "°C" else 10.0)
+            sp.setSuffix(" " + units)
+            sp.setValue(dflt)
+            sp.setToolTip("%s picks the start-of-injection correction the ECU "
+                          "adds (%.0f %s: none on stock files)."
+                          % (label, dflt, units))
+            sp.valueChanged.connect(lambda _v: self._conditions_changed())
+            top.addWidget(lbl)
+            top.addWidget(sp)
+            self.cond[key] = (lbl, sp)
+        top.addStretch(1)
+        v.addLayout(top)
+        top = QtWidgets.QHBoxLayout()
         top.addWidget(QtWidgets.QLabel("Show"))
         self.mode_group = QtWidgets.QButtonGroup(self)
         self.mode_group.setExclusive(True)
@@ -151,6 +182,11 @@ class EoiDialog(QtWidgets.QDialog):
         self.view.setMinimumContentsLength(24)
         top.addWidget(self.view, 1)
         v.addLayout(top)
+        self.when = QtWidgets.QLabel()
+        self.when.setWordWrap(True)
+        self.when.setStyleSheet("color: gray")
+        self.when.setVisible(False)
+        v.addWidget(self.when)
 
         self.warn = QtWidgets.QLabel()
         self.warn.setWordWrap(True)
@@ -224,6 +260,7 @@ class EoiDialog(QtWidgets.QDialog):
         v.addLayout(foot)
 
         self.ds.currentIndexChanged.connect(self._model_changed)
+        self.soi_box.currentIndexChanged.connect(lambda _i: self._set_changed())
         self.coolant.valueChanged.connect(lambda _v: self.rebuild())
         self.mode_group.idClicked.connect(lambda _i: self.rebuild())
         self.view.currentIndexChanged.connect(lambda _i: self.rebuild())
@@ -251,11 +288,50 @@ class EoiDialog(QtWidgets.QDialog):
         m = self.model
         if m.missing:
             return None
-        key = self.ds.currentIndex()
+        key = (self.ds.currentIndex(), self.soi_key())
         c = self._calcs.get(key)
         if c is None:
-            c = self._calcs[key] = _eoi.Calculator(m)
+            c = self._calcs[key] = _eoi.Calculator(m, self.conditions(), key[1])
         return c
+
+    def soi_key(self) -> str:
+        return self.soi_box.currentData() or "base"
+
+    def _set_changed(self) -> None:
+        m = self.model
+        when = next((x.when for x in m.soi_sets if x.key == self.soi_key()), "")
+        self.when.setText(when)
+        self.when.setVisible(bool(when))
+        self._sync_inputs()
+        self.rebuild()
+
+    def _sync_inputs(self) -> None:
+        """Show the conditions the current set reads; a start set runs its
+        grid over coolant, so the Coolant box has nothing to pick there."""
+        m = self.model
+        calc = self.calc
+        used = set(calc.conditions_used) if calc is not None else \
+            {c.cond for c in m.corrections}
+        for key, (lbl, sp) in self.cond.items():
+            lbl.setVisible(key in used)
+            sp.setVisible(key in used)
+        start = calc is not None and calc.by_coolant
+        self.coolant.setEnabled(not start)
+        self.coolant.setToolTip(
+            "The start set's grid runs over coolant: every column is its own "
+            "coolant temperature." if start else
+            "The coolant temperature picks which start-of-injection tables the "
+            "ECU blends.")
+        self.collapse_act.setEnabled(not start)
+
+    def conditions(self) -> Dict[str, float]:
+        return {k: sp.value() for k, (_l, sp) in self.cond.items()}
+
+    def _conditions_changed(self) -> None:
+        cond = self.conditions()
+        for c in self._calcs.values():
+            c.conditions.update(cond)
+        self.rebuild()
 
     def mode(self) -> str:
         b = self.mode_group.checkedButton()
@@ -275,6 +351,16 @@ class EoiDialog(QtWidgets.QDialog):
             if e is not None:
                 self.view.addItem("Duration table %d: %s" % (k, e.name), k)
         self.view.blockSignals(False)
+        self.soi_box.blockSignals(True)
+        self.soi_box.clear()
+        self.soi_box.addItem("Base (normal running)", "base")
+        for x in m.soi_sets:
+            self.soi_box.addItem(x.label, x.key)
+        self.soi_box.blockSignals(False)
+        self.set_lbl.setVisible(bool(m.soi_sets))
+        self.soi_box.setVisible(bool(m.soi_sets))
+        self.when.setVisible(False)
+        self._sync_inputs()
         notes = list(m.notes) + [
             "EOI in degrees ATDC: negative = before TDC. SOI in degrees BTDC."]
         self.notes.setText(" ".join(notes))
@@ -348,8 +434,9 @@ class EoiDialog(QtWidgets.QDialog):
         self.grid.setVerticalHeaderLabels(
             [_num(y, 1) for y in (t.ys or [0.0])])
         def _u(ax):
+            from .signal_names import english_units
             u = ((ax.units if ax is not None else "") or "").strip("[] ")
-            return u or "-"
+            return english_units(u) or "-"
         self.axes_lbl.setText("Columns: %s   ·   Rows: %s" % (
             _u(t.e.x), _u(t.e.y if t.ys else None)))
 
@@ -464,14 +551,24 @@ class EoiDialog(QtWidgets.QDialog):
         dur_names = " + ".join(
             "%s × %.2f" % (calc.dur_t[i].e.name, w) if w < 0.999 else
             "%s alone" % calc.dur_t[i].e.name for i, w in cell.dur_members)
+        if abs(cell.soi_cor) > 0.005:
+            soi_names += " %s corrections %s°" % (
+                "−" if calc.btdc(cell.soi_cor) < 0 else "+",
+                _num(abs(cell.soi_cor), 2))
         lim = (" &nbsp;<i>(capped by %s)</i>" % m.limiter.name) \
             if cell.soi_limited else ""
+        if calc.by_coolant:
+            where = "%s rpm, %s °C coolant, start quantity %s mg" % (
+                _num(cell.rpm, 0), _num(cell.q, 1),
+                _num(calc.fuel_q(cell.rpm, cell.q), 1))
+        else:
+            where = "%s rpm, %s mg" % (_num(cell.rpm, 0), _num(cell.q, 1))
         self.info.setText(
-            "<b>%s rpm, %s mg</b><br>"
+            "<b>%s</b><br>"
             "SOI %s° BTDC &nbsp;<span style='color:gray'>(%s)</span>%s<br>"
             "%s(%s°) = %.2f &nbsp;→&nbsp; duration %s = %s°<br>"
             "EOI = %s − %s = <b>%s</b>" % (
-                _num(cell.rpm, 0), _num(cell.q, 1),
+                where,
                 _num(cell.soi_btdc, 2), soi_names, lim,
                 m.duration.selector.name, _num(cell.soi, 2), cell.index,
                 dur_names, _num(cell.duration, 2),
@@ -479,7 +576,8 @@ class EoiDialog(QtWidgets.QDialog):
                 _eoi.fmt_angle(cell.eoi, 2)))
         for i, _w in cell.dur_members:
             e = calc.dur_t[i].e
-            cells = [(rr, cc) for rr, cc, _ in calc.dur_t[i].weights(cell.rpm, cell.q)]
+            cells = [(rr, cc) for rr, cc, _ in calc.dur_t[i].weights(
+                cell.rpm, calc.fuel_q(cell.rpm, cell.q))]
             menu.addAction(e.name, lambda e=e, cl=cells: self._goto(e, cl))
 
     # --------------------------------------------------------------- go to

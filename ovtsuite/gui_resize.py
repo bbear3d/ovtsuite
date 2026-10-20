@@ -348,7 +348,8 @@ class ResizeDialog(QtWidgets.QDialog):
             why = "That is the table as it is."
         self.errors.setText(why)
         self.ok.setEnabled(bool(self.plans) and not why)
-        self.note.setText(self._mid_note() if self.plans and not why else "")
+        self.note.setText((self._mid_note() or self._prepage_note())
+                          if self.plans and not why else "")
         lab = self.label()
         self.version.setText("Save the project now, as a version named \"%s\""
                              % lab + ("  (the tab's other unsaved edits go "
@@ -379,6 +380,17 @@ class ResizeDialog(QtWidgets.QDialog):
                 "stock table. Not yet bench-proven — flash only with BDM "
                 "recovery ready, and check the whole table logs as edited."
                 % " and ".join(parts))
+
+    def _prepage_note(self) -> str:
+        """The caution for moving an EDC15P pre-page table, when relocating
+        and the codec offers one; else empty."""
+        if not self.relocating():
+            return ""
+        fn = getattr(self.codec, "relocate_unproven", None)
+        return (fn(self.session, self.e) or "") if fn else ""
+
+    def _prepage_move(self) -> bool:
+        return bool(self._prepage_note())
 
     def label(self) -> str:
         nx, ny = self.nx.value(), (self.ny.value() if self.is_map else 1)
@@ -462,6 +474,18 @@ def resize_table(ws, e) -> bool:
             "%s is in the middle of its calibration block. Moving it is "
             "not yet proven on a vehicle: a reference the tool could not "
             "find would read the stock table, and a wrong flash needs BDM "
+            "recovery. Continue?" % e.name,
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if r != QtWidgets.QMessageBox.StandardButton.Yes:
+            return False
+    elif d._prepage_move():
+        r = QtWidgets.QMessageBox.warning(
+            ws, "Move a pre-page table",
+            "%s is in the ECU's pre-page. Moving it re-points the pre-page "
+            "pointer table and leaves the original as a stock fallback. This "
+            "is not yet proven on a vehicle, and a wrong flash needs BDM "
             "recovery. Continue?" % e.name,
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.No,

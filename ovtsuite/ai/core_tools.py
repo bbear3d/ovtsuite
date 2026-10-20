@@ -736,6 +736,10 @@ def register(reg: Registry) -> None:
         P.remove(id)
         return {"withdrawn": id}
 
+    # ------------------------------------------------------------ injection
+    from . import eoi_tools
+    eoi_tools.register(reg)
+
 
 _ENGINE = {}
 _ENGINE_LOCK = threading.Lock()

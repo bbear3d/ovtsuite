@@ -61,6 +61,13 @@ this column and works it out for every row: duration − start, in degrees
 is saved in the log like any other column, and uses the same convention as
 Tune from logs and [End of injection](../tools/end-of-injection.md).
 
+Ticking cells by hand works the same way: as soon as the selection holds both
+a start and a duration cell, the calculated column is added (**Remove** takes
+it out; unticking either cell drops it). On an **EDC15** unit-injector (PD)
+ECU those are the start-of-delivery and delivery-duration setpoints, block 4
+cells 2 and 3 on most software. The start comes in as degrees with *BTDC* or
+*ATDC* after it; a start after TDC counts as negative.
+
 ## Transmission presets (ZF6HP — 6HP19)
 
 ![A ZF 6HP19 on CAN with the shift-map discovery preset applied](../images/log-tcu-preset.png)
