@@ -324,7 +324,9 @@ file](editor/definitions.md).
 German in a definition is shown in English. A description the app knows --
 every description of the Bosch EDC15 DAMOS it ships translations for -- gets
 its checked English, with the German kept after **DE:**; any other is
-translated word by word, which leaves words it does not know in German. Units
+translated word by word, German words left in a half-English text and
+tree headings included. A word the app has no translation for stays in
+German. Units
 are always shown in English (*mg/Hub* reads *mg/stroke*, *Grad C* reads
 *deg C*).
 

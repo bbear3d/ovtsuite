@@ -50,6 +50,7 @@ undo step.
 | Ctrl+Shift+M | **Smooth selection** (one 3x3 pass) |
 | Ctrl+R | **Copy from comparison** |
 | Ctrl+Shift+R | **Revert to as-read values** -- the project's original read (the file as opened, outside a project) |
+| F11 | **Revert to last saved values** -- the values the selected cells had when the file or project was last saved (the file as opened, before the first save). Also on the toolbar and the table's right-click menu. |
 | | **Set step for this map...** -- the step Alt+Up / Alt+Down use for this map, remembered per map. Unset, it is one raw step: the smallest change the map can hold. |
 
 ## View
@@ -113,10 +114,11 @@ Mouse: double-click a cell to edit it; right-click for **Copy**,
 | Shift+click, Shift+drag, Shift+arrows | Extend the selection. |
 | Ctrl+click | Add a cell to the selection, or take it out. |
 | Ctrl+drag up/down on a selected point | Raise / lower every selected cell (one undo step; Esc cancels). |
-| Arrows | Move the current cell. |
-| Ctrl+arrows, drag | Rotate and tilt. |
+| Arrows | Move the current cell the way the arrow points on the screen. |
+| Ctrl+arrows, Ctrl+Shift+arrows | Jump / select to the edge of the data, as in the table. |
+| [ / ], PgUp / PgDn, drag | Rotate, tilt. |
 | + / -, mouse wheel | Zoom. |
-| Home | Reset the view. |
+| Home | Reset the view and the height scale. |
 | Edit > Cells keys, Ctrl+Z, Ctrl+Y | As in the table. |
 | Esc | Cancel a Ctrl+drag. |
 | Ctrl+3 | Hide the surface. |

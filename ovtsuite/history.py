@@ -265,6 +265,10 @@ def revert_to_version(session, version_id: str) -> RevertResult:
                 session.edit_bytes(addr, old_b)
                 n_bytes += len(old_b)
 
+    # a resized table takes the size its record holds again (ovtsuite.resize)
+    follow = getattr(session, "follow_layout", None)
+    if follow is not None:
+        follow()
     regions_after = {n: (regions_before[n], bytes(b))
                      for n, b in session.region_buffers()
                      if n in regions_before}

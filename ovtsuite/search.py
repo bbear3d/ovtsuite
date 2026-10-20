@@ -46,6 +46,8 @@ import weakref
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .signal_names import translate_german
+
 MODES = ("text", "value", "address", "bytes")
 MATCHES = ("fuzzy", "exact", "regex")
 
@@ -328,7 +330,8 @@ class Corpus:
                 except Exception:
                     title = e.name
             path = getattr(e, "category_path", None) or ()
-            cats = " > ".join(path) if path else "; ".join(e.categories or ())
+            cats = (" > ".join(translate_german(p) for p in path) if path
+                    else "; ".join(e.categories or ()))
             label = getattr(e, "label", "") or ""
             docs.append(_Doc(e, (
                 ("symbol", e.name or ""),
@@ -802,7 +805,9 @@ class SearchEngine:
             ents += list(session.variant_entities())
         except Exception:
             pass
-        return ents
+        # a detected parameter a user parameter stands in for is found as
+        # that copy (userparams.hidden)
+        return [e for e in ents if not getattr(e, "_hidden_by", None)]
 
     @staticmethod
     def _cached(cache: dict, session, key, make):

@@ -195,6 +195,8 @@ See [Editing and saving](editing.md#checksums) for what is corrected on save.
 | **Export > Binary (.bin)...** | | One part of the set -- flash, MPC or EEPROM -- as a plain image. See [Exporting](editor/export.md). |
 | **Export > Original file (.sgo / .dim / .frf)...** | | The file the set was imported from, with the saved version in it. Only for a set imported from such a file. |
 | **Export > Definition as XDF...** | | The tab's parameters as a TunerPro definition. Needs the file's module. |
+| **Export > Definition as A2L...** | | The tab's parameters as an ASAP2 description, for WinOLS and other tools. See [Exporting](editor/export.md#definition-as-a2l). |
+| **Export > Map pack for WinOLS (.kp, experimental)...** | | The tab's parameters as a WinOLS map pack (experimental). See [Exporting](editor/export.md#map-pack-for-winols-experimental). |
 | **Export > Data log...** / **Patch...** / **Attachment...** | | One of the logs, patches or attachments kept in the project. Greyed out when it has none. |
 | **New window** | | Start another, separate window. See [Tabs and sessions](editor/tabs-and-sessions.md#one-window). |
 | **Exit** | | Close the app (asks about unsaved changes). |
@@ -255,6 +257,7 @@ saving](editing.md#version-history).
 | **Tune from logs...** | | [Tune from logs](modules/edc16/logtune.md) (EDC16; the shift torque report on a ZF 6HP) |
 | **Bus sniffer (J2534)...** | | [Bus sniffer](sniffer.md) |
 | **ECU simulator (bench)...** | | [ECU simulator](simulator.md) |
+| **Bosch EDC16 > Block builder...** | | One complete EDC16U31/U34 put together from blocks of different files. See [Block builder](modules/edc16/block-builder.md). |
 | **ZF 6HP > Correct program-area checksums** | | A switch, off by default, for a ZF 6HP tab. See [Editing and saving](editing.md#zf-6hp-program-area-checksums). |
 | **VDO Cluster > Needle sweep...** | | For a VDO cluster tab. See [VDO cluster](modules/vdo/needle-sweep.md). |
 | **AI > Assistant** | Ctrl+Shift+A | Opens, folds or brings back the assistant panel on the right. See [The assistant panel](ai/assistant.md). |

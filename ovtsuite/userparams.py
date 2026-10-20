@@ -21,6 +21,16 @@ definition (``gui_project._apply_definition``); the definition snapshot
 that is not a project yet holds them on its session (``_user_params``) and
 its first save as a project carries them over.
 
+**Duplicate as user parameter** starts a spec from a detected parameter
+(:func:`from_entity`): the copy can be changed freely and is kept with the
+project like any user parameter, so re-matching or a module update never
+overwrites it. Its spec names the parameter it stands in for
+(``replaces``: symbol and EDC15 dataset) and, with ``hide``, the original
+is hidden: :func:`apply` marks it (``_hidden_by``, never stored in a
+snapshot) and puts the copy in its place in the tree, and the tree and
+searches leave hidden parameters out (:func:`hidden`). Turning ``hide``
+off, or deleting the copy, brings the original back.
+
 No Qt here.
 """
 
@@ -49,7 +59,7 @@ def blank(kind: str = "map") -> dict:
             "cols": 1 if kind == "constant" else 8,
             "bits": 16, "signed": False, "float": False, "order": "row",
             "equation": "X", "units": "", "description": "", "folder": "",
-            "x": None, "y": None}
+            "x": None, "y": None, "replaces": None, "hide": False}
 
 
 def _axis_size(ax: dict) -> int:
@@ -204,6 +214,95 @@ def is_user(e) -> bool:
     return getattr(e, "source", "") == SOURCE
 
 
+def hidden(e) -> bool:
+    """A detected parameter a user parameter stands in for, with "hide the
+    original" on: left out of the tree and of searches."""
+    return bool(getattr(e, "_hidden_by", None))
+
+
+def visible(entities) -> list:
+    return [e for e in entities if not getattr(e, "_hidden_by", None)]
+
+
+def _axis_spec(e, ax) -> Optional[dict]:
+    if ax is None:
+        return None
+    if ax.addr is None:
+        vals = list(ax.values or [])
+        return {"values": [float(v) for v in vals], "units": ax.units or ""} \
+            if vals else None
+    signed = ax.signed
+    if signed is None:                  # decided from the values, as shown
+        from .xdf_export import _axis_signed
+        signed = _axis_signed(e, ax)
+    return {"addr": int(ax.addr), "bits": int(ax.bits),
+            "signed": bool(signed) and not ax.is_float,
+            "float": bool(ax.is_float), "equation": ax.equation or "X",
+            "units": ax.units or ""}
+
+
+def from_entity(e, session=None) -> dict:
+    """A spec that reads exactly what the detected parameter ``e`` reads,
+    named after it (``<symbol>_edit``, unique in ``session``), standing in
+    for it with its original hidden: what **Duplicate as user parameter**
+    starts from."""
+    kind = {"indexed": "curve"}.get(e.kind, e.kind)
+    if kind not in KINDS:
+        raise ValueError("%s cannot be duplicated (%s)" % (e.name, e.kind))
+    taken = {x.name for x in getattr(session, "entities", ())} if session else set()
+    base = "%s_edit" % (e.name or "param").replace(" ", "_")
+    name, i = base, 2
+    while name in taken:
+        name, i = "%s%d" % (base, i), i + 1
+    title = getattr(e, "title", "") or e.name
+    path = list(getattr(e, "category_path", None) or ()) or list(e.categories[:1])
+    s = blank(kind)
+    s.update({
+        "name": name, "title": "%s (edited)" % title,
+        "folder": " / ".join(path),
+        "description": e.description or "",
+        "addr": int(e.addr), "rows": int(e.rows), "cols": int(e.cols),
+        "bits": int(e.bits), "signed": bool(e.signed),
+        "float": bool(getattr(e, "is_float", False)),
+        "order": "col" if getattr(e, "order", "row") == "col" else "row",
+        "equation": e.equation or "X", "units": e.units or "",
+        "x": _axis_spec(e, e.x) if kind != "constant" else None,
+        "y": _axis_spec(e, e.y) if kind == "map" else None,
+        "replaces": {"name": e.name, "group": getattr(e, "group", "") or ""},
+        "hide": True})
+    if e.kind == "indexed":             # a curve without an axis
+        s["x"] = None
+        s["cols"] = int(e.rows) * int(e.cols)
+    return normalise(s)
+
+
+def _original(session, rep: dict):
+    """The detected parameter ``rep`` (``{"name", "group"}``) names."""
+    name, group = rep.get("name"), rep.get("group") or ""
+
+    def hit(e):
+        return (not is_user(e) and e.name == name
+                and (getattr(e, "group", "") or "") == group)
+    e = next((e for e in session.entities if hit(e)), None)
+    if e is None:
+        try:
+            e = next((v for v in session.variant_entities() if hit(v)), None)
+        except Exception:
+            e = None
+    return e
+
+
+def _clear_hidden(session) -> None:
+    lists = [session.entities]
+    cached = getattr(session, "_variant_entities", None)
+    if cached:
+        lists.append(cached)
+    for lst in lists:
+        for e in lst:
+            if getattr(e, "_hidden_by", None):
+                e._hidden_by = None
+
+
 def specs(session) -> List[dict]:
     """The session's user parameters, as specs."""
     return [copy.deepcopy(s) for s in (getattr(session, "_user_params", None) or [])]
@@ -241,6 +340,21 @@ def apply(session, spec_list) -> int:
         session.by_key = {}
     for e in ents:
         session.by_key[(SOURCE, e.name, e.addr)] = e
+    # the detected parameters they stand in for: hidden, the copy in place
+    _clear_hidden(session)
+    for e, s in zip(ents, kept):
+        rep = s.get("replaces")
+        if not rep or not s.get("hide"):
+            continue
+        orig = _original(session, rep)
+        if orig is None:
+            continue
+        orig._hidden_by = e.name
+        e.tier = orig.tier
+        e.categories = list(orig.categories)
+        e.category_path = list(getattr(orig, "category_path", None) or ())
+        e.note = ("Your copy of %s (Duplicate as user parameter), shown in "
+                  "its place; the original is hidden." % orig.name)
     session._user_params = [copy.deepcopy(s) for s in spec_list or []]
     return len(ents)
 
@@ -320,5 +434,6 @@ def apply_from_project(proj, sid, session) -> str:
 
 
 __all__ = ["SOURCE", "KINDS", "BITS", "blank", "normalise", "validate",
-           "to_entity", "is_user", "specs", "drop", "apply", "put", "remove",
-           "find", "preview", "dumps", "loads", "apply_from_project"]
+           "to_entity", "is_user", "hidden", "visible", "from_entity", "specs",
+           "drop", "apply", "put", "remove", "find", "preview", "dumps",
+           "loads", "apply_from_project"]

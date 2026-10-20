@@ -36,3 +36,47 @@ def test_german_sentence():
     assert "setpoint" in out.lower() and "engine speed" in out.lower()
     assert "idle" in out.lower()
     assert "ä" not in out and "ö" not in out and "ü" not in out
+
+
+def test_german_words_in_half_translated_text():
+    # A2L / KB texts that are mostly English but kept a German word
+    assert T("Schwere counter limit for fault path Dfp_BrkCD") == \
+        "Severity counter limit for fault path Dfp_BrkCD"
+    assert T("CARB specific Fehlercode for fault path Dfp_AFSCD_Pl") == \
+        "CARB specific fault code for fault path Dfp_AFSCD_Pl"
+    assert "Umweltbedingung" not in T("SBR Umweltbedingung 4")
+
+
+def test_ascii_umlauts_inflections_compounds():
+    out = T("KTF Umweltbedingung 2 / Z: Uebernahme von Festwerten von 0 bis 65535")
+    for de in ("Umweltbedingung", "Uebernahme", "Festwerten", " von ", " bis "):
+        assert de not in out
+    assert "linear" in T("ARD linearer G-Faktor").lower()
+    assert T("Signalnummer") == "Signal number"
+    assert T("Istgang") == "Actual gear"
+    assert "general" in T("ARD Koeffizient D-Regler allgemein")
+
+
+def test_english_and_code_words_untouched():
+    for s in ["H2503_MOT7: Input signals from message MOT7",
+              "Adaptation value is not used",
+              "Minimum Duty cycle From PWM-Input From Refrigerant pressure",
+              "pos. Offset On Torque loss At neg. Load change",
+              "counter for unsuccessful regenerations [%]",
+              "also fast", "Standard information"]:
+        assert T(s) == s
+    # an identifier that opens the text keeps its case
+    out = T('jSasGlsRSS43_Fktn: "Applikationesgroessen Instanz jSasGlsRSS43"')
+    assert out.startswith("jSasGlsRSS43_Fktn:") and "Instanz" not in out
+
+
+def test_abbreviations_and_switch_states():
+    assert "positive Gradient" in T("ARD Fuehrungsformer Ausrollen pos. Gradient")
+    assert T("Anfangswert EIN").endswith("ON")
+
+
+def test_category_headings_translated():
+    # tree headings are translated where they are shown (gui / search)
+    assert "Koordination" not in T("Antriebs-Koordination")
+    out = T("Koordinator fuer Luftfilterventil Komponententreiber")
+    assert "fuer" not in out and "Komponententreiber" not in out

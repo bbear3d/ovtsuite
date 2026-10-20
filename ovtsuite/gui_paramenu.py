@@ -141,7 +141,9 @@ def properties(ws, e) -> dict:
     general.append(("Group", g.tier_name(e.tier)))
     path = list(getattr(e, "category_path", None) or ())
     if path:
-        general.append(("Category", " / ".join(path)))
+        from .signal_names import translate_german
+        general.append(("Category", " / ".join(translate_german(p)
+                                                for p in path)))
     elif e.categories:
         general.append(("Categories", ", ".join(e.categories)))
     if getattr(e, "selector", "") and getattr(e, "set_index", ""):
@@ -487,6 +489,12 @@ def _entity_actions(ws, m, e, ro):
         hx.setEnabled(False)
         hx.setToolTip("Not in a read-only tab")
     m.addAction("Properties...", lambda: show_properties(ws, e))
+    if e.kind in ("map", "curve") and not _up.is_user(e):
+        from . import gui_resize as _gr
+        why = _gr.availability(ws, e)
+        rs = m.addAction("Resize axes...", lambda: _gr.resize_table(ws, e))
+        rs.setEnabled(why is None)
+        rs.setToolTip(why or "Change how many breakpoints this table has")
     cp = m.addMenu("Copy")
     if e.name:
         cp.addAction("Symbol", lambda: _copy(e.name))
@@ -515,6 +523,14 @@ def _entity_actions(ws, m, e, ro):
         dl = m.addAction("Delete user parameter", lambda: delete_parameter(ws, e))
         ed.setEnabled(not ro)
         dl.setEnabled(not ro)
+    elif e.kind in ("map", "curve", "constant", "indexed") and \
+            not getattr(e, "text_kind", ""):
+        m.addSeparator()
+        du = m.addAction("Duplicate as user parameter...",
+                         lambda: duplicate_parameter(ws, e))
+        du.setEnabled(not ro)
+        du.setToolTip("Your own copy of this definition, to change as you "
+                      "like; kept with the project, never overwritten")
 
 
 def attach(ws):
@@ -551,6 +567,7 @@ def _store(ws):
         except Exception:
             pass
     ws._changed_cache = None
+    ws._tree_sig = None                 # a parameter hidden or shown again
     ws._populate()
 
 
@@ -572,6 +589,20 @@ def add_parameter(ws, spec=None):
     if e is not None:
         ws.show_entity(e)
     return e
+
+
+def duplicate_parameter(ws, e):
+    """Duplicate as user parameter: the dialog, started from what ``e``
+    reads, standing in for it (its original hidden unless unticked).
+    Returns the new entity."""
+    if ws.primary is None or _view_only(ws) or _up.is_user(e):
+        return None
+    try:
+        spec = _up.from_entity(e, ws.primary)
+    except ValueError as ex:
+        QtWidgets.QMessageBox.information(ws, "Duplicate as user parameter", str(ex))
+        return None
+    return add_parameter(ws, spec)
 
 
 def edit_parameter(ws, e):
@@ -716,7 +747,9 @@ class UserParamDialog(QtWidgets.QDialog):
         self.session = ws.primary
         self.editing = editing
         g = _g()
+        self._replaces = (spec or {}).get("replaces")
         self.setWindowTitle("Edit user parameter" if editing
+                            else "Duplicate as user parameter" if self._replaces
                             else "Add parameter")
         try:
             self.setWindowIcon(g.app_icon())
@@ -754,6 +787,15 @@ class UserParamDialog(QtWidgets.QDialog):
         f.addRow("Folder:", self.folder)
         self.desc = QtWidgets.QLineEdit()
         f.addRow("Description:", self.desc)
+        self.hide_orig = QtWidgets.QCheckBox()
+        self.hide_orig.setToolTip(
+            "The tree, Find and the parameter filter then show this copy, in "
+            "the original's place, instead of the original")
+        f.addRow("", self.hide_orig)
+        self.hide_orig.setVisible(bool(self._replaces))
+        if self._replaces:
+            self.hide_orig.setText("Hide the original (%s)"
+                                   % self._replaces.get("name", ""))
         left.addWidget(about)
 
         data = QtWidgets.QGroupBox("Data")
@@ -869,6 +911,7 @@ class UserParamDialog(QtWidgets.QDialog):
         self.units.setText(s.get("units") or "")
         self.xbox.set_spec(s.get("x"))
         self.ybox.set_spec(s.get("y"))
+        self.hide_orig.setChecked(bool(s.get("hide")))
 
     def spec(self) -> dict:
         """The form as a spec (ValueError for a field that is not a
@@ -887,7 +930,9 @@ class UserParamDialog(QtWidgets.QDialog):
              "equation": self.eq.text().strip() or "X",
              "units": self.units.text().strip(),
              "x": self.xbox.spec() if kind != "constant" else None,
-             "y": self.ybox.spec() if kind == "map" else None}
+             "y": self.ybox.spec() if kind == "map" else None,
+             "replaces": self._replaces,
+             "hide": bool(self._replaces) and self.hide_orig.isChecked()}
         return _up.normalise(s)
 
     def errors_for(self) -> List[str]:
@@ -971,4 +1016,4 @@ __all__ = ["attach", "build_menu", "entity_of", "spans", "values_tsv",
            "properties", "properties_text", "ParameterPropertiesDialog",
            "show_properties", "show_in_hex", "copy_from_comparison",
            "UserParamDialog", "add_parameter", "edit_parameter",
-           "delete_parameter"]
+           "delete_parameter", "duplicate_parameter"]

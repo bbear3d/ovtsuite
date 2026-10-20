@@ -115,6 +115,11 @@ class ModuleSpec:
     #: the AI assistant and the MCP server (docs/AI_PLAN.md). Optional: a
     #: module built before it existed simply contributes none.
     ai_tools: Optional[str] = None
+    #: ``layout() -> ovtsuite.resize.LayoutCodec`` -- how this platform's
+    #: table records are read and rewritten, so the base app can resize a
+    #: map or curve (docs/MAP_RESIZE.md). Optional: without it, tables of
+    #: this platform simply can't be resized.
+    layout: Optional[str] = None
     #: Data files this module owns: globs relative to the app's ``data``
     #: directory. Its code is its package (``<app>/<id>/``). Every data file
     #: belongs to exactly one module or to the base app -- the build checks.

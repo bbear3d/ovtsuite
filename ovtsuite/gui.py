@@ -1740,6 +1740,12 @@ if HAVE_QT:
             return len(cells)
 
         def refresh(self):
+            if self.entity is not None and self._vals and (
+                    len(self._vals) != self.entity.rows
+                    or len(self._vals[0]) != self.entity.cols):
+                # the table was resized (or a resize undone): a new grid
+                self.set_entity(self.entity, self.compare)
+                return
             if self.entity:
                 self._vals = self.entity.values()
                 self._x = self.entity.x_values()
@@ -6761,6 +6767,20 @@ if HAVE_QT:
             what = "selected cells" if self._selected_z() else "whole table"
             sub = menu.addMenu("Copy %s from tab" % what)
             self.win.fill_copy_from_menu(sub, self)
+            from . import gui_cellkeys as _gck
+            _gck.add_to_menu(self.win, menu)       # revert actions
+            e = self.model.entity
+            if e is not None and e.kind in ("map", "curve") and \
+                    getattr(e, "source", "") != "user":
+                from . import gui_resize as _gr
+                why = _gr.availability(self, e)
+                menu.addSeparator()
+                rs = menu.addAction("Resize axes...",
+                                    lambda: _gr.resize_table(self, e))
+                rs.setEnabled(why is None)
+                rs.setToolTip(why or "Change how many breakpoints this "
+                                     "table has")
+                menu.setToolTipsVisible(True)
             _gui_ai.extend_menu(self, menu, self.model.entity)
             menu.exec(self.table.viewport().mapToGlobal(pos))
 
@@ -6977,6 +6997,8 @@ if HAVE_QT:
                 self._last_needle = ""
                 for e in (self.primary.entities
                           + self.primary.variant_entities()):
+                    if getattr(e, "_hidden_by", None):
+                        continue            # a user parameter stands in for it
                     if e.tier not in tiers:
                         ti = QtWidgets.QTreeWidgetItem(
                             [tier_name(e.tier)])
@@ -7002,8 +7024,11 @@ if HAVE_QT:
                     for depth in range(len(path)):
                         ck = (e.tier, tuple(path[:depth + 1]))
                         if ck not in cats:
-                            ci = QtWidgets.QTreeWidgetItem([path[depth]])
-                            ci.setData(0, _BASE_ROLE, path[depth])
+                            # a heading still in German (a supplier's
+                            # function title) reads in English
+                            head = _tr_de(path[depth])
+                            ci = QtWidgets.QTreeWidgetItem([head])
+                            ci.setData(0, _BASE_ROLE, head)
                             parent.addChild(ci)
                             cats[ck] = ci
                         parent = cats[ck]
@@ -7745,15 +7770,20 @@ if HAVE_QT:
                 "version history and the flasher work as usual.")
             box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
             mid = _platforms.module_for(loaded.platform)
-            install = None
+            install = github = None
             if mid and not _registry.can(loaded.platform, "definitions") \
                     and _registry.spec(mid) is None:
+                from . import gui_getmodule as _gm  # published on GitHub?
+                github, avail = _gm.offer_button(box, mid)
                 install = box.addButton("Install module...",
                                         QtWidgets.QMessageBox.ButtonRole.ActionRole)
             box.exec()
-            if install is not None and box.clickedButton() is install:
+            clicked = box.clickedButton()
+            if clicked is not None and clicked in (install, github):
                 from .gui_modules import install_from_file
-                if install_from_file(self) is not None \
+                got = (_gm.install(self, mid, avail) if clicked is github
+                       else install_from_file(self))
+                if got is not None \
                         and _registry.can(loaded.platform, "checksum") \
                         and getattr(loaded, "path", None):
                     # the module is in: open the binary again, with it -- a
@@ -10064,6 +10094,14 @@ if HAVE_QT:
                       needs_file=True,
                       enabled_when=lambda: getattr(cw().primary, "support",
                                                    "full") == "full")
+            from . import gui_defexport as _gde     # A2L / WinOLS map pack
+            for text, fn in (("Definition as A2L...", _gde.export_a2l),
+                             ("Map pack for WinOLS (.kp, experimental)...",
+                              _gde.export_kp)):
+                self._act(x, text, lambda _c=False, f=fn: f(cw()),
+                          needs_file=True,
+                          enabled_when=lambda: getattr(cw().primary, "support",
+                                                       "full") == "full")
             x.addSeparator()
             for kind, text in (("log", "Data log..."), ("patch", "Patch..."),
                                ("attachment", "Attachment...")):
@@ -10212,6 +10250,17 @@ if HAVE_QT:
                     sub.menuAction().setToolTip(
                         _registry.missing_text(mid, "these tools"))
                 return sub
+            e16 = self.edc16_menu = _mod_menu("edc16", "Bosch EDC16")
+
+            def _builder():
+                import importlib            # the EDC16 module's own window
+                importlib.import_module(".edc16.gui_builder16",
+                                        __package__).open_builder(self)
+            self._act(e16, "Block builder...", lambda _c=False: _builder()
+                      ).setToolTip(
+                "Put one EDC16U31/U34 together from blocks of different files "
+                "(boot, program, calibrations, MPC, EEPROM), checked against "
+                "each other")
             zf = self.zf6hp_menu = _mod_menu("zf6hp", "ZF 6HP")
             self.program_area_act = self._act(
                 zf, "Correct program-area checksums",

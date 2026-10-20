@@ -313,15 +313,22 @@ class FileWorkspace:
 
 def apply_definition(proj, sid, session) -> str:
     """A packaged third-party definition (XDF ...) on the set's main member,
-    then the user's own parameters, applied the way the app's project tabs
-    apply them (gui_project). Returns a note, "" when there is none."""
+    then the tables resized in the set, then the user's own parameters,
+    applied the way the app's project tabs apply them (gui_project) -- so
+    the assistant reads and writes a resized table at its real size.
+    Returns a note, "" when there is none."""
     note = _apply_packaged(proj, sid, session)
+    from .. import resize as _rz
+    try:
+        lay = _rz.apply_from_project(proj, sid, session)
+    except Exception as ex:
+        lay = "the resized tables could not be read: %s" % ex
     from .. import userparams as _up
     try:
         more = _up.apply_from_project(proj, sid, session)
     except Exception as ex:
         more = "the user parameters could not be read: %s" % ex
-    return "; ".join(x for x in (note, more) if x)
+    return "; ".join(x for x in (note, lay, more) if x)
 
 
 def _apply_packaged(proj, sid, session) -> str:

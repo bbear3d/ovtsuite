@@ -19,6 +19,7 @@ Ctrl+Shift+L            interpolate: along a row, down a column, or a block
 Ctrl+Shift+M            smooth (one 3x3 pass)
 Ctrl+R                  copy the selected cells from the comparison
 Ctrl+Shift+R            put the selected cells back to the as-read values
+F11                     put the selected cells back to the last saved values
 =====================  ===================================================
 
 **Set step for this map...** sets the step. The default is one raw step --
@@ -276,15 +277,46 @@ def _as_read(ws) -> Tuple[Optional[bytes], str]:
     return (bytes(orig), "as opened") if orig is not None else (None, "")
 
 
+def _last_saved(ws) -> Tuple[Optional[bytes], str]:
+    """The image as last saved (in a project: the last save of the tab,
+    which is what its history holds), else as opened."""
+    p = ws.primary
+    data = getattr(p, "_last_saved_snapshot", None)
+    if data is None:
+        data = getattr(p, "original", None)
+    if data is None or len(data) != len(p.binfile.data):
+        return None, ""
+    return bytes(data), "last saved"
+
+
 def revert(win):
-    ws = _ws(win)
+    _revert_to(_ws(win), _as_read, "There is no original image to go back to.")
+
+
+def revert_saved(win):
+    """Edit > Cells > Revert to last saved values (F11)."""
+    _revert_to(_ws(win), _last_saved, "The file has not been saved yet.")
+
+
+def _revert_to(ws, source, missing: str):
+    """Put the selected cells back to their values in the image
+    ``source(ws)`` gives, as one undo step."""
     if ws is None or not _editable(ws):
         return
-    data, what = _as_read(ws)
+    data, what = source(ws)
     if data is None:
-        _say(ws, "There is no original image to go back to.")
+        _say(ws, missing)
         return
     m = ws.model
+    from . import resize as _resize
+    if m.entity is not None and not _resize.lines_up(ws.primary, m.entity, data):
+        # resized or moved since then: the old image's bytes at these cells
+        # are other cells, axis points or another table -- never write them
+        _say(ws, "%s was resized or moved since the %s version, so its %s "
+                 "values no longer line up with its cells: nothing was changed. "
+                 "Undo the resize (Edit > Undo, or the version history) to go "
+                 "back to it." % (m.entity.name, what, what))
+        return
     e = m.entity
     then = copy.copy(e)                  # the same cells, read from `data`
     bf = copy.copy(e.binfile)
@@ -475,7 +507,10 @@ class _TableKeys(QtCore.QObject):
         target = m.index(r, c)
         sm = t.selectionModel()
         if not extend:
-            t.setCurrentIndex(target)
+            # the target alone: setCurrentIndex(target) would take its flags
+            # from the keys held -- Ctrl, so it added the cell to the selection
+            sm.setCurrentIndex(target, QtCore.QItemSelectionModel.ClearAndSelect)
+            t.scrollTo(target)
             return True
         # the anchor: the corner of the selected block opposite the cursor
         ar, ac = cur.row(), cur.column()
@@ -598,6 +633,7 @@ ACTIONS = [
     (None, None, None),
     ("Copy from comparison", "Ctrl+R", from_comparison),
     ("Revert to as-read values", "Ctrl+Shift+R", revert),
+    ("Revert to last saved values", "F11", revert_saved),
     (None, None, None),
     ("Set step for this map...", None, set_step),
 ]
@@ -624,6 +660,21 @@ def add_menu(win, edit_menu) -> QtWidgets.QMenu:
     for ws in getattr(win, "workspaces", lambda: [])():
         attach(ws)
     return sub
+
+
+#: The cell actions the table's right-click menu repeats.
+MENU_ACTIONS = ("Revert to last saved values", "Revert to as-read values")
+
+
+def add_to_menu(win, menu):
+    """The revert actions in a table's right-click menu (the same actions,
+    so they show their shortcuts and follow Options)."""
+    acts = {a.text(): a for a in getattr(win, "_cell_actions", ())}
+    have = [acts[t] for t in MENU_ACTIONS if t in acts]
+    if have:
+        menu.addSeparator()
+        for a in have:
+            menu.addAction(a)
 
 
 def attach(ws):

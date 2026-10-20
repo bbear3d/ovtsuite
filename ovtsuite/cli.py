@@ -352,16 +352,36 @@ def cmd_diff(args):
 
 
 def cmd_export(args):
-    from .session import TunerSession
-    from .xdf_export import export_xdf
     from . import branding
     s = _load(args)
     title = args.title or branding.tagged(s.binfile.name)
-    xml = export_xdf(s.entities + s.variant_entities(), title,
-                     s.binfile.name, image_size=len(s.binfile.data),
-                     platform=s.platform)
-    with open(args.out, "w", encoding="ascii", errors="replace") as fh:
-        fh.write(xml)
+    ents = s.entities + s.variant_entities()
+    fmt = args.format or os.path.splitext(args.out)[1].lower().lstrip(".")
+    warnings = []
+    if fmt == "a2l":
+        from .a2l_export import export_a2l
+        text = export_a2l(ents, title, image_size=len(s.binfile.data),
+                          platform=s.platform, warnings=warnings)
+        with open(args.out, "w", encoding="ascii", errors="replace",
+                  newline="\n") as fh:
+            fh.write(text)
+    elif fmt == "kp":
+        from .definitions.winols_write import write_kp
+        with open(args.out, "wb") as fh:
+            fh.write(write_kp(ents, len(s.binfile.data), title=title,
+                              warnings=warnings))
+        print("note: the map pack format is experimental -- WinOLS may not "
+              "open it; an A2L imports reliably")
+    else:
+        from .xdf_export import export_xdf
+        xml = export_xdf(ents, title, s.binfile.name,
+                         image_size=len(s.binfile.data), platform=s.platform)
+        with open(args.out, "w", encoding="ascii", errors="replace") as fh:
+            fh.write(xml)
+    for w in warnings[:20]:
+        print("warning: %s" % w)
+    if len(warnings) > 20:
+        print("warning: ... and %d more" % (len(warnings) - 20))
     tables = sum(1 for e in s.entities if e.kind in ("map", "curve"))
     consts = sum(1 for e in s.entities if e.kind == "constant")
     print("wrote %s: %d tables, %d constants (%s family %s%s)"
@@ -1554,11 +1574,15 @@ def main(argv=None):
                    help="print up to N missed structures")
     s.set_defaults(fn=cmd_coverage)
 
-    s = sub.add_parser("export", help="export a TunerPro XDF for a binary", parents=[_common])
+    s = sub.add_parser("export", help="export a binary's definition: TunerPro "
+                       "XDF, ASAP2 A2L or WinOLS map pack (experimental)",
+                       parents=[_common])
     s.add_argument("binary")
     s.add_argument("out")
     s.add_argument("--family")
     s.add_argument("--title")
+    s.add_argument("--format", choices=("xdf", "a2l", "kp"),
+                   help="default: from the output's extension (else xdf)")
     s.set_defaults(fn=cmd_export)
 
     s = sub.add_parser("tune", help="build and optionally apply a tune profile",

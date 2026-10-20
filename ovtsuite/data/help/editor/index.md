@@ -14,6 +14,7 @@ saving](../editing.md).
 |---|---|
 | [Tables and editing values](tables-and-editing.md) | Reading a table and its notes, typing values, **Modify selection**, **Fill**, **Smooth**, **Heatmap**, swapping axes, copy and paste, copying a table from another tab. |
 | [The parameter menu and Properties](parameter-menu.md) | Right-clicking a parameter: opening it, showing it in the hex editor, copying its symbol, address or values, copying it from the comparison; the **Properties** window. |
+| [Resizing a table](resizing-tables.md) | Giving a map or curve more (or fewer) breakpoints, its copies, and how the new size is kept with the project. |
 | [User-defined parameters](user-parameters.md) | Defining a table or value the definitions do not have, and where it is kept. |
 | [Comparing files](comparison.md) | The original as read as a tab's comparison, other comparisons (a binary, another tab, a saved version, another project), how differences show, **Edit > Show differences...**. |
 | [The Find panel](search.md) | Searching by name, value, address or byte pattern, in one tab or all of them. |

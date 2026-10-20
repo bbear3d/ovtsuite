@@ -42,6 +42,28 @@ the range of all of them. **OK** is available once everything fits: the
 symbol is new, the equation can be read, and the data and axes are inside
 the binary. What is wrong is listed in red above the buttons.
 
+## Changing a detected parameter's definition
+
+The parameters the app finds come from its definitions, and are found again
+whenever a file opens -- so a change to one of them would be undone by the
+next match, or by a module update. To change how a detected parameter is
+read (its title, scaling, units, size, axes or address), make your own copy
+of it:
+
+1. Right-click it in the tree > **Duplicate as user parameter...**.
+2. The window opens filled in with exactly what the parameter reads, named
+   `<symbol>_edit` and titled *(edited)*. Change what you need; the
+   **Preview** shows the result.
+3. **Hide the original (\<symbol\>)** is ticked: the copy is then shown in the
+   original's place in the tree, and **Find** and the parameter filter find
+   the copy instead of the original. Untick it to keep both.
+4. **OK**.
+
+The copy is a user parameter like any other: kept with the project, never
+changed by re-matching or a module update. To bring the original back,
+**Edit user parameter...** the copy and untick **Hide the original**, or
+delete the copy.
+
 ## Where they are kept
 
 User parameters are listed in their own group, **User defined**, and are

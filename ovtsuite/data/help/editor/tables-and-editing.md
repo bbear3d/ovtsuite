@@ -130,6 +130,12 @@ Some cells are not numbers:
 - **Named values** (codings, options) show their name with the stored number
   in brackets, and offer a drop-down list of the names when edited.
 
+To undo changes to some cells only, select them and press **F11**
+(**Revert to last saved values**, also on the toolbar and the right-click
+menu): they go back to the values they had at the last save. **Ctrl+Shift+R**
+takes them back to the original read instead. Each is one undo step, and the
+keys can be changed in **Tools > Options... > Keyboard shortcuts**.
+
 The comparison's copy is read-only, and so are the few parameters a
 definition marks as not to be edited by hand (such as a cluster's
 odometer).

@@ -70,18 +70,25 @@ The surface takes the keys while it has the focus (click it first):
 
 | Keys | What it does |
 |---|---|
-| Arrows | Move the current cell, as in the table. |
+| Arrows | Move the current cell the way the arrow points on the screen: Up always moves to the point drawn above, however the surface is turned. |
 | Shift+arrows | Extend the selection. |
-| Ctrl+arrows | Rotate (left/right) and tilt (up/down) the surface. |
+| Ctrl+arrows, Ctrl+Shift+arrows | Jump (or select) to the edge of the data, as in the table. |
+| [ / ] | Rotate the surface left / right. |
+| PgUp / PgDn | Tilt the surface up / down. |
 | + / - | Zoom in / out. |
-| Home | Back to the starting angle and zoom. |
+| Home | Back to the starting angle and zoom, and a fresh height scale. |
 | Alt+Up / Alt+Down, Alt+Shift+Up / Down | Selected cells one step / ten steps up or down. |
 | Alt+PgUp / Alt+PgDn | Selected cells +1 % / -1 %. |
 | Ctrl+Shift+L / Ctrl+Shift+M | Interpolate / smooth the selection. |
 | Ctrl+R / Ctrl+Shift+R | Copy the selection from the comparison / back to the as-read values. |
+| F11 | Back to the last saved values. |
 | Ctrl+Z / Ctrl+Y | Undo / redo. |
 | Esc | Cancel a drag. |
 | Ctrl+3 | Hide the surface (the keys go back to the table). |
+
+While the same map is shown the height scale only grows, so a point you
+step up or down moves on the scale instead of the whole surface rescaling
+around it. **Reset view** (or Home) fits the scale to the values again.
 
 The cell keys are those of **Edit > Cells** (see
 [Keyboard shortcuts](keyboard-shortcuts.md#edit-cells)); a shortcut changed in

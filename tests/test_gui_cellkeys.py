@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6 import QtCore, QtTest, QtWidgets
+    from PySide6 import QtCore, QtGui, QtTest, QtWidgets
 except ImportError as exc:                              # no Qt, or no GL libs
     pytest.skip("PySide6 is not usable here: %s" % exc, allow_module_level=True)
 
@@ -181,6 +181,33 @@ def test_copy_from_comparison_and_back_to_as_read(win):
     assert [e.cell(r, c) for r, c in cells[:3]] == pytest.approx(stock)
 
 
+def test_revert_to_last_saved_goes_back_to_the_save_not_the_read(win):
+    from ovtsuite import gui_cellkeys as K
+    ws = _open(win, PLAIN)
+    p, e = ws.primary, ws.model.entity
+    assert _act(win, "Revert to last saved values").shortcut().toString() == "F11"
+    cells = [(1, 1), (1, 2)]
+    _select(ws, cells)
+    read = [e.cell(r, c) for r, c in cells]
+    kept = p._last_saved_snapshot
+    try:
+        _act(win, "Step up x10").trigger()
+        saved = [e.cell(r, c) for r, c in cells]
+        assert saved != read
+        p._last_saved_snapshot = bytes(p.binfile.data)   # as a save leaves it
+        _act(win, "Step up x10").trigger()
+        assert [e.cell(r, c) for r, c in cells] != saved
+        _act(win, "Revert to last saved values").trigger()          # F11
+        assert [e.cell(r, c) for r, c in cells] == pytest.approx(saved)
+        _act(win, "Revert to as-read values").trigger()             # Ctrl+Shift+R
+        assert [e.cell(r, c) for r, c in cells] == pytest.approx(read)
+    finally:
+        p._last_saved_snapshot = kept
+    menu = QtWidgets.QMenu()
+    K.add_to_menu(win, menu)
+    assert [a.text() for a in menu.actions() if a.text()] == list(K.MENU_ACTIONS)
+
+
 def test_ctrl_arrow_goes_to_the_edge_of_the_map(win):
     ws = win.current
     m, t, e = ws.model, ws.table, ws.model.entity
@@ -194,6 +221,19 @@ def test_ctrl_arrow_goes_to_the_edge_of_the_map(win):
     assert len(sel) > 1, "Ctrl+Shift+Up selects up to the edge"
     # never into the X band above the map
     assert all(z is not None for z in sel)
+
+
+def test_ctrl_arrow_leaves_only_the_cell_it_lands_on_selected(win, monkeypatch):
+    """With Ctrl held (as it is, during Ctrl+arrow) a plain setCurrentIndex
+    toggles the target into the selection; the jump selects it alone."""
+    ws = win.current
+    m, t = ws.model, ws.table
+    _select(ws, [(2, 2)])
+    monkeypatch.setattr(QtGui.QGuiApplication, "keyboardModifiers",
+                        staticmethod(lambda: QtCore.Qt.ControlModifier))
+    QtTest.QTest.keyClick(t, QtCore.Qt.Key_Right, QtCore.Qt.ControlModifier)
+    sel = {m.z_at(ix) for ix in t.selectionModel().selectedIndexes()}
+    assert sel == {m.z_at(t.currentIndex())}
 
 
 def test_editor_arrows_move_on_and_ctrl_enter_fills(win):

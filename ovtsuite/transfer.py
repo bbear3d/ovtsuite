@@ -174,5 +174,6 @@ def build_overlay(primary: Entity, other: Entity,
             out_row.append(_interp1(ox, row_at_y, xv))
         out.append(out_row)
     return Overlay("resampled", out,
-                   "comparison resampled from %dx%d onto this map's axes"
-                   % (other.rows, other.cols))
+                   "the comparison is %dx%d, this table %dx%d -- resampled "
+                   "onto this table's axes"
+                   % (other.rows, other.cols, primary.rows, primary.cols))

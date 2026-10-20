@@ -401,19 +401,19 @@ def _plan(offer):
 
 
 def _download(parent, offer, assets, owners=None, strict=False,
-              quiet=False) -> Optional[List[Tuple[object, str, str]]]:
+              quiet=False, what="update") -> Optional[List[Tuple[object, str, str]]]:
     """Download and verify ``assets`` with a progress dialog: ``[(asset,
     path, how verified)]``, or None (cancelled or failed; said so unless
     ``quiet``). ``owners``: asset name -> the release whose checksum list
     vouches for it (default: the offer's). ``strict``: only a signed
-    checksum list will do."""
+    checksum list will do. ``what``: the progress window's word for it."""
     global last_error
     last_error = ""
     total = sum(max(a.size, 1) for a in assets)
     scale = max(1, total // 1000000)            # QProgressBar holds an int
-    dlg = QtWidgets.QProgressDialog("Downloading the update...", "Cancel", 0,
+    dlg = QtWidgets.QProgressDialog("Downloading the %s..." % what, "Cancel", 0,
                                     max(1, total // scale), parent)
-    dlg.setWindowTitle(branding.title("Downloading update"))
+    dlg.setWindowTitle(branding.title("Downloading %s" % what))
     dlg.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
     dlg.setMinimumDuration(0)
     dlg.setAutoClose(False)
