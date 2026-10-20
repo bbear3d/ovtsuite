@@ -61,6 +61,10 @@ MODULES: Dict[str, ModuleInfo] = {m.id: m for m in (
     ModuleInfo("zf6hp", "ZF 6HP",
                "ZF 6HP19/26/28 TCUs: definitions, shift/TCC tools, checksum.",
                ("zf6hp",)),
+    ModuleInfo("zf5hp", "ZF 5HP",
+               "ZF 5HP19 (01V) and 5HP24 (01L) TCUs: definitions, checksum, "
+               "experimental K-line flashing. Free and open-source.",
+               ("zf5hp",)),
     ModuleInfo("zf8hp", "ZF 8HP",
                "ZF 8HP Gen1/Gen2 TCUs: definitions and checksum.",
                ("zf8hp",)),
@@ -80,6 +84,7 @@ PLATFORMS: Dict[str, Platform] = {p.id: p for p in (
     Platform("edc16", "Bosch EDC16", "EDC16", "edc16", 13, ("edc16",)),
     Platform("edc15", "Bosch EDC15", "EDC15", "edc15", 7, ("edc15",)),
     Platform("zf6hp", "ZF 6HP", "6HP", "zf6hp", 11, ("zf6hp",)),
+    Platform("zf5hp", "ZF 5HP", "5HP", "zf5hp", 6, ()),
     Platform("zf8hp", "ZF 8HP", "8HP", "zf8hp", 3, ("zf8hp",)),
     Platform("aisin", "Aisin", "AISIN", "aisin", 2, ()),
     Platform("vdo", "VDO instrument cluster", "VDO", "vdo", 4, ("vdo",)),

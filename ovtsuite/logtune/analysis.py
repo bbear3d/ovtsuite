@@ -48,6 +48,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from ..autotune.plan import ERROR, NOTE, WARNING, Plan, Problem
 from ..autotune.validate import COMMON_CHECKS
+from .. import eoi as _eoi
 from . import grid
 from .roles import RECIPES, ROLE_LABELS
 from .samples import Run
@@ -1400,22 +1401,49 @@ class LogTuner:
                      "(EngPrt_facTempPreTrbn_MAP): the ECU starts cutting torque at %.0f deg C. The "
                      "fixes are more air (boost), less fuel, or an earlier end of injection." % warn, (["rpm", "n", "EGT max deg C"], rows) if rows else None)
 
+    def _eoi_calc(self):
+        """The End of injection model of this file (:mod:`ovtsuite.eoi`), or
+        None: SOI corrections then assume a degree of advance is a degree
+        earlier end of injection."""
+        if not hasattr(self, "_eoi_c"):
+            self._eoi_c = None
+            try:
+                ms = [m for m in _eoi.models(self.s) if not m.missing]
+                if ms:
+                    self._eoi_c = _eoi.Calculator(ms[0])
+            except Exception:
+                self._eoi_c = None
+        return self._eoi_c
+
     def _soi(self):
         """Advance the SOI base maps where the logs show a late end of injection
         (or, with a working sensor, a hot exhaust) under load. The correction is
         split between the maps InjCrv_phiBas_CUR blends at the logged coolant
-        temperature. Opt-in, one step per pass, never past the SOI limiter."""
+        temperature. The advance a sample needs is solved with the file's End
+        of injection model (:func:`ovtsuite.eoi.advance_for_target`): the
+        duration tables are picked by SOI, so a degree of advance is not a
+        degree earlier end. Opt-in, one step per pass, never past the SOI
+        limiter."""
         if not all(self._any(r) for r in ("rpm", "iq", "soi", "dur")):
             return
         o = self.o
         egt_ok = getattr(self, "_egt_ok", False)
         warn = getattr(self, "_egt_warn", None) or self.egt_limits()[0]
         acc, want, ents = defaultdict(float), defaultdict(float), {}
+        calc = self._eoi_calc()
         for run in self.runs:
             for i, v in self._rows(run, ("rpm", "iq", "soi", "dur"), warm=False):
                 if v["iq"] < o.soi_min_iq:
                     continue
                 late = (v["dur"] - v["soi"]) - o.eoi_target
+                if late > 0 and calc is not None:
+                    # the duration the ECU uses depends on the SOI (its
+                    # duration tables are picked by SOI): solve for the
+                    # advance that really lands on the target
+                    adv = _eoi.advance_for_target(calc, v["rpm"], v["iq"],
+                                                  v["soi"], v["dur"], o.eoi_target)
+                    if adv is not None:
+                        late = max(adv, 0.0)
                 hot = egt_ok and (run.get("egt", i) or 0) >= warn
                 need = max(late, 0.0) + (0.5 if hot else 0.0)
                 for e, wm in self._maps_for_row(self._soi_maps, run, i, blend_ok=True):
@@ -1444,6 +1472,8 @@ class LogTuner:
             n += 1
         if n:
             self.res.add(WARN, "injection", "Start of injection advanced in %d cell(s) (opt-in)" % n,
+                         "The advance is solved with the ECU's own choice of duration table at the "
+                         "new start (see Tools > End of injection). "
                          "In %s, at most %.1f deg per cell per pass, capped at InjCrv_phiMIMax_MAP and "
                          "%.0f deg BTDC. Warm-up rows only move the maps InjCrv_phiBas_CUR selects "
                          "below %.0f deg C coolant. Earlier injection raises peak cylinder pressure: listen for "

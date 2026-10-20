@@ -112,6 +112,7 @@ its region cannot be viewed/edited as calibration data.
 '''
 
 import struct
+import zlib
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -170,9 +171,12 @@ class SgoSection:
     #: section, so ``addr`` cannot place them.
     lo: int = 0
     hi: int = 0
-    #: The solved 11-byte BCB Type1 key, for a "bcb1" section (see
-    #: :mod:`ovtsuite.bcb1`); the key is per container, not per section.
+    #: The BCB Type1 key, for a "bcb1" section (see :mod:`ovtsuite.bcb1`): the
+    #: solved 11-byte EDC15 key, or the fixed 6-byte ZF 5HP ``GEHEIM`` key.
     bcb1_key: bytes = b""
+    #: How this "bcb1" section's 16-bit field is computed on re-encode:
+    #: "sum" (EDC15 additive) or "crc32" (ZF 5HP, zlib.crc32 low-16).
+    bcb1_ck16: str = "sum"
 
     @property
     def end(self) -> int:
@@ -282,48 +286,72 @@ def _decode_section(sec: SgoSection) -> None:
     sec.scheme = None
 
 
-def _decode_bcb1(sections: List["SgoSection"]) -> None:
-    """Decode a container's Bosch BCB Type1 (EDC15) areas.
+def _accept_bcb1(s: "SgoSection", key: bytes, ck16_kind: str) -> bool:
+    """Try one full BCB Type1 key on section ``s``; set it decoded and return
+    True only if every check the format itself defines passes.
 
-    The codec's 11-byte key has four per-dataset bytes that are stored nowhere
-    in the file, so they are solved from the areas themselves
-    (:func:`ovtsuite.bcb1.solve_key`) and the result is confirmed three ways,
-    all of them values the format itself defines: the area's terminal 24-bit
-    sum (inside :func:`ovtsuite.bcb1.decode`), the same sum restated as ASCII
-    hex in the area's provenance header, and the section table's own 16-bit
-    field where it is populated. An area failing any of them is left
-    unrecognized rather than decoded with a guess."""
+    ``ck16_kind`` selects how the section-table 16-bit field (+0x13) is
+    validated, because the two dialects populate it differently:
+      - "sum":   low 16 bits of the additive byte sum (EDC15 dialect)
+      - "crc32": low 16 bits of ``zlib.crc32`` of the plaintext (ZF 5HP
+                 ``GEHEIM`` dialect -- verified on real 5HP19 files)
+    The terminal 24-bit sum (inside :func:`ovtsuite.bcb1.decode`) and the
+    provenance header's restated sum are checked for both."""
+    prefix, body = _bcb1.split(_xorff(s.blob))
+    plain = _bcb1.decode(body, s.declared_len, key)
+    if plain is None:
+        return False
+    stated = _bcb1.header_sum(prefix)
+    if stated is not None and (sum(plain) & 0xFFFFFF) != stated:
+        return False
+    ck16 = struct.unpack_from(">H", s.header, _CKSUM16_OFF)[0]
+    if ck16:
+        got = (zlib.crc32(plain) & 0xFFFF) if ck16_kind == "crc32" \
+            else (sum(plain) & 0xFFFF)
+        if got != ck16:
+            return False
+    s.plaintext = plain
+    s.scheme = "bcb1"
+    s.bcb_prefix = prefix
+    s.bcb1_key = key
+    s.bcb1_ck16 = ck16_kind
+    return True
+
+
+def _decode_bcb1(sections: List["SgoSection"]) -> None:
+    """Decode a container's Bosch BCB Type1 areas (EDC15 and ZF 5HP dialects).
+
+    Two dialects share the record format and differ only in the key and in how
+    the section's 16-bit field is populated:
+
+      - **ZF 5HP** (VW "01V"/"01L"): the fixed 6-byte key ``GEHEIM``
+        (:data:`ovtsuite.bcb1.KEY_5HP`), nothing to solve; its 16-bit field is
+        a CRC-32 low-16. Tried first because it needs no solving.
+      - **EDC15**: an 11-byte key whose four per-dataset bytes are stored
+        nowhere, so they are solved from the areas themselves
+        (:func:`ovtsuite.bcb1.solve_key`); its 16-bit field is an additive sum.
+
+    Both are confirmed by values the format itself defines -- the area's
+    terminal 24-bit sum, the same sum restated in the provenance header, and
+    the section's 16-bit field where populated. An area failing any check is
+    left unrecognized rather than decoded with a guess."""
     pend = [s for s in sections
             if s.scheme is None and _bcb1.looks_like(_xorff(s.blob))]
     if not pend:
         return
-    bodies = []
-    for s in pend:
-        _, body = _bcb1.split(_xorff(s.blob))
-        bodies.append((body, s.declared_len))
+    # ZF 5HP: fixed GEHEIM key, CRC-32 low-16 field.
+    pend = [s for s in pend if not _accept_bcb1(s, _bcb1.KEY_5HP, "crc32")]
+    if not pend:
+        return
+    # EDC15: solve the 11-byte key from the remaining areas.
+    bodies = [(_bcb1.split(_xorff(s.blob))[1], s.declared_len) for s in pend]
     key = _bcb1.solve_key(bodies)
     if key is None:
         return
     for s in pend:
-        prefix, body = _bcb1.split(_xorff(s.blob))
-        plain = _bcb1.decode(body, s.declared_len, key)
-        used = key
-        if plain is None:
+        if not _accept_bcb1(s, key, "sum"):
             # The KEY.BC4 area carries its own fixed key.
-            plain = _bcb1.decode(body, s.declared_len, _bcb1.KEY_BC4)
-            used = _bcb1.KEY_BC4
-        if plain is None:
-            continue
-        stated = _bcb1.header_sum(prefix)
-        if stated is not None and (sum(plain) & 0xFFFFFF) != stated:
-            continue
-        ck16 = struct.unpack_from(">H", s.header, _CKSUM16_OFF)[0]
-        if ck16 and (sum(plain) & 0xFFFF) != ck16:
-            continue
-        s.plaintext = plain
-        s.scheme = "bcb1"
-        s.bcb_prefix = prefix
-        s.bcb1_key = used
+            _accept_bcb1(s, _bcb1.KEY_BC4, "sum")
 
 
 def parse(data: bytes, name: str = "") -> SgoContainer:
@@ -506,6 +534,11 @@ def _image_span(sec: "SgoSection"):
     rather than placed at their own low addresses, which would corrupt the
     image."""
     if sec.scheme == "bcb1":
+        if sec.bcb1_key == _bcb1.KEY_5HP:
+            # ZF 5HP: the single area sits at its literal flash address in a
+            # 512 KiB image (file offset == address, e.g. 0x8000..0x7FFFD);
+            # the boot sector below it is not carried and stays fill.
+            return sec.lo, sec.lo + sec.declared_len
         if sec.lo >= _EDC15_FLASH_BASE and sec.hi < _EDC15_FLASH_BASE + _EDC15_SIZE:
             base = sec.lo - _EDC15_FLASH_BASE
             return base, base + sec.declared_len
@@ -644,13 +677,15 @@ def apply_image(container: SgoContainer, base_addr: int, data: bytes) -> SgoCont
             continue
         blob = _encode_section(s, current)
         header = bytearray(s.header)
-        struct.pack_into(">H", header, _CKSUM16_OFF, sum(current) & 0xFFFF)
+        ck16 = (zlib.crc32(current) & 0xFFFF) if s.bcb1_ck16 == "crc32" \
+            else (sum(current) & 0xFFFF)
+        struct.pack_into(">H", header, _CKSUM16_OFF, ck16)
         struct.pack_into("<I", header, _SLEN_OFF, len(blob))
         new_sections.append(SgoSection(
             index=s.index, off=s.off, addr=s.addr, crypt=s.crypt,
             declared_len=s.declared_len, header=bytes(header), blob=blob,
             scheme=s.scheme, plaintext=current, bcb_prefix=s.bcb_prefix,
-            lo=s.lo, hi=s.hi, bcb1_key=s.bcb1_key))
+            lo=s.lo, hi=s.hi, bcb1_key=s.bcb1_key, bcb1_ck16=s.bcb1_ck16))
     return SgoContainer(prefix=container.prefix, sections=new_sections,
                          trailer=container.trailer, name=container.name)
 
@@ -671,13 +706,15 @@ def replace_section(container: SgoContainer, addr: int, plaintext: bytes) -> Sgo
                 and len(plaintext) == len(s.plaintext)):
             blob = _encode_section(s, plaintext)
             header = bytearray(s.header)
-            struct.pack_into(">H", header, _CKSUM16_OFF, sum(plaintext) & 0xFFFF)
+            ck16 = (zlib.crc32(bytes(plaintext)) & 0xFFFF) if s.bcb1_ck16 == "crc32" \
+                else (sum(plaintext) & 0xFFFF)
+            struct.pack_into(">H", header, _CKSUM16_OFF, ck16)
             struct.pack_into("<I", header, _SLEN_OFF, len(blob))
             new_sections.append(SgoSection(
                 index=s.index, off=s.off, addr=s.addr, crypt=s.crypt,
                 declared_len=s.declared_len, header=bytes(header), blob=blob,
                 scheme=s.scheme, plaintext=bytes(plaintext), bcb_prefix=s.bcb_prefix,
-                lo=s.lo, hi=s.hi, bcb1_key=s.bcb1_key))
+                lo=s.lo, hi=s.hi, bcb1_key=s.bcb1_key, bcb1_ck16=s.bcb1_ck16))
         else:
             new_sections.append(s)
     return SgoContainer(prefix=container.prefix, sections=new_sections,

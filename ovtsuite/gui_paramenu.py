@@ -495,6 +495,9 @@ def _entity_actions(ws, m, e, ro):
         rs = m.addAction("Resize axes...", lambda: _gr.resize_table(ws, e))
         rs.setEnabled(why is None)
         rs.setToolTip(why or "Change how many breakpoints this table has")
+    from . import gui_eoi as _ge
+    if _ge.involved(ws, e):
+        m.addAction("End of injection...", lambda: _ge.open_for(ws, e))
     cp = m.addMenu("Copy")
     if e.name:
         cp.addAction("Symbol", lambda: _copy(e.name))

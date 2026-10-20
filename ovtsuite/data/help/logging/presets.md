@@ -47,12 +47,19 @@ serves:" followed by the names of the missing values (for example "Boost
 |---|---|---|
 | **Boost control (target + actuator pilot)** | engine speed, injected quantity, boost actual and specified, boost actuator duty | Coolant at 70 °C or more. Tiptronic, hold 3rd: three full-throttle pulls from 1300 to 4500 rpm, then the same in 4th. Add 2–3 minutes of steady part throttle at 1800–3000 rpm. |
 | **Full-load fuelling and active limiter** | engine speed, injected quantity, air mass, pedal | Coolant at 70 °C or more. Hold 3rd: full throttle from 1300 rpm to the limiter, twice; repeat in 4th. Let the intercooler cool between runs. |
-| **Injection timing (start + duration)** | engine speed, injected quantity, start of injection, injection duration | The same pulls as the fuelling log, plus a few seconds at steady 2000, 2500 and 3000 rpm part throttle. |
+| **Injection timing (start + duration)** | engine speed, injected quantity, start of injection, injection duration, and **End of injection (calculated)** | The same pulls as the fuelling log, plus a few seconds at steady 2000, 2500 and 3000 rpm part throttle. |
 | **Exhaust temperature (pre-turbine sensor)** | engine speed, injected quantity, pre-turbine temperature | Coolant at 70 °C or more, 4th gear: a full-throttle pull from 1500 rpm to the limiter, then full throttle up a long grade if you have one. |
-| **Warm-up running (coolant below 70 deg C)** | engine speed, injected quantity, coolant, start of injection, duration | Start from cold and log without stopping until coolant passes 75 °C: normal driving, steady part throttle at 1500–2500 rpm and a few firm accelerations in 3rd in each coolant band. |
+| **Warm-up running (coolant below 70 deg C)** | engine speed, injected quantity, coolant, start of injection, duration, and End of injection (calculated) | Start from cold and log without stopping until coolant passes 75 °C: normal driving, steady part throttle at 1500–2500 rpm and a few firm accelerations in 3rd in each coolant band. |
 | **Cold take-off (active limiter, boost control, intake air)** | engine speed, injected quantity, coolant, driver's-wish / protection / smoke-limit torque, boost actual and specified, boost actuator duty, intake air temperature | Log from a cold start (coolant under 40 °C) until it passes 70. In D, several take-offs from a full stop, some at half pedal and some firm, with a few seconds at idle in gear before each; then the same take-offs once warm for comparison. Four blocks (1, 7, 8 and 11 on the LQ). |
 | **Gearbox torque intervention (ECU side)** | gearbox torque reduction, torque increase (MSR), the gearbox-intervention and drag-torque status flags | Coolant at 70 °C or more. A dozen closed-throttle coast-downs through every gear with the foot fully off, then half a dozen kickdowns from steady cruise in 4th and 5th, with a few seconds of steady driving between events. Limited to three blocks. |
 | **Cruise efficiency (before/after comparison)** | engine speed, injected quantity, vehicle speed | Coolant at 70 °C or more, flat road: hold 60, 80, 100 and 120 km/h for at least 30 s each. Use the same route and direction for the before and after logs. |
+
+**End of injection (calculated)** is not read from the ECU. Whenever a preset
+logs both the start of injection and the injection duration, the logger adds
+this column and works it out for every row: duration − start, in degrees
+**after** TDC (negative = before TDC). The cell list shows it as **calc**. It
+is saved in the log like any other column, and uses the same convention as
+Tune from logs and [End of injection](../tools/end-of-injection.md).
 
 ## Transmission presets (ZF6HP — 6HP19)
 

@@ -463,6 +463,7 @@ class TunerSession:
             # every word exchanged: edited in the ECU's byte order, saved back
             # the way it came (see save()).
             from .platforms import edc15 as _e15p
+            from .platforms import zf5hp as _z5p
             if _e15p.byte_swapped(self.binfile.data):
                 self.binfile = BinaryFile.from_bytes(
                     _e15p.swap16(bytes(self.binfile.data)),
@@ -474,6 +475,19 @@ class TunerSession:
                     "EDC15V flash). It is shown in the ECU's own byte order "
                     "and saved back byte-swapped, like the original; Save As "
                     "a native .edc15 container stores the ECU's byte order.")
+            elif _z5p.byte_swapped(self.binfile.data):
+                # A ZF 5HP flash read with the two bytes of every 16-bit word
+                # exchanged, as 16-bit bench/BDM readers save it: edit in the
+                # TCU's own big-endian order, save back the way it came.
+                self.binfile = BinaryFile.from_bytes(
+                    _z5p.swap16(bytes(self.binfile.data)),
+                    os.path.basename(path), endian=">")
+                self._byte_swapped = True
+                self.load_note = (
+                    "This file is stored byte-swapped (the two bytes of every "
+                    "16-bit word exchanged, as 16-bit bench/BDM readers save a "
+                    "ZF 5HP flash). It is shown in the TCU's own byte order and "
+                    "saved back byte-swapped, like the original.")
         self.path = path
         data = bytes(self.binfile.data)
         # Platform, from format-defined markers rather than the file size --

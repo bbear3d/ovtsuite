@@ -255,6 +255,7 @@ saving](editing.md#version-history).
 | **ECU read / write...** | Ctrl+E | [ECU read / write](flashing.md) |
 | **Data logging...** | Ctrl+L | [Data logging](logging.md) |
 | **Tune from logs...** | | [Tune from logs](modules/edc16/logtune.md) (EDC16; the shift torque report on a ZF 6HP) |
+| **End of injection...** | | [End of injection](tools/end-of-injection.md) (EDC15P / EDC16 unit-injector engines) |
 | **Bus sniffer (J2534)...** | | [Bus sniffer](sniffer.md) |
 | **ECU simulator (bench)...** | | [ECU simulator](simulator.md) |
 | **Bosch EDC16 > Block builder...** | | One complete EDC16U31/U34 put together from blocks of different files. See [Block builder](modules/edc16/block-builder.md). |

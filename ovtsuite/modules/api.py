@@ -120,6 +120,11 @@ class ModuleSpec:
     #: map or curve (docs/MAP_RESIZE.md). Optional: without it, tables of
     #: this platform simply can't be resized.
     layout: Optional[str] = None
+    #: ``injection(session) -> [ovtsuite.eoi.InjectionModel]`` -- the SOI and
+    #: injection-duration table sets of a unit-injector ECU, one model per
+    #: dataset, for the End of injection view (docs/EOI.md). Optional:
+    #: without it the view is not offered for this platform.
+    injection: Optional[str] = None
     #: Data files this module owns: globs relative to the app's ``data``
     #: directory. Its code is its package (``<app>/<id>/``). Every data file
     #: belongs to exactly one module or to the base app -- the build checks.

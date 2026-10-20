@@ -72,6 +72,12 @@ KEY_UNKNOWN: Tuple[int, ...] = (2, 3, 4, 5)
 #: The fixed key of the ``KEY.BC4`` area (byte-identical in every file seen).
 KEY_BC4 = bytes.fromhex("24AA5A23842141E155B23F")
 
+#: The ZF 5HP (VW "01V"/"01L") dialect's key: the fixed 6-byte ASCII string
+#: ``GEHEIM`` ("secret"), nothing per-dataset to solve. The record framing and
+#: terminal 24-bit sum are identical to the EDC15 dialect; only the key length
+#: (6 vs 11) differs, which :func:`decode`/:func:`encode` take from the key.
+KEY_5HP = b"GEHEIM"
+
 #: Marker of the codec in an area's cleartext provenance header. BOTH Bosch
 #: BCB Type1 dialects carry it, so it identifies the CODEC FAMILY and must not
 #: be used to tell them apart:
@@ -149,20 +155,23 @@ def set_header_sum(prefix: bytes, value: int) -> bytes:
     return body + line[len(line) - cut:] + sep + rest
 
 
-def _frame(body: bytes, dlen: int, k: Dict[int, int]):
+def _frame(body: bytes, dlen: int, k: Dict[int, int], keylen: int = KEYLEN):
     """Walk the records under the partial key ``k``.
 
     Returns ``(literals, rles, terminal_offset)`` where ``literals`` and
     ``rles`` are lists of ``(offset, length)``. Raises :class:`KeyError` if a
     key byte that is not in ``k`` would be needed, and returns None if the
     framing is impossible (which is how a wrong key is rejected).
+
+    ``keylen`` is the key's repeat period (11 for the EDC15 dialect; the ZF
+    5HP ``GEHEIM`` dialect passes 6). The EDC15 solver keeps the default.
     """
     n, p, tot = len(body), 0, 0
     lits: List[Tuple[int, int]] = []
     rles: List[Tuple[int, int]] = []
 
     def g(j: int) -> int:
-        idx = j % KEYLEN
+        idx = j % keylen
         if idx not in k:
             raise KeyError(idx)
         return body[j] ^ k[idx]
@@ -192,13 +201,16 @@ def _frame(body: bytes, dlen: int, k: Dict[int, int]):
 
 
 def decode(body: bytes, dlen: int, key: bytes) -> Optional[bytes]:
-    """Decode one area's record body with a full 11-byte key.
+    """Decode one area's record body with a full key.
 
-    Returns the plaintext, or None if the framing or the format's own terminal
-    24-bit sum does not check out. Never returns unvalidated bytes.
+    The key's length is its repeat period: 11 bytes for the EDC15 dialect,
+    6 bytes (``b"GEHEIM"``) for the ZF 5HP dialect. Returns the plaintext, or
+    None if the framing or the format's own terminal 24-bit sum does not check
+    out. Never returns unvalidated bytes.
     """
-    k = {i: key[i] for i in range(KEYLEN)}
-    framed = _frame(body, dlen, k)
+    kl = len(key)
+    k = {i: key[i] for i in range(kl)}
+    framed = _frame(body, dlen, k, kl)
     if framed is None:
         return None
     lits, rles, q = framed
@@ -206,13 +218,13 @@ def decode(body: bytes, dlen: int, key: bytes) -> Optional[bytes]:
     for off, kind, ln in sorted([(o, "L", n) for o, n in lits] +
                                 [(o, "R", n) for o, n in rles]):
         if kind == "L":
-            out += bytes(body[off + j] ^ key[(off + j) % KEYLEN]
+            out += bytes(body[off + j] ^ key[(off + j) % kl]
                          for j in range(ln))
         else:
-            out += bytes([body[off] ^ key[off % KEYLEN]]) * ln
+            out += bytes([body[off] ^ key[off % kl]]) * ln
     want = 0
     for d in range(3):
-        want = (want << 8) | (body[q + d] ^ key[(q + d) % KEYLEN])
+        want = (want << 8) | (body[q + d] ^ key[(q + d) % kl])
     if len(out) != dlen or (sum(out) & MASK24) != want:
         return None
     return bytes(out)
@@ -368,4 +380,5 @@ def encode(plaintext: bytes, key: bytes) -> bytes:
     total = sum(plaintext) & MASK24
     recs += struct.pack(">H", 3 << 14)
     recs += bytes([(total >> 16) & 0xFF, (total >> 8) & 0xFF, total & 0xFF])
-    return bytes(b ^ key[p % KEYLEN] for p, b in enumerate(recs))
+    kl = len(key)
+    return bytes(b ^ key[p % kl] for p, b in enumerate(recs))
