@@ -8,7 +8,7 @@
 Both start with the same header -- ``u32 11, "WinOLS File\\0"``, ``u32``
 format version -- and keep their maps as one list of records, written field
 after field with no padding. The record layout was reconstructed from
-projects of format versions 114, 117, 292, 397, 479, 503 and 597 (OLS 4 ... 5.x);
+projects of format versions 114, 117, 250, 292, 397, 479, 503 and 597 (OLS 4 ... 5.x);
 every record of every sample parses in sequence and the list ends exactly
 where the next section starts, so nothing here searches or guesses: a record
 is read field by field, and a list that does not parse to its declared count
@@ -109,6 +109,12 @@ PROFILES = (
     _Profile("479", False, True, True, 117, 32, 14, True, 4, 48, True, 25),
     _Profile("397", True, True, True, 117, 32, 14, True, 0, 36, False, 25),
     _Profile("292", True, True, False, 61, 32, 14, False, 0, -1, False, 15),
+    # Format 250 (OLS 5.0) is a hybrid: records carry NO i32 -1 prefix (like
+    # 117) but use the 292-era field sizes (precx 61), with its own ztail 24
+    # and axpre 6. Reconstructed from a real 163-record project (RS6 5HP24);
+    # all records parse in sequence and the list ends exactly at the folder
+    # section. Format 100 is yet another layout and is not covered here.
+    _Profile("250", True, False, False, 61, 24, 6, False, 0, -1, False, 0),
     _Profile("117", True, False, False, 57, 24, 2, False, 0, -1, False, 0),
 )
 

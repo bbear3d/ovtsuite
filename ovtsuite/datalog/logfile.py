@@ -53,15 +53,25 @@ class Channel:
     width: int = 0
     signed: bool = False
     scale: float = 1.0
+    #: Set only for a channel the logger works out from other channels of the
+    #: same row instead of reading it (see datalog.derived): "eoi" = end of
+    #: injection, duration - start of injection, deg ATDC.
+    derived: str = ""
 
     @property
     def is_memory(self) -> bool:
         return self.addr is not None
 
     @property
+    def is_derived(self) -> bool:
+        return bool(self.derived)
+
+    @property
     def key(self):
         # Memory channels have no group/field, so keying them that way would
         # collide with block cell (0, 0) and with each other.
+        if self.derived:
+            return ("=", self.derived)
         return ("@", self.addr) if self.addr is not None else (self.group, self.field)
 
     @property
@@ -159,6 +169,9 @@ _LEGACY_UNITS = {"mg/h": "mg/stroke"}
 
 # ------------------------------------------------------------ KWHack layout
 def _marker_part(c: Channel) -> str:
+    if c.derived:
+        # =<name>: worked out from the row's other cells, nothing read
+        return "=" + c.derived
     if c.addr is not None:
         # @<addr>:<width><s|u> -- distinguishable from "g.f" by the @, so an
         # older reader does not silently take it for a block cell.
@@ -179,6 +192,9 @@ def parse_marker_line(line: str) -> Optional[List[Channel]]:
         return out
     for part in rest.split(","):
         part = part.strip()
+        if part.startswith("="):
+            out.append(Channel(0, 0, derived=part[1:]))
+            continue
         if part.startswith("@"):
             spec, _, wid = part[1:].partition(":")
             try:

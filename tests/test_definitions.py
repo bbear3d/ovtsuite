@@ -281,6 +281,31 @@ def test_an_ols_5_map_pack_of_format_503_reads_whole():
     assert len(winols.to_definition(wf).tables) == 102
 
 
+def test_an_ols_5_project_of_format_250_reads_whole():
+    """A WinOLS 5.0 project (format 250, the RS6 5HP24 gearbox def): its
+    records carry no i32 -1 prefix (like format 117) but use the 292-era
+    field sizes, with ztail 24 and axpre 6. All 163 records -- the leading
+    whole-image hexdump plus 162 maps/curves -- read in order to the folder
+    section, and the embedded image comes back whole."""
+    p = os.path.join(REF, "Binaries", "ZF5HP24", "Definitions",
+                     "4B0927156FB_RS6_5HP24.ols")
+    if not os.path.exists(p):
+        pytest.skip("4B0927156FB_RS6_5HP24.ols not present")
+    data = open(p, "rb").read()
+    assert winols.format_version(data) == 250
+    wf = winols.parse(data)
+    assert wf.kind == "ols" and not wf.problems
+    assert len(wf.records) == wf.declared == 163
+    assert len(wf.image) == 0x80000
+    assert wf.folders.get(1) == "Hexdump"
+    maps = [r for r in wf.records if r.type in (3, 4, 5)]
+    assert len(maps) == 162
+    first = maps[0]
+    assert (first.type, first.cols, first.rows, first.addr) == (4, 8, 8, 0x63CF4)
+    assert first.x.source in (1, 3) and first.x.addr == 0x63CE4
+    assert len(winols.to_definition(wf).tables) == 162
+
+
 def test_a_little_endian_curve_reads_with_its_axis():
     defn = winols.load(make_ols(597))
     defn.tables = [t for t in defn.tables if t.name == "CUR"]

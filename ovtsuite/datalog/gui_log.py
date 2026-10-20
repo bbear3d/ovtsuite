@@ -33,6 +33,7 @@ from ..flash.transport import KLine, KLineError
 from ..flash.gui_flash import (list_ports, kline_devices, is_j2534, open_j2534,
                                no_device_hint,
                                cable_allows_high)
+from . import derived as _derived
 from . import logfile as _lf
 from .channels import ChannelNamer
 from . import logview as _lv
@@ -301,11 +302,16 @@ class LogWorker(QtCore.QThread):
                         time.sleep(0.7)
                         continue
                     if logging_:
-                        groups = sorted({c.group for c in chans if not c.is_memory})
+                        groups = sorted({c.group for c in chans
+                                         if not c.is_memory and not c.is_derived})
                         res = (sess.read_groups(groups, is_stop=lambda: self._stop)
                                if groups else {})
                         texts, values = [], []
                         for c in chans:
+                            if c.is_derived:     # worked out below
+                                texts.append("N/A")
+                                values.append(None)
+                                continue
                             if c.is_memory:
                                 t, v = self._read_mem(sess, c)
                                 texts.append(t)
@@ -319,6 +325,7 @@ class LogWorker(QtCore.QThread):
                             else:
                                 texts.append("N/A")
                                 values.append(None)
+                        _derived.fill(chans, texts, values)
                         stamp = datetime.now()
                         with self._lock:
                             # Stopped (or restarted) while this row was being
@@ -1211,7 +1218,8 @@ class ConnPane(QtWidgets.QWidget):
         if prev is None or prev[0] != want[0]:
             self._fill_presets()         # the two must never disagree
         self._fill_groups()
-        self._channels = [self._namer.channel(c.group, c.field) for c in self._channels]
+        self._channels = [c if c.is_derived else self._namer.channel(c.group, c.field)
+                          for c in self._channels]
         self._refresh_sel()
         self._fill_browse(self._current_group(), None)
         self._set_default_path()
@@ -1640,6 +1648,10 @@ class ConnPane(QtWidgets.QWidget):
         groups, missing = recipe_groups(self._namer, rec, rec.max_groups, avoid=avoid)
         self._channels = [self._namer.channel(g, f) for g in groups
                           for f in range(self._namer.slots(g))]
+        if {"soi", "dur"} <= set(rec.needs) | set(rec.wants) and \
+                _derived.can_add_eoi(self._channels):
+            # end of injection, worked out from the row's SOI and duration
+            self._channels.append(_derived.eoi_channel())
         self._refresh_sel()
         self._fill_browse(self._current_group(), None)
         text = "Blocks %s. %s" % (", ".join(map(str, groups)) or "-", rec.how)
@@ -1670,7 +1682,8 @@ class ConnPane(QtWidgets.QWidget):
     def _refresh_sel(self):
         self.sel.setRowCount(len(self._channels))
         for r, c in enumerate(self._channels):
-            self.sel.setItem(r, 0, QtWidgets.QTableWidgetItem("G%d/%d" % (c.group, c.field + 1)))
+            self.sel.setItem(r, 0, QtWidgets.QTableWidgetItem(
+                "calc" if c.is_derived else "G%d/%d" % (c.group, c.field + 1)))
             self.sel.setItem(r, 1, QtWidgets.QTableWidgetItem(c.title))
             self.sel.setItem(r, 2, QtWidgets.QTableWidgetItem(""))
         self.sel.resizeColumnsToContents()
@@ -1805,7 +1818,8 @@ class ConnPane(QtWidgets.QWidget):
             _recent.set_last_dir(os.path.dirname(path), "log")
         self._log_path = path
         self._t0 = None
-        self._live = _lf.DataLog(channels=[_lf.Channel(c.group, c.field, c.label, c.unit, c.signal)
+        self._live = _lf.DataLog(channels=[_lf.Channel(c.group, c.field, c.label, c.unit, c.signal,
+                                                       derived=c.derived)
                                            for c in self._channels])
         self.chart.set_data([], [[] for _ in self._channels],
                             [c.title for c in self._channels], [c.unit for c in self._channels])
@@ -2384,7 +2398,8 @@ class DataLogDialog(QtWidgets.QDialog):
         # controller wrote this log, so pick the pane that can name its cells.
         namer = self._namer_for_log(log)
         for c in log.channels:
-            if namer is not None and namer.available and (c.label.startswith("Group ") or not c.label):
+            if namer is not None and namer.available and not c.is_derived and \
+                    (c.label.startswith("Group ") or not c.label):
                 c2 = namer.channel(c.group, c.field)
                 c.label, c.signal = c2.label, c2.signal
                 c.unit = c.unit or c2.unit

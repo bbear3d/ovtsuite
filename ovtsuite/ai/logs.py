@@ -132,7 +132,9 @@ def summary(log, name: str = "") -> dict:
             d["unit"] = c.unit
         if c.signal:
             d["signal"] = c.signal
-        if not c.is_memory:
+        if getattr(c, "is_derived", False):
+            d["derived"] = c.derived
+        elif not c.is_memory:
             d["group"], d["field"] = c.group, c.field + 1
         if not pts:
             d["samples"] = 0

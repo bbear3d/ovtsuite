@@ -6781,6 +6781,10 @@ if HAVE_QT:
                 rs.setToolTip(why or "Change how many breakpoints this "
                                      "table has")
                 menu.setToolTipsVisible(True)
+            from . import gui_eoi as _ge
+            if e is not None and _ge.involved(self, e):
+                menu.addAction("End of injection...",
+                               lambda: _ge.open_for(self, e))
             _gui_ai.extend_menu(self, menu, self.model.entity)
             menu.exec(self.table.viewport().mapToGlobal(pos))
 
@@ -10238,6 +10242,20 @@ if HAVE_QT:
                 return available(p)
             self._act(tools, "Tune from logs...", self._on_ws("open_logtune"),
                       needs_file=True, enabled_when=_logtune_ok)
+
+            def _eoi_open(_c=False):
+                from . import gui_eoi as _ge   # End of injection (eoi.py)
+                if cw() is not None:
+                    _ge.open_for(cw())
+
+            def _eoi_ok():
+                try:
+                    from . import gui_eoi as _ge
+                    return _ge.availability(cw()) is None
+                except Exception:
+                    return False
+            self._act(tools, "End of injection...", _eoi_open,
+                      needs_file=True, enabled_when=_eoi_ok)
             self._act(tools, "Bus sniffer (J2534)...", self.open_sniffer)
             self._act(tools, "ECU simulator (bench)...", self.open_simulator)
             tools.addSeparator()

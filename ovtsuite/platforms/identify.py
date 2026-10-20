@@ -30,6 +30,7 @@ from . import aisin as _aisin
 from . import edc15 as _edc15
 from . import edc16 as _edc16
 from . import vdo as _vdo
+from . import zf5hp as _zf5hp
 from . import zf6hp as _zf6hp
 from . import zf8hp as _zf8hp
 
@@ -108,6 +109,8 @@ def _facts(pid: str, data: bytes) -> Dict[str, str]:
             return {"family": lay + " layout"} if lay else {}
         if pid == "aisin":
             return _aisin.describe(data)
+        if pid == "zf5hp":
+            return _zf5hp.describe(data)
     except Exception:            # identity strings are decoration only
         pass
     return {}
@@ -129,6 +132,7 @@ def identify(data: bytes, container_kind: Optional[str] = None,
         return Identity("hvac", "container")
     for pid, test in (("vdo", _vdo.detect), ("edc15", _edc15.detect),
                       ("zf8hp", _zf8hp.detect), ("zf6hp", _zf6hp.detect),
+                      ("zf5hp", _zf5hp.detect),
                       ("aisin", _aisin.detect), ("edc16", _edc16.detect)):
         if test(data):
             return Identity(pid, "structure", _facts(pid, data))
