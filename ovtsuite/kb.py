@@ -186,8 +186,16 @@ def _merge_supplement(kb: "Kb", family: str) -> None:
         c = KbConstant(*r)
         if c.name not in have:
             kb.constants.append(c); have.add(c.name)
+    # a supplement table named like a KB table REPLACES it: the way to correct
+    # a generated row (e.g. a wrong axis equation from the source XDF) so the
+    # correction survives regeneration
+    at = {t.name: i for i, t in enumerate(kb.tables)}
     for r in sup.get("tables", []):
-        kb.tables.append(KbTable(*r))
+        t = KbTable(*r)
+        if t.name in at:
+            kb.tables[at[t.name]] = t
+        else:
+            kb.tables.append(t)
     for r in sup.get("signatures", []):
         kb.signatures.append(KbSignature(**r))
     for k, v in sup.get("a2l_names", {}).items():

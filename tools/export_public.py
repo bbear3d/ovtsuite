@@ -85,6 +85,8 @@ BASE_TESTS_EXCLUDE = [
     "tests/test_aisin09d.py",
     "tests/test_datalog_memchan.py",       # reads a private probe tool
     "tests/test_export_public.py",
+    "tests/test_edc15_fnw_sets.py",        # private tools/add_soi_set_edc15.py
+    "tests/test_eoi16_corrections.py",     # private tools/add_soicor_edc16.py
 ]
 
 #: Files of the VDO export outside the module's own package and data.

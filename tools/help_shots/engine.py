@@ -281,3 +281,29 @@ def tools_vss(ctx):
 def tools_vss_edc15(ctx):
     w = ctx.main_window(ctx.ref("edc15_bd"))
     return _tool(ctx, w, "open_vss", "vss")
+
+
+def _eoi(ctx, ref, rpm=2000, q=20):
+    """Tools > End of injection on ``ref``, the cell nearest (rpm, q) picked so
+    the breakdown under the grid is filled in."""
+    from ovtsuite import gui_eoi
+    w = ctx.main_window(ctx.ref(ref))
+    ws = w.current
+    if gui_eoi.availability(ws):
+        raise Skip(gui_eoi.availability(ws))
+    dlg = gui_eoi.open_for(ws)           # as Tools > End of injection does
+    if dlg is None:
+        raise Skip("the End of injection window did not open")
+    calc = dlg.calc                     # (a property)
+    t = calc.reference(dlg.coolant.value())
+    near = lambda axis, v: min(range(len(axis)), key=lambda i: abs(axis[i] - v))
+    r, c = t.cell_of(near(t.rpm_axis(), rpm), near(t.q_axis(), q))
+    dlg.grid.setCurrentCell(r, c)
+    ctx.settle(200)
+    return dlg
+
+
+@shot("tools-eoi", BASE, size=(1040, 600),
+      what="End of injection on an EDC16 PD file, one cell's breakdown shown")
+def tools_eoi(ctx):
+    return _eoi(ctx, "edc16_lq")

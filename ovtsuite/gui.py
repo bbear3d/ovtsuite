@@ -936,6 +936,8 @@ if HAVE_QT:
             self._cmp_dec = _entity_decimals(compare) if compare else self._dec
             self._zheads = ((getattr(e, "col_labels", None) or
                              _view6.column_headers(e)) if e else None)
+            # per-column explanations (ZF lock-up thresholds: ovtsuite.lockup)
+            self._ztips = getattr(e, "col_tips", None) if e else None
             self._rheads = self._row_labels(e, self._y)
             self._roff = 1 if (e and self._x) else 0
             # A pedal map already carries its Y axis in the row headers, in
@@ -1222,6 +1224,8 @@ if HAVE_QT:
             return base + self._left
 
         def headerData(self, sec, orient, role=QtCore.Qt.DisplayRole):
+            if role == QtCore.Qt.ToolTipRole and self.entity:
+                return self._header_tip(sec, orient)
             if role != QtCore.Qt.DisplayRole or not self.entity:
                 return None
             across, down = ("Y", "X") if self.transposed else ("X", "Y")
@@ -1244,6 +1248,21 @@ if HAVE_QT:
                     return across               # the comparison's axis band
                 return self._rowhead(rr, self._crheads)
             return self._rowhead(sec - self._top)
+
+        def _header_tip(self, sec, orient):
+            """The Z column's explanation, wherever that column is drawn."""
+            tips = getattr(self, "_ztips", None)
+            if not tips:
+                return None
+            if (orient == QtCore.Qt.Horizontal) != (not self.transposed):
+                return None
+            if orient == QtCore.Qt.Horizontal:
+                col = sec - self._left
+            else:
+                if self.sep_row() is not None and sec >= self.sep_row():
+                    return None
+                col = sec - self._top
+            return tips[col] if 0 <= col < len(tips) else None
 
         def _rowhead(self, row: int, cheads=None) -> str:
             heads = (self._zheads if self.transposed
@@ -8351,6 +8370,16 @@ if HAVE_QT:
             self.open_tool("msblock", lambda: MsBlockDialog(
                 self.primary, self, compare=self.comparison))
 
+        def open_shift_editor(self):
+            """Tools > ZF 6HP > Shift map editor... (gui_gearbox_edit)."""
+            from .gui_gearbox_edit import open_editor
+            return open_editor(self)
+
+        def open_tcc_editor(self):
+            """Tools > ZF 6HP > Lock-up (TCC) editor... (gui_gearbox_edit)."""
+            from .gui_gearbox_edit import open_editor
+            return open_editor(self, "tcc")
+
         def open_gears(self):
             g = GearRatios(self.primary)
             if not g.available:
@@ -10294,6 +10323,37 @@ if HAVE_QT:
                 "Off by default -- a calibration tune never changes them; turn "
                 "it on only when editing program/boot bytes or a descriptor's "
                 "identity.")
+            def _shiftedit_ok(kind="shift", platform="zf6hp"):
+                try:
+                    from .gui_gearbox_edit import available
+                except Exception:
+                    return False
+                p = cw().primary
+                return p is not None and getattr(p, "platform", "") == platform \
+                    and available(p, kind) and not getattr(cw(), "view_only", None)
+            self._act(zf, "Shift map editor...", self._on_ws("open_shift_editor"),
+                      needs_file=True, enabled_when=_shiftedit_ok).setToolTip(
+                "Edit many shift schedules at once: offset, scale or slide a "
+                "shift line across a selection, with a live preview and "
+                "advisory checks; applies as one undoable step.")
+            self._act(zf, "Lock-up (TCC) editor...", self._on_ws("open_tcc_editor"),
+                      needs_file=True, enabled_when=lambda: _shiftedit_ok("tcc")).setToolTip(
+                "Edit the converter lock-up characteristics by gear: RO / OR / RC "
+                "thresholds across every characteristic a gear uses, following "
+                "the upshift if wanted, with a preview; one undoable step.")
+            z8 = self.zf8hp_menu = _mod_menu("zf8hp", "ZF 8HP")
+            self._act(z8, "Shift map editor...", self._on_ws("open_shift_editor"),
+                      needs_file=True, enabled_when=lambda: _shiftedit_ok("shift", "zf8hp")
+                      ).setToolTip(
+                "Edit many 8HP shift programs at once (14 lines, 1>2..8>7): offset, "
+                "scale or slide a line across a selection, with a live preview and "
+                "advisory checks; applies as one undoable step.")
+            self._act(z8, "Lock-up (TCC) editor...", self._on_ws("open_tcc_editor"),
+                      needs_file=True, enabled_when=lambda: _shiftedit_ok("tcc", "zf8hp")
+                      ).setToolTip(
+                "Edit the 8HP converter-clutch (WK) characteristics by the gear "
+                "WT_KWK_ZTAB gives them: RO / OR / RC / COC thresholds, with a "
+                "preview; one undoable step.")
             vdo = self.vdo_menu = _mod_menu("vdo", "VDO Cluster")
             self._act(vdo, "Needle sweep...", self._on_ws("open_sweep"),
                       needs_file=True,

@@ -168,7 +168,7 @@ def installed_identity(m) -> Optional[str]:
 #: its recorded hash is updated -- that is the prompt to decide whether this
 #: wants bumping too. A frozen build has no source to hash, so there this
 #: number (with each module's own version) is ALL that tells builds apart.
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 
 #: The base files that build, shape or restore a session's model -- traced
 #: from ``TunerSession.__init__`` through a module's ``build`` / ``load_kb``

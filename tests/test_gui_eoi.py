@@ -110,3 +110,24 @@ def test_not_offered_without_injection_tables(G):
         assert gui_eoi.availability(w.current) is not None
     finally:
         w.close_discarding()
+
+
+def test_soi_sets_and_conditions(win):
+    from ovtsuite import gui_eoi
+    d = gui_eoi.open_for(win.current)
+    QtWidgets.QApplication.processEvents()
+    keys = [d.soi_box.itemData(i) for i in range(d.soi_box.count())]
+    assert keys == ["base", "dyn", "start"]
+    vis = lambda k: not d.cond[k][1].isHidden()          # noqa: E731
+    assert vis("air") and vis("baro") and not vis("q_start")
+    d.soi_box.setCurrentIndex(keys.index("dyn"))
+    QtWidgets.QApplication.processEvents()
+    assert d.calc.soi_key == "dyn" and not d.when.isHidden()
+    d.soi_box.setCurrentIndex(keys.index("start"))
+    QtWidgets.QApplication.processEvents()
+    assert d.calc.by_coolant
+    assert not d.coolant.isEnabled() and vis("q_start") and not vis("air")
+    assert not d.collapse_act.isEnabled()
+    d.grid.setCurrentCell(4, 5)
+    assert "°C coolant" in d.info.text()
+    d.close()

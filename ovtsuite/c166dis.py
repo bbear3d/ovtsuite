@@ -213,7 +213,7 @@ def decode_one(data, pos, base):
     if fmt == 'RRB':
         return mk(mn, 2, '%s, %s' % (rb(n), rb(m)))
     if fmt == 'MOVBZS':  # Rwn, Rbm
-        return mk(mn, 2, '%s, %s' % (rw(n), rb(m)))
+        return mk(mn, 2, '%s, %s' % (rw(m), rb(n)))   # C0/D0 mn: Rb high nibble
     if fmt == 'RNM8':
         o, _ = m8(m); return mk(mn, 2, '%s, %s' % (rw(n), o))
     if fmt == 'RNM8B':

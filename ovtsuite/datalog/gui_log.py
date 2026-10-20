@@ -1619,8 +1619,16 @@ class ConnPane(QtWidgets.QWidget):
         if item.checkState() == QtCore.Qt.Checked:
             if not any(c.key == (group, f) for c in self._channels):
                 self._channels.append(self._namer.channel(group, f))
+                if _derived.can_add_eoi(self._channels):
+                    # both start and duration ticked: log the end of injection
+                    # too (Remove takes it out again)
+                    self._channels.append(_derived.eoi_channel())
         else:
             self._channels = [c for c in self._channels if c.key != (group, f)]
+            if None in _derived.sources(self._channels):
+                # its start or duration cell went: nothing to work it out from
+                self._channels = [c for c in self._channels
+                                  if c.derived != _derived.EOI]
         self._refresh_sel()
 
     # ---- presets ------------------------------------------------------

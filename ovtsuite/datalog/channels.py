@@ -69,7 +69,8 @@ class ChannelNamer:
             if d is None or sid == 255:
                 return generic
             name = d.name or ("xcwGrp%02d" % sid)
-            return ("%s (G%d/%d)" % (name, group, field + 1), "xcwGrp%02d" % sid, "")
+            sig = getattr(d, "signal", "") or ("xcwGrp%02d" % sid)
+            return ("%s (G%d/%d)" % (name, group, field + 1), sig, "")
         if sid == 255 or self._cat is None:
             return generic
         info = self._cat.info(sid)

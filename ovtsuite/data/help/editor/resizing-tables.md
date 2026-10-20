@@ -102,6 +102,15 @@ and confirm the whole table logs as you edited it.** A table the ECU reaches
 only through a shared routine, or whose address the code builds directly, is
 refused with the reason; resize those in place.
 
+Some EDC15 ECUs (the unit-injector "EDC15P" cars) keep extra tables in a
+**pre-page** just below the main calibration — the smoke limiters live there.
+These can now be moved too: they have their own pointer table, and the moved
+copy goes into free space elsewhere in the same dataset with the original left
+as a fallback. There is usually little erased room in these ECUs, so a large
+table is often refused for lack of space. **Moving a pre-page table is not yet
+proven on a vehicle — flash it only with BDM recovery ready, and confirm the
+whole table logs as you edited it.**
+
 ## What can't be resized (yet)
 
 - Tables whose axes are stored apart from their values (group maps).

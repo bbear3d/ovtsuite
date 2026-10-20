@@ -26,7 +26,24 @@ The ECU stores no end of injection. It works one out from two sets of tables:
   different speed depending on where the delivery starts.
 
 A selector curve gives a table number with a fraction: 3.84 means 16 % of
-table 3 and 84 % of table 4. The end of injection is then
+table 3 and 84 % of table 4. The fraction counts: the selector is stored with
+a fraction byte, the curve is interpolated between its breakpoints, and the
+ECU's code blends the two tables by that fraction, not half and half. (Checked
+in the code of an EDC15P, 038906019GQ, and an EDC16, 03G906016KN; every table
+set on both is read this way.) At full warm-up most files use the last SOI
+table alone; the fraction matters most for the duration, whose selector input,
+the SOI itself, nearly always falls between two breakpoints.
+
+On top of that SOI the ECU adds a correction for **altitude** (atmospheric
+pressure) and one for **intake-air temperature**, each its own set of tables,
+and then caps the result with the **SOI limiter** (EDC15 `fnwSWMX_KF`, EDC16
+`InjCrv_phiMIMax_MAP`, by engine speed and coolant).
+
+On EDC16 the base SOI tables are not the only set: while the smoke limit is
+the torque limit that applies, usually at full throttle, most PD software uses
+the **dynamic SOI** set (`InjCrv_phiDyn0..4_GMAP`) *instead*, often several
+degrees earlier. Some software (03G906016KN, 03G906021NK) also switches to
+per-gear SOI maps once warm. The end of injection is then
 
 **EOI = duration − SOI**, in degrees **after** TDC. A negative EOI is before
 TDC. Tune from logs uses the same convention.
@@ -35,7 +52,21 @@ The window does exactly this with the tables in your file.
 
 ## The window
 
+![End of injection on an EDC16 PD file, with the breakdown of the cell at 2000 rpm and 20 mg](../images/tools-eoi.png)
+
 - **Coolant**: which SOI tables the ECU uses (warm by default).
+- **SOI set**: **Base (normal running)**, **Start (cranking)**, and on
+  EDC16 **Dynamic (smoke-limited)** for full-load running or a **Gear** set
+  where the software has them. (EDC15 has a dynamic set too, but every
+  reference file switches it off; it is offered when a file switches it on.) The line under it says when the
+  ECU uses that set. Editing in a set changes that set's tables only.
+  The start tables run over engine speed and *coolant*, so with **Start** the
+  grid's rows are coolant temperatures, the **Coolant** box is greyed out, and
+  the duration is read at the **Start quantity** you enter (the ECU asks for
+  a start torque, not a quantity, so take it from a log of a start).
+- **Intake air** and **Air pressure**: the conditions for the air-temperature
+  and altitude corrections (20 °C and 1013 hPa to start with; on most stock
+  files both corrections are zero there, on some the air correction is not).
 - **Dataset** (EDC15): the dataset to show.
 - **Show**: **EOI**, **SOI** (degrees before TDC), **Duration**, or
   **Table no.** (which duration tables are read, with the fraction).
@@ -78,9 +109,14 @@ coolant temperatures before you confirm.
 
 ## What is not included
 
-The numbers are for steady running at sea level, with fuel at its reference
-temperature. The ECU also corrects the SOI for intake-air temperature,
-altitude and transients, and the quantity for fuel temperature. To see the
+The numbers are for steady running with fuel at its reference temperature.
+Not included: the term that fades out after the start,
+exhaust-treatment regeneration (EDC16) and the fuel-temperature correction to
+the quantity. EDC15 can also add a timing trim stored in the ECU's EEPROM
+(adaptation channel 4); the file limits it with `fnwFNmiAG` / `fnwFNmxAG`,
+which are 0 on stock files, so it is 0 there. The notes say when a file allows
+one. A correction set the file's definition does not
+place is named in the notes at the bottom of the window. To see the
 real values while driving, log them: the **Injection timing** preset in
 [Data logging](../logging.md) records start and duration, and adds a calculated
 end-of-injection column.

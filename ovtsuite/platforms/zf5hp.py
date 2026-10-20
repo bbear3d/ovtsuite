@@ -26,8 +26,14 @@ from typing import Dict
 
 _CODE_HDR = 0x8000       # code block header
 _DATA_HDR = 0x60000      # data/calibration block header
-_IDENT = 0x70380         # ident block (part number + gearbox + engine)
-_MARK = b"BT010405"
+_IDENT = 0x70360         # ident block (part number + gearbox + engine);
+                         # start early -- the block shifts a little between
+                         # BT format versions (PN at 0x7038E on BT010405,
+                         # 0x70378 on BT010504)
+_MARK = b"BT"            # ZF Bosch block-header prefix; the 6 chars after
+                         # are a BT format version (010405, 010504, ...),
+                         # so it is NOT pinned -- see _CODE_TAG below
+_CODE_TAG = b"-CODE-"    # structural tag at the code-block header +0x0E
 
 _PN = re.compile(rb"[0-9A-Z]{2}0927156[0-9A-Z]{0,3}")
 _GEARBOX = re.compile(rb"AG[45] 01[VL]")
@@ -37,12 +43,17 @@ _FAMILY = {b"01V": "5HP19", b"01L": "5HP24"}
 
 
 def _header_at(data: bytes, off: int) -> bool:
-    return len(data) >= off + 0x14 and data[off:off + 8] == _MARK
+    return len(data) >= off + 0x14 and data[off:off + 2] == _MARK
 
 
 def detect(data: bytes) -> bool:
+    # Two ``BT``-prefixed block headers (code at 0x8000, data at 0x60000), with
+    # the code block carrying the fixed ``-CODE-`` tag at +0x0E. The 6 version
+    # chars after ``BT`` vary by image (BT010405, BT010504, ...), so detection
+    # keys on the structural tag, not the version -- verified across 5HP19
+    # software levels E46722/E35722 (BT010405) and G35208 (BT010504).
     return (_header_at(data, _CODE_HDR)
-            and b"-CODE-" in data[_CODE_HDR:_CODE_HDR + 0x14]
+            and data[_CODE_HDR + 0x0E:_CODE_HDR + 0x14] == _CODE_TAG
             and _header_at(data, _DATA_HDR))
 
 
@@ -68,7 +79,7 @@ def byte_swapped(data: bytes) -> bool:
 def describe(data: bytes) -> Dict[str, str]:
     """Family / part number / gearbox facts for the identity line."""
     out: Dict[str, str] = {}
-    seg = data[_IDENT:_IDENT + 0x40]
+    seg = data[_IDENT:_IDENT + 0x60]
     gb = _GEARBOX.search(seg)
     if gb:
         out["family"] = _FAMILY.get(gb.group(0)[-3:], "5HP")

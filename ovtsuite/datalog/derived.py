@@ -13,7 +13,14 @@ read, written to the file like any other column, and marked ``=<name>`` in the
 ``duration - start of injection``, from the row's SOI (deg BTDC) and
 injection-duration (crank degrees) cells. The same convention as Tune from
 logs and Tools > End of injection. Added to the Timing preset when both cells
-are logged.
+are logged (EDC16), and offered when both are ticked by hand.
+
+EDC16 cells are recognised by their A2L signal; EDC15P (PD) cells by the
+setpoints the measuring blocks carry, start of delivery ``zmmFBsoll`` and
+delivery duration ``zmmFDsoll`` (named from their KW1281 message numbers, see
+``edc15.msblock15.MESSAGE_SIGNALS``). A crank angle sent with KW1281 formula 4
+or 27 arrives as a size plus "BTDC"/"ATDC" in its text; the text decides the
+sign, so an injection starting after TDC counts as a negative advance.
 """
 from __future__ import annotations
 
@@ -31,14 +38,33 @@ def eoi_channel() -> Channel:
                    derived=EOI)
 
 
+#: EDC15P measuring-block setpoints, which the engine roles (EDC16 A2L
+#: signals) do not list.
+_EDC15_ROLES = {"zmmFBsoll": "soi", "zmmFDsoll": "dur"}
+
+
 def _role(c: Channel) -> Optional[str]:
     from ..logtune.roles import role_of_signal, _label_symbol
     for sig in (getattr(c, "signal", "") or "",
                 _label_symbol(getattr(c, "label", "") or "")):
-        r = role_of_signal(sig) if sig else None
+        r = (role_of_signal(sig) or _EDC15_ROLES.get(sig)) if sig else None
         if r:
             return r
     return None
+
+
+def advance(value, text: str = "") -> Optional[float]:
+    """Degrees before TDC from a logged angle cell: the text's "ATDC" makes it
+    negative, "BTDC" positive; a plain number is taken as it stands."""
+    if value is None:
+        return None
+    v = float(value)
+    t = (text or "").upper()
+    if "ATDC" in t:
+        return -abs(v)
+    if "BTDC" in t:
+        return abs(v)
+    return v
 
 
 def sources(channels: Sequence[Channel]) -> Tuple[Optional[int], Optional[int]]:
@@ -73,7 +99,7 @@ def fill(channels: Sequence[Channel], texts: List[str],
             continue
         v = None
         if soi is not None and dur is not None:
-            a, b = values[soi], values[dur]
+            a, b = advance(values[soi], texts[soi]), values[dur]
             if a is not None and b is not None:
                 v = float(b) - float(a)
         values[i] = v
