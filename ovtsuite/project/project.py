@@ -741,6 +741,36 @@ class Project:
             self._blobs[p] = data
         self._touch()
 
+    # ================================================== layout modifiers
+    @staticmethod
+    def _layout_path(sid):
+        return "sets/%s/user/layout.json" % sid
+
+    def layout_mods(self, sid: str) -> list:
+        """The tables resized in set ``sid`` (:mod:`ovtsuite.resize`
+        modifiers); ``[]`` when none."""
+        from .. import resize as _rz
+        s = self.set(sid)
+        return _rz.loads(self._blobs.get(self._layout_path(s.id)))
+
+    def set_layout_mods(self, sid: str, mods) -> None:
+        """Keep ``mods`` as set ``sid``'s layout modifiers, MERGED with what
+        is already kept: a modifier lists every size its table has had, so
+        any version of the set opens at the size its bytes hold, and none is
+        ever dropped by saving a version that predates it."""
+        from .. import resize as _rz
+        s = self.set(sid)
+        p = self._layout_path(s.id)
+        merged = _rz.merge(_rz.loads(self._blobs.get(p)), mods or [])
+        data = _rz.dumps(merged) if merged else None
+        if self._blobs.get(p) == data:
+            return
+        if data is None:
+            self._blobs.pop(p, None)
+        else:
+            self._blobs[p] = data
+        self._touch()
+
     # ================================================== definition cache
     def set_cache(self, sid: str, branch: str, data: Optional[bytes]) -> None:
         """Advisory definition snapshot for a branch (``ovtsuite.defn``)."""

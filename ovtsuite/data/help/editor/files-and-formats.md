@@ -116,8 +116,12 @@ file](definitions.md).
 German texts in a definition -- descriptions, axis names, categories -- are
 shown in English: a description of the Bosch EDC15 DAMOS the app ships
 translations for gets its checked English, anything else is translated word
-by word (compounds are split into their parts), and units are always shown
-in English. A category such as *ARMD: 10.40 Momentenbasierte Antiruckelfunktion*
+by word (compounds are split into their parts; *ue*/*ae*/*oe* spellings and
+inflected forms are recognised), and units are always shown in English. A
+German word left in an otherwise English text -- *Schwere counter limit*,
+*CARB specific Fehlercode* -- is translated as well, while English words that
+happen to be German too (*also*, *not*, *fast*) and code words such as
+*MOT7* or *Dfp_BrkCD* are left as they are. A category such as *ARMD: 10.40 Momentenbasierte Antiruckelfunktion*
 reads *Torque-based anti-jerk function (ARMD 10.40)*.
 
 Saving is safe against interruptions: the new file is written next to the

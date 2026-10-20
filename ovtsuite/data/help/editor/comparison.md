@@ -81,7 +81,7 @@ above the grid say which case it is:
 |---|---|
 | `comparison: direct cell diff` | Same size, same axes: cell compared with cell. |
 | `comparison: same size, AXES DIFFER - cells are at different operating points` (banner: `· axes differ`) | Same size but different breakpoints. Each value is shown in the cell it is stored in, and the comparison's own axis band shows its own breakpoints. Two cells in the same place are **not** the same operating point. |
-| `comparison: comparison resampled from 8x16 onto this map's axes` (banner: `· resampled`) | Different sizes: the comparison's values are interpolated onto the primary's breakpoints, so they can be read cell for cell. They are calculated, not stored, values. |
+| `comparison: the comparison is 8x16, this table 8x6 -- resampled onto this table's axes` (banner: `· resampled`) | Different sizes -- also a table [resized](resizing-tables.md) in this project shown against a version from before the resize: the comparison's values are interpolated onto the primary's breakpoints, so they can be read cell for cell. They are calculated, not stored, values. |
 | `comparison matched column by column from ...` | Gearbox tables whose columns are labels rather than measurements: columns are matched by label; a column the comparison does not have is left blank. |
 
 When the comparison has no copy of the table at all, the title line ends

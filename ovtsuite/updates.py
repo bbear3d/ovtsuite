@@ -351,6 +351,71 @@ def module_updates(rel: Release, installed: List[InstalledModule]) -> List[Modul
     return out
 
 
+# ------------------------------------------------------- modules on GitHub
+#: A module package among a release's assets: ``<id>-<ver>[-checksum].ovtmod``.
+_PACKAGE_RX = re.compile(r"^([a-z0-9_]+)-(\d+(?:\.\d+)*)(-checksum)?\.ovtmod$")
+
+
+@dataclass
+class AvailableModule:
+    """A module package published on GitHub: the newest release carrying
+    each version of it."""
+    id: str
+    name: str
+    version: str
+    variant: str                        # "full" or "checksum"
+    package: Asset
+    release: Release
+    installed: str = ""                 # the installed version, "" = none
+
+    @property
+    def newer(self) -> bool:
+        """Not installed, or newer than the installed copy."""
+        return not self.installed or is_newer(self.version, self.installed)
+
+
+def available_modules(releases: List[Release], installed: List[InstalledModule],
+                      known=None) -> Dict[Tuple[str, str], List[AvailableModule]]:
+    """Every module package in ``releases`` (published ones only), as
+    ``{(id, variant): [AvailableModule, newest first]}`` -- one entry per
+    version, from the newest release that carries it. ``known`` limits it to
+    the ids the app knows (default: :data:`ovtsuite.platforms.MODULES`).
+    Several versions are kept so an installer that refuses the newest (built
+    for a later app) can fall back to an older one."""
+    if known is None:
+        from . import platforms
+        known = platforms.MODULES
+    have = {m.id: m.version for m in installed}
+    seen: Dict[Tuple[str, str], Dict[str, AvailableModule]] = {}
+    for rel in releases:
+        if not rel.usable:
+            continue
+        for a in rel.assets:
+            mm = _PACKAGE_RX.match(a.name)
+            if not mm or mm.group(1) not in known:
+                continue
+            mid, ver = mm.group(1), mm.group(2)
+            key = (mid, "checksum" if mm.group(3) else "full")
+            slot = seen.setdefault(key, {})
+            old = slot.get(ver)
+            if old is None or compare_versions(rel.version, old.release.version) > 0:
+                info = known[mid]
+                slot[ver] = AvailableModule(
+                    mid, getattr(info, "name", mid), ver, key[1], a, rel,
+                    have.get(mid, ""))
+    return {k: sorted(v.values(), key=lambda m: _pad(parse_version(m.version)[0], 8),
+                      reverse=True)
+            for k, v in seen.items()}
+
+
+def module_choices(avail: Dict[Tuple[str, str], List[AvailableModule]], mid: str,
+                   variant: str = "full") -> List[AvailableModule]:
+    """The packages to try for module ``mid``, newest first: the variant
+    asked for, else the other one."""
+    other = "checksum" if variant == "full" else "full"
+    return avail.get((mid, variant)) or avail.get((mid, other)) or []
+
+
 @dataclass
 class Offer:
     release: Release

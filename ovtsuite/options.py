@@ -133,7 +133,8 @@ PAGES: List[str] = list(dict.fromkeys(o.page for o in OPTIONS))
 #: the toolbar's buttons until the user changes them
 DEFAULT_TOOLBAR = [
     "file/new-project", "file/open-project", "file/open-recent", "file/save",
-    "|", "edit/undo", "edit/redo", "|", "edit/find-panel",
+    "|", "edit/undo", "edit/redo", "edit/cells/revert-to-last-saved-values",
+    "|", "edit/find-panel",
     "edit/show-differences",
     "edit/version-history", "|", "tools/ecu-read-write", "tools/data-logging",
     "|", "view/project-panel", "tools/ai/assistant", "tools/options",

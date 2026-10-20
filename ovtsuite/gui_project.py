@@ -433,6 +433,14 @@ def _apply_definition(proj, sid, session) -> str:
     module's -- ovtsuite.xdf_session), then the user's own parameters
     (ovtsuite.userparams). Returns a note for the status bar ("" if none)."""
     note = _apply_packaged(proj, sid, session)
+    # tables resized in this set: their size follows the bytes, whatever the
+    # module's (re)built definition says (ovtsuite.resize)
+    from . import resize as _rz
+    try:
+        lay = _rz.apply_from_project(proj, sid, session)
+    except Exception as ex:
+        lay = "The resized tables could not be read: %s" % ex
+    note = "; ".join(x.rstrip(".") for x in (note, lay) if x)
     from . import userparams as _up
     try:
         more = _up.apply_from_project(proj, sid, session)
@@ -648,6 +656,10 @@ def _commit(ws, label="") -> bool:
             auto = "patch"
     proj.commit(ref.sid, ref.bid, images, label=label or named or auto,
                 kind=kind, log=lines)
+    # tables resized in the tab (ovtsuite.resize) go with the version
+    from . import resize as _rz
+    if _rz.mods(ws.primary):
+        proj.set_layout_mods(ref.sid, _rz.mods(ws.primary))
     # no snapshot from this save (a structural edit, a value it can't carry):
     # drop the branch's old one rather than keep a stale definition about
     proj.set_cache(ref.sid, ref.bid, defn or None)
@@ -778,10 +790,11 @@ def save_selection(win, doc, tabs) -> bool:
     return save(anchor, only=list(tabs))
 
 
-def save(ws, tab_only=False, path=None, only=None) -> bool:
+def save(ws, tab_only=False, path=None, only=None, label="") -> bool:
     """Save the tab's project: every edited tab of it, or with ``tab_only``
     just this one, or the tabs in ``only`` (the others stay unsaved). True
-    once it is on disk."""
+    once it is on disk. ``label`` names the version this tab's edits become
+    (a resize, say); the other tabs' versions are named as usual."""
     win = ws.win
     doc = ws.project_ref.doc
     if path is None and doc.path is None:
@@ -811,7 +824,7 @@ def save(ws, tab_only=False, path=None, only=None) -> bool:
                 why = t.primary.save_refusal(t.project_ref.workfile)
                 if why:
                     raise ValueError(why)
-                _commit(t)
+                _commit(t, label=label if t is ws else "")
         for t in doc.tabs(win):
             keep_definition(t)          # an unedited tab's, too
         if path is not None and os.path.abspath(path) != doc.path:
@@ -908,6 +921,10 @@ def save_as_project(ws) -> bool:
         from . import userparams as _up
         if _up.specs(ws.primary):
             proj.set_user_params(s.id, _up.specs(ws.primary))
+        # ... and so do the tables resized in it
+        from . import resize as _rz
+        if _rz.mods(ws.primary):
+            proj.set_layout_mods(s.id, _rz.mods(ws.primary))
         job = proj.prepare_save(path)
         _sv.run(win, job.run)               # the window waits, painting
         job.finish()

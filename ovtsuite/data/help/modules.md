@@ -45,19 +45,40 @@ installed says which module to install.
 | **Version** | The installed module's version. |
 | **Installed** | Where it is installed: **for you** (your own modules folder), **for all users** (the app's own `modules` folder, where the installers put modules, when the app is installed for all users), **for you (with the app)** (the app's own `modules` folder when the app itself is installed for you only, for example under `%LOCALAPPDATA%\Programs`), or **built in** (part of the program itself, as when running from source). |
 | **Signed by** | The key that signed the module, **unsigned** for an unsigned development build, or **-** for a built-in one. |
+| **On GitHub** | The newest version published in the app's GitHub releases, marked **(newer)** when it is newer than the installed one; **not published** when no release carries the module. It is looked up when the window opens if the app may check for updates by itself (**Tools > Options...**); otherwise click **Check GitHub**. |
 
 | Control | Does |
 |---|---|
 | **Install from file...** | Installs a module package (`.ovtmod`) for you. |
+| **Install from GitHub** | Downloads the selected module's newest published version and installs it for you, as **Install from file...** does. Available when GitHub has a version you do not have. |
+| **Check GitHub** | Looks up the modules published on GitHub again. |
 | **Remove** | Removes the selected module. Available for a module installed from a package, not for a built-in one. |
 | **Allow unsigned modules (development)** | Accepts modules that are not signed by a trusted key. For development builds only; leave it off. |
 | **Close** | Closes the window. |
 
 ## Installing a module
 
-There are four ways, all ending in the same place:
+There are five ways, all ending in the same place:
 
-**From inside the app** — no administrator rights needed:
+**From GitHub, inside the app** — no administrator rights needed:
+
+1. **Tools > Modules...**, select the module and click **Install from
+   GitHub**; or open a file whose module you do not have, and click
+   **Download and install** in the *Limited support* box that says so (when
+   the app may not check for updates by itself, the button reads **Get the
+   module from GitHub...** and looks it up when clicked).
+2. The module's `.ovtmod` package is downloaded from the newest release that
+   has it and checked against the release's signed checksum list. If the
+   newest version is built for a later version of the app, the next older
+   one is used.
+3. Then it is installed exactly as from a file (below): the same question,
+   the licence agreement of a closed-source module, your own modules folder.
+   A file you opened is opened again with the module.
+
+The same package works on Windows, Linux and macOS, so this needs no
+installer program.
+
+**From a file, inside the app** — no administrator rights needed:
 
 1. **Tools > Modules...**, then **Install from file...**, and pick the
    `.ovtmod` file.

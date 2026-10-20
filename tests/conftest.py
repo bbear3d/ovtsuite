@@ -29,6 +29,9 @@ os.environ.setdefault("OVT_NO_READ_PROMPT", "1")
 os.environ.setdefault("OVT_NO_PLACE_PROMPT", "1")
 # Definition placements are not remembered on disk between test runs.
 os.environ.setdefault("OVT_PLACEMENT_CACHE", "")
+# Nothing asks GitHub by itself (the update check, the published modules):
+# a test that wants it turns it back on and fakes the answers.
+os.environ.setdefault("OVTSUITE_NO_UPDATE_CHECK", "1")
 
 # The GUI tests run on Qt's offscreen platform, which ships no fonts: every
 # character is drawn as a wide placeholder box, so text measured ~twice its

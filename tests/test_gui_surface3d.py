@@ -11,6 +11,7 @@ selected points as one undo step, and an undo made anywhere redraws it.
 
 Offscreen, on a synthetic map (no reference binaries needed).
 """
+import math
 import os
 import sys
 
@@ -229,17 +230,55 @@ def test_picking_a_point_selects_its_cell_in_the_table(ws, app):
     assert panel.view.editor.current() == (0, 0)
 
 
-def test_arrows_move_and_extend(ws, app):
+def _screen_dir(v, step):
+    """Where a (row, col) step points on the screen (x right, y down), on
+    the surface's base plane."""
+    x1, _d, z2 = v._rot(step[1], step[0], 0.0)
+    return x1, -z2
+
+
+def test_arrows_follow_the_screen_however_it_is_turned(ws, app):
     panel = _open(ws, app)
     v = panel.view
-    panel.view.editor.select_one(1, 1)
-    QtTest.QTest.keyClick(v, QtCore.Qt.Key_Right)
-    assert _cur(ws) == (1, 2)
-    QtTest.QTest.keyClick(v, QtCore.Qt.Key_Down, QtCore.Qt.ShiftModifier)
-    assert _z_selection(ws) == {(1, 2), (2, 2)}
-    yaw = v.yaw
-    QtTest.QTest.keyClick(v, QtCore.Qt.Key_Left, QtCore.Qt.ControlModifier)
-    assert v.yaw != yaw and _cur(ws) == (2, 2), "Ctrl+arrow turns the view"
+    seen = {}
+    for turn in (0.0, math.pi / 2, math.pi):
+        v.reset_view()
+        v.orbit(turn, 0.0)
+        for key, (wx, wy) in ((QtCore.Qt.Key_Up, (0, -1)),
+                              (QtCore.Qt.Key_Down, (0, 1)),
+                              (QtCore.Qt.Key_Left, (-1, 0)),
+                              (QtCore.Qt.Key_Right, (1, 0))):
+            panel.view.editor.select_one(2, 2)
+            QtTest.QTest.keyClick(v, key)
+            r, c = _cur(ws)
+            step = (r - 2, c - 2)
+            assert abs(step[0]) + abs(step[1]) == 1
+            sx, sy = _screen_dir(v, step)
+            assert sx * wx + sy * wy > 0, "the arrow's way on the screen"
+            seen[(turn, key)] = step
+    # turned half round, the same key walks the grid the other way
+    up0, up180 = seen[(0.0, QtCore.Qt.Key_Up)], seen[(math.pi, QtCore.Qt.Key_Up)]
+    assert up180 == (-up0[0], -up0[1])
+
+
+def test_shift_extends_ctrl_jumps_and_brackets_turn(ws, app):
+    panel = _open(ws, app)
+    v = panel.view
+    e = ws.model.entity
+    panel.view.editor.select_one(2, 2)
+    QtTest.QTest.keyClick(v, QtCore.Qt.Key_Right, QtCore.Qt.ShiftModifier)
+    assert len(_z_selection(ws)) == 2
+    yaw, pitch = v.yaw, v.pitch
+    panel.view.editor.select_one(2, 2)
+    QtTest.QTest.keyClick(v, QtCore.Qt.Key_Right, QtCore.Qt.ControlModifier)
+    assert (v.yaw, v.pitch) == (yaw, pitch), "Ctrl+arrow no longer turns"
+    r, c = _cur(ws)
+    assert (r, c) != (2, 2) and (r in (0, e.rows - 1) or c in (0, e.cols - 1))
+    assert len(_z_selection(ws)) == 1, "the landing cell alone"
+    QtTest.QTest.keyClick(v, QtCore.Qt.Key_BracketRight)
+    assert v.yaw == pytest.approx(yaw + 0.1)
+    QtTest.QTest.keyClick(v, QtCore.Qt.Key_PageUp)
+    assert v.pitch == pytest.approx(pitch + 0.08)
     QtTest.QTest.keyClick(v, QtCore.Qt.Key_Home)
     assert v.yaw == pytest.approx(-0.7)
 
@@ -254,7 +293,7 @@ def test_the_cell_keys_edit_from_the_surface(ws, app):
     panel.view.setFocus()
     act = next(a for a in panel.cell_actions if a.text() == "Step up")
     assert act.shortcut().toString() == "Alt+Up"
-    assert act in panel.view.actions(), "bound to the surface too"
+    assert act in panel.actions(), "bound to the surface panel too"
     act.trigger()
     assert e.cell(1, 1) == pytest.approx(before + step)
     app.processEvents()
@@ -325,10 +364,18 @@ def test_follows_an_edit_and_an_undo_made_elsewhere(ws, app):
     app.processEvents()
     assert panel.view.vals[0][4] == pytest.approx(old + 50)
     assert panel.view.vmax >= old + 50, "ranges recomputed"
+    top = panel.view.vmax
     ws.primary.undo()
     ws.poll()                                       # the window's timer
     app.processEvents()
     assert panel.view.vals[0][4] == pytest.approx(old)
+    # the scale stays as wide while the same map is shown: an edited point
+    # moves on it, the scale does not move with it
+    assert panel.view.vmax == pytest.approx(top)
+    QtTest.QTest.keyClick(panel.view, QtCore.Qt.Key_Home)   # Reset view
+    app.processEvents()
+    assert panel.view.vmax == pytest.approx(
+        max(v for row in panel.view.vals for v in row))
 
 
 def test_a_curve_is_not_drawn(ws, app):

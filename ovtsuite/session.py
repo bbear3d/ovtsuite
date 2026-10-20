@@ -769,11 +769,26 @@ class TunerSession:
 
     def undo(self) -> Optional[str]:
         cmd = self.undo_stack.undo(self.binfile)
+        self.follow_layout()
         return cmd.label if cmd is not None else None
 
     def redo(self) -> Optional[str]:
         cmd = self.undo_stack.redo(self.binfile)
+        self.follow_layout()
         return cmd.label if cmd is not None else None
+
+    def follow_layout(self) -> int:
+        """Re-shape every RESIZED table (ovtsuite.resize) to the size its
+        record in the image now holds -- after bytes came back from undo,
+        redo or the version history. Nothing to do (and nothing read) on a
+        session without resized tables."""
+        if not getattr(self, "_layout_mods", None):
+            return 0
+        try:
+            from . import resize as _resize
+            return _resize.follow_headers(self)
+        except Exception:
+            return 0
 
     def undo_steps(self, n: int) -> List[str]:
         """Undo the last ``n`` commands; the labels of those undone."""
@@ -1605,6 +1620,9 @@ class TunerSession:
         new.defn_state = "shared"
         new.original = bytes(data)
         new._last_saved_snapshot = new.original
+        # a version from before (or after) a resize: its resized tables take
+        # the size ITS records hold, not this session's
+        new.follow_layout()
         return new
 
     def write_change_log(self, path: str) -> None:

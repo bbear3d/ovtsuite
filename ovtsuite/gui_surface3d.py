@@ -35,11 +35,14 @@ drag elsewhere           rotate;  wheel: zoom
 Keys (the surface has the focus):
 
 =======================  ==================================================
-arrows                   move the current point (as in the table)
+arrows                   move the current point the way the arrow points
+                         on the screen, however the surface is turned
 Shift+arrows             extend the selection
-Ctrl+arrows              rotate / tilt
+Ctrl(+Shift)+arrows      to the edge of the data, as in the table
+[ / ]                    rotate left / right
+PgUp / PgDn              tilt up / down
 + / -                    zoom in / out
-Home                     reset the view
+Home                     reset the view (and the height scale)
 Alt+Up/Down ... Ctrl+R   Edit > Cells, exactly as in the table
 Ctrl+Z / Ctrl+Y          undo / redo (the window's own)
 =======================  ==================================================
@@ -59,6 +62,9 @@ DRAG_PX = 3
 
 _ARROWS = {QtCore.Qt.Key_Up: (-1, 0), QtCore.Qt.Key_Down: (1, 0),
            QtCore.Qt.Key_Left: (0, -1), QtCore.Qt.Key_Right: (0, 1)}
+#: Screen direction of each arrow key (x right, y down).
+_SCREEN = {QtCore.Qt.Key_Up: (0.0, -1.0), QtCore.Qt.Key_Down: (0.0, 1.0),
+           QtCore.Qt.Key_Left: (-1.0, 0.0), QtCore.Qt.Key_Right: (1.0, 0.0)}
 
 
 def _gui():
@@ -104,6 +110,7 @@ class Surface3DView(QtWidgets.QWidget):
         self._drag = None                   # Ctrl+drag state
         self._pts: List[List[QtCore.QPointF]] = []
         self._scale = 1.0
+        self.on_reset = None                # called by reset_view (the panel)
         self.set_values(vals, zrange)
         self.setMinimumSize(420, 320)
         self.setMouseTracking(True)
@@ -132,6 +139,8 @@ class Surface3DView(QtWidgets.QWidget):
     def reset_view(self):
         self.yaw, self.pitch, self.zoom = -0.7, 0.62, 1.0
         self._moved()
+        if self.on_reset is not None:
+            self.on_reset()
 
     def follow(self, other):
         """Adopt another view's orbit and zoom (no signal, no loop)."""
@@ -187,6 +196,22 @@ class Surface3DView(QtWidgets.QWidget):
             return self._pts[i][j]
         except IndexError:
             return None
+
+    def grid_step(self, key) -> Tuple[int, int]:
+        """The (row, col) step that moves the way arrow ``key`` points on
+        the screen as the surface is turned now: of the four neighbours,
+        the one whose drawn direction is closest to the arrow's."""
+        want = _SCREEN[key]
+        ac, ar = self._rot(1.0, 0.0, 0.0), self._rot(0.0, 1.0, 0.0)
+        cands = []
+        for (di, dj), (vx, vz) in (((0, 1), (ac[0], ac[2])),
+                                   ((0, -1), (-ac[0], -ac[2])),
+                                   ((1, 0), (ar[0], ar[2])),
+                                   ((-1, 0), (-ar[0], -ar[2]))):
+            sx, sy = vx, -vz                # screen-up is -y
+            n = math.hypot(sx, sy) or 1.0
+            cands.append(((sx * want[0] + sy * want[1]) / n, (di, dj)))
+        return max(cands)[1]
 
     def value_per_px(self) -> float:
         """Display units one pixel of vertical drag stands for, so a
@@ -268,12 +293,22 @@ class Surface3DView(QtWidgets.QWidget):
             self._drag = {"cancelled": True}
             return
         if key in _ARROWS and not mods & QtCore.Qt.AltModifier:
-            di, dj = _ARROWS[key]
-            if ctrl or self.editor is None:
+            if self.editor is None:         # the comparison: turn it
+                di, dj = _ARROWS[key]
                 self.orbit(dj * 0.1, -di * 0.08)
+            elif ctrl:
+                self.editor.jump(self.grid_step(key), shift)
             else:
-                self.editor.move(di, dj, shift)
+                self.editor.move(*self.grid_step(key), shift)
             return
+        if not mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier):
+            turn = {QtCore.Qt.Key_BracketLeft: (-0.1, 0.0),
+                    QtCore.Qt.Key_BracketRight: (0.1, 0.0),
+                    QtCore.Qt.Key_PageUp: (0.0, 0.08),
+                    QtCore.Qt.Key_PageDown: (0.0, -0.08)}.get(key)
+            if turn is not None:
+                self.orbit(*turn)
+                return
         if key in (QtCore.Qt.Key_Plus, QtCore.Qt.Key_Equal):
             self.zoom_by(1.15)
             return
@@ -503,6 +538,15 @@ class _Editor:
         else:
             self.select_one(i, j)
 
+    def jump(self, d, extend: bool):
+        """Ctrl(+Shift)+arrow: to the edge of the data, as the table does
+        (``d`` in the grid's row/col order, as the table's)."""
+        keys = getattr(self.ws.table, "_cellkeys", None)
+        if keys is not None:
+            keys._jump(d, extend)
+            if not extend:
+                self.anchor = self.current()
+
     # -- Ctrl+drag ------------------------------------------------------
     def _targets(self):
         """[(i, j, r, c, stored value)] the drag moves: every selected
@@ -596,6 +640,7 @@ class SurfacePanel(QtWidgets.QFrame):
         super().__init__(parent)
         self.ws = ws
         self._entity = _NOTHING
+        self._zkeep = None                  # (shape, lo, hi): the height scale
         self._pending = False
         self._sel_model = None
         self.cell_actions: List[QtGui.QAction] = []
@@ -665,6 +710,7 @@ class SurfacePanel(QtWidgets.QFrame):
         # start where the surface is drawn, so the first move is no jump
         hs.setValue(round(self.view.zscale * 100))
         reset.clicked.connect(self.view.reset_view)
+        self.view.on_reset = self._reset_range
         self.wire_chk.toggled.connect(
             lambda on: [vw.set_wire(on) for vw in self.views])
         hs.valueChanged.connect(
@@ -677,13 +723,27 @@ class SurfacePanel(QtWidgets.QFrame):
                 sig.connect(self._schedule)
 
     # -- helpers ----------------------------------------------------------
-    @staticmethod
-    def _zrange(vals, cmp_vals):
-        if not cmp_vals:
+    def _zrange(self, vals, cmp_vals):
+        """The height scale: the values' range (with the comparison's),
+        only ever widened while the same map is shown -- so a stepped
+        point moves on the scale instead of the scale moving with it.
+        A new map, a new shape or Reset view starts it again."""
+        flat = [x for row in vals for x in row]
+        if cmp_vals:
+            flat += [x for row in cmp_vals for x in row]
+        if not flat:
             return None
-        flat = [x for row in vals for x in row] + \
-            [x for row in cmp_vals for x in row]
-        return (min(flat), max(flat)) if flat else None
+        lo, hi = min(flat), max(flat)
+        shape = (len(vals), len(vals[0]) if vals else 0)
+        keep = self._zkeep
+        if keep is not None and keep[0] == shape:
+            lo, hi = min(lo, keep[1]), max(hi, keep[2])
+        self._zkeep = (shape, lo, hi)
+        return (lo, hi)
+
+    def _reset_range(self):
+        self._zkeep = None
+        self._schedule()
 
     def _show_cmp(self, on: bool, name: str = ""):
         self.cmp_label.setText("Comparison - %s" % (name or ""))
@@ -741,10 +801,12 @@ class SurfacePanel(QtWidgets.QFrame):
         surface's. Undo / Redo are the window's and work as they are."""
         acts = list(getattr(getattr(self.ws, "win", None), "_cell_actions",
                             ()) or ())
-        have = set(self.view.actions())
+        # on the panel, so its controls (the height slider, which would
+        # take Alt+Up / PgUp for itself) and the comparison have them too
+        have = set(self.actions())
         for a in acts:
             if a not in have:
-                self.view.addAction(a)
+                self.addAction(a)
         self.cell_actions = acts
 
     def _schedule(self, *_a):
@@ -774,6 +836,7 @@ class SurfacePanel(QtWidgets.QFrame):
         ed = self.view.editor
         if e is not self._entity:
             self._entity = e
+            self._zkeep = None
             ed.anchor = None
             self.view.preview = {}
             self.msg.setText("")

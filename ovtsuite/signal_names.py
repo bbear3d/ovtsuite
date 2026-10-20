@@ -411,6 +411,7 @@ _DE_FUNC = {
     "je": "per", "pro": "per", "diese": "this", "dieser": "this",
     "dieses": "this", "sein": "its", "seiner": "its", "am": "at the",
     "beim": "at the", "zu": "to", "so": "so", "dann": "then",
+    "nur": "only", "jedoch": "however", "um": "to",
 }
 # ASCII-transliterated function words (fuer, ueber, gemaess) for the hq family.
 _DE_FUNC.update({_ascii_umlaut(_k): _v for _k, _v in list(_DE_FUNC.items())
@@ -482,6 +483,20 @@ def phrase_english(text: str):
 
 
 _WORDS = None
+_SHARED = None
+_FOLDED = None
+
+
+def _load_gz(name, empty):
+    import gzip
+    import json
+    import os
+    path = os.path.join(os.path.dirname(__file__), "data", name)
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return empty
 
 
 def _words() -> dict:
@@ -489,20 +504,83 @@ def _words() -> dict:
     empty value marks a word that is not German and stays as it is."""
     global _WORDS
     if _WORDS is None:
-        import gzip
-        import json
-        import os
-        path = os.path.join(os.path.dirname(__file__), "data",
-                            "de_en_words.json.gz")
-        try:
-            with gzip.open(path, "rt", encoding="utf-8") as fh:
-                _WORDS = json.load(fh)
-        except (OSError, ValueError):
-            _WORDS = {}
+        _WORDS = _load_gz("de_en_words.json.gz", {})
     return _WORDS
 
 
+def _shared() -> frozenset:
+    """German words that are also everyday English words ("die", "also",
+    "not", "fast", "will"): translated only inside a German text, never in
+    an English one (``data/de_en_shared.json.gz``)."""
+    global _SHARED
+    if _SHARED is None:
+        _SHARED = frozenset(_load_gz("de_en_shared.json.gz", []))
+    return _SHARED
+
+
+def _folded() -> dict:
+    """The word table's umlaut words by their ASCII spelling ("uebernahme"
+    -> "übernahme"), for definitions that write ue / ae / oe / ss."""
+    global _FOLDED
+    if _FOLDED is None:
+        folded = {}
+        for k in _words():
+            a = _ascii_umlaut(k)
+            if a != k:
+                folded.setdefault(a, k)
+        _FOLDED = folded
+    return _FOLDED
+
+
+#: German inflection endings, longest first: "multiplikative" -> multiplikativ,
+#: "schaltungen" -> schaltung, "inneren" -> inner(e)
+_ENDINGS = ("ern", "ens", "es", "en", "er", "em", "ns", "e", "n", "s")
+
 _WORD_RE = _re.compile(r"([A-Za-zÄÖÜäöüß]+)")
+
+
+def _plain(lw: str, words: dict):
+    """The word table's English for ``lw`` as written or spelt with ue / ae /
+    oe / ss for the umlaut; None when neither is in the table."""
+    en = words.get(lw)
+    if en is None:
+        k = _folded().get(lw)
+        if k is not None:
+            en = words.get(k)
+    return en
+
+
+@_lru_cache(maxsize=131072)
+def _lookup(lw: str):
+    """The English of one lower-case German word: the word table (as written
+    or with ue/ae/oe/ss for the umlaut), a compound of known words, or an
+    inflected form of a known word. "" for a word the table marks as not
+    German, None for a word nothing knows."""
+    words = _words()
+    en = _plain(lw, words)
+    if en is not None:
+        return en
+    en = _compound(lw, words)
+    if en:
+        return en
+    return _inflected(lw, words)
+
+
+def _inflected(lw: str, words: dict, compound: bool = True):
+    """``lw`` without a German inflection ending, when that is a known German
+    word ("linearer" -> linear, "Schaltungen" -> Schaltung)."""
+    for end in _ENDINGS:
+        base = lw[:-len(end)]
+        if len(base) < 4 or not lw.endswith(end):
+            continue
+        en = _plain(base, words)
+        if not en and compound:
+            en = _compound(base, words)
+        if en:
+            if end == "s" and en.lower() == base:
+                return None     # an English plural ("definitions"), not German
+            return en
+    return None
 
 
 def _german_words(text: str) -> int:
@@ -511,17 +589,32 @@ def _german_words(text: str) -> int:
 
 
 def _word_counts(text: str):
-    """(German words, other words of three letters or more) in ``text``."""
-    words = _words()
+    """(German words, other words of three letters or more) in ``text``.
+    Identifiers ("Dfp_AFSCD", "MOT7", "jAdaAglex") are neither."""
     n = other = 0
-    for w in _WORD_RE.findall(text):
+    for m in _WORD_RE.finditer(text):
+        w = m.group(0)
+        if _identifier(text, m.start(), m.end()):
+            continue
         lw = w.lower()
-        en = words.get(lw)
-        if (en and en != lw) or (en is None and _compound(lw, words)):
+        en = _lookup(lw)
+        if en and en != lw:
             n += 1
         elif len(lw) >= 3:
             other += 1
     return n, other
+
+
+def _identifier(text: str, a: int, b: int) -> bool:
+    """Whether the letters text[a:b] belong to a code word: touching an
+    underscore or a digit ("Dfp_ACCCD", "MOT7", "H2503"), or capitals inside
+    a word ("jAdaAglex", "CoEng")."""
+    if a > 0 and (text[a - 1] == "_" or text[a - 1].isdigit()):
+        return True
+    if b < len(text) and (text[b] == "_" or text[b].isdigit()):
+        return True
+    w = text[a:b]
+    return bool(_re.search(r"[a-zäöüß][A-ZÄÖÜ]", w))
 
 
 def _is_german(text: str) -> bool:
@@ -534,57 +627,177 @@ def _is_german(text: str) -> bool:
     return n >= 2 or (n >= 1 and other == 0)
 
 
+#: short German words that never occur in English, translated wherever they
+#: stand ("Koordinator fuer Luftfilterventil", "Schwere und Dauer")
+_DE_SHORT = frozenset({
+    "und", "für", "fuer", "mit", "von", "vom", "zur", "zum", "ist", "bei",
+    "beim", "oder", "nicht", "sowie", "bzw", "wird", "werden", "nach",
+    "über", "ueber", "gemäß", "gemaess", "einer", "eines", "keine", "kein",
+    "der", "des", "dem", "das", "auf", "pro", "durch", "wenn", "falls",
+    "nur", "dann", "jedoch", "um"})
+
+
+def _plainly_german(lw: str, en: str) -> bool:
+    """A word to translate even inside an English text: German beyond doubt
+    -- not also an English word ("also", "not", "fast"), not a short form
+    the table merely spells out ("neg" -> negative, "temp" -> temperature)."""
+    if lw in _DE_SHORT:
+        return True
+    if len(lw) < 4 or lw in _shared():
+        return False
+    full = en.lower().replace(" ", "")
+    if full.startswith(lw) and len(full) - len(lw) >= 2:
+        return False                # "neg" -> negative: a short form
+    if lw in (full + "s", full + "es"):
+        return False                # "regenerations": an English plural
+    return True
+
+
+def _beside_german(text, toks, i) -> bool:
+    """Whether the word before or after toks[i] is German: a German word
+    that is also English ("die", "moment", "not") is read as German only
+    there -- "des inneren Kreises" -- not in "is not used"."""
+    for j in (i - 1, i + 1):
+        if 0 <= j < len(toks):
+            m = toks[j]
+            if _identifier(text, m.start(), m.end()):
+                continue
+            lw = m.group(0).lower()
+            en = _lookup(lw)
+            if lw in _shared() or lw in _DE_SHORT:
+                if lw in _DE_SHORT:
+                    return True
+                continue
+            if (en and en != lw) or (en is None and len(lw) >= 3
+                                     and _STRONG_HINT_LC.search(lw)):
+                return True
+    return False
+
+
 @_lru_cache(maxsize=65536)
 def translate_german(text: str) -> str:
     """Best-effort German->English rendering of a description. One the
     phrase table knows is given its curated English. Any other goes word by
-    word -- the word table first, then the German roots for a word it does
-    not know -- and only once the text is plainly German (an umlaut, a
-    German-only root, or words the word table knows as German), so English
-    words such as 'temperature', 'message' or 'filter' are left untouched."""
+    word -- the word table (umlauts written ue/ae/oe/ss too, compounds and
+    inflected forms of its words), then the German roots for a word it does
+    not know. A plainly German text is translated throughout; in an English
+    one (or a half-translated one: "Schwere counter limit for fault path")
+    only the words that are German beyond doubt are, so English words such
+    as 'temperature', 'message', 'filter' or 'not' are left untouched.
+    Code words (identifiers, "MOT7") are never changed."""
     known = phrase_english(text)
     if known is not None:
         return known
     if not text:
         return text
-    if not _is_german(text):
-        return text            # no German marker -> leave English text alone
-    words = _words()
+    german = _is_german(text)
+    toks = list(_WORD_RE.finditer(text)) if german else ()
     parts = []
-    for tok in _WORD_RE.split(text):
-        if not tok or not _WORD_RE.fullmatch(tok):
+    changed = False
+    pos = 0
+    for i, m in enumerate(toks or _WORD_RE.finditer(text)):
+        parts.append(text[pos:m.start()])
+        pos = m.end()
+        tok = m.group(0)
+        if _identifier(text, m.start(), m.end()):
             parts.append(tok)
             continue
-        en = words.get(tok.lower())
+        lw = tok.lower()
+        if tok in _CAPS and german:
+            parts.append(_CAPS[tok])            # "EIN" / "AUS" switch states
+            continue
+        en = _lookup(lw)
+        if not en and lw in _DE_SHORT:
+            en = _DE_FUNC.get(lw) or en
+        if en and en.lower() == lw:
+            parts.append(tok)        # the same word in English: keep as written
+            continue
+        if not german:
+            if en and _plainly_german(lw, en) and not (
+                    tok.isupper() and len(tok) <= 5):
+                parts.append(_abbrev(text, m, en))
+                changed = True
+            else:
+                parts.append(tok)
+            continue
         if en is not None:
-            parts.append(en if en else tok)
+            if en and (lw not in _shared() or lw in _DE_SHORT
+                       or _beside_german(text, toks, i)):
+                parts.append(_abbrev(text, m, en))
+            else:
+                parts.append(tok)
             continue
-        en = _compound(tok.lower(), words)
-        if en:
-            parts.append(en)
-            continue
-        if _STRONG_HINT_LC.search(tok.lower()):
+        if _STRONG_HINT_LC.search(lw):
             r = _old_translate(tok)
             parts.append(r[:1].lower() + r[1:])
         else:
-            parts.append(_DE_FUNC.get(tok.lower(), tok))
-    out = _re.sub(r"\s+", " ", "".join(parts)).strip()
+            parts.append(_DE_FUNC.get(lw, tok))
+    parts.append(text[pos:])
+    if not german and not changed:
+        return text            # nothing German in it: leave English text alone
+    out = _re.sub(_DOT + r"\.", "", "".join(parts))
+    out = _re.sub(r"\s+", " ", out).strip()
     out = _re.sub(r"\s+([,.;:])", r"\1", out)
     out = _re.sub(r"\ba/c\b", "A/C", out, flags=_re.I)
     out = _re.sub(r"\b(egr|obd|ecu|dpf)\b", lambda m: m.group(1).upper(), out)
+    first = text.split(None, 1)[0] if text.split() else ""
+    if first and out.startswith(first):
+        return out          # first word kept as written ("jAdaAglex_Fktn:")
     return out[:1].upper() + out[1:] if out else out
+
+
+#: switch states written in capitals ("Anfangswert EIN")
+_CAPS = {"EIN": "ON", "AUS": "OFF"}
+
+#: marks the full stop of an abbreviation that was written out in full
+_DOT = "\x00"
+
+
+def _abbrev(text: str, m, en: str) -> str:
+    """``en`` for the word ``m`` of ``text``; a German abbreviation written
+    out in full ("pos." -> "positive", "zul." -> "permissible") loses its
+    full stop, unless that stop ends the text."""
+    b = m.end()
+    if (b + 1 < len(text) and text[b] == "." and text[b + 1] in " -/"
+            and len(m.group(0)) <= 6 and not en.endswith(".")
+            and len(en) > len(m.group(0))):
+        return en + _DOT
+    return en
+
+
+#: a short word that opens a compound, as it reads there: "Istgang" is the
+#: actual gear, not "is gear". Prefixes whose sense depends on the verb
+#: (ein-, auf-, aus-, ab-, an-, zu-) open no compound; such words are in
+#: the word table themselves.
+_PREFIX = {
+    "ist": "actual", "soll": "setpoint", "vor": "pre", "nach": "post",
+    "über": "over", "ueber": "over", "unter": "under", "gegen": "counter",
+    "mit": "", "ein": "", "auf": "", "aus": "", "ab": "", "an": "",
+    "zu": "", "bei": "", "um": "", "von": "", "vom": "", "zum": "",
+    "zur": "", "der": "", "die": "", "das": "", "des": "", "den": "",
+    "dem": "", "und": "", "oder": "", "für": "", "fuer": "", "im": "",
+    "in": "", "am": "", "als": "", "bis": "", "pro": "", "je": "",
+}
 
 
 def _compound(w: str, words: dict, depth: int = 0):
     """A German compound the word table has no entry for, as the words it
     is made of: "fehlerklassentabelle" -> "fault class table" (a linking
-    s / n / en / es between the parts is allowed). None when it does not
-    split into known German words."""
+    s / n / en / es between the parts is allowed; the parts may be written
+    with ue/ae/oe/ss, and the last may be inflected or an English word the
+    German borrowed: "Fehlercode" -> "fault code"). None when it does not
+    split into known words."""
     if len(w) < 7 or depth > 2:
         return None
-    for i in range(len(w) - 3, 2, -1):
+    for i in range(len(w) - 4, 2, -1):
         left = w[:i]
-        en_l = words.get(left)
+        english_left = False
+        if left in _DE_FUNC or left in _PREFIX:
+            en_l = _PREFIX.get(left)     # "Istgang" -> actual gear
+        else:
+            en_l = _plain(left, words)
+            if en_l == "" and len(left) >= 4 and depth == 0:
+                en_l, english_left = left, True   # "Signalnummer"
         if not en_l:
             continue
         for link in ("", "s", "n", "en", "es"):
@@ -593,14 +806,26 @@ def _compound(w: str, words: dict, depth: int = 0):
                 if not right.startswith(link):
                     continue
                 right = right[len(link):]
-            if len(right) < 3:
+            if len(right) < 4 or right in _DE_FUNC:
+                continue        # "allgemein" is not "allgem" + "ein"
+            en_r = _plain(right, words)
+            if english_left:
+                # an English word joined to a German one: only a plain
+                # German head makes the whole word German
+                if en_r and en_r.lower() != right and right not in _shared():
+                    return "%s %s" % (en_l, en_r)
                 continue
-            en_r = words.get(right)
             if en_r:
                 return "%s %s" % (en_l, en_r)
+            if en_r == "" and not link and len(left) >= 4:
+                return "%s %s" % (en_l, right)      # borrowed English head
             sub = _compound(right, words, depth + 1)
             if sub:
                 return "%s %s" % (en_l, sub)
+            if len(right) >= 5:
+                en_r = _inflected(right, words, compound=False)
+                if en_r:
+                    return "%s %s" % (en_l, en_r)
     return None
 
 

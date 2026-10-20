@@ -868,6 +868,34 @@ class RevertResult:
     warnings: List[str] = field(default_factory=list)
 
 
+def _resized_records(target):
+    """``[(start, end, name)]``: the records of the tables resized or moved
+    in ``target`` (ovtsuite.resize), as they are now."""
+    try:
+        from . import resize as _resize
+    except Exception:
+        return []
+    codec = _resize.codec_for(target)
+    if codec is None:
+        return []
+    out = []
+    data = bytes(target.binfile.data)
+    try:
+        ents = list(target.entities) + list(target.variant_entities())
+    except Exception:
+        ents = list(getattr(target, "entities", []) or [])
+    for e in ents:
+        if not _resize.is_resized(e):
+            continue
+        try:
+            shp = codec.record(data, e)
+        except Exception:
+            shp = None
+        if shp is not None:
+            out.append((shp.start, shp.end, e.name))
+    return out
+
+
 def revert_applied_patch(target, record: dict) -> RevertResult:
     """Undo a previously applied patch using the before/after byte values
     recorded in the change log at apply time (``list_applied_patches``
@@ -890,11 +918,28 @@ def revert_applied_patch(target, record: dict) -> RevertResult:
     warnings: List[str] = []
     reverse_writes = []
     drifted = 0
+    resized = _resized_records(target)
+    held: Dict[str, int] = {}
     for addr, bits, old, new in writes:
         cur = target.binfile.read(addr, bits, False)
         if cur != new:
+            hit = next((name for lo, hi, name in resized if lo <= addr < hi), None)
+            if hit is not None:
+                # a table resized or moved since the patch: its record was
+                # rewritten, and the pre-patch bytes would land in the new
+                # layout -- another cell, an axis point, a point count
+                held[hit] = held.get(hit, 0) + 1
+                continue
             drifted += 1
         reverse_writes.append((addr, bits, new, old))
+    for name, n in sorted(held.items()):
+        warnings.append(
+            "%s was resized or moved after this patch: %d of its byte range(s) "
+            "were left as they are (writing the old bytes into the new layout "
+            "would corrupt it). Set it by hand, or undo the resize first." % (name, n))
+    if not reverse_writes:
+        raise ValueError("nothing of this patch can be reverted: %s"
+                         % "; ".join(warnings))
     if drifted:
         warnings.append(
             "%d of %d byte range(s) were changed again after this patch was "

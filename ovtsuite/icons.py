@@ -45,6 +45,7 @@ FOR_ACTION = {
     "file/exit": "log-out",
     "edit/undo": "undo-2",
     "edit/redo": "redo-2",
+    "edit/cells/revert-to-last-saved-values": "archive-restore",
     "edit/find": "search",
     "edit/find-panel": "search",
     "edit/find-in-definition": "file-search",

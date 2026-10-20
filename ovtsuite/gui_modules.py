@@ -6,8 +6,10 @@
 """The Module Manager, and installing a module from inside the app.
 
 Tools > Modules... lists every module the app knows -- installed or not --
-with its version, variant (full or checksum-only), where it is installed and
-who signed it, and installs a ``.ovtmod`` or removes one. Installing from the
+with its version, variant (full or checksum-only), where it is installed,
+who signed it and the newest version published on GitHub, and installs a
+``.ovtmod`` (from a file or straight from GitHub, :mod:`ovtsuite.gui_getmodule`)
+or removes one. Installing from the
 app goes to the per-user modules folder (no administrator rights needed); the
 module installers write the app's own folder. See docs/MODULES_PLAN.md.
 
@@ -180,12 +182,12 @@ class ModuleLicenceDialog(QtWidgets.QDialog):
 
 
 class ModuleManagerDialog(QtWidgets.QDialog):
-    COLS = ("Module", "Status", "Version", "Installed", "Signed by")
+    COLS = ("Module", "Status", "Version", "Installed", "Signed by", "On GitHub")
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(branding.title("Modules"))
-        self.resize(820, 360)
+        self.resize(920, 380)
         v = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
             "Modules add editing (definitions, maps, tools) and checksum "
@@ -211,6 +213,13 @@ class ModuleManagerDialog(QtWidgets.QDialog):
         row = QtWidgets.QHBoxLayout()
         self.install_btn = QtWidgets.QPushButton("Install from file...")
         self.install_btn.clicked.connect(self._install)
+        self.github_btn = QtWidgets.QPushButton("Install from GitHub")
+        self.github_btn.setToolTip("Download the selected module's newest "
+                                   "published version and install it")
+        self.github_btn.clicked.connect(self._install_github)
+        self.check_btn = QtWidgets.QPushButton("Check GitHub")
+        self.check_btn.setToolTip("Look up the modules published on GitHub again")
+        self.check_btn.clicked.connect(lambda: self._lookup(fresh=True))
         self.remove_btn = QtWidgets.QPushButton("Remove")
         self.remove_btn.clicked.connect(self._remove)
         self.unsigned = QtWidgets.QCheckBox("Allow unsigned modules (development)")
@@ -218,12 +227,47 @@ class ModuleManagerDialog(QtWidgets.QDialog):
         self.unsigned.toggled.connect(_set_unsigned_pref)
         close = QtWidgets.QPushButton("Close")
         close.clicked.connect(self.accept)
-        for w in (self.install_btn, self.remove_btn, self.unsigned):
+        for w in (self.install_btn, self.github_btn, self.check_btn,
+                  self.remove_btn, self.unsigned):
             row.addWidget(w)
         row.addStretch(1)
         row.addWidget(close)
         v.addLayout(row)
+        self.available = None               # GitHub's modules, once looked up
+        self.github_error = ""
+        from . import gui_getmodule as _gm
+        if _gm.may_look_up():
+            self._lookup()
+        else:
+            self.github_error = "click Check GitHub"
+            self.refresh()
+
+    def _lookup(self, fresh: bool = False):
+        """Ask GitHub what it publishes (in the background)."""
+        from . import gui_getmodule as _gm
+        self.check_btn.setEnabled(False)
+        self.github_error = "checking..."
         self.refresh()
+        _gm.published_async(self, self._looked_up, fresh=fresh)
+
+    def _looked_up(self, avail, error):
+        try:
+            self.check_btn.setEnabled(True)
+        except RuntimeError:                # the dialog closed meanwhile
+            return
+        self.available, self.github_error = avail, error
+        self.refresh()
+
+    def _github(self, mid: str) -> str:
+        from . import gui_getmodule as _gm
+        if self.available is None:
+            return self.github_error
+        top = _gm.best(self.available, mid)
+        if top is None:
+            return "not published" if not self.github_error else "?"
+        if not top.installed:
+            return top.version
+        return top.version + ("  (newer)" if top.newer else "  (current)")
 
     def _ids(self):
         return list(_platforms.MODULES)
@@ -233,7 +277,7 @@ class ModuleManagerDialog(QtWidgets.QDialog):
         self.table.setRowCount(len(ids))
         for r, mid in enumerate(ids):
             st = _status(mid)
-            cells = (_platforms.MODULES[mid].name,) + st
+            cells = (_platforms.MODULES[mid].name,) + st + (self._github(mid),)
             for c, text in enumerate(cells):
                 it = QtWidgets.QTableWidgetItem(text)
                 if c == 0:
@@ -252,7 +296,22 @@ class ModuleManagerDialog(QtWidgets.QDialog):
         mid = self._selected()
         rec = _loader.installed_records().get(mid) if mid else None
         self.remove_btn.setEnabled(rec is not None)
-        self.note.setText(_platforms.MODULES[mid].description if mid else "")
+        from . import gui_getmodule as _gm
+        top = _gm.best(self.available or {}, mid) if mid else None
+        self.github_btn.setEnabled(top is not None and top.newer)
+        note = _platforms.MODULES[mid].description if mid else ""
+        if self.github_error and self.github_error not in (
+                "checking...", "click Check GitHub"):
+            note = (note + "\n" if note else "") + "GitHub: " + self.github_error
+        self.note.setText(note)
+
+    def _install_github(self):
+        from . import gui_getmodule as _gm
+        mid = self._selected()
+        if mid and _gm.install(self, mid, self.available) is not None:
+            self.available = None
+            self.refresh()
+            self._lookup(fresh=True)
 
     def _install(self):
         if install_from_file(self) is not None:
