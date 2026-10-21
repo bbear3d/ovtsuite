@@ -113,7 +113,12 @@ whole table logs as you edited it.**
 
 ## What can't be resized (yet)
 
-- Tables whose axes are stored apart from their values (group maps).
+- **Map sets** that share one pair of axes, each map's values stored apart
+  -- on EDC15 PD software the smoke limiters `mrwBRA0..2KR` and the
+  start-of-injection sets such as `fnwSWGK0..9KR`. A set can only change size
+  all together; the menu's tooltip names the set.
+- Fixed-layout records with no point counts, such as the EDC15 fault-code
+  conversion tables (`xcwFSPK...`): they aren't tuning maps.
 - Tables with 32-bit or floating-point axes.
 - Axes past 64 points.
 - A table the ECU reaches in a way the tool can't re-point can't be relocated
