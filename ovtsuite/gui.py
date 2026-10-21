@@ -10243,6 +10243,21 @@ if HAVE_QT:
                       "Ctrl+D", needs_file=True, enabled_when=full)
             self._act(tools, "Measuring blocks...", self._on_ws("open_msblock"),
                       "Ctrl+M", needs_file=True, enabled_when=full)
+
+            def _eoi_open(_c=False):
+                from . import gui_eoi as _ge   # End of injection (eoi.py)
+                if cw() is not None:
+                    _ge.open_for(cw())
+
+            def _eoi_ok():
+                try:
+                    from . import gui_eoi as _ge
+                    return _ge.availability(cw()) is None
+                except Exception:
+                    return False
+            # with the other tools that read the parameter tree
+            self._act(tools, "End of injection...", _eoi_open,
+                      needs_file=True, enabled_when=_eoi_ok)
             self._act(tools, "Gear ratios...", self._on_ws("open_gears"), "Ctrl+G",
                       needs_file=True, enabled_when=full)
             self._act(tools, "VSS pulse settings...", self._on_ws("open_vss"),
@@ -10271,20 +10286,6 @@ if HAVE_QT:
                 return available(p)
             self._act(tools, "Tune from logs...", self._on_ws("open_logtune"),
                       needs_file=True, enabled_when=_logtune_ok)
-
-            def _eoi_open(_c=False):
-                from . import gui_eoi as _ge   # End of injection (eoi.py)
-                if cw() is not None:
-                    _ge.open_for(cw())
-
-            def _eoi_ok():
-                try:
-                    from . import gui_eoi as _ge
-                    return _ge.availability(cw()) is None
-                except Exception:
-                    return False
-            self._act(tools, "End of injection...", _eoi_open,
-                      needs_file=True, enabled_when=_eoi_ok)
             self._act(tools, "Bus sniffer (J2534)...", self.open_sniffer)
             self._act(tools, "ECU simulator (bench)...", self.open_simulator)
             tools.addSeparator()
