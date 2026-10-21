@@ -108,6 +108,66 @@ def _nice_ticks(lo: float, hi: float, want: int = 6) -> List[float]:
     return out
 
 
+class _Flow(QtWidgets.QLayout):
+    """Lays its widgets out left to right and wraps onto the next row when
+    the width runs out -- the line buttons (a 6-speed has eleven, and the
+    lock-up labels are long), so they never set the window's width."""
+
+    def __init__(self, parent=None, spacing: int = 4):
+        super().__init__(parent)
+        self._items: List[QtWidgets.QLayoutItem] = []
+        self.setSpacing(spacing)
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return QtCore.Qt.Orientations()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._place(QtCore.QRect(0, 0, width, 0), False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._place(rect, True)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        # the widest item, whole: one per row at the narrowest, never clipped
+        size = QtCore.QSize()
+        for it in self._items:
+            size = size.expandedTo(it.sizeHint())
+        return size
+
+    def _place(self, rect, apply: bool) -> int:
+        x, y, line = rect.x(), rect.y(), 0
+        sp = self.spacing()
+        for it in self._items:
+            hint = it.sizeHint()
+            if x + hint.width() > rect.right() + 1 and line > 0:
+                x, y, line = rect.x(), y + line + sp, 0
+            if apply:
+                it.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), hint))
+            x += hint.width() + sp
+            line = max(line, hint.height())
+        return y + line - rect.y()
+
+
 def _is_dark() -> bool:
     pal = QtWidgets.QApplication.palette()
     return pal.color(QtGui.QPalette.Window).lightness() < 128
@@ -123,7 +183,7 @@ class ScheduleChart(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(420, 260)
+        self.setMinimumSize(300, 220)
         self.setMouseTracking(True)
         self.series: List[dict] = []
         self.unit = ""
@@ -309,7 +369,7 @@ class GearboxEditDialog(QtWidgets.QDialog):
         self.has_refs = any(sc.refs for sc in sset.schedules)
         self.session = ws.primary
         self.setWindowTitle(TITLES.get(self.kind, "Schedule editor"))
-        self.resize(1440, 860)
+        self._fit_to_screen(1440, 860)
         self.steps: List[object] = []          # added operations
         self.edit: Optional[GE.Edit] = None
         self.result = None
@@ -345,6 +405,34 @@ class GearboxEditDialog(QtWidgets.QDialog):
             self.log_chk.setToolTip("Logs are read from the project this file was opened from")
 
     # ---------------------------------------------------------- navigator
+    def _fit_to_screen(self, w: int, h: int) -> None:
+        """Open at ``w`` x ``h``, or smaller where the screen is: the
+        window always fits (and can be made bigger)."""
+        scr = self.screen() or QtGui.QGuiApplication.primaryScreen()
+        if scr is not None:
+            g = scr.availableGeometry()
+            w = min(w, int(g.width() * 0.92))
+            h = min(h, int(g.height() * 0.9))
+        self.resize(w, h)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # the content settled: shrink to the screen again, and keep the whole
+        # window on it (the minimum is what the controls need)
+        if not getattr(self, "_fitted", False):
+            self._fitted = True
+            scr = self.screen() or QtGui.QGuiApplication.primaryScreen()
+            if scr is not None:
+                g = scr.availableGeometry()
+                w = min(self.width(), max(self.minimumWidth(), int(g.width() * 0.92)))
+                h = min(self.height(), max(self.minimumHeight(), int(g.height() * 0.9)))
+                self.resize(w, h)
+                fr = self.frameGeometry()
+                fr.moveCenter(g.center())
+                x = max(g.left(), min(fr.left(), g.right() - fr.width() + 1))
+                y = max(g.top(), min(fr.top(), g.bottom() - fr.height() + 1))
+                self.move(x, y)
+
     def _build_navigator(self):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
@@ -538,7 +626,13 @@ class GearboxEditDialog(QtWidgets.QDialog):
         v = QtWidgets.QVBoxLayout(w)
         v.setContentsMargins(4, 0, 4, 0)
         bar = QtWidgets.QHBoxLayout()
-        bar.addWidget(QtWidgets.QLabel("Line:"))
+        bar.addWidget(QtWidgets.QLabel("Line:"), 0, QtCore.Qt.AlignTop)
+        lines_w = QtWidgets.QWidget()
+        sp = lines_w.sizePolicy()
+        sp.setHorizontalPolicy(QtWidgets.QSizePolicy.Preferred)
+        sp.setHeightForWidth(True)
+        lines_w.setSizePolicy(sp)
+        lines = _Flow(lines_w)
         self.line_group = QtWidgets.QButtonGroup(self)
         self.line_group.setExclusive(True)
         for ln in self.sset.lines:
@@ -552,12 +646,15 @@ class GearboxEditDialog(QtWidgets.QDialog):
                 b.setToolTip("%s shift (%s gear → %s gear)" % (
                     "Upshift" if ln.kind == "up" else "Downshift", ln.gear_left, ln.gear_entered))
             self.line_group.addButton(b, ln.index)
-            bar.addWidget(b)
+            lines.addWidget(b)
         first = self.sset.lines[0].index
         self.line_group.button(first).setChecked(True)
         self.line_group.idClicked.connect(self._line_changed)
-        bar.addStretch(1)
+        bar.addWidget(lines_w, 1)
         tcc = self.kind == "tcc"
+        # what is drawn with the line, and in which units: a row of its own,
+        # so the line buttons have the whole width to wrap in
+        opts = QtWidgets.QHBoxLayout()
         self.pair_chk = QtWidgets.QCheckBox("Paired threshold" if tcc else "Opposite shift")
         self.pair_chk.setChecked(True)
         self.pair_chk.setToolTip(
@@ -565,7 +662,7 @@ class GearboxEditDialog(QtWidgets.QDialog):
             "Draw the opposite shift between the same two gears, dashed, "
             "so the gap between them is visible")
         self.pair_chk.toggled.connect(lambda *_: self._redraw())
-        bar.addWidget(self.pair_chk)
+        opts.addWidget(self.pair_chk)
         self.refs_chk = QtWidgets.QCheckBox("Upshifts")
         self.refs_chk.setVisible(tcc and self.has_refs)
         self.refs_chk.setChecked(tcc and self.has_refs)
@@ -573,7 +670,7 @@ class GearboxEditDialog(QtWidgets.QDialog):
                                  "each program that uses it: full lock (RC) should complete "
                                  "below these")
         self.refs_chk.toggled.connect(lambda *_: self._redraw())
-        bar.addWidget(self.refs_chk)
+        opts.addWidget(self.refs_chk)
         # second row: what is drawn over the schedules
         bar2 = QtWidgets.QHBoxLayout()
         self.eff_chk = QtWidgets.QCheckBox("Effective line")
@@ -606,17 +703,29 @@ class GearboxEditDialog(QtWidgets.QDialog):
         for wdg in (self.eff_chk, self.blend_box, self.blend_btn):
             wdg.setVisible(not tcc)
             bar2.addWidget(wdg)
-        bar2.addWidget(self.log_chk)
+        # the logs toggle goes where there is room: beside the opposite-shift
+        # box on the shift editor, on the (otherwise empty) row below on the
+        # lock-up editor, whose row above holds two boxes already
+        logs_row = bar2 if tcc else opts
+        if not tcc:
+            bar2.addStretch(1)
+        logs_row.addWidget(self.log_chk)
         self.log_lbl = QtWidgets.QLabel()
         self.log_lbl.setStyleSheet("color: palette(mid);")
-        bar2.addWidget(self.log_lbl, 1)
+        sp = self.log_lbl.sizePolicy()      # its text never widens the window
+        sp.setHorizontalPolicy(QtWidgets.QSizePolicy.Ignored)
+        self.log_lbl.setSizePolicy(sp)
+        logs_row.addWidget(self.log_lbl, 1)
+        if tcc:
+            opts.addStretch(1)
         self._bar2 = bar2
         self.unit_box = QtWidgets.QComboBox()
         for key, text in UNITS:
             self.unit_box.addItem(text, key)
         self.unit_box.currentIndexChanged.connect(lambda *_: (self._unit_changed(), self._redraw()))
-        bar.addWidget(self.unit_box)
+        opts.addWidget(self.unit_box)
         v.addLayout(bar)
+        v.addLayout(opts)
         v.addLayout(self._bar2)
         vs = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.chart = ScheduleChart()

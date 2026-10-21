@@ -86,8 +86,14 @@ value is one where the SOI limiter (EDC16 `InjCrv_phiMIMax_MAP`) caps the SOI.
 
 Click a cell to see how it was worked out: which SOI tables were blended, the
 selector value, the two duration tables and their weights, and the result.
-**Go to SOI table** and **Go to duration table** open the table with the
-cells marked.
+**Go to SOI table** opens, in the main window, the SOI table the ECU reads
+most at this coolant temperature, with the selected cells marked (with nothing
+selected, just the table). **Go to duration table** lists the duration tables
+the clicked cell reads and opens one with the cells it uses marked. The line
+under the buttons says what was opened.
+
+**SOI** and **Duration** cells are shaded from light (low) to darker blue
+(high) across the grid.
 
 ## Changing it
 

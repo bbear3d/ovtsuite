@@ -40,12 +40,17 @@ MODES = (("eoi", "EOI"), ("soi", "SOI"), ("dur", "Duration"),
 #: EOI bands (deg ATDC): before TDC, then later and later
 _EOI_BANDS = ((0.0, "#E1F5EE"), (4.0, "#F1EFE8"), (8.0, "#FAEEDA"),
               (12.0, "#FAC775"), (1e9, "#F09595"))
+#: light sequential shades for the SOI and Duration views, low to high. Every
+#: view gives its cells a light background, so the dark text reads the same
+#: under a light or a dark application theme.
+_SEQ = ("#EEF3FA", "#DDE8F6", "#CADCF0", "#B6CEEA", "#A1C0E3")
 _IDX = ("#EEEDFE", "#CECBF6", "#AFA9EC", "#E1F5EE", "#9FE1CB", "#5DCAA5",
         "#F1EFE8", "#D3D1C7")
 _INK = QtGui.QColor("#2C2C2A")
 _UNUSED_BG = QtGui.QColor("#ECECEC")
 _UNUSED_INK = QtGui.QColor("#8A8A8A")
 _PART_BG = QtGui.QColor("#FAEEDA")
+_USED_BG = QtGui.QColor("#FFFFFF")
 
 
 def _g():
@@ -251,6 +256,10 @@ class EoiDialog(QtWidgets.QDialog):
         gocol.addStretch(1)
         low.addLayout(gocol, 1)
         v.addLayout(low)
+
+        self.status = QtWidgets.QLabel()          # what Go to ... just did
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
 
         self.notes = QtWidgets.QLabel()
         self.notes.setWordWrap(True)
@@ -501,6 +510,18 @@ class EoiDialog(QtWidgets.QDialog):
                 it.setFlags(flags)
                 it.setData(QtCore.Qt.ItemDataRole.UserRole, val)
                 self.grid.setItem(r, c, it)
+        if mode in ("soi", "dur"):
+            vals = [it.data(QtCore.Qt.ItemDataRole.UserRole)
+                    for it in (self.grid.item(r, c) for r in range(self.grid.rowCount())
+                               for c in range(self.grid.columnCount())) if it is not None]
+            lo, hi = min(vals), max(vals)
+            for r in range(self.grid.rowCount()):
+                for c in range(self.grid.columnCount()):
+                    it = self.grid.item(r, c)
+                    if it is None:
+                        continue
+                    f = 0.0 if hi <= lo else (it.data(QtCore.Qt.ItemDataRole.UserRole) - lo) / (hi - lo)
+                    it.setBackground(QtGui.QColor(_SEQ[min(int(f * len(_SEQ)), len(_SEQ) - 1)]))
 
     def _fill_table(self, calc: _eoi.Calculator, k: int) -> None:
         cool = self.coolant.value()
@@ -524,6 +545,7 @@ class EoiDialog(QtWidgets.QDialog):
                     it.setToolTip("Blended in with weight %.0f %% at %.0f °C"
                                   % (100 * w, cool))
                 else:
+                    it.setBackground(_USED_BG)          # light under any theme
                     it.setForeground(_INK)
                     it.setToolTip("Used alone at %.0f °C" % cool)
                 flags = QtCore.Qt.ItemFlag.ItemIsSelectable | \
@@ -608,8 +630,13 @@ class EoiDialog(QtWidgets.QDialog):
 
     # --------------------------------------------------------------- go to
     def _goto(self, e, cells) -> None:
+        """Open ``e`` in the tab's table view with ``cells`` marked, and bring
+        the main window forward (this window stays open beside it)."""
         ws = self.ws
         try:
+            win = ws.window()
+            if getattr(win, "current", ws) is not ws and hasattr(win, "show_workspace"):
+                win.show_workspace(ws)
             ws.show_entity(e)
             model = ws.model
             if model.entity is e and cells:
@@ -619,19 +646,28 @@ class EoiDialog(QtWidgets.QDialog):
                     ws.table.setCurrentIndex(idx)
                     ws.table.scrollTo(
                         idx, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
-        except Exception:
-            pass
+            win.raise_()
+            win.activateWindow()
+            self.status.setText("Opened %s in the main window%s." % (
+                e.name, ", the cells used here marked" if cells else ""))
+        except Exception as ex:                       # never silent
+            self.status.setText("Could not open %s: %s" % (e.name, ex))
 
     def _goto_soi(self) -> None:
+        """The SOI table the ECU reads most at this coolant temperature, with
+        the selected cells marked (no selection: the table on its own)."""
         calc = self.calc
-        if calc is None or self.table_view() is not None:
+        if calc is None:
             return
-        r, c = self.grid.currentRow(), self.grid.currentColumn()
-        cell = self._cells.get((r, c))
-        if cell is None:
+        ref = calc.reference(self.coolant.value())
+        if self.table_view() is not None:
+            self._goto(ref.e, [])
             return
-        i = max(cell.soi_members, key=lambda m: m[1])[0]
-        self._goto(calc.soi_t[i].e, [(r, c)])
+        sel = sorted({(i.row(), i.column()) for i in self.grid.selectedItems()})
+        if not sel and self.grid.currentRow() >= 0:
+            sel = [(self.grid.currentRow(), self.grid.currentColumn())]
+        # the grid is laid out on the reference table's own cells
+        self._goto(ref.e, [(r, c) for r, c in sel if (r, c) in self._cells])
 
     # ---------------------------------------------------------------- edits
     def _apply(self, plan: _eoi.Plan) -> int:
