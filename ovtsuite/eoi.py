@@ -163,11 +163,31 @@ def members(idx: float, count: int) -> List[Tuple[int, float]]:
 #: Operating conditions a :class:`Correction` can depend on, besides coolant:
 #: key -> (label, units, default, low, high). The defaults are steady running
 #: at sea level on a mild day.
-CONDITIONS: Dict[str, Tuple[str, str, float, float, float]] = {
+CONDITIONS: Dict[str, Tuple[str, str, Optional[float], float, float]] = {
     "air": ("Intake air", "°C", 20.0, -40.0, 120.0),
     "baro": ("Air pressure", "hPa", 1013.0, 500.0, 1100.0),
     "q_start": ("Start quantity", "mg/stroke", 40.0, 0.0, 150.0),
+    #: None: at the ECU's own reference temperature (no correction)
+    "fuel": ("Fuel temperature", "°C", None, -40.0, 120.0),
 }
+
+
+@dataclass
+class FuelCorrection:
+    """The fuel-temperature correction of the quantity the duration maps
+    read. The pump maps were measured at a reference fuel temperature
+    (``ref``: engine speed x quantity -> deg C); away from it the quantity is
+    corrected by ``rate`` (mg per 100 K, same inputs) times ``factor`` (a
+    curve over fuel - reference, in K) / 100. EDC15 (038906019GQ 0x46C58):
+    zmwMKBT_KF / zmwMKOR_KF / zmwMKOR_KL, the result held to 0..zmwMKOR_Mx;
+    EDC16 (03G906016KN 0x62A70): InjUn_tFlRef_MAP / InjUn_QntyPerTemp_MAP /
+    InjUn_tFlDiffCor_CUR. While starting the ECU uses coolant instead of fuel
+    temperature when ``start_coolant`` (cowFUN_MEK / InjUn_swtTempSel_C)."""
+    ref: object
+    rate: object
+    factor: object
+    q_max: Optional[float] = None
+    start_coolant: bool = False
 
 
 @dataclass
@@ -238,6 +258,8 @@ class InjectionModel:
     #: sets that replace the base SOI set in some running state (see
     #: :class:`SoiSet`); the base set is ``soi``
     soi_sets: Tuple[SoiSet, ...] = ()
+    #: the fuel-temperature correction of the duration maps' quantity
+    fuel: Optional[FuelCorrection] = None
 
     def soi_set(self, key: Optional[str]) -> TableSet:
         """The SOI table set ``key`` names (None / "base": the base set)."""
@@ -267,6 +289,7 @@ class Cell:
     eoi: float                         # deg ATDC (negative = BTDC)
     soi_btdc: float = 0.0              # the SOI as degrees BTDC
     soi_cor: float = 0.0               # of the SOI: the corrections, deg (own units)
+    q_dur: Optional[float] = None      # quantity the duration maps read (fuel-corrected)
 
 
 @dataclass
@@ -306,10 +329,14 @@ class Calculator:
                     for c in model.corrections]
         self.conditions = {k: v[2] for k, v in CONDITIONS.items()}
         self.conditions.update(conditions or {})
+        fc = model.fuel
+        self.fuel_t = None if fc is None else \
+            (Table(fc.ref), Table(fc.rate), Table(fc.factor))
 
     def refresh(self) -> None:
         """Re-read every table (after an edit or an undo)."""
-        extra = [t for _c, ts, sel in self.cor for t in ts + [sel]]
+        extra = [t for _c, ts, sel in self.cor for t in ts + [sel]] + \
+            list(self.fuel_t or ())
         for t in self.soi_t + self.dur_t + [self.soi_sel, self.dur_sel, self.lim] + extra:
             if t is not None:
                 t.refresh()
@@ -342,6 +369,31 @@ class Calculator:
             return self.q_map.at(rpm, x2)
         return self.conditions.get("q_start", CONDITIONS["q_start"][2])
 
+    def fuel_correction(self, coolant: float, rpm: float, x2: float) -> float:
+        """mg the ECU adds to the quantity before the duration maps, at grid
+        point (rpm, x2): 0 without a model or at the reference temperature."""
+        if self.fuel_t is None:
+            return 0.0
+        fc = self.model.fuel
+        if self.by_coolant and fc.start_coolant:
+            temp = self.clt(coolant, x2)             # starting: coolant
+        else:
+            temp = self.conditions.get("fuel")
+        if temp is None:
+            return 0.0
+        q = self.fuel_q(rpm, x2)
+        ref, rate, fac = self.fuel_t
+        return rate.at(rpm, q) * fac.curve(temp - ref.at(rpm, q)) / 100.0
+
+    def dur_q(self, coolant: float, rpm: float, x2: float) -> float:
+        """The quantity the duration maps read at grid point (rpm, x2): the
+        injected quantity plus the fuel-temperature correction, held to
+        0..q_max as the ECU does."""
+        q = self.fuel_q(rpm, x2) + self.fuel_correction(coolant, rpm, x2)
+        hi = self.model.fuel.q_max if self.model.fuel is not None else None
+        q = max(q, 0.0)
+        return min(q, hi) if hi is not None else q
+
     @property
     def uses_corrections(self) -> bool:
         return bool(self.cor) and (self.sset is None or self.sset.corrections)
@@ -354,6 +406,8 @@ class Calculator:
             out.append(self.sset.selector_cond)
         if self.by_coolant and self.q_map is None:
             out.append("q_start")
+        if self.fuel_t is not None and not (self.by_coolant and self.model.fuel.start_coolant):
+            out.append("fuel")
         return [k for i, k in enumerate(out) if k not in out[:i]]
 
     # -- sign -------------------------------------------------------------
@@ -436,9 +490,11 @@ class Calculator:
         sm = mem if mem is not None else self.soi_members(coolant)
         s, lim = self.soi(coolant, rpm, q, sm)
         fq = self.fuel_q(rpm, q)
-        d, idx, dm = self.duration(s, rpm, fq)
+        qd = self.dur_q(coolant, rpm, q)
+        d, idx, dm = self.duration(s, rpm, qd)
         return Cell(rpm, q, s, sm, lim, idx, dm, d, self.eoi(s, d),
-                    self.btdc(s), self.correction(rpm, fq) if self.uses_corrections else 0.0)
+                    self.btdc(s), self.correction(rpm, fq) if self.uses_corrections else 0.0,
+                    qd)
 
     def reference(self, coolant: float) -> Table:
         """The SOI table whose breakpoints the grid uses: the one with most
@@ -467,7 +523,7 @@ class Calculator:
                 if self.by_coolant:
                     # a start set: only the cells around the start quantity
                     if not any((rr, cc) == (r, c) for rr, cc, _w in
-                               t.weights(rpm, self.fuel_q(rpm, coolant))):
+                               t.weights(rpm, self.dur_q(coolant, rpm, coolant))):
                         continue
                     s, _ = self.soi(coolant, rpm, coolant, mem)
                 else:
@@ -486,7 +542,7 @@ class Calculator:
         [lo_btdc, hi_btdc] reaches it. EOI falls as SOI advances (the
         duration's change with SOI is far below one degree per degree), so
         bisection on the BTDC value is enough."""
-        fq = self.fuel_q(rpm, q)
+        fq = self.dur_q(coolant, rpm, q)
 
         def f(b):
             s = self.native(b)
@@ -514,7 +570,7 @@ class Calculator:
 
 def advance_for_target(calc: "Calculator", rpm: float, q: float,
                        soi_btdc: float, duration: float, target: float,
-                       span: float = 20.0) -> Optional[float]:
+                       span: float = 20.0, coolant: float = 90.0) -> Optional[float]:
     """How many degrees to advance a LOGGED start of injection so the end of
     injection reaches ``target`` (deg ATDC), with the ECU's own choice of
     duration table at the new SOI.
@@ -523,7 +579,10 @@ def advance_for_target(calc: "Calculator", rpm: float, q: float,
     temperature, pilot split), so only the model's CHANGE of duration with
     SOI is applied to it: d(s) = duration + D(s) - D(soi). Returns the
     advance in degrees (negative = retard), or None if no SOI within
-    ``span`` degrees reaches the target."""
+    ``span`` degrees reaches the target. The duration maps are read at the
+    quantity the ECU corrects for the fuel temperature in ``calc``'s
+    conditions (none set: the reference temperature)."""
+    q = calc.dur_q(coolant, rpm, q)
     d0, _, _ = calc.duration(calc.native(soi_btdc), rpm, q)
 
     def eoi_at(b):
@@ -673,7 +732,7 @@ def plan_duration(calc: Calculator, coolant: float,
     acc: Dict[int, Dict[Tuple[int, int], List[float]]] = {}
     for rpm, q, new in points:
         s, _ = calc.soi(coolant, rpm, q, mem)
-        fq = calc.fuel_q(rpm, q)
+        fq = calc.dur_q(coolant, rpm, q)
         cur, _, dm = calc.duration(s, rpm, fq)
         delta = new - cur
         for i, _w in dm:
@@ -806,7 +865,8 @@ def fmt_angle(v: float, nd: int = 1) -> str:
     return "%.*f° %s" % (nd, abs(v), "ATDC" if v > 0 else "BTDC")
 
 
-__all__ = ["Table", "TableSet", "SoiSet", "Correction", "CONDITIONS", "InjectionModel", "Calculator", "Cell", "Grid",
+__all__ = ["Table", "TableSet", "SoiSet", "Correction", "FuelCorrection", "CONDITIONS",
+           "InjectionModel", "Calculator", "Cell", "Grid",
            "Plan", "members", "plan_target_eoi", "plan_duration", "plan_soi",
            "plan_table", "advance_for_target",
            "plan_collapse", "collapse_error", "selector_problems", "apply",

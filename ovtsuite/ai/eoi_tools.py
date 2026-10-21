@@ -40,11 +40,18 @@ _COND = {"intake_air": {"type": "number", "description": "Intake air temperature
                                                          "altitude correction and the start set's "
                                                          "selector (default 1013)."},
          "start_quantity": {"type": "number", "description": "Start set only: the quantity "
-                                                           "mg/stroke while starting (default 40)."}}
+                                                           "mg/stroke while starting (default 40)."},
+         "fuel_temperature": {"type": "number", "description": "Fuel temperature °C for the "
+                                                             "correction of the quantity the "
+                                                             "duration maps read (default: the "
+                                                             "ECU's reference temperature, no "
+                                                             "correction)."}}
 
 
-def _calc(m, soi_set, intake_air, air_pressure, start_quantity=None):
+def _calc(m, soi_set, intake_air, air_pressure, start_quantity=None, fuel_temperature=None):
     cond = {}
+    if fuel_temperature is not None:
+        cond["fuel"] = float(fuel_temperature)
     if start_quantity is not None:
         cond["q_start"] = float(start_quantity)
     if intake_air is not None:
@@ -58,7 +65,8 @@ def _calc(m, soi_set, intake_air, air_pressure, start_quantity=None):
                         % (soi_set, ", ".join(["base"] + [s.key for s in m.soi_sets])))
 
 
-_COND_NAME = {"air": "intake_air", "baro": "air_pressure", "q_start": "start_quantity"}
+_COND_NAME = {"air": "intake_air", "baro": "air_pressure", "q_start": "start_quantity",
+              "fuel": "fuel_temperature"}
 
 
 def _sets(m):
@@ -126,14 +134,15 @@ def register(reg: Registry) -> None:
               title="End of injection")
     def end_of_injection(ctx, handle, dataset=None, coolant=None, rpm=None, quantity=None,
                          values="eoi", soi_set=None, intake_air=None, air_pressure=None,
-                         start_quantity=None):
+                         start_quantity=None, fuel_temperature=None):
         t, m, labels = _model(ctx, handle, dataset)
-        calc = _calc(m, soi_set, intake_air, air_pressure, start_quantity)
+        calc = _calc(m, soi_set, intake_air, air_pressure, start_quantity, fuel_temperature)
         clt = float(coolant if coolant is not None else m.coolant_warm)
         out = {"dataset": m.label, "datasets": labels, "platform": m.platform,
                "coolant": num(clt), "convention": _CONVENTION, "assumes": list(m.notes),
                "soi_set": calc.soi_key, "soi_sets": _sets(m),
-               "conditions": {_COND_NAME[k]: num(calc.conditions[k])
+               "conditions": {_COND_NAME[k]: (num(calc.conditions[k])
+                                              if calc.conditions[k] is not None else "reference")
                               for k in calc.conditions_used}}
         if calc.by_coolant:
             out["note"] = ("start set: the grid's second axis and the point's 'quantity' argument "
@@ -156,6 +165,7 @@ def register(reg: Registry) -> None:
                     "duration_selector": t.index.eid(m.duration.selector),
                     "duration_table_number": _round(c.index, 3),
                     "duration_tables": _members(t, m.duration.tables, c.dur_members),
+                    "duration_quantity": _round(c.q_dur) if c.q_dur is not None else None,
                     "duration": _round(c.duration), "eoi": _round(c.eoi),
                     "eoi_text": E.fmt_angle(c.eoi)}
                 if m.limiter is not None:
@@ -206,9 +216,9 @@ def register(reg: Registry) -> None:
     def end_of_injection_changes(ctx, handle, target_eoi, dataset=None, coolant=None,
                                  rpm_min=None, rpm_max=None, quantity_min=None, quantity_max=None,
                                  only_later=False, soi_set=None, intake_air=None, air_pressure=None,
-                                 start_quantity=None):
+                                 start_quantity=None, fuel_temperature=None):
         t, m, _labels = _model(ctx, handle, dataset)
-        calc = _calc(m, soi_set, intake_air, air_pressure, start_quantity)
+        calc = _calc(m, soi_set, intake_air, air_pressure, start_quantity, fuel_temperature)
         clt = float(coolant if coolant is not None else m.coolant_warm)
         goal = float(target_eoi)
 

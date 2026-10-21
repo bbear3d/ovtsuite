@@ -106,3 +106,12 @@ def test_lq_start_set(env):
     r = call(env, "end_of_injection", handle=h, soi_set="start", start_quantity=40)
     assert "coolant" in r["grid"] and "note" in r
     assert set(r["conditions"]) == {"air_pressure", "start_quantity"}
+
+
+def test_lq_fuel_temperature(env):
+    h = _open(env, LQ)
+    r = call(env, "end_of_injection", handle=h, rpm=2000, quantity=20, fuel_temperature=20)
+    assert r["point"]["duration_quantity"] == pytest.approx(18.22, abs=0.01)
+    assert r["conditions"]["fuel_temperature"] == 20
+    r = call(env, "end_of_injection", handle=h, rpm=2000, quantity=20)
+    assert r["conditions"]["fuel_temperature"] == "reference"

@@ -67,6 +67,12 @@ The window does exactly this with the tables in your file.
 - **Intake air** and **Air pressure**: the conditions for the air-temperature
   and altitude corrections (20 °C and 1013 hPa to start with; on most stock
   files both corrections are zero there, on some the air correction is not).
+- **Fuel temperature**: the duration maps were measured at a reference fuel
+  temperature (about 68 °C at part load on GQ and LQ); away from it the ECU
+  corrects the quantity the maps read, so cold fuel gives a shorter duration
+  and an earlier end of injection. **Reference** (the default) leaves the
+  quantity as it is. Click a cell to see the corrected quantity. While
+  starting, most files use the coolant temperature here instead.
 - **Dataset** (EDC15): the dataset to show.
 - **Show**: **EOI**, **SOI** (degrees before TDC), **Duration**, or
   **Table no.** (which duration tables are read, with the fraction).
@@ -109,10 +115,11 @@ coolant temperatures before you confirm.
 
 ## What is not included
 
-The numbers are for steady running with fuel at its reference temperature.
-Not included: the term that fades out after the start,
-exhaust-treatment regeneration (EDC16) and the fuel-temperature correction to
-the quantity. EDC15 can also add a timing trim stored in the ECU's EEPROM
+The numbers are for steady running, at the conditions you set. Not included:
+the term that fades out after the start, exhaust-treatment regeneration
+(EDC16), and the share of the fuel-temperature correction that an EDC16 file
+with an electronic pilot injection gives the pilot (PD injectors pre-inject
+hydraulically, so almost every file has none; the notes say when one does). EDC15 can also add a timing trim stored in the ECU's EEPROM
 (adaptation channel 4); the file limits it with `fnwFNmiAG` / `fnwFNmxAG`,
 which are 0 on stock files, so it is 0 there. The notes say when a file allows
 one. A correction set the file's definition does not
