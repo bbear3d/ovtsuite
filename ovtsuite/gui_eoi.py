@@ -53,6 +53,19 @@ def _g():
     return gui
 
 
+_COND_TIPS = {
+    "air": "Intake air temperature: picks the air-temperature correction the "
+           "ECU adds to the start of injection (none at 20 °C on most stock files).",
+    "baro": "Atmospheric pressure: picks the altitude correction the ECU adds "
+            "to the start of injection (none at sea level).",
+    "q_start": "The quantity injected while starting, which the duration is "
+               "read at (take it from a log of a start).",
+    "fuel": "Fuel temperature: the ECU corrects the quantity the duration maps "
+            "read for it. Reference = the temperature the maps were measured "
+            "at, no correction.",
+}
+
+
 def _num(v: float, nd: int = 2) -> str:
     t = ("%.*f" % (nd, v)).rstrip("0").rstrip(".") if nd else "%d" % round(v)
     return "0" if t in ("-0", "") else t
@@ -150,14 +163,19 @@ class EoiDialog(QtWidgets.QDialog):
         for key, (label, units, dflt, lo, hi) in _eoi.CONDITIONS.items():
             lbl = QtWidgets.QLabel(label)
             sp = QtWidgets.QDoubleSpinBox()
-            sp.setRange(lo, hi)
             sp.setDecimals(0)
             sp.setSingleStep(5.0 if units == "°C" else 10.0)
             sp.setSuffix(" " + units)
-            sp.setValue(dflt)
-            sp.setToolTip("%s picks the start-of-injection correction the ECU "
-                          "adds (%.0f %s: none on stock files)."
-                          % (label, dflt, units))
+            if dflt is None:
+                # one step below the range: "Reference", the ECU's own
+                # reference temperature (no correction)
+                sp.setRange(lo - 1.0, hi)
+                sp.setSpecialValueText("Reference")
+                sp.setValue(lo - 1.0)
+            else:
+                sp.setRange(lo, hi)
+                sp.setValue(dflt)
+            sp.setToolTip(_COND_TIPS.get(key, label))
             sp.valueChanged.connect(lambda _v: self._conditions_changed())
             top.addWidget(lbl)
             top.addWidget(sp)
@@ -324,8 +342,10 @@ class EoiDialog(QtWidgets.QDialog):
             "ECU blends.")
         self.collapse_act.setEnabled(not start)
 
-    def conditions(self) -> Dict[str, float]:
-        return {k: sp.value() for k, (_l, sp) in self.cond.items()}
+    def conditions(self) -> Dict[str, Optional[float]]:
+        return {k: (None if sp.specialValueText() and sp.value() <= sp.minimum()
+                    else sp.value())
+                for k, (_l, sp) in self.cond.items()}
 
     def _conditions_changed(self) -> None:
         cond = self.conditions()
@@ -563,6 +583,12 @@ class EoiDialog(QtWidgets.QDialog):
                 _num(calc.fuel_q(cell.rpm, cell.q), 1))
         else:
             where = "%s rpm, %s mg" % (_num(cell.rpm, 0), _num(cell.q, 1))
+        fq = calc.fuel_q(cell.rpm, cell.q)
+        if cell.q_dur is not None and abs(cell.q_dur - fq) > 0.005:
+            where += " &nbsp;<span style='color:gray'>(duration read at %s mg: fuel " \
+                     "temperature %s %s mg)</span>" % (
+                         _num(cell.q_dur, 2), "+" if cell.q_dur > fq else "−",
+                         _num(abs(cell.q_dur - fq), 2))
         self.info.setText(
             "<b>%s</b><br>"
             "SOI %s° BTDC &nbsp;<span style='color:gray'>(%s)</span>%s<br>"
@@ -577,7 +603,7 @@ class EoiDialog(QtWidgets.QDialog):
         for i, _w in cell.dur_members:
             e = calc.dur_t[i].e
             cells = [(rr, cc) for rr, cc, _ in calc.dur_t[i].weights(
-                cell.rpm, calc.fuel_q(cell.rpm, cell.q))]
+                cell.rpm, cell.q_dur if cell.q_dur is not None else cell.q)]
             menu.addAction(e.name, lambda e=e, cl=cells: self._goto(e, cl))
 
     # --------------------------------------------------------------- go to

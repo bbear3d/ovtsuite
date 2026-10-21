@@ -300,13 +300,23 @@ def test_driver_request_below_the_limit_is_not_a_limiter():
     assert tuner._limiter(run, 0) == "smoke limit"
 
 
-def _timing_log(tmp_path, lq, **kw):
+def _timing_log(tmp_path, lq, model_soi=False, **kw):
+    """``model_soi``: log the start the ECU's base set gives at the pull's
+    coolant (the End of injection model), not phiBas9 -- what a real log of
+    a cold engine shows."""
     import logtune_sim as sim
     s, n = lq
     car = sim.Car(s)
     rows = []
     for k in range(3):
         rows += sim.wot_pull(car, t0=k * 20.0, **kw)
+    if model_soi:
+        from ovtsuite import eoi
+        calc = eoi.Calculator(eoi.models(s)[0])
+        clt, late = kw.get("clt", 90.0), kw.get("eoi", 6.0)
+        for _t, v in rows:
+            v["soi"] = calc.cell(clt, v["rpm"], v["iq"]).soi_btdc
+            v["dur"] = v["soi"] + late
     return sim.write_log(str(tmp_path / "t.csv"), s, n, [1, 4, 7, 10, 74], rows)
 
 
@@ -407,11 +417,16 @@ def test_warmup_rows_correct_only_warmup_timing_maps(lq, tmp_path):
     Warm-up rows correct 7/8 and never 9; switched off, they correct nothing."""
     from ovtsuite.logtune import Options, analyse, runs_from_paths
     s, n = lq
-    runs = runs_from_paths([_timing_log(tmp_path, lq, eoi=13.0, clt=40.0)], n)
+    runs = runs_from_paths([_timing_log(tmp_path, lq, model_soi=True, eoi=13.0, clt=40.0)], n)
     o = Options(correct_pilot=False, correct_smoke=False, correct_soi=True)
     res = analyse(s, runs, o)
     maps = {w.target.name for w in res.plan.effective_writes}
-    assert maps and maps <= {"InjCrv_phiBas7_GMAP", "InjCrv_phiBas8_GMAP"}
+    # the base maps read at 40 deg C; where the dynamic set gives the same
+    # start the log can't tell them apart, so its warm-up maps move too --
+    # never a warm map of either set
+    assert maps & {"InjCrv_phiBas7_GMAP", "InjCrv_phiBas8_GMAP"}
+    assert maps <= {"InjCrv_phiBas7_GMAP", "InjCrv_phiBas8_GMAP",
+                    "InjCrv_phiDyn0_GMAP", "InjCrv_phiDyn1_GMAP", "InjCrv_phiDyn2_GMAP"}
     assert res.plan.ok
     o.tune_warmup = False
     off = analyse(s, runs, o)
@@ -576,3 +591,64 @@ def test_pres_smoke_ignores_the_lagging_air_reading_right_after_a_pedal_step(lq,
 
     assert downs(Options(correct_pilot=False, maf_settle_s=0.0)), "the test must provoke a cut"
     assert downs(Options(correct_pilot=False)) == []
+
+
+# ------------------------------------------------------- dynamic SOI set
+def _dyn_log(tmp_path, lq, groups, smoke_torque=5000.0, soi_from=None, name="d.csv"):
+    import logtune_sim as sim
+    s, n = lq
+    car = sim.Car(s)
+    rows = []
+    for k in range(3):
+        rows += sim.wot_pull(car, t0=k * 20.0, eoi=13.0, smoke_torque=smoke_torque)
+    if soi_from is not None:                       # the ECU on another SOI set
+        from ovtsuite import eoi
+        calc = eoi.Calculator(eoi.models(s)[0], soi_set=soi_from)
+        for _t, v in rows:
+            v["soi"] = calc.cell(90.0, v["rpm"], v["iq"]).soi_btdc
+            v["dur"] = v["soi"] + 13.0
+    return sim.write_log(str(tmp_path / name), s, n, groups, rows)
+
+
+@needs_ref
+def test_smoke_limited_rows_correct_the_dynamic_soi_set(lq, tmp_path):
+    """With the torques logged, the ECU's own rule (request and torque limit
+    over the smoke limit by InjCrv_trqDyn*High_C) puts smoke-limited rows on
+    InjCrv_phiDyn*_GMAP -- the base maps are not what the ECU read there."""
+    from ovtsuite.logtune import Options, analyse, runs_from_paths
+    s, n = lq
+    o = Options(correct_pilot=False, correct_smoke=False, correct_soi=True)
+    groups = [1, 4, 7, 8, 10, 11, 74]
+    runs = runs_from_paths([_dyn_log(tmp_path, lq, groups, smoke_torque=100.0)], n)
+    if not all(r.has("trq_smk") and r.has("trq_lim") and r.has("trq_drv") for r in runs):
+        pytest.skip("the LQ's blocks %s don't carry the three torques" % groups)
+    res = analyse(s, runs, o)
+    maps = {w.target.name for w in res.plan.effective_writes if w.target.name.startswith("InjCrv_phi")}
+    assert maps and all(m.startswith("InjCrv_phiDyn") for m in maps), maps
+    # not smoke-limited: the base maps, as before
+    runs = runs_from_paths([_dyn_log(tmp_path, lq, groups, name="b.csv")], n)
+    res = analyse(s, runs, o)
+    maps = {w.target.name for w in res.plan.effective_writes if w.target.name.startswith("InjCrv_phi")}
+    assert maps and all(m.startswith("InjCrv_phiBas") for m in maps), maps
+
+
+@needs_ref
+def test_without_torques_the_logged_soi_names_the_set(lq, tmp_path):
+    """No torques logged: a logged start that matches the dynamic set's (and
+    not the base set's) start puts the row on the dynamic set."""
+    from ovtsuite.logtune import Options, analyse, runs_from_paths
+    s, n = lq
+    o = Options(correct_pilot=False, correct_smoke=False, correct_soi=True)
+    runs = runs_from_paths([_dyn_log(tmp_path, lq, [1, 4, 7, 10, 74], soi_from="dyn")], n)
+    if any(r.has("trq_smk") for r in runs):
+        pytest.skip("these blocks carry the smoke limit")
+    res = analyse(s, runs, o)
+    maps = {w.target.name for w in res.plan.effective_writes if w.target.name.startswith("InjCrv_phi")}
+    # low speed, where the sets differ by degrees: the dynamic maps; high
+    # speed, where they agree within a degree: both sets
+    assert any(m.startswith("InjCrv_phiDyn") for m in maps), maps
+    dyn_low = [w for w in res.plan.effective_writes if w.target.name.startswith("InjCrv_phiDyn")
+               and w.target.x_values()[w.col] <= 2000]
+    bas_low = [w for w in res.plan.effective_writes if w.target.name.startswith("InjCrv_phiBas")
+               and w.target.x_values()[w.col] <= 1500]
+    assert dyn_low and not bas_low

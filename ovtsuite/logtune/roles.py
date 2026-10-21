@@ -199,7 +199,8 @@ RECIPES: Tuple[Recipe, ...] = (
            "to the limiter, twice; repeat in 4th. Let the intercooler cool "
            "between runs."),
     Recipe("timing", "Injection timing (start + duration)",
-           ("rpm", "iq", "soi", "dur"), ("clt", "tfuel", "egt"),
+           ("rpm", "iq", "soi", "dur"), ("clt", "tfuel", "egt", "trq_smk", "trq_drv",
+                                         "trq_lim", "atm"),
            "Coolant at 70 deg C or more. Same full-throttle pulls as the fuelling log, "
            "plus a few seconds at steady 2000/2500/3000 rpm part throttle."),
     Recipe("egt", "Exhaust temperature (pre-turbine sensor)",

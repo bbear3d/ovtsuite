@@ -131,3 +131,18 @@ def test_soi_sets_and_conditions(win):
     d.grid.setCurrentCell(4, 5)
     assert "°C coolant" in d.info.text()
     d.close()
+
+
+def test_fuel_temperature_input(win):
+    from ovtsuite import gui_eoi
+    d = gui_eoi.open_for(win.current)
+    QtWidgets.QApplication.processEvents()
+    lbl, sp = d.cond["fuel"]
+    assert not sp.isHidden()
+    assert d.conditions()["fuel"] is None and sp.text() == "Reference"
+    sp.setValue(20.0)
+    QtWidgets.QApplication.processEvents()
+    assert d.calc.conditions["fuel"] == 20.0
+    d.grid.setCurrentCell(4, 5)
+    assert "fuel temperature" in d.info.text()
+    d.close()

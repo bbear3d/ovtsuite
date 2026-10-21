@@ -1317,6 +1317,108 @@ class LogTuner:
         sel = self.curve_at("InjCrv_phiBas_CUR", clt if clt is not None else 90.0)
         return self._blend(sel, "InjCrv_phiBas%d_GMAP", self.ent)
 
+    def _dyn_maps(self, clt):
+        """[(map entity, weight)] InjCrv_phiDyn_CUR blends at this coolant
+        temperature: the dynamic SOI set, which the ECU reads INSTEAD of the
+        base set while the smoke limit is the binding torque limit."""
+        sel = self.curve_at("InjCrv_phiDyn_CUR", clt if clt is not None else 90.0)
+        return self._blend(sel, "InjCrv_phiDyn%d_GMAP", self.ent)
+
+    #: The ECU's dynamic-SOI condition (03G906016KN routine 0x5E834), each
+    #: with its hysteresis pair: (logged value, high, low)
+    _DYN_HYS = (("dyn_des", "InjCrv_trqDynDesHigh_C", "InjCrv_trqDynDesLow_C"),
+                ("dyn_lim", "InjCrv_trqDynLimHigh_C", "InjCrv_trqDynLimLow_C"),
+                ("clt", "InjCrv_tDynClntHigh_C", "InjCrv_tDynClntLow_C"),
+                ("atm", "InjCrv_pDynAPHigh_C", "InjCrv_pDynAPLow_C"))
+
+    def dyn_enabled(self) -> bool:
+        """Whether the file switches dynamic SOI on and calibrates its set."""
+        return bool(self.const("InjCrv_swtDyn_C", 0)) and bool(self._dyn_maps(90.0))
+
+    def _dyn_states(self, run):
+        """Per row of ``run``: True when the ECU ran on the dynamic SOI set,
+        False when on the base set, None when the log can't tell.
+
+        The ECU's rule, with each threshold's hysteresis carried from row to
+        row: the torque request over the smoke limit above
+        InjCrv_trqDynDes*_C, the torque limit (EngPrt_trqLim) over the smoke
+        limit above InjCrv_trqDynLim*_C, coolant above InjCrv_tDynClnt*_C and
+        air pressure above InjCrv_pDynAP*_C, with InjCrv_swtDyn_C set. The
+        request is the logged driver's wish (the ECU uses the slow-filtered
+        request plus the idle governor, which the measuring blocks don't
+        carry); the boost-control plausibility check it also makes is not
+        logged."""
+        n = len(run)
+        if not self.dyn_enabled():
+            return [False] * n
+        th = {k: (self.const(hi), self.const(lo)) for k, hi, lo in self._DYN_HYS}
+        if any(v[0] is None or v[1] is None for v in th.values()):
+            return [None] * n
+        state = {k: False for k in th}
+        out = []
+        for i in range(n):
+            drv, smk, lim = run.get("trq_drv", i), run.get("trq_smk", i), run.get("trq_lim", i)
+            vals = {"dyn_des": None if drv is None or smk is None else drv - smk,
+                    "dyn_lim": None if lim is None or smk is None else lim - smk,
+                    "clt": run.get("clt", i), "atm": run.get("atm", i)}
+            known = True
+            for k, (hi, lo) in th.items():
+                x = vals[k]
+                if x is None:
+                    if k in ("clt", "atm") and hi <= 0 and lo <= 0:
+                        state[k] = True          # threshold at/below any real value
+                        continue
+                    known = False
+                    continue
+                if x > hi:
+                    state[k] = True
+                elif x < lo:
+                    state[k] = False
+            out.append(all(state.values()) if known else None)
+        return out
+
+    def _dyn_by_soi(self, run, i, v):
+        """When the log can't tell by the ECU's rule: which set the logged
+        start of injection itself came from. The End of injection model gives
+        the start the base set and the dynamic set would produce at the row's
+        speed, quantity and coolant (and logged air pressure / intake air when
+        there); the logged value names the set when it is within 1 degree of
+        one and clearly apart from the other; "both" when the two sets give
+        the same start there (within 1 degree): the row could have run on
+        either, and the same advance is right for both; None when neither
+        matches (the model is off there)."""
+        calcs = getattr(self, "_dyn_calcs", None)
+        if calcs is None:
+            calcs = self._dyn_calcs = {}
+            try:
+                ms = [m for m in _eoi.models(self.s) if not m.missing]
+                if ms and any(x.key == "dyn" for x in ms[0].soi_sets):
+                    calcs["base"] = _eoi.Calculator(ms[0])
+                    calcs["dyn"] = _eoi.Calculator(ms[0], soi_set="dyn")
+            except Exception:
+                calcs.clear()
+        if not calcs:
+            return None
+        clt = run.get("clt", i)
+        cond = {}
+        if run.get("atm", i) is not None:
+            cond["baro"] = run.get("atm", i)
+        if run.get("iat", i) is not None:
+            cond["air"] = run.get("iat", i)
+        got = {}
+        for k, c in calcs.items():
+            c.conditions.update(cond)
+            try:
+                got[k] = c.cell(clt if clt is not None else 90.0, v["rpm"], v["iq"]).soi_btdc
+            except Exception:
+                return None
+        if abs(got["dyn"] - got["base"]) < 1.0:
+            return "both"
+        near = min(got, key=lambda k: abs(got[k] - v["soi"]))
+        if abs(got[near] - v["soi"]) > 1.0:
+            return None
+        return near == "dyn"
+
     def _warm_soi_set(self):
         """Every SOI base map a warm engine (warm_clt .. 90 deg C) can read."""
         seen, out = set(), []
@@ -1341,7 +1443,8 @@ class LogTuner:
         if e is None:
             temps = [self.o.warm_clt, 90.0]
         else:
-            temps = [t for t in self._map_clt_range(self._soi_maps, e) if t <= 90.0] or [90.0]
+            sel = self._dyn_maps if e.name.startswith("InjCrv_phiDyn") else self._soi_maps
+            temps = [t for t in self._map_clt_range(sel, e) if t <= 90.0] or [90.0]
             ys = lim.y_values()
             lo, hi = min(temps), max(temps)
             temps = [lo, hi] + [y for y in ys[:grid.effective_len(ys)] if lo < y < hi]
@@ -1431,22 +1534,42 @@ class LogTuner:
         warn = getattr(self, "_egt_warn", None) or self.egt_limits()[0]
         acc, want, ents = defaultdict(float), defaultdict(float), {}
         calc = self._eoi_calc()
+        dyn_on = self.dyn_enabled()
+        n_dyn = n_unknown = 0
         for run in self.runs:
+            states = self._dyn_states(run) if dyn_on else None
             for i, v in self._rows(run, ("rpm", "iq", "soi", "dur"), warm=False):
                 if v["iq"] < o.soi_min_iq:
+                    continue
+                dyn = states[i] if states is not None else False
+                if dyn is None:
+                    dyn = self._dyn_by_soi(run, i, v)
+                if dyn is None:
+                    # the ECU may have been on either set: a correction could
+                    # land in maps it wasn't reading
+                    n_unknown += 1
                     continue
                 late = (v["dur"] - v["soi"]) - o.eoi_target
                 if late > 0 and calc is not None:
                     # the duration the ECU uses depends on the SOI (its
                     # duration tables are picked by SOI): solve for the
                     # advance that really lands on the target
+                    # the duration maps read the quantity corrected for the
+                    # logged fuel temperature
+                    calc.conditions["fuel"] = run.get("tfuel", i)
                     adv = _eoi.advance_for_target(calc, v["rpm"], v["iq"],
-                                                  v["soi"], v["dur"], o.eoi_target)
+                                                  v["soi"], v["dur"], o.eoi_target,
+                                                  coolant=run.get("clt", i) or 90.0)
                     if adv is not None:
                         late = max(adv, 0.0)
                 hot = egt_ok and (run.get("egt", i) or 0) >= warn
                 need = max(late, 0.0) + (0.5 if hot else 0.0)
-                for e, wm in self._maps_for_row(self._soi_maps, run, i, blend_ok=True):
+                if dyn is True:
+                    n_dyn += 1
+                sels = {True: (self._dyn_maps,), False: (self._soi_maps,),
+                        "both": (self._soi_maps, self._dyn_maps)}[dyn]
+                for e, wm in [x for sel in sels
+                              for x in self._maps_for_row(sel, run, i, blend_ok=True)]:
                     ents[e.name] = e
                     for r, c, w in grid.weights(e, v["rpm"], v["iq"]):
                         acc[(e.name, r, c)] += w * wm
@@ -1470,15 +1593,29 @@ class LogTuner:
             self.res.cells.append(CellNote(e.name, r, c, xs[c], ys[r], old, e.clamp(new), w, why))
             touched.add(name)
             n += 1
+        if n_unknown:
+            self.res.add(INFO, "injection",
+                         "%d row(s) left out of the timing correction: dynamic SOI unknown" % n_unknown,
+                         "This file uses dynamic SOI (InjCrv_swtDyn_C = 1): while the smoke limit is "
+                         "the binding torque limit the ECU reads InjCrv_phiDyn*_GMAP instead of the base "
+                         "maps. Which set a row ran on comes from the driver's wish, the torque limit "
+                         "and the smoke limit when they are logged (the Injection timing preset adds "
+                         "them when there is room), else from which set's start of injection the "
+                         "logged one matches. For these rows neither worked, so they were not used "
+                         "rather than corrected in maps the ECU may not have been reading.")
         if n:
             self.res.add(WARN, "injection", "Start of injection advanced in %d cell(s) (opt-in)" % n,
                          "The advance is solved with the ECU's own choice of duration table at the "
                          "new start (see Tools > End of injection). "
                          "In %s, at most %.1f deg per cell per pass, capped at InjCrv_phiMIMax_MAP and "
-                         "%.0f deg BTDC. Warm-up rows only move the maps InjCrv_phiBas_CUR selects "
+                         "%.0f deg BTDC. Rows the ECU ran on the dynamic SOI set (smoke-limited, "
+                         "%d here) move InjCrv_phiDyn*_GMAP instead of the base maps; where the "
+                         "two sets give the same start and the log can't tell them apart, both move. "
+                         "Warm-up rows only move the maps InjCrv_phiBas_CUR selects "
                          "below %.0f deg C coolant. Earlier injection raises peak cylinder pressure: listen for "
                          "knock, log the timing preset after every pass, and stop once end of injection "
-                         "is on target." % (", ".join(sorted(touched)), o.soi_step, o.soi_max, o.warm_clt))
+                         "is on target." % (", ".join(sorted(touched)), o.soi_step, o.soi_max, n_dyn,
+                                            o.warm_clt))
 
     def _timing(self):
         if not all(self._any(r) for r in ("rpm", "iq", "soi", "dur")):

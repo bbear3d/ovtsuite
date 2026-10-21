@@ -7,8 +7,8 @@
 """Publish the open-source parts of this repository, and keep licence headers.
 
 This repository is private and holds everything: the base app (open source,
-MPL-2.0), the VDO cluster module (open source, MPL-2.0, its own repository)
-and the closed-source control-unit modules (the module EULA,
+MPL-2.0), the open-source modules (MPL-2.0, each in its own repository: the
+VDO cluster module and the ZF 5HP module) and the closed-source control-unit modules (the module EULA,
 ``ovtsuite/modules/EULA.txt``). Its history carries all of them, so it is
 never pushed anywhere public. This tool copies the open parts into separate
 trees whose history starts fresh:
@@ -17,15 +17,16 @@ trees whose history starts fresh:
         the base app: every file build.ownership() gives the base app, plus
         the root files, packaging, docs, tools and tests listed below
 
-    python tools/export_public.py vdo DEST [--init] [--force]
-        the VDO cluster module: ovtsuite/vdo/, the data it owns, its tests
+    python tools/export_public.py vdo|zf5hp DEST [--init] [--force]
+        an open-source module: its package (ovtsuite/<id>/), the data it owns,
+        the files OPEN_MODULES lists for it, and a README and LICENSE
 
     python tools/export_public.py headers [--check]
         put the SPDX licence header on every source file in THIS tree (MPL-2.0
         for base and open-module files, the EULA for closed-module files);
         --check lists the files that lack the right one and exits 1
 
-    python tools/export_public.py list base|vdo
+    python tools/export_public.py list base|vdo|zf5hp
         print what an export would contain, and nothing else
 
 An export copies the working tree's files (tracked, or new and not ignored),
@@ -87,6 +88,7 @@ BASE_TESTS_EXCLUDE = [
     "tests/test_export_public.py",
     "tests/test_edc15_fnw_sets.py",        # private tools/add_soi_set_edc15.py
     "tests/test_eoi16_corrections.py",     # private tools/add_soicor_edc16.py
+    "tests/test_eoi16_fuel.py",            # private tools/add_fuelcor_edc16.py
 ]
 
 #: Files of the VDO export outside the module's own package and data.
@@ -94,6 +96,15 @@ VDO_FILES = [
     "tests/test_vdo.py", "tests/test_vdo_flash.py", "tests/test_vdo_sweep.py",
 ]
 VDO_ID = "vdo"
+
+#: Files of the ZF 5HP export outside the module's own package. The K-line
+#: flasher (ovtsuite/flash/zf5hp.py) and the identification
+#: (ovtsuite/platforms/zf5hp.py) are base files, so test_flash_zf5hp.py stays
+#: in the base export; test_zf5hp.py needs the module's checksum and tables.
+ZF5HP_FILES = [
+    "tests/test_zf5hp.py",
+]
+ZF5HP_ID = "zf5hp"
 
 #: Never published, whatever a list above says.
 NEVER = [
@@ -198,7 +209,7 @@ def _module_import(specs):
 
 
 def select(which: str):
-    """(paths to export, {path: owner}) for 'base' or 'vdo'."""
+    """(paths to export, {path: owner}) for 'base' or an open module's id."""
     specs = build._specs(SRC_PKG)
     owners = build.ownership(SRC_PKG, specs)
     files = _git_files()
@@ -212,14 +223,16 @@ def select(which: str):
                 continue                       # __pycache__, .tmp: not walked
             owner = owners[rel]
             pkg_owner[p] = owner
-            if (which == "base" and not owner) or (which == VDO_ID and owner == VDO_ID):
+            if (which == "base" and not owner) or (which != "base" and owner == which):
                 out.append(p)
             continue
-        if which == VDO_ID:
-            if _match(p, VDO_FILES):
+        if which != "base":
+            if _match(p, OPEN_MODULES[which]["files"]):
                 out.append(p)
-                pkg_owner[p] = VDO_ID
+                pkg_owner[p] = which
             continue
+        if any(_match(p, m["files"]) for m in OPEN_MODULES.values()):
+            continue                           # an open module's own file
         if p.startswith("tests/") and p.endswith(".py") and not _match(p, BASE_FILES):
             if p in BASE_TESTS_EXCLUDE:
                 continue
@@ -244,8 +257,8 @@ def _leaks(which: str, paths, owners) -> list:
         owner = owners.get(p, "")
         if which == "base" and owner:
             bad.append("%s: belongs to the %s module" % (p, owner))
-        if which == VDO_ID and owner != VDO_ID:
-            bad.append("%s: not part of the VDO module" % p)
+        if which != "base" and owner != which:
+            bad.append("%s: not part of the %s module" % (p, OPEN_MODULES[which]["name"]))
         with open(os.path.join(ROOT, p), "rb") as fh:
             if SECRET_TEXT.search(fh.read()):
                 bad.append("%s: contains a private key" % p)
@@ -353,9 +366,60 @@ mileage is illegal in most countries. See `LEGAL.md` in the base app.
 """
 
 
-def _write_vdo_extras(dest: str) -> None:
+ZF5HP_README = """# OVT-Suite ZF 5HP module
+
+The ZF 5HP transmission module for [OVT-Suite]({source}): the ZF 5HP19 (VW
+"01V") and 5HP24/24A (VW "01L") Bosch TCUs -- the CRC-16/XMODEM checksum and
+the calibration tables, which the module finds structurally in the image
+itself (ZF's self-describing maps). It bundles no definition file: no WinOLS
+map pack or other third-party definition is part of it.
+
+Identification, the `.sgo` container decode and the experimental K-line
+flasher are part of the base app, not of this module.
+
+## Licence
+
+This module is free software under the Mozilla Public License 2.0 (`LICENSE`,
+and `ovtsuite/zf5hp/LICENSE.txt`, which travels in the built package).
+
+## Building
+
+The module is laid out exactly as it sits inside the OVT-Suite source tree.
+Copy this repository's files over a checkout of the base app (same paths),
+then:
+
+    python tools/build_modules.py packages --modules zf5hp --unsigned
+
+That writes `dist/modules/zf5hp-<version>.ovtmod`. A module you build is not
+signed with the official key, so the app loads it only with **Allow unsigned
+modules (development)** ticked in Tools > Modules... (or `OVT_ALLOW_UNSIGNED=1`).
+The signed package ships with the OVT-Suite releases.
+
+Run its tests from the combined tree:
+
+    python -m pytest tests/test_zf5hp.py -q
+
+Most of them open reference images that are not published, and are skipped
+without them.
+
+## Trademarks and legal use
+
+ZF, Volkswagen and Audi are trademarks of their owners; this project is not
+affiliated with or endorsed by them. A wrong calibration can damage a
+transmission and change how the vehicle drives. See `LEGAL.md` in the base app.
+"""
+
+#: The open-source modules, each exported to its own repository.
+OPEN_MODULES = {
+    VDO_ID: {"name": "VDO", "files": VDO_FILES, "readme": VDO_README},
+    ZF5HP_ID: {"name": "ZF 5HP", "files": ZF5HP_FILES, "readme": ZF5HP_README},
+}
+
+
+def _write_module_extras(which: str, dest: str) -> None:
+    readme = OPEN_MODULES[which]["readme"]
     with open(os.path.join(dest, "README.md"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(VDO_README.format(source=branding.SOURCE_URL or "the base app"))
+        fh.write(readme.format(source=branding.SOURCE_URL or "the base app"))
     shutil.copy2(os.path.join(ROOT, "LICENSE"), os.path.join(dest, "LICENSE"))
     with open(os.path.join(dest, ".gitignore"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("__pycache__/\n*.py[cod]\n.pytest_cache/\ndist/\nbuild/\n")
@@ -379,8 +443,8 @@ def export(which: str, dest: str, force: bool = False, init: bool = False) -> in
         return 1
     _clear(dest)
     _copy(paths, owners, specs, dest)
-    if which == VDO_ID:
-        _write_vdo_extras(dest)
+    if which != "base":
+        _write_module_extras(which, dest)
     print("exported %d files to %s" % (len(paths), dest))
     for w in _warnings(which, paths):
         print("WARNING: " + w)
@@ -398,7 +462,7 @@ def headers(check: bool) -> int:
     specs = build._specs(SRC_PKG)
     owners = build.ownership(SRC_PKG, specs)
     public = {}
-    for which in ("base", VDO_ID):
+    for which in ("base",) + tuple(OPEN_MODULES):
         paths, own, _s = select(which)
         public.update((p, own.get(p, "")) for p in paths)
     wrong = []
@@ -438,7 +502,7 @@ def headers(check: bool) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("base", VDO_ID):
+    for name in ("base",) + tuple(OPEN_MODULES):
         s = sub.add_parser(name)
         s.add_argument("dest")
         s.add_argument("--force", action="store_true")
@@ -446,7 +510,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("headers")
     s.add_argument("--check", action="store_true")
     s = sub.add_parser("list")
-    s.add_argument("which", choices=("base", VDO_ID))
+    s.add_argument("which", choices=("base",) + tuple(OPEN_MODULES))
     a = ap.parse_args(argv)
     if a.cmd == "headers":
         return headers(a.check)
