@@ -146,3 +146,29 @@ def test_fuel_temperature_input(win):
     d.grid.setCurrentCell(4, 5)
     assert "fuel temperature" in d.info.text()
     d.close()
+
+
+def test_every_view_fills_its_cells_and_go_to_soi_works_without_a_selection(win):
+    """Each view gives its cells a light fill under dark text, so a dark theme
+    can't hide them (SOI and Duration used to have none); Go to SOI table
+    opens the table even with no cell selected, and says what it did."""
+    from ovtsuite import gui_eoi
+    ws = win.current
+    d = gui_eoi.open_for(ws)
+    QtWidgets.QApplication.processEvents()
+    for i in range(4):
+        d.mode_group.button(i).click()
+        QtWidgets.QApplication.processEvents()
+        it = d.grid.item(6, 6)
+        assert it.text() and it.background().style() != QtCore.Qt.BrushStyle.NoBrush, d.mode()
+    d.mode_group.button(0).click()
+    QtWidgets.QApplication.processEvents()
+    assert d.grid.currentRow() < 0
+    d.go_soi.click()
+    QtWidgets.QApplication.processEvents()
+    assert ws.model.entity.name.startswith("InjCrv_phiBas") and "Opened" in d.status.text()
+    d.grid.setCurrentCell(6, 6)
+    d.go_soi.click()
+    QtWidgets.QApplication.processEvents()
+    assert ("z", 6, 6) in ws.model.hl
+    d.close()

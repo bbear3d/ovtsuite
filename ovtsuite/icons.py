@@ -74,6 +74,7 @@ FOR_ACTION = {
     "tools/ecu-read-write": "cpu",
     "tools/data-logging": "chart-line",
     "tools/tune-from-logs": "sliders-horizontal",
+    "tools/end-of-injection": "syringe",
     "tools/bus-sniffer-j2534": "radio",
     "tools/ecu-simulator-bench": "flask-conical",
     "tools/ai/assistant": "sparkles",
