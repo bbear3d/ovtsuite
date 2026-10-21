@@ -111,12 +111,35 @@ table is often refused for lack of space. **Moving a pre-page table is not yet
 proven on a vehicle — flash it only with BDM recovery ready, and confirm the
 whole table logs as you edited it.**
 
+## Map sets
+
+Some EDC15 PD maps come in sets that share one pair of axes, each map's
+values stored apart -- the smoke limiters `mrwBRA0..2KR`, and the
+start-of-injection sets such as `fnwSWGK0..9KR`. The ECU reads the axes once
+for the whole set, so a set changes size **all together**: resize any map of
+it and every map of the set gets the new breakpoints, each with its own
+values recalculated, in every dataset, as one undo step. The dialog names the
+set.
+
+- The sets on one pair of axes are one set: on these ECUs the base
+  start-of-injection maps share their axes with the dynamic, altitude and
+  air-temperature sets (`fnwSWDY*`, `fnwSWAD*`, `fnwSWLT*`), 25 maps in all.
+- The curves that show a set's breakpoints (such as `mrwDZstzv`) follow the
+  new axes.
+- The maps of a set are usually packed with no spare room, so **In place**
+  can only make a set smaller; to make it bigger, choose **Move it to free
+  space**. The shared axes and every map's values are written to spare room
+  and the ECU's pointers to each of them re-pointed; the original set is left
+  as a fallback. A large set is refused when the free space can't hold it --
+  the base start-of-injection set usually is.
+- **Resizing a map set, in place or moved, is not yet proven on a vehicle.**
+  Flash it only with BDM recovery ready, and confirm every map of the set
+  logs as you edited it.
+
 ## What can't be resized (yet)
 
-- **Map sets** that share one pair of axes, each map's values stored apart
-  -- on EDC15 PD software the smoke limiters `mrwBRA0..2KR` and the
-  start-of-injection sets such as `fnwSWGK0..9KR`. A set can only change size
-  all together; the menu's tooltip names the set.
+- A map set whose pointers can't all be found (one for each axis and for
+  each map's values) is refused, with the reason.
 - Fixed-layout records with no point counts, such as the EDC15 fault-code
   conversion tables (`xcwFSPK...`): they aren't tuning maps.
 - Tables with 32-bit or floating-point axes.

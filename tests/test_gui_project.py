@@ -152,6 +152,35 @@ def test_last_used_tabs_and_opening_the_rest(G, win, car):
         w2.close_discarding()
 
 
+def test_a_binary_can_be_removed_from_the_project(win, car, monkeypatch):
+    from ovtsuite import gui_project as gp
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(
+        lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Yes))
+    win.open_path(car)
+    doc = gp.docs(win)[0]
+    ecu, tcu = sorted(_project_tabs(win), key=lambda t: t.project_ref.set.name)
+    assert gp.remove_binary(win, doc, tcu.project_ref.sid)
+    assert [s.name for s in doc.project.sets] == ["ECU"]
+    assert _project_tabs(win) == [ecu] and gp.docs(win) == [doc]
+    assert not gp.remove_binary(win, doc, ecu.project_ref.sid)   # the last one
+    assert ecu.save()
+    assert [s.name for s in ovt.Project.load(car).sets] == ["ECU"]
+
+
+def test_removing_the_open_binary_opens_another(win, car, monkeypatch):
+    from ovtsuite import gui_project as gp
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(
+        lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Yes))
+    win.open_path(car)
+    doc = gp.docs(win)[0]
+    tcu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "TCU")
+    assert win.close_tab(tcu)
+    ecu = _project_tabs(win)[0]
+    assert gp.remove_binary(win, doc, ecu.project_ref.sid)
+    assert gp.docs(win) == [doc]                    # the project stays open
+    assert [t.project_ref.set.name for t in _project_tabs(win)] == ["TCU"]
+
+
 def test_closing_the_last_tab_closes_the_project(win, car):
     from ovtsuite import gui_project as gp
     win.open_path(car)

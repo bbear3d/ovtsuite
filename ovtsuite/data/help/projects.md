@@ -238,7 +238,10 @@ Right-click an item for what can be done with it:
   file](editor/definitions.md)); **Hide the module's built-in maps** (when a
   module also defines the binary) to show only the definition's maps, or
   untick it to show them beside the module's again; remove it again.
-  The set's tooltip names the definition it has.
+  The set's tooltip names the definition it has. **Remove from the
+  project...** takes the binary out with all its versions and branches
+  (its open tab closes; logs, patches and attachments kept for it stay in
+  the project). A project keeps at least one binary.
 - **Branch** -- open it, make it the active branch (the one a first open
   shows), rename, **New branch from here**, delete (its history stays).
 - **Branch** or **Version** -- **Compare with project**: a binary version

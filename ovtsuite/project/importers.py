@@ -393,6 +393,18 @@ def _import_backup15(project, data, filename, into_set, branch):
 def _import_raw(project, data, filename, into_set, branch, sidecar_log,
                 definition):
     ident = _identify(data)
+    if not ident.known:
+        # A 16-bit bench/BDM read of a ZF 5HP flash is stored with the two
+        # bytes of every word exchanged, so it identifies as "unknown" as-is.
+        # Identify the NATIVE image so the member records the right platform
+        # (the bytes are kept as they came -- the session deswaps them on open,
+        # TunerSession._byte_swapped, and saves back swapped). Without this the
+        # member was platform "unknown": its module never engaged, so an
+        # auto-attached sidecar definition was applied instead of the module's
+        # structural maps and -- placed in the wrong byte order -- showed none.
+        from ..platforms import zf5hp as _z5p
+        if _z5p.byte_swapped(data):
+            ident = _identify(_z5p.swap16(data))
     s = _new_or_existing_set(project, into_set, ident.platform, filename,
                              ident.facts)
     role = "flash" if ident.known else "raw"
