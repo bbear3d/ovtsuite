@@ -57,8 +57,58 @@ def availability(ws, e) -> Optional[str]:
         return "The installed module for this ECU can't resize tables"
     main = _rz.main_of(s, e)
     if codec.start_of(main) is None:
-        return codec.why(main)
+        why = codec.why(main)
+        if "stored straight after" in why:      # values apart from the axes
+            return _set_reason(s, main) or why
+        return why
     return None
+
+
+def _set_reason(session, e) -> Optional[str]:
+    """When ``e`` is one map of a set that shares its axes (EDC15's
+    ``mrwBRA0..2KR``, ``fnwSWGK0..9KR``: one axis record, each member's
+    values apart), say so -- a set changes size only all together."""
+    axes = [a for a in ((e.x, e.y) if e.kind == "map" else (_rz.curve_axis(e),))
+            if a is not None and a.addr is not None]
+    if not axes:
+        return None
+    key = tuple(a.addr for a in axes)
+    group = getattr(e, "group", "") or ""
+    mates = []
+    for o in session.entities:
+        if o is e or o.kind != e.kind or (getattr(o, "group", "") or "") != group:
+            continue
+        oa = [a for a in ((o.x, o.y) if o.kind == "map" else (_rz.curve_axis(o),))
+              if a is not None and a.addr is not None]
+        if tuple(a.addr for a in oa) == key:
+            mates.append(o.name)
+    if not mates:
+        return None
+    names = sorted([e.name] + mates)
+    shown = ", ".join(names[:4]) + (", ..." if len(names) > 4 else "")
+    return ("this %s is one of a set of %d that share their axes (%s), each "
+            "with its values stored apart; a set can only change size all "
+            "together, which isn't available yet"
+            % (e.kind, len(names), shown))
+
+
+class _Spin(QtWidgets.QSpinBox):
+    """A spin box that says when the value changed by its arrows (buttons,
+    keys, wheel) -- those come in bursts, and the dialog waits for the burst
+    to end before it plans and previews again."""
+
+    stepping = False
+
+    def stepBy(self, steps):
+        self.stepping = True
+        try:
+            super().stepBy(steps)
+        finally:
+            self.stepping = False
+
+
+#: How long the size arrows must rest before the plan and preview follow.
+STEP_SETTLE_MS = 150
 
 
 class ResizeDialog(QtWidgets.QDialog):
@@ -135,14 +185,14 @@ class ResizeDialog(QtWidgets.QDialog):
         size = QtWidgets.QGroupBox("Size")
         f = QtWidgets.QFormLayout(size)
         row = QtWidgets.QHBoxLayout()
-        self.nx = QtWidgets.QSpinBox()
+        self.nx = _Spin()
         self.nx.setRange(2, max(main.nx, min(_rz.MAX_POINTS,
                                              max(main.nx, main.decl_nx))))
         self.nx.setValue(main.nx)
         row.addWidget(QtWidgets.QLabel("X points"))
         row.addWidget(self.nx)
         self.inplace.toggled.connect(self._method_changed)
-        self.ny = QtWidgets.QSpinBox()
+        self.ny = _Spin()
         self.ny.setRange(2, max(main.ny, min(_rz.MAX_POINTS,
                                              max(main.ny, main.decl_ny))))
         self.ny.setValue(main.ny)
@@ -223,9 +273,11 @@ class ResizeDialog(QtWidgets.QDialog):
         self.buttons.helpRequested.connect(self._help)
         v.addWidget(self.buttons)
 
-        self._fill_axes()
-        self.nx.valueChanged.connect(self._fill_axes)
-        self.ny.valueChanged.connect(self._fill_axes)
+        self._settle = QtCore.QTimer(self, singleShot=True, interval=STEP_SETTLE_MS)
+        self._settle.timeout.connect(self._fill_axes)
+        self._method_changed()              # the In place limits, and the axes
+        self.nx.valueChanged.connect(self._size_changed)
+        self.ny.valueChanged.connect(self._size_changed)
         self.fill.currentIndexChanged.connect(self._fill_axes)
         self.axes.itemChanged.connect(lambda *_a: self._update())
         self.plans: List[_rz.Plan] = []
@@ -245,20 +297,30 @@ class ResizeDialog(QtWidgets.QDialog):
     def relocating(self) -> bool:
         return self.relocate.isChecked()
 
+    def _size_changed(self, *_a):
+        """A new point count: at once when typed or set, once the arrows
+        rest when stepped (each plan of a move scans the program)."""
+        if self.nx.stepping or self.ny.stepping:
+            self._settle.start()
+        else:
+            self._settle.stop()
+            self._fill_axes()
+
     def _method_changed(self, *_a):
-        """Raise the point ceiling to the structural max when relocating (the
-        reserved-space cap no longer applies), and back when in place."""
+        """The point ceilings for the method: the structural maximum when the
+        table moves to free space; what fits in the room it has when in place
+        -- and a size set for a move comes back down to that."""
         main = self.lims[0]
         if self.relocating():
-            cap = _rz.MAX_POINTS
+            capx = capy = _rz.MAX_POINTS
         else:
-            cap = min(_rz.MAX_POINTS, max(main.nx, main.decl_nx))
-            capy = min(_rz.MAX_POINTS, max(main.ny, main.decl_ny))
-        self.nx.setMaximum(max(self.nx.value(), _rz.MAX_POINTS if
-                               self.relocating() else cap))
-        if self.is_map:
-            self.ny.setMaximum(max(self.ny.value(), _rz.MAX_POINTS if
-                                   self.relocating() else capy))
+            capx = max(main.nx, min(_rz.MAX_POINTS, main.max_nx))
+            capy = max(main.ny, min(_rz.MAX_POINTS, main.max_ny))
+        for box, cap in ((self.nx, capx), (self.ny, capy)):
+            box.blockSignals(True)
+            box.setMaximum(cap)             # clamps a larger value down to it
+            box.blockSignals(False)
+        self._settle.stop()
         self._fill_axes()
 
     def _axis_units(self) -> str:
@@ -440,6 +502,9 @@ class ResizeDialog(QtWidgets.QDialog):
             pass
 
     def _accept(self):
+        if self._settle.isActive():         # arrows clicked just now
+            self._settle.stop()
+            self._fill_axes()
         self._update()
         if not self.ok.isEnabled():
             return
