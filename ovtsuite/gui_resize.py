@@ -56,39 +56,23 @@ def availability(ws, e) -> Optional[str]:
     if codec is None:
         return "The installed module for this ECU can't resize tables"
     main = _rz.main_of(s, e)
+    members = _rz.set_of(s, main, codec)
+    if members:                         # a map set: resized all together
+        why = _rz.limits(s, main, codec).reason
+        return ("%s; %s" % (set_text(main, members), why)) if why else None
     if codec.start_of(main) is None:
-        why = codec.why(main)
-        if "stored straight after" in why:      # values apart from the axes
-            return _set_reason(s, main) or why
-        return why
+        return codec.why(main)
     return None
 
 
-def _set_reason(session, e) -> Optional[str]:
-    """When ``e`` is one map of a set that shares its axes (EDC15's
+def set_text(e, members) -> str:
+    """``e`` is one map of a set that shares its axes (EDC15's
     ``mrwBRA0..2KR``, ``fnwSWGK0..9KR``: one axis record, each member's
-    values apart), say so -- a set changes size only all together."""
-    axes = [a for a in ((e.x, e.y) if e.kind == "map" else (_rz.curve_axis(e),))
-            if a is not None and a.addr is not None]
-    if not axes:
-        return None
-    key = tuple(a.addr for a in axes)
-    group = getattr(e, "group", "") or ""
-    mates = []
-    for o in session.entities:
-        if o is e or o.kind != e.kind or (getattr(o, "group", "") or "") != group:
-            continue
-        oa = [a for a in ((o.x, o.y) if o.kind == "map" else (_rz.curve_axis(o),))
-              if a is not None and a.addr is not None]
-        if tuple(a.addr for a in oa) == key:
-            mates.append(o.name)
-    if not mates:
-        return None
-    names = sorted([e.name] + mates)
+    values apart) -- which changes size only all together."""
+    names = [m.name for m in members]
     shown = ", ".join(names[:4]) + (", ..." if len(names) > 4 else "")
     return ("this %s is one of a set of %d that share their axes (%s), each "
-            "with its values stored apart; a set can only change size all "
-            "together, which isn't available yet"
+            "with its values stored apart; the set changes size all together"
             % (e.kind, len(names), shown))
 
 
@@ -121,6 +105,7 @@ class ResizeDialog(QtWidgets.QDialog):
         self.codec = _rz.codec_for(self.session)
         self.e = _rz.main_of(self.session, e)
         self.lims = _rz.all_limits(self.session, self.e, self.codec)
+        self.members = _rz.set_of(self.session, self.e, self.codec)
         self.is_map = self.e.kind == "map"
         g = _g()
         title = g._english(self.e) or self.e.name
@@ -131,9 +116,10 @@ class ResizeDialog(QtWidgets.QDialog):
             pass
         self.resize(760, 600)
         main = self.lims[0]
+        named = _rz.set_main(self.session, self.e, self.codec)
         prev = next((m for m in _rz.mods(self.session)
-                     if _rz.key_of(m) == (self.e.name, self.e.group or "",
-                                          self.e.kind)), None)
+                     if _rz.key_of(m) == (named.name, named.group or "",
+                                          named.kind)), None)
         self.stock = tuple(prev["stock"]) if prev else (main.nx, main.ny)
 
         v = QtWidgets.QVBoxLayout(self)
@@ -148,7 +134,12 @@ class ResizeDialog(QtWidgets.QDialog):
                "size when the definition is rebuilt."
                if getattr(ws, "project_ref", None) is not None else
                "<i>This tab is not a project yet: save it as one to keep the "
-               "new size when the definition is rebuilt.</i>"))
+               "new size when the definition is rebuilt.</i>")
+            + ("<br><br><b>%s</b>: every map of the set gets the new axes, "
+               "each with its own values recalculated." % html_escape(
+                   set_text(self.e, self.members)[0].upper()
+                   + set_text(self.e, self.members)[1:])
+               if self.members else ""))
         intro.setWordWrap(True)
         intro.setTextFormat(QtCore.Qt.TextFormat.RichText)
         v.addWidget(intro)
@@ -396,9 +387,10 @@ class ResizeDialog(QtWidgets.QDialog):
             xs = ys = None
         if not why:
             try:
-                if self.relocating():
-                    self.plans = _rz.plan(self.session, self.e, xs, ys,
-                                          self.codec, mode="relocate")
+                if self.relocating() or self.members:
+                    self.plans = _rz.plan(
+                        self.session, self.e, xs, ys, self.codec,
+                        mode="relocate" if self.relocating() else "inplace")
                 else:
                     self.plans = [_rz.plan_one(self.session, l.entity, xs, ys,
                                                self.codec, l)
@@ -445,7 +437,10 @@ class ResizeDialog(QtWidgets.QDialog):
 
     def _prepage_note(self) -> str:
         """The caution for moving an EDC15P pre-page table, when relocating
-        and the codec offers one; else empty."""
+        and the codec offers one -- or for resizing a map set, either way;
+        else empty."""
+        if self.members and getattr(self.codec, "set_unproven", None):
+            return self.codec.set_unproven(self.session, self.e)
         if not self.relocating():
             return ""
         fn = getattr(self.codec, "relocate_unproven", None)
@@ -458,8 +453,9 @@ class ResizeDialog(QtWidgets.QDialog):
         nx, ny = self.nx.value(), (self.ny.value() if self.is_map else 1)
         main = self.lims[0]
         verb = "Move + resize" if self.relocating() else "Resize"
-        return "%s %s %s -> %s" % (
-            verb, self.e.name, _rz.fmt_dims(self.e, main.nx, main.ny),
+        return "%s %s%s %s -> %s" % (
+            verb, self.e.name, " and its set" if self.members else "",
+            _rz.fmt_dims(self.e, main.nx, main.ny),
             _rz.fmt_dims(self.e, nx, ny))
 
     def _preview(self, xs, ys):
@@ -545,6 +541,18 @@ def resize_table(ws, e) -> bool:
             QtWidgets.QMessageBox.StandardButton.No)
         if r != QtWidgets.QMessageBox.StandardButton.Yes:
             return False
+    elif d.members:
+        r = QtWidgets.QMessageBox.warning(
+            ws, "Resize a map set",
+            "%s is one of a set of %d maps that share their axes; all of them "
+            "are resized, in every dataset, and the ECU's pointers to them "
+            "re-pointed. This is not yet proven on a vehicle, and a wrong "
+            "flash needs BDM recovery. Continue?" % (e.name, len(d.members)),
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if r != QtWidgets.QMessageBox.StandardButton.Yes:
+            return False
     elif d._prepage_move():
         r = QtWidgets.QMessageBox.warning(
             ws, "Move a pre-page table",
@@ -576,9 +584,10 @@ def resize_table(ws, e) -> bool:
                 ws, "Resize axes", "The table was resized, but the project "
                 "could not be saved: %s" % ex)
     try:
+        n = len(d.lims)
         ws.statusBar().showMessage(
             "%s (%d cop%s). Undo puts it back." % (
-                label, len(d.plans), "y" if len(d.plans) == 1 else "ies"),
+                label, n, "y" if n == 1 else "ies"),
             8000)
     except Exception:
         pass

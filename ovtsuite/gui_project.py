@@ -1835,6 +1835,44 @@ def close_project(win, doc) -> bool:
     return True
 
 
+def remove_binary(win, doc, sid) -> bool:
+    """Take binary set ``sid`` out of ``doc`` with its history (asking
+    first); its open tabs close. The project keeps at least one binary."""
+    proj = doc.project
+    s = proj.set(sid)
+    if len(proj.sets) < 2:
+        QtWidgets.QMessageBox.information(
+            win, "Remove binary", "%s is the project's only binary; a project "
+            "keeps at least one." % s.name)
+        return False
+    tabs = [t for t in doc.tabs(win) if t.project_ref.sid == s.id]
+    text = ("Remove \"%s\" from the project? Its versions and branches go "
+            "with it; logs, patches and attachments kept for it stay in the "
+            "project." % s.name)
+    if any(t.is_dirty() for t in tabs):
+        text += "\n\nIts open tab has unsaved changes; they are lost."
+    elif tabs:
+        text += "\n\nIts open tab closes."
+    if QtWidgets.QMessageBox.question(win, "Remove binary", text) \
+            != QtWidgets.QMessageBox.StandardButton.Yes:
+        return False
+    doc.__dict__["_hold"] = True        # its last tabs going keep it open
+    try:
+        for t in tabs:
+            win._remove_workspace(t, remember=False)
+        proj.remove_set(s.id)
+    finally:
+        doc.__dict__.pop("_hold", None)
+    if not doc.tabs(win):
+        rest = proj.sets[0]
+        open_branch(win, doc, rest.id, rest.active_branch or rest.branches[0].id)
+    remember(win, doc)
+    for t in doc.tabs(win):
+        win._workspace_changed(t)
+    refresh_panel(win)
+    return True
+
+
 class DocEntry:
     """A project with unsaved changes of its own and no edited tab, for the
     window's "Unsaved changes" list on exit."""
@@ -2913,6 +2951,12 @@ class ProjectPanel(AutoHideDock):
                 rm = m.addAction("Remove the definition",
                                  lambda: self._remove_def(d, sid))
                 rm.setEnabled(bool(main.definition))
+            m.addSeparator()
+            rb = m.addAction("Remove from the project...",
+                             lambda: remove_binary(self.win, d, sid))
+            rb.setEnabled(len(d.project.sets) > 1)
+            if len(d.project.sets) < 2:
+                rb.setToolTip("A project keeps at least one binary")
         elif kind == "branch":
             sid, bid = data[2], data[3]
             m.addAction("Open in a tab", lambda: open_branch(self.win, d, sid, bid))

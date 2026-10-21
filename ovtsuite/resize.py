@@ -361,6 +361,7 @@ def _starts(session, codec, skip) -> List[int]:
     except Exception:
         pass
     skip_ids = {id(x) for x in skip}
+    set_start = getattr(codec, "set_start", None)
     for o in ents:
         if id(o) in skip_ids:
             continue
@@ -368,6 +369,10 @@ def _starts(session, codec, skip) -> List[int]:
         if o.kind in ("map", "curve"):
             try:
                 s = codec.start_of(o)
+                if s is None and set_start is not None:
+                    s = set_start(o)
+                    if s is not None:       # a set member: its cells too
+                        out.append(o.addr)
             except Exception:
                 s = None
         if s is None:
@@ -399,6 +404,8 @@ def limits(session, e, codec: Optional[LayoutCodec] = None,
         return no("the installed module cannot resize tables on this platform")
     if e.kind not in ("map", "curve"):
         return no("only maps and curves have axes to resize")
+    if set_of(session, e, codec):
+        return set_limits(session, e, codec)
     start = codec.start_of(e)
     if start is None:
         return no(codec.why(e))
@@ -435,6 +442,8 @@ def all_limits(session, e, codec=None) -> List[Limits]:
     group = [e] + copies_of(session, e)
     if codec is None:
         return [limits(session, x, None) for x in group]
+    if set_of(session, e, codec):
+        return [limits(session, x, codec) for x in group]
     starts = _starts(session, codec, group)
     return [limits(session, x, codec, starts) for x in group]
 
@@ -461,11 +470,17 @@ class Plan:
     disp: int = 0                  # record start - slot target (EDC16 block)
     reserve: int = 0               # bytes the move claims in free space
     coverage: Optional[dict] = None  # EDC16: how the table's refs were carried
+    # a map set (one plan per member, and per axis shown as a curve of its
+    # own): the copy's first plan carries every write and ``set_info``
+    set_info: Optional[dict] = None
+    view: str = ""                 # 'x' / 'y': a curve showing that set axis
 
     @property
     def noop(self) -> bool:
         if self.mode == "relocate":
             return False
+        if self.writes is not None:
+            return self.new == self.old and not self.writes
         return self.new == self.old and self.data == self.old_bytes
 
     def byte_writes(self) -> List[Tuple[int, int, int]]:
@@ -514,6 +529,14 @@ def _encode_resized(e, codec, data, enc_start: int, old: Shape,
     resampled from its current cells -- the bytes alone, for either mode.
     ``enc_start`` is where the OLD record sits (its RAM pointers carry over).
     Raises ValueError on an axis that will not store."""
+    xs, ys, flat, nx, ny = _resampled(e, old, new_x, new_y)
+    return codec.encode(data, enc_start, e, nx, ny, xs, ys, flat), nx, ny
+
+
+def _resampled(e, old: Shape, new_x, new_y):
+    """``(xs, ys, cells, nx, ny)``: ``e`` on ``new_x``/``new_y`` (display
+    units) as raw breakpoints and raw cells in storage order, resampled from
+    its current cells. Raises ValueError on an axis that will not store."""
     bf = e.binfile
     nx = len(new_x)
     ny = len(new_y) if e.kind == "map" else 1
@@ -545,7 +568,7 @@ def _encode_resized(e, codec, data, enc_start: int, old: Shape,
             flat = [z[r][c] for r in range(ny) for c in range(nx)]
     else:
         flat = z[0]
-    return codec.encode(data, enc_start, e, nx, ny, xs, ys, flat), nx, ny
+    return xs, ys, flat, nx, ny
 
 
 def plan_one(session, e, new_x: Sequence[float], new_y: Sequence[float] = (),
@@ -589,7 +612,12 @@ def _alloc(codec, session, e, need: int, used: List[Tuple[int, int]]
     """A free offset for a ``need``-byte record in ``e``'s container, not
     overlapping ``used`` (prior relocations this batch and in the project).
     None when nothing fits."""
-    for fs, fl in codec.free_spans(session, e):
+    return _alloc_in(codec.free_spans(session, e), need, used)
+
+
+def _alloc_in(spans, need: int, used: List[Tuple[int, int]]) -> Optional[int]:
+    """:func:`_alloc` over free ``spans`` already worked out."""
+    for fs, fl in spans:
         pos = fs + (fs & 1)
         blocks = sorted(u for u in used if u[0] < fs + fl and u[1] > fs)
         for us, ue in blocks:
@@ -611,6 +639,8 @@ def _used_spans(session, codec) -> List[Tuple[int, int]]:
             fp = r.get("bytes")
             if ns and fp:
                 out.append((int(ns), int(ns) + int(fp)))
+        for a, b in m.get("reserved") or []:       # a moved map set's pieces
+            out.append((int(a), int(b)))
     return out
 
 
@@ -676,6 +706,8 @@ def plan(session, e, new_x, new_y=(), codec=None, mode="inplace") -> List[Plan]:
     resize. ``mode`` is ``"inplace"`` or ``"relocate"``."""
     codec = codec or codec_for(session)
     e = main_of(session, e)
+    if codec is not None and set_of(session, e, codec):
+        return plan_set(session, e, new_x, new_y, codec, mode)
     if mode == "relocate":
         if codec is None:
             raise ValueError("the installed module cannot resize this table")
@@ -689,6 +721,310 @@ def plan(session, e, new_x, new_y=(), codec=None, mode="inplace") -> List[Plan]:
         return out
     lims = all_limits(session, e, codec)
     return [plan_one(session, l.entity, new_x, new_y, codec, l) for l in lims]
+
+
+# ------------------------------------------------------------------ map sets
+# A map set ("Kennraum": EDC15 mrwBRA0..2KR, fnwSWGK0..9KR) is several maps
+# on ONE pair of axis records, each member's cells stored apart. The ECU
+# reads the axes once for the whole set, so the set changes size only all
+# together: the axis records are rewritten once and every member's cells are
+# resampled onto them, and the platform's pointers to each piece are
+# re-pointed where a piece moves (codec hooks ``set_start``, ``read_axes``,
+# ``encode_axes``, ``encode_cells``, ``axes_footprint``, ``set_pointers``).
+# The modifier (``mode: "set"``) records the pointer slots, so a version of
+# the set reads at whatever size ITS pointers lead to.
+
+def _axes_key(e) -> tuple:
+    axes = (e.x, e.y) if e.kind == "map" else (curve_axis(e),)
+    return tuple(a.addr if a is not None else None for a in axes)
+
+
+def set_of(session, e, codec=None) -> List[object]:
+    """The members of ``e``'s map set in ``e``'s dataset (``e`` included),
+    by cell address: every table on the same axis records. Empty for a table
+    with axes of its own whose cells follow them (an ordinary record), or a
+    platform with no sets. A member whose cells happen to follow the shared
+    axes (the first, once a set has been moved) is still a member -- resized
+    alone it would rewrite the axes under every other member."""
+    codec = codec or codec_for(session)
+    fn = getattr(codec, "set_start", None) if codec is not None else None
+    if fn is None or e.kind not in ("map", "curve"):
+        return []
+    try:
+        hdr = fn(e)
+    except Exception:
+        hdr = None
+    if hdr is None:
+        return []
+    key, grp, dm = _axes_key(e), e.group or "", dims(e)
+    out = [o for o in getattr(session, "entities", []) or []
+           if o is not e and o.kind == e.kind and (o.group or "") == grp
+           and _axes_key(o) == key and dims(o) == dm and o.addr != e.addr
+           and fn(o) == hdr]
+    if not out and codec.start_of(e) is not None:
+        return []                         # an ordinary record
+    return sorted(out + [e], key=lambda o: o.addr)
+
+
+def set_main(session, e, codec=None):
+    """The member a set's resize and modifier are named after (the first
+    by cell address in the main copy's dataset); ``e`` when not a set."""
+    e = main_of(session, e)
+    members = set_of(session, e, codec)
+    return members[0] if members else e
+
+
+def _set_views(session, members, shp: Shape) -> List[Tuple[object, str]]:
+    """Curves showing one of the set's axes as their values
+    (``mrwDZstzv``: cells = the breakpoints): ``[(entity, 'x'|'y')]``."""
+    e = members[0]
+    grp = e.group or ""
+    ids = {id(m) for m in members}
+    out = []
+    for o in getattr(session, "entities", []) or []:
+        if o.kind != "curve" or id(o) in ids or (o.group or "") != grp:
+            continue
+        ax = curve_axis(o)
+        if ax is None or ax.addr != o.addr:
+            continue
+        if o.addr == shp.x_addr:
+            out.append((o, "x"))
+        elif shp.y_addr is not None and o.addr == shp.y_addr:
+            out.append((o, "y"))
+    return out
+
+
+def _view_shape(shp: Shape, which: str) -> Shape:
+    a, n = (shp.x_addr, shp.nx) if which == "x" else (shp.y_addr, shp.ny)
+    return Shape(a - 4, n, 1, a, None, a, a + 2 * n)
+
+
+@dataclass
+class SetLimits(Limits):
+    """How far a map set (``entity`` and every member) can be resized in
+    place: the shared axes before the next object, and each member's cells
+    before theirs."""
+    members: List[object] = None
+    axes_room: int = 0
+    cells_room: List[int] = None
+    shape: Optional[Shape] = None          # the shared axes as they are
+
+    def fits(self, codec, nx: int, ny: int) -> Optional[str]:
+        e = self.entity
+        if self.reason:
+            return self.reason
+        if nx < 2 or (e.kind == "map" and ny < 2):
+            return "an axis needs at least 2 points"
+        if nx > MAX_POINTS or ny > MAX_POINTS:
+            return "an axis can have at most %d points" % MAX_POINTS
+        if nx > max(self.nx, self.decl_nx) or ny > max(self.ny, self.decl_ny):
+            return ("the definition reserves room for at most %s"
+                    % fmt_dims(e, max(self.nx, self.decl_nx),
+                               max(self.ny, self.decl_ny)))
+        ny = ny if e.kind == "map" else 1
+        need = codec.axes_footprint(e, nx, ny)
+        if need > self.axes_room:
+            return ("the set's shared axes need %d bytes; %d are free before "
+                    "the next object" % (need, self.axes_room))
+        cells = (e.bits // 8) * nx * ny
+        for m, room in zip(self.members, self.cells_room):
+            if cells > room:
+                return ("%s's values need %d bytes; %d are free before the "
+                        "next object -- move the set to free space instead"
+                        % (m.name, cells, room))
+        return None
+
+
+def set_limits(session, e, codec=None) -> SetLimits:
+    """What resizing ``e``'s whole set in place allows (format-defined, as
+    for one table: each piece up to the size the definition reserves, and
+    before the next object the image is known to hold)."""
+    codec = codec or codec_for(session)
+    members = set_of(session, e, codec)
+    nx, ny = dims(e)
+
+    def no(why):
+        return SetLimits(e, 0, nx, ny, nx, ny, 0, None, why, members=members,
+                         cells_room=[0] * len(members))
+
+    if not members:
+        return no(codec.why(e) if codec is not None else
+                  "the installed module cannot resize tables on this platform")
+    data = bytes(e.binfile.data)
+    hdr = codec.set_start(e)
+    shp = codec.read_axes(data, hdr, e)
+    if shp is None or (shp.nx, shp.ny) != (nx, ny) or \
+            shp.x_addr != (e.x.addr if e.kind == "map" else curve_axis(e).addr):
+        return no("the set's axes in the image do not match this table "
+                  "(0x%X)" % hdr)
+    try:
+        codec.set_pointers(data, hdr, e, [m.addr for m in members])
+    except ValueError as ex:
+        return no(str(ex))
+    views = [v for v, _w in _set_views(session, members, shp)]
+    starts = sorted(set(_starts(session, codec, members + views)
+                        + [m.addr for m in members]))
+    if e.kind == "map":
+        dnx, dny = e.declared_cols or nx, e.declared_rows or ny
+    else:
+        dnx, dny = max(e.declared_rows or 1, e.declared_cols or 1), 1
+    dnx, dny = max(nx, dnx), max(ny, dny)
+    step = e.bits // 8
+
+    def room(at, used, declared):
+        nxt = next((s for s in starts if s >= at + used), None)
+        r = declared if nxt is None else min(declared, nxt - at)
+        return max(r, used), nxt
+
+    axes_room, nxt = room(hdr, shp.end - hdr, codec.axes_footprint(e, dnx, dny))
+    cells_room = [room(m.addr, step * nx * ny, step * dnx * dny)[0]
+                  for m in members]
+    lim = SetLimits(e, hdr, nx, ny, nx, ny, axes_room, nxt, decl_nx=dnx,
+                    decl_ny=dny, members=members, axes_room=axes_room,
+                    cells_room=cells_room, shape=shp)
+    cap_x, cap_y = min(MAX_POINTS, dnx), min(MAX_POINTS, dny)
+    while lim.max_nx < cap_x and lim.fits(codec, lim.max_nx + 1, ny) is None:
+        lim.max_nx += 1
+    if e.kind == "map":
+        while lim.max_ny < cap_y and lim.fits(codec, nx, lim.max_ny + 1) is None:
+            lim.max_ny += 1
+    return lim
+
+
+def plan_set(session, e, new_x, new_y=(), codec=None, mode="inplace"
+             ) -> List[Plan]:
+    """Plans for ``e``'s whole map set in its dataset and in every other
+    dataset holding it -- all or none. Per copy, the first plan (the set's
+    first member) carries every byte write and ``set_info``; the others
+    re-shape the remaining members and the axis curves."""
+    codec = codec or codec_for(session)
+    if codec is None:
+        raise ValueError("the installed module cannot resize this table")
+    e = set_main(session, e, codec)
+    used = _used_spans(session, codec) if mode == "relocate" else []
+    names, out = None, []
+    for o in [e] + copies_of(session, e):
+        members = set_of(session, o, codec)
+        got = [m.name for m in members]
+        if not members:
+            raise ValueError("%s [%s]: %s" % (o.title, o.group or "",
+                                              codec.why(o)))
+        if names is None:
+            names = got
+        elif got != names:
+            raise ValueError("%s [%s]: its set is not the same maps (%s) as "
+                             "in %s" % (o.title, o.group or "",
+                                        ", ".join(got), e.group or "the set"))
+        out += _plan_set_copy(session, members, new_x, new_y, codec, mode,
+                              used)
+    return out
+
+
+def _plan_set_copy(session, members, new_x, new_y, codec, mode,
+                   used: List[Tuple[int, int]]) -> List[Plan]:
+    e0 = members[0]
+    nx = len(new_x)
+    ny = len(new_y) if e0.kind == "map" else 1
+    if nx < 2 or (e0.kind == "map" and ny < 2):
+        raise ValueError("%s: an axis needs at least 2 points" % e0.title)
+    if nx > MAX_POINTS or ny > MAX_POINTS:
+        raise ValueError("%s: an axis can have at most %d points"
+                         % (e0.title, MAX_POINTS))
+    data = bytes(e0.binfile.data)
+    hdr = codec.set_start(e0)
+    old = codec.read_axes(data, hdr, e0)
+    if old is None or (old.nx, old.ny) != dims(e0):
+        raise ValueError("%s: the set's axes in the image do not match the "
+                         "table" % e0.title)
+    try:
+        ptrs = codec.set_pointers(data, hdr, e0, [m.addr for m in members])
+    except ValueError as ex:
+        raise ValueError("%s: %s" % (e0.title, ex))
+    base = ptrs["base"]
+    cells = []
+    for m in members:
+        xs, ys, flat, nx, ny = _resampled(m, old, new_x, new_y)
+        cells.append(codec.encode_cells(m, flat))
+    axes = codec.encode_axes(data, hdr, e0, nx, ny, xs, ys)
+    reserved = []
+    if mode == "relocate":
+        if codec.container_of(session, e0) is None:
+            raise ValueError("%s: %s" % (e0.title,
+                                         codec.relocate_why(session, e0)))
+        spans = codec.free_spans(session, e0)
+        mine = []
+        for blob in [axes] + cells:
+            at = _alloc_in(spans, _even(len(blob)), used + mine)
+            if at is None:
+                need = sum(_even(len(b)) for b in [axes] + cells)
+                raise ValueError(
+                    "%s: not enough free space in the dataset to move the set "
+                    "there (needs %d bytes, in %d pieces)"
+                    % (e0.title, need, 1 + len(cells)))
+            mine.append((at, at + _even(len(blob))))
+        reserved = mine
+        used.extend(mine)                 # the next dataset's copy, and later
+        new_hdr = mine[0][0]
+        new_cells = [a for a, _b in mine[1:]]
+    else:
+        lim = set_limits(session, e0, codec)
+        why = lim.fits(codec, nx, ny)
+        if why:
+            raise ValueError("%s: %s" % (e0.title, why))
+        new_hdr, new_cells = hdr, [m.addr for m in members]
+    after = bytearray(data)
+    touched = set()
+
+    def put(at, blob):
+        after[at:at + len(blob)] = blob
+        touched.update(range(at, at + len(blob)))
+
+    put(new_hdr, axes)
+    for at, blob in zip(new_cells, cells):
+        put(at, blob)
+    x_rec = new_hdr + 4 + 2 * ny
+    targets = [(ptrs["axes"][0], new_hdr)]
+    if e0.kind == "map":
+        targets.append((ptrs["axes"][1], x_rec))
+    targets += list(zip(ptrs["cells"], new_cells))
+    for slots, to in targets:
+        for s in slots:
+            if codec.slot_target(data, s, base) == to:
+                continue
+            for a, _o, nb in codec.encode_pointer(data, s, to, base):
+                after[a] = nb
+                touched.add(a)
+    writes = [(a, data[a], after[a]) for a in sorted(touched)
+              if data[a] != after[a]]
+    # read back through the pointers, as the ECU will
+    blob = bytes(after)
+    shp = codec.read_axes(blob, new_hdr, e0)
+    ok = (shp is not None and (shp.nx, shp.ny) == (nx, ny)
+          and all(codec.slot_target(blob, s, base) == to
+                  for slots, to in targets for s in slots))
+    if not ok:
+        raise ValueError("%s: the rewritten set does not read back through its "
+                         "pointers (nothing was written)" % e0.title)
+    info = {"group": e0.group or "", "base": base,
+            "axis_slots": [list(s) for s in ptrs["axes"]],
+            "cell_slots": [list(s) for s in ptrs["cells"]],
+            "old_hdr": hdr, "hdr": new_hdr, "cells": list(new_cells),
+            "reserved": [list(r) for r in reserved]}
+    out = []
+    for i, (m, at) in enumerate(zip(members, new_cells)):
+        mshape = Shape(new_hdr, nx, ny, shp.x_addr, shp.y_addr, at,
+                       at + len(cells[i]))
+        out.append(Plan(m, new_hdr, (old.nx, old.ny), (nx, ny), b"", b"",
+                        mshape, mode=mode, writes=writes if i == 0 else [],
+                        new_start=new_hdr, old_start=hdr, base=base,
+                        slots=tuple(ptrs["axes"][0]),
+                        set_info=info if i == 0 else None))
+    for v, which in _set_views(session, members, old):
+        out.append(Plan(v, new_hdr, (old.nx, old.ny), (nx, ny), b"", b"",
+                        _view_shape(shp, which), mode=mode, writes=[],
+                        new_start=new_hdr, old_start=hdr, base=base,
+                        view=which))
+    return out
 
 
 # ------------------------------------------------------------------ entity
@@ -783,6 +1119,28 @@ def lines_up(session, e, data) -> bool:
     codec = codec_for(session)
     if codec is None or data is None:
         return True
+    hdr = None
+    if getattr(codec, "set_start", None) is not None:
+        try:
+            hdr = codec.set_start(e) if set_of(session, e, codec) else None
+        except Exception:
+            hdr = None
+        ax = curve_axis(e) if e.kind == "curve" else None
+        if hdr is None and ax is not None and ax.addr == e.addr:
+            hdr = e.addr - 4                # a curve showing a set's axis
+    if hdr is not None:
+        # a map set member: the shared axes must be where they are now, at
+        # the same size, in ``data`` too (a resize rewrites them; a move
+        # puts them -- and every member's cells -- somewhere else)
+        try:
+            now = codec.read_axes(bytes(session.binfile.data), hdr, e)
+            then = codec.read_axes(bytes(data), hdr, e)
+        except Exception:
+            return True
+        if now is None:
+            return True
+        return then is not None and (then.nx, then.ny, then.x_addr) == \
+            (now.nx, now.ny, now.x_addr)
     try:
         now = codec.record(bytes(session.binfile.data), e)
     except Exception:
@@ -823,10 +1181,20 @@ def merge(a, b) -> List[dict]:
         if cur is None:
             cur = out[k] = dict(m)
             cur["sizes"] = []
+            cur["reserved"] = []
         else:
-            for f in ("now", "when", "app", "copies"):
+            cur.setdefault("reserved", [])
+            # a map set's latest pointers and members (its slots are the
+            # same every time; where they lead is the bytes' business)
+            for f in ("now", "when", "app", "copies", "how", "sets",
+                      "members", "views"):
                 if f in m:
                     cur[f] = m[f]
+        for r in m.get("reserved") or []:
+            if list(r) not in cur["reserved"]:
+                cur["reserved"].append(list(r))
+        if not cur["reserved"]:
+            del cur["reserved"]
         for s in list(m.get("sizes") or []) + [m.get("now")]:
             if s and list(s) not in cur["sizes"]:
                 cur["sizes"].append(list(s))
@@ -856,6 +1224,46 @@ def _record(main, plans: List[Plan], stock) -> dict:
     else:
         rec["start"] = p0.start
     return rec
+
+
+def _view_stock(stock, which: str) -> Tuple[int, int]:
+    """The stock size of a curve showing set axis ``which``."""
+    return (stock[0] if which == "x" else stock[1]), 1
+
+
+def _set_record(main, plans: List[Plan], stock, prev) -> dict:
+    """The modifier for a map set resize (``mode: "set"``): the members, the
+    axis curves, and per dataset the pointer slots the set is reached
+    through, which apply follows."""
+    from . import branding
+    p0 = plans[0]
+    members = []
+    for p in plans:
+        if p.set_info is not None and members:
+            break                         # the next dataset's copy begins
+        if not p.view:
+            members.append(p.entity.name)
+    views = []
+    for p in plans:
+        if p.view and [p.entity.name, p.view] not in views:
+            views.append([p.entity.name, p.view])
+    stock_hdr = {r.get("group") or "": r.get("stock_hdr")
+                 for r in (prev or {}).get("sets") or []}
+    sets, reserved = [], []
+    for p in plans:
+        if p.set_info is None:
+            continue
+        r = dict(p.set_info)
+        r["stock_hdr"] = stock_hdr.get(r["group"]) or r["old_hdr"]
+        reserved += r.pop("reserved", [])
+        sets.append(r)
+    return {"name": main.name, "group": main.group or "", "kind": main.kind,
+            "mode": "set", "how": p0.mode, "stock": list(stock),
+            "now": list(p0.new), "sizes": [list(p0.new)],
+            "copies": len(sets) - 1, "members": members, "views": views,
+            "sets": sets, "reserved": reserved,
+            "when": time.strftime("%Y-%m-%d %H:%M"),
+            "app": getattr(branding, "__version__", "")}
 
 
 def codec_footprint(p: Plan) -> int:
@@ -915,6 +1323,78 @@ def _apply_relocate(session, m, codec, data) -> Tuple[bool, List[str]]:
     return moved, problems
 
 
+def _apply_set(session, m, codec, data) -> Tuple[bool, List[str]]:
+    """Re-shape every member of a resized map set (and its axis curves), in
+    every dataset, to wherever the set's ECU pointers lead in ``data``: the
+    first axis-record slot gives the axes (a size the set has had, the
+    second axis's slot agreeing), each member's cell slot its cells. A stock
+    or pre-resize image leads to the stock set and keeps it. Returns
+    (any-not-stock, problems)."""
+    kind = m.get("kind")
+    stock = tuple(m.get("stock") or ())
+    sizes = {tuple(s) for s in (m.get("sizes") or [])} | {stock}
+    names = list(m.get("members") or [])
+    moved, problems = False, []
+    for r in m.get("sets") or []:
+        grp = r.get("group") or ""
+        here = [e for e in getattr(session, "entities", []) or []
+                if (e.group or "") == grp]
+        ents = {e.name: e for e in here if e.kind == kind and e.name in names}
+        label = "%s [%s]" % (m.get("name"), grp)
+        if not names or set(ents) != set(names):
+            problems.append("%s: the set's maps are not all in this definition"
+                            % label)
+            continue
+        base = int(r.get("base", 0))
+        ax = r.get("axis_slots") or []
+        cs = r.get("cell_slots") or []
+        hdr = (codec.slot_target(data, int(ax[0][0]), base)
+               if ax and ax[0] else None)
+        e0 = ents[names[0]]
+        shp = codec.read_axes(data, hdr, e0) if hdr is not None else None
+        if shp is None or (shp.nx, shp.ny) not in sizes:
+            problems.append("%s: the axes its pointer leads to are not a size "
+                            "the set has had" % label)
+            continue
+        if kind == "map" and (len(ax) < 2 or not ax[1] or codec.slot_target(
+                data, int(ax[1][0]), base) != shp.x_addr - 4):
+            problems.append("%s: its two axis pointers do not agree" % label)
+            continue
+        cells = [codec.slot_target(data, int(c[0]), base) if c else None
+                 for c in cs]
+        if len(cells) != len(names) or None in cells:
+            problems.append("%s: a member's pointer could not be read" % label)
+            continue
+        step = e0.bits // 8
+        for nm, at in zip(names, cells):
+            e = ents[nm]
+            new = Shape(hdr, shp.nx, shp.ny, shp.x_addr, shp.y_addr, at,
+                        at + step * shp.nx * shp.ny)
+            if (shp.nx, shp.ny) != dims(e) or at != e.addr or \
+                    _axes_key(e) != _axes_key_of(e, new):
+                shape_entity(e, new)
+            if (shp.nx, shp.ny) != stock and e.source not in (
+                    "anchored", "struct", "verified", "placed"):
+                e.source = "verified"
+            mark(e, stock)
+        for vname, which in m.get("views") or []:
+            for v in here:
+                if v.name == vname and v.kind == "curve":
+                    vs = _view_shape(shp, which)
+                    if (vs.nx, 1) != dims(v) or v.addr != vs.z_addr:
+                        shape_entity(v, vs)
+                    mark(v, _view_stock(stock, which))
+        if (shp.nx, shp.ny) != stock or hdr != int(r.get("stock_hdr") or hdr):
+            moved = True
+    return moved, problems
+
+
+def _axes_key_of(e, shp: Shape) -> tuple:
+    if e.kind == "map":
+        return (shp.x_addr, shp.y_addr)
+    return (shp.x_addr,)
+
+
 def follow(session, e, codec=None, stock=None) -> bool:
     """Re-shape ``e`` to whatever valid record its header holds in this
     session's image. True when it changed."""
@@ -964,8 +1444,9 @@ def apply(session, lst, codec: Optional[LayoutCodec] = None
     data = session.binfile.data
     n, problems, with_copies = 0, [], set()
     for m in lst:
-        if m.get("mode") == "relocate":
-            ok, probs = _apply_relocate(session, m, codec, bytes(data))
+        if m.get("mode") in ("relocate", "set"):
+            fn = _apply_set if m.get("mode") == "set" else _apply_relocate
+            ok, probs = fn(session, m, codec, bytes(data))
             n += 1 if ok else 0
             problems += probs
             continue
@@ -1028,11 +1509,13 @@ def follow_headers(session, codec: Optional[LayoutCodec] = None) -> int:
     stock = {(m.get("name"), m.get("kind")): tuple(m.get("stock") or ())
              for m in lst}
     for m in lst:
-        if m.get("mode") == "relocate":
+        if m.get("mode") in ("relocate", "set"):
             reloc[(m.get("name"), m.get("kind"))] = m
     for m in reloc.values():
-        # a moved table follows its ECU slot wherever THIS image puts it
-        ok, _probs = _apply_relocate(session, m, codec, bytes(session.binfile.data))
+        # a moved table (or a map set) follows its ECU slot(s) wherever THIS
+        # image puts it
+        fn = _apply_set if m.get("mode") == "set" else _apply_relocate
+        ok, _probs = fn(session, m, codec, bytes(session.binfile.data))
         n += 1 if ok else 0
     for e in getattr(session, "entities", []) or []:
         k = (e.name, e.kind)
@@ -1114,6 +1597,7 @@ def execute(session, plans: List[Plan], label: str = ""):
     prev = next((m for m in mods(session)
                  if key_of(m) == (main.name, main.group or "", main.kind)), None)
     stock = tuple(prev["stock"]) if prev else tuple(plans[0].old)
+    is_set = plans[0].set_info is not None
     writes, entries = [], []
     for p in plans:
         for a, o, nb in p.byte_writes():
@@ -1122,22 +1606,26 @@ def execute(session, plans: List[Plan], label: str = ""):
         tmp = copy.copy(e)
         _own_axes(tmp)
         shape_entity(tmp, p.shape)
-        mark(tmp, stock)
+        mark(tmp, _view_stock(stock, p.view) if p.view else stock)
         entries.append((e, layout_of(e), layout_of(tmp)))
     verb = "Move + resize" if plans[0].mode == "relocate" else "Resize"
-    lab = label or "%s %s %s -> %s" % (
-        verb, main.name, fmt_dims(main, *plans[0].old),
-        fmt_dims(main, *plans[0].new))
+    lab = label or "%s %s%s %s -> %s" % (
+        verb, main.name, " and its set" if is_set else "",
+        fmt_dims(main, *plans[0].old), fmt_dims(main, *plans[0].new))
     cmd = ResizeCommand(lab, writes, entries)
-    session._record(cmd, "%s (%d cop%s)" % (lab, len(plans),
-                                            "y" if len(plans) == 1 else "ies"))
-    set_mods(session, merge(mods(session), [_record(main, plans, stock)]))
+    n = (sum(1 for p in plans if p.set_info is not None) if is_set
+         else len(plans))
+    session._record(cmd, "%s (%d cop%s)" % (lab, n, "y" if n == 1 else "ies"))
+    rec = (_set_record(main, plans, stock, prev) if is_set
+           else _record(main, plans, stock))
+    set_mods(session, merge(mods(session), [rec]))
     return cmd
 
 
 __all__ = ["Shape", "LayoutCodec", "Limits", "Plan", "codec_for", "dims",
            "fmt_dims", "copies_of", "main_of", "limits", "all_limits",
            "plan_one", "relocate_one", "plan", "resample", "spread",
+           "set_of", "set_main", "set_limits", "plan_set", "SetLimits",
            "execute", "apply",
            "follow", "follow_headers", "mods", "set_mods", "merge", "find",
            "dumps", "loads", "apply_from_project", "is_resized", "MAX_POINTS",

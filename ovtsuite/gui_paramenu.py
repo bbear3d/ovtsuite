@@ -158,6 +158,8 @@ def properties(ws, e) -> dict:
         src = "defined by you (user parameter)"
     elif e.source == "definition":
         src = "from the definition file packaged with this binary"
+    elif e.source == "struct":
+        src = "detected structurally (read from the image's own self-describing table format)"
     elif not placement_trusted(e):
         src += " (address inferred -- check before editing)"
     general.append(("Placement", src))

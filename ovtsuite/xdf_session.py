@@ -218,11 +218,52 @@ def placed_definition(data: bytes, type_: str, image: bytes,
     if reference:
         ref = _place.reference_from_file(reference, defn)
     base = opts.get("base")
-    pl = _place.placed(defn, bytes(image),
-                       key="%s:%s" % (type_, hashlib.sha1(bytes(data)).hexdigest()),
-                       reference=ref, base=None if base is None else int(base),
-                       relocate=bool(opts.get("relocate", True)), progress=progress)
+    key = "%s:%s" % (type_, hashlib.sha1(bytes(data)).hexdigest())
+    reloc = bool(opts.get("relocate", True))
+    pl = _place.placed(defn, bytes(image), key=key, reference=ref,
+                       base=None if base is None else int(base),
+                       relocate=reloc, progress=progress)
+    # A definition authored for a 16-bit byte-SWAPPED read of this flash (a
+    # WinOLS project of a bench/BDM read, whose values WinOLS interprets in the
+    # other byte order) anchors in swap16(image), not the native image the TCU
+    # runs. A within-word swap does not move addresses, so if the swapped image
+    # fits better, the tables are at the same addresses -- place against it and
+    # flip the definition's storage byte order so values read right on the
+    # native image. Only tried when a base is being searched and the native fit
+    # is weak, so a native-authored definition is never disturbed.
+    if base is None and pl.confirmed < max(2, len(defn.tables) // 2):
+        try:
+            pl2 = _place.placed(defn, _swap16(bytes(image)), key=key + ":bswap",
+                                reference=ref, base=None, relocate=reloc)
+            if pl2.confirmed > pl.confirmed:
+                pl = pl2
+                _flip_definition_endian(defn)
+        except Exception:
+            pass
     return _place.relocated(defn, pl, bool(opts.get("unverified"))), pl
+
+
+def _swap16(b: bytes) -> bytes:
+    a = bytearray(len(b))
+    a[0::2] = b[1::2]
+    a[1::2] = b[0::2]
+    return bytes(a)
+
+
+def _flip_definition_endian(defn) -> None:
+    """Flip every multi-byte storage between big- and little-endian, in place,
+    so a definition authored for a byte-swapped read reads correctly on the
+    native image (same addresses, opposite word byte order)."""
+    flip = {"<": ">", ">": "<"}
+    for t in defn.tables:
+        stores = [t.z]
+        if getattr(t, "x", None) is not None:
+            stores.append(t.x.values)
+        if getattr(t, "y", None) is not None:
+            stores.append(t.y.values)
+        for st in stores:
+            if st is not None and st.bits > 8 and st.endian in flip:
+                st.endian = flip[st.endian]
 
 
 def apply_definition(session, data: bytes, type_: str,

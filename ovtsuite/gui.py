@@ -6073,6 +6073,7 @@ if HAVE_QT:
     PLATFORM_BADGE = {
         "edc16": ("ECU", "EDC16", QtGui.QColor(61, 124, 201)),
         "edc15": ("ECU", "EDC15", QtGui.QColor(61, 124, 201)),
+        "zf5hp": ("TCU", "ZF 5HP", QtGui.QColor(224, 190, 64)),
         "zf6hp": ("TCU", "ZF 6HP", QtGui.QColor(224, 160, 48)),
         "zf8hp": ("TCU", "ZF 8HP", QtGui.QColor(224, 120, 48)),
         "hvac": ("HVAC", "Climatronic", QtGui.QColor(90, 160, 110)),
@@ -7113,6 +7114,21 @@ if HAVE_QT:
                 pass
             self._populate()
 
+        def _auto_advanced_if_needed(self):
+            """Turn "Advanced" on when EVERY map the file has is in an Advanced
+            group, so the tree is never empty while the status bar reports maps
+            were found (e.g. a structurally-detected ZF 5HP image, whose tables
+            sit in "Other gearbox maps"). Only forces it on, never off, and only
+            when nothing would show otherwise."""
+            try:
+                if self.advanced.isChecked():
+                    return
+                ents = list(getattr(self.primary, "entities", ()) or ())
+                if ents and all(_is_advanced(e) for e in ents):
+                    self.advanced.setChecked(True)   # _on_advanced repopulates
+            except Exception:
+                pass
+
         def _apply_tree_filters(self):
             want_tier = self.tier_box.currentData()
             adv = self.advanced.isChecked()
@@ -7747,6 +7763,7 @@ if HAVE_QT:
                 add_recent(path)
                 self._rebuild_recent()
             self._refresh_enabled()
+            self._auto_advanced_if_needed()
             self._populate()
             self.restore_tables(open_tables["tables"],
                                 open_tables["table_active"])
@@ -8947,6 +8964,7 @@ if HAVE_QT:
             self.title.setText("Select a parameter")
             self.desc.setText("")
             self._refresh_enabled()
+            self._auto_advanced_if_needed()
             self._populate()
             self.restore_tables(open_tables["tables"],
                                 open_tables["table_active"])
