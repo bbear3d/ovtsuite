@@ -143,3 +143,11 @@ def test_website_staging(tmp_path):
     flat = json.dumps(cfg["nav"])
     for pid in idx.pages:
         assert pid + ".md" in flat, pid
+
+
+def test_the_shift_editors_have_their_page_and_the_full_load_step_its_own():
+    from ovtsuite import helpdocs
+    idx = helpdocs.HelpIndex()
+    assert idx.for_context(["GearboxEditDialog"]).title == "Shift map and lock-up editors"
+    assert idx.for_context(["FullLoadPanel", "GearboxEditDialog"]).title == \
+        "Full-load shift points"
