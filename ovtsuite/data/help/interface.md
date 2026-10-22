@@ -23,7 +23,7 @@ From top to bottom:
 | Parameter tree (left) | Every parameter of the file, grouped by what a tuner uses it for. See [the parameter tree](#the-parameter-tree). |
 | Table tabs (right, top) | The tables you have open in this file. See [table tabs](#table-tabs). |
 | Title and notes | The name, kind, size and units of the table on screen, and what it is. |
-| Edit bar | **Modify selection**, **Fill**, **Smooth**, **Heatmap** and **3D surface** (shows or hides the surface above the grid) -- plus, on the tables that need them, **Show Z as** and **Vehicle…** (ZF 6HP speed maps) and **Copy to other bank**. |
+| Edit bar | **Modify selection**, **Fill**, **Smooth**, **Heatmap**, **3D surface** (shows or hides the surface above the grid) and **Dyno** (Ctrl+4, the calculated power and torque of the file above that) -- plus, on the tables that need them, **Show Z as** and **Vehicle…** (ZF 6HP speed maps) and **Copy to other bank**. |
 | 3D surface | Above the grid when **3D surface** (Ctrl+3) is on: the map as a surface you can turn and edit, with a splitter to share the room with the grid. See [3D surface](editor/3d-surface.md). |
 | Grid | The table itself, with its axes, and the comparison file's copy underneath when one is open. |
 | Status bar | The file, its definition, the comparison and the checksum state. See [the status bar](#the-status-bar). |
@@ -243,11 +243,19 @@ saving](editing.md#version-history).
 
 ### Tools
 
+The menu lists only the tools the tab in front can use: another platform's
+editors, tools that need the module's maps, and (with no file open) every
+tool that works on a file are left out, as is a module's sub-menu with
+nothing in it for this tab. Switch tabs and the menu follows. Window-wide
+tools -- ECU read / write, Data logging, the bus sniffer, Modules... -- are
+always there, and so is a sub-menu for a module that is not installed.
+
 | Item | Shortcut | Where it is described |
 |---|---|---|
 | **DTC / Fault-Path editor...** | Ctrl+D | [Parameter tools](tools.md); the engine module's pages, e.g. [EDC16](modules/edc16/index.md); ZF 6HP fault codes in [ZF 6HP](modules/zf6hp/index.md). |
 | **Measuring blocks...** | Ctrl+M | [Parameter tools](tools.md) |
 | **End of injection...** | | [End of injection](tools/end-of-injection.md) (EDC15P / EDC16 unit-injector engines) |
+| **Dyno chart...** | | [Dyno chart](tools/dyno.md) (EDC15 / EDC16) |
 | **Gear ratios...** | Ctrl+G | [Parameter tools](tools.md) |
 | **VSS pulse settings...** | Ctrl+U | [Parameter tools](tools.md) |
 | **Hex editor...** | Ctrl+H | [Hex editor](editor/hex-editor.md) |

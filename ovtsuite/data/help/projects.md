@@ -57,8 +57,10 @@ is optional.
 `.ovt` on the window opens a project. The first time, every set opens in a
 tab of its own; after that, the tabs you had open last time come back. Each
 tab is labelled with the project's name, the set and the branch -- *A6 ▸ ECU
-· Stage 1* -- and tinted like any ECU or TCU tab; the window title shows the
-same, with `*` when the project has unsaved changes.
+· Stage 1* -- and tinted like any ECU or TCU tab. The window title shows the
+same with the project's file name added -- *A6 [A6-stage2.ovt] ▸ ECU · Stage
+1* (just *A6.ovt ▸ ...* when the file is named after the project) -- so after
+**Save As** it names the new file; `*` when the project has unsaved changes.
 
 A set or branch that is not open is one click away: double-click it in the
 **Project panel** (View > Project panel), or pick it from **File > Open from

@@ -18,7 +18,9 @@ from ..signal_names import english_units
 
 
 class ChannelNamer:
-    def __init__(self, session):
+    def __init__(self, session, dataset: Optional[str] = None):
+        """``dataset``: on an EDC15 image, the calibration dataset (its label,
+        e.g. "Manual") whose blocks to name; default the first one."""
         self.session = session
         self._mb = None
         self._cat = None
@@ -36,6 +38,8 @@ class ChannelNamer:
             return
         if getattr(session, "is_edc15", False):
             for g in self._mb.groups():
+                if dataset is not None and g.group != dataset:
+                    continue
                 self._groups.setdefault(g.block, g)      # first dataset's block N
         else:
             from ..signals import SignalCatalog

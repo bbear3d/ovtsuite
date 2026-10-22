@@ -6354,6 +6354,9 @@ if HAVE_QT:
             self.surf_btn = QtWidgets.QPushButton("3D surface")
             self.surf_btn.setShortcut("Ctrl+3")     # a toggle: gui_surface3d
             eb.addWidget(self.surf_btn)
+            self.dyno_btn = QtWidgets.QPushButton("Dyno")
+            self.dyno_btn.setShortcut("Ctrl+4")     # a toggle: gui_dyno
+            eb.addWidget(self.dyno_btn)
 
             # the comparison (when loaded) is shown INSIDE this same grid,
             # under a banner row, so both share one set of scrollers and one
@@ -6369,7 +6372,8 @@ if HAVE_QT:
             rv.addWidget(self.desc)
             rv.addWidget(self.editbar)
             from . import gui_surface3d as _s3d     # 3-D surface above it
-            rv.addWidget(_s3d.attach(self), 1)
+            from . import gui_dyno as _gdy          # the dyno chart above that
+            rv.addWidget(_gdy.attach(self, _s3d.attach(self)), 1)
 
             split = QtWidgets.QSplitter()
             split.addWidget(left)
@@ -10252,7 +10256,7 @@ if HAVE_QT:
             self._act(view, "Next tab", lambda: self._cycle_tab(1), "Ctrl+Tab")
             self._act(view, "Previous tab", lambda: self._cycle_tab(-1),
                       "Ctrl+Shift+Tab")
-            tools = bar.addMenu("&Tools")
+            tools = self.tools_menu = bar.addMenu("&Tools")
             # Tools that read the parameter tree need the platform's module
             # (and a definition for this binary); the hex editor, checksums,
             # flasher, logger, sniffer and simulator never do.
@@ -10276,6 +10280,20 @@ if HAVE_QT:
             # with the other tools that read the parameter tree
             self._act(tools, "End of injection...", _eoi_open,
                       needs_file=True, enabled_when=_eoi_ok)
+
+            def _dyno_open(_c=False):
+                from . import gui_dyno as _gdy  # calculated dyno chart (dyno.py)
+                if cw() is not None:
+                    _gdy.open_for(cw())
+
+            def _dyno_ok():
+                try:
+                    from . import gui_dyno as _gdy
+                    return _gdy.availability(cw()) is None
+                except Exception:
+                    return False
+            self._act(tools, "Dyno chart...", _dyno_open,
+                      needs_file=True, enabled_when=_dyno_ok)
             self._act(tools, "Gear ratios...", self._on_ws("open_gears"), "Ctrl+G",
                       needs_file=True, enabled_when=full)
             self._act(tools, "VSS pulse settings...", self._on_ws("open_vss"),
@@ -10384,6 +10402,8 @@ if HAVE_QT:
             _gui_ai.add_menu(self, tools)
             self._act(tools, "Modules...", self.open_modules).setToolTip(
                 "Which control-module modules are installed; install or remove one")
+            from . import gui_toolsmenu as _gtm
+            _gtm.install(self)              # only the tools the tab can use
             helpm = bar.addMenu("&Help")
             # F1 itself is handled app-wide (gui_help.install_f1): help for
             # the focused panel or the window in front; "\tF1" only shows the key here

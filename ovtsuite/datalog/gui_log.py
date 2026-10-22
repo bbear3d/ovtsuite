@@ -36,6 +36,7 @@ from ..flash.gui_flash import (list_ports, kline_devices, is_j2534, open_j2534,
 from . import derived as _derived
 from . import logfile as _lf
 from .channels import ChannelNamer
+from . import msbcatalogue as _msbcat
 from . import logview as _lv
 from .. import branding
 
@@ -53,6 +54,21 @@ CAN_ECUS = ("EDC16", "ZF6HP", "ZF6HP-UDS", "Aisin TRx")
 KLINE_ECUS = ("EDC16", "EDC15")
 PALETTE = [QtGui.QColor(c) for c in ("#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
                                       "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f")]
+
+
+def kline_over_j2534(dev, ecu, fast_init, log):
+    """The K-line link for ``ecu`` on an opened J2534 device.
+
+    EDC15 speaks KW1281, which acknowledges every byte with its complement:
+    it needs the byte-stream link (KWHack's PassThruKLineInterface port),
+    woken by the device's own 5-baud init -- never fast init, which an EDC15
+    must not be sent. Everything else on K-line is KWP2000, whose frames the
+    message link carries."""
+    if ecu == "EDC15":
+        from ..flash.kline_j2534_raw import J2534RawKLine
+        return J2534RawKLine(dev, baud=_diag.EDC15_BAUD, log=log)
+    from ..flash.kline_j2534 import J2534KLine
+    return J2534KLine(dev, log=log, fast_init=fast_init)
 
 
 # ------------------------------------------------------------ thread lifetime
@@ -264,17 +280,18 @@ class LogWorker(QtCore.QThread):
                     link = CanKLine(ch, dest=self._can_dest, log=self.status.emit)
                 speed, cap = "Low", False        # no elevated K-line baud over CAN
             elif is_j2534(self._port):
-                from ..flash.kline_j2534 import J2534KLine
                 self._can = open_j2534(self._port)
-                link = J2534KLine(self._can, log=self.status.emit, fast_init=self._fast_init)
+                link = kline_over_j2534(self._can, self._ecu, self._fast_init, self.status.emit)
             else:
-                link = KLine(self._port, baud=10400, prefer_fast_init=self._fast_init)
+                link = KLine(self._port, baud=10400,
+                             prefer_fast_init=self._fast_init and self._ecu != "EDC15")
             self._link = link
             if self._ecu == "ZF6HP-UDS":
                 from .zf6hp_uds_live import Zf6hpUdsLiveSession
                 sess = Zf6hpUdsLiveSession(link, self._ecu, self.status.emit)
             else:
                 sess = _diag.DiagSession(link, self._ecu, self.status.emit)
+                sess.fast_kw1281 = True   # KW1281 fast timing, as KWHack's live data uses
             try:
                 sess.connect(speed, cap, is_stop=lambda: self._stop)
             except Exception as ex:
@@ -720,7 +737,7 @@ class ConnectionBar(QtWidgets.QWidget):
         self.ecu_box.setCurrentText(want if want in allowed else allowed[0])
         self.ecu_box.blockSignals(False)
         self.ecu_box.setEnabled(True)
-        self.fast_disable_chk.setVisible(not can)    # K-line only
+        self.fast_disable_chk.setVisible(not can and self.ecu() != "EDC15")  # K-line, not EDC15
         self.refresh_ports()                         # rebuilds ports -> _port_changed
         if hasattr(self, "speed_box"):
             self._ecu_changed()                      # signals were blocked above
@@ -742,9 +759,12 @@ class ConnectionBar(QtWidgets.QWidget):
         on any cable; EDC16 uses fast init, and a J2534 device forces it."""
         if not hasattr(self, "fast_disable_chk") or self.is_can():
             return
+        # EDC15 is always 5-baud slow init (KW1281 has no fast init, and an
+        # EDC15 must not be sent one) -- no option shown, as in the flasher.
+        self.fast_disable_chk.setVisible(self.ecu() != "EDC15")
         if self.ecu() == "EDC15":
-            self.fast_disable_chk.setChecked(True)   # slow init default (user may override)
-            self.fast_disable_chk.setEnabled(True)
+            self.fast_disable_chk.setChecked(True)
+            self.fast_disable_chk.setEnabled(False)
         elif is_j2534(self.port_box.currentData()):
             self.fast_disable_chk.setChecked(False)  # J2534 hardware fast init, required
             self.fast_disable_chk.setEnabled(False)
@@ -836,8 +856,8 @@ class ConnectionBar(QtWidgets.QWidget):
     def fast_init(self):
         """K-line fast init: always on for a J2534 device (hardware); the checkbox
         for a serial cable.  Meaningless over CAN."""
-        if self.is_can():
-            return False
+        if self.is_can() or self.ecu() == "EDC15":
+            return False                 # EDC15: always 5-baud slow init
         return is_j2534(self.port()) or not self.fast_disable_chk.isChecked()
 
     def cap_high(self):
@@ -1070,6 +1090,10 @@ class ConnPane(QtWidgets.QWidget):
         self._live = _lf.DataLog()
         self._logging = False           # real state, not read back off a button
         self._mem_state = None          # what the 0x23 probe said, once connected
+        #: controller -> the identity it reported on its last connect. Kept
+        #: after Disconnect so the cells stay named; with no binary open, it
+        #: is what the measuring-block catalogue is looked up by.
+        self._ecu_ident: dict = {}
 
         v = QtWidgets.QVBoxLayout(self)
         v.setContentsMargins(4, 4, 4, 4)
@@ -1193,7 +1217,18 @@ class ConnPane(QtWidgets.QWidget):
             # unrelated calibration happens to be open. A ChannelNamer with no
             # session reports available=False, which gives exactly that.
             return ChannelNamer(None)
-        return ChannelNamer(self._primary())
+        n = ChannelNamer(self._primary())
+        if n.available:
+            return n                     # the binary always wins
+        # No binary that can name these blocks: the catalogue -- the entry for
+        # the software the ECU reported, else its part number's, else the
+        # platform's generic layout (also before connecting)
+        cat = _msbcat.namer_for(self.conn.ecu(), self._ecu_identity())
+        return cat if cat is not None else n
+
+    def _ecu_identity(self) -> str:
+        """What the selected controller reported on its last connect ("")."""
+        return self._ecu_ident.get(self.conn.ecu(), "")
 
     def _namer_sig(self):
         """What the namer depends on, so a change rebuilds it and nothing else
@@ -1202,12 +1237,15 @@ class ConnPane(QtWidgets.QWidget):
         ecu = self.conn.ecu()
         if ecu in ("ZF6HP", "ZF6HP-UDS", "Aisin TRx"):
             return (ecu,)
-        return ("binary", id(self._primary()))
+        # ...and on the reported identity, which names them when no binary can
+        return ("binary", id(self._primary()), ecu, self._ecu_identity())
 
     def _sync_namer(self):
         """Follow this pane's own controller and binary. Not while logging:
-        the running log's columns were named from the binary it started with."""
-        if self._worker is not None:
+        the running log's columns were named from the binary it started with.
+        Connected but not recording is fine -- that is when the identity
+        arrives, and the cells are only handed over at Start."""
+        if self._logging:
             return False
         want = self._namer_sig()
         prev = getattr(self, "_namer_sig_cur", None)
@@ -1399,14 +1437,30 @@ class ConnPane(QtWidgets.QWidget):
         elif self.conn.ecu() == "ZF6HP-UDS":
             self.src_hint.setText("Tick a cell to log it. 6HP28 live signals come from the "
                                   "04A1 UDS block; values are raw counts until calibrated.")
+        elif isinstance(self._namer, _msbcat.CatalogueNamer):
+            n = self._namer
+            if n.match == "exact":
+                tail = "if this car's measuring blocks were edited, open its file to name them from it"
+            else:
+                tail = "names can differ on this software, so open the car's file to name them exactly"
+            self.src_hint.setText("Tick a cell to log it. Cells named from %s; %s."
+                                  % (n.describe(), tail))
         elif name and getattr(self._namer, "available", False):
             self.src_hint.setText("Tick a cell to log it. Cells named from %s." % name)
         else:
             where = ("with Open project or binary..." if getattr(self._window, "standalone", False)
                      else "in a tab")
-            self.src_hint.setText("Tick a cell to log it. No measuring-block map for this "
-                                  "controller is open, so cells are unnamed; open the car's "
-                                  "file %s to name them." % where)
+            if self.conn.ecu() in _msbcat.PLATFORMS:
+                # (with the catalogue installed the namer is never this one)
+                self.src_hint.setText("Tick a cell to log it. Cells are unnamed: no "
+                                      "measuring-block map for this controller is open and "
+                                      "the %s module's measuring-block catalogue is not "
+                                      "installed. Open the car's file %s to name them."
+                                      % (self.conn.ecu(), where))
+            else:
+                self.src_hint.setText("Tick a cell to log it. No measuring-block map for this "
+                                      "controller is open, so cells are unnamed; open the "
+                                      "car's file %s to name them." % where)
 
     # ---- connection ---------------------------------------------------
     def _toggle_connect(self):
@@ -1482,6 +1536,10 @@ class ConnPane(QtWidgets.QWidget):
 
     def _on_connected(self, identity, baud):
         self.ident.setText("%s   (%d baud)" % (identity or "connected", baud))
+        if identity:
+            self._ecu_ident[self.conn.ecu()] = identity
+            self._sync_namer()           # names from the catalogue when no binary can
+            self._update_src_hint()
         self.connect_btn.setText("Disconnect")
         self.connect_btn.setEnabled(True)
         self._set_logging_ui(False)
@@ -2537,11 +2595,11 @@ class EcuTask(QtCore.QThread):
                     link = CanKLine(ch, dest=self._can_dest, log=self.status.emit)
                 speed, cap = "Low", False        # no elevated K-line baud over CAN
             elif is_j2534(port):
-                from ..flash.kline_j2534 import J2534KLine
                 self._can = open_j2534(port)
-                link = J2534KLine(self._can, log=self.status.emit, fast_init=self._fast_init)
+                link = kline_over_j2534(self._can, ecu, self._fast_init, self.status.emit)
             else:
-                link = KLine(port, baud=10400, prefer_fast_init=self._fast_init)
+                link = KLine(port, baud=10400,
+                             prefer_fast_init=self._fast_init and ecu != "EDC15")
             sess = _diag.DiagSession(link, ecu, self.status.emit)
             sess.connect("Low" if ecu == "EDC15" else speed, cap)
             try:

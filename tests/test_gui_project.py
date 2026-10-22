@@ -181,6 +181,17 @@ def test_removing_the_open_binary_opens_another(win, car, monkeypatch):
     assert [t.project_ref.set.name for t in _project_tabs(win)] == ["TCU"]
 
 
+def test_the_window_title_names_the_project_file(win, car, tmp_path,
+                                                monkeypatch):
+    from ovtsuite import gui_project as gp
+    win.open_path(car)
+    assert "A6 [car.ovt] ▸ " in win.windowTitle()
+    other = str(tmp_path / "A6.ovt")
+    monkeypatch.setattr(gp, "_ask_project_path", lambda *a: other)
+    assert gp.save_as(win.current)
+    assert "A6.ovt ▸ " in win.windowTitle()             # the name is the file's
+
+
 def test_closing_the_last_tab_closes_the_project(win, car):
     from ovtsuite import gui_project as gp
     win.open_path(car)

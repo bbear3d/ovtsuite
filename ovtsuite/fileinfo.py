@@ -30,6 +30,9 @@ _PN_ONLY = re.compile(_PN + rb"$")
 # config/checksum bytes there -- e.g. 038997016T), then the definitive part number.
 _IDENT16 = re.compile(rb"([0-9A-Z][ -~]{11})[\x00-\xff]{8}(" + _PN
                       + rb")\x00([0-9A-Z]{4})\x00([ -~]{20})")
+# The record from the part number on, for software whose first field is laid
+# out otherwise (the early V10, 070906016AA: "0281011481 " and 3 bytes).
+_IDENT16_PART = re.compile(rb"(" + _PN + rb")\x00([0-9A-Z]{4})\x00([ -~]{20})")
 _HDR16 = re.compile(rb"([0-9]{10})([0-9A-Z]{8})")
 
 
@@ -69,6 +72,11 @@ def ident16(data: bytes, region=None) -> dict:
             out["bosch_num"] = field1                       # first field is the Bosch number
         out["sw_version"] = m.group(3).decode()
         out["system"] = m.group(4).decode().strip()
+        out["ident_addr"] = m.start()
+    elif (m := _IDENT16_PART.search(data, start & ~0x3FFFF)) is not None:
+        out["part"] = m.group(1).decode().strip()
+        out["sw_version"] = m.group(2).decode()
+        out["system"] = m.group(3).decode().strip()
         out["ident_addr"] = m.start()
     else:
         # Fallback: no structured record (odd/edited layout) -- surface the most

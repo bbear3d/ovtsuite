@@ -751,7 +751,7 @@ def current_digests() -> Tuple[str, str]:
     itself."""
     from . import defn, datafiles
     files = [p for n, p in datafiles.listing(datafiles.owner(INDEX_FILE))
-             if n != INDEX_FILE]
+             if n != INDEX_FILE and n not in defn._NOT_MODEL_DATA]
     return defn._hash_files(sorted(files)), defn.ui_digest()
 
 
