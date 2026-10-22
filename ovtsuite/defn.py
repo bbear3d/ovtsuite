@@ -110,7 +110,10 @@ def _module_of(platform: Optional[str]):
 #: when a model is built: the search label index (ovtsuite.search) is
 #: regenerated whenever the labels change, and hashing it would make a GUI
 #: change look like a knowledge-base change.
-_NOT_MODEL_DATA = {"search_index.json.gz"}
+#: Data files no definition is built from: the search index (it hashes the
+#: rest), and the logger's measuring-block catalogues.
+_NOT_MODEL_DATA = {"search_index.json.gz", "edc16_msblocks.json.gz",
+                   "edc15_msblocks.json.gz"}
 
 
 def data_digest(platform: Optional[str] = None) -> str:

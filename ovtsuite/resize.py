@@ -1306,8 +1306,17 @@ def _apply_relocate(session, m, codec, data) -> Tuple[bool, List[str]]:
             problems.append("%s [%s]: its ECU pointer could not be read"
                             % (name, grp))
             continue
+        blk = tgt
         tgt += disp                          # EDC16: block base -> record
         shp = codec.read(data, tgt, e)
+        if (shp is None or (shp.nx, shp.ny) not in sizes) and disp and \
+                r.get("new_base") is not None and r.get("old_start") is not None \
+                and blk != int(r["new_base"]):
+            # an image from before the move (the original, an older
+            # version): its slot still leads to the old block, where the
+            # record sits at its old place -- not at the moved block's
+            # displacement (03G906021KK: 0x1D6490, not old block + 0x113C)
+            shp = codec.read(data, int(r["old_start"]), e)
         if shp is None or (shp.nx, shp.ny) not in sizes:
             problems.append("%s [%s]: the record its pointer leads to is not a "
                             "size it has had" % (name, grp))

@@ -87,7 +87,7 @@ def unserved_for(namer) -> List[int]:
     """
     if namer is None or not getattr(namer, "available", False):
         return []
-    if type(namer).__name__ != "ChannelNamer":
+    if type(namer).__name__ not in ("ChannelNamer", "CatalogueNamer"):
         return []
     try:
         groups = namer.populated_groups()

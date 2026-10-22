@@ -57,7 +57,7 @@ used.
 | ECU | How the session is opened |
 |---|---|
 | **EDC16** | K-line: wake-up at 10400 baud, diagnostic session, identification, then the link-speed raise you chose. CAN: a TP 2.0 channel to the engine, then the same session (no speed raise). |
-| **EDC15** | KW1281 slow init; no speed choice. |
+| **EDC15** | KW1281: 5-baud slow init at 9600 baud, then identification and coding. 9600 is the only rate an EDC15 talks KW1281 at, so there is no speed choice. An EDC15 that answers in KWP2000 instead is in the mode it uses for flash programming and generic OBD, which has no measuring blocks: the logger says so and does not connect. Works on a KKL cable and on a J2534 device (the device does the 5-baud init). |
 | **ZF6HP** | TP 2.0 channel to the transmission, diagnostic session, identification. Reads measuring blocks 1–17 of the 6HP19. |
 | **ZF6HP-UDS** | TP 2.0 channel to the transmission, then polls its single live-data block. The 6HP28 does not serve the 6HP19's measuring blocks. |
 | **Aisin TRx** | TP 2.0 channel to the transmission, the same session as **ZF6HP**. |
@@ -83,7 +83,8 @@ More speed means more rows per second.
 K-line connections normally use ISO 14230 fast init, which the later EDC16s
 need. Tick **Disable Fast Init** to use the 5-baud slow init instead.
 
-- Choosing **EDC15** ticks it for you (EDC15 uses slow init); you can untick it.
+- **EDC15** always uses slow init, on any cable, so the box is not shown for
+  it.
 - On a J2534 device fast init is done by the device itself, so the box is
   unticked and greyed out.
 

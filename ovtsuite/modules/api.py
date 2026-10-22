@@ -125,6 +125,12 @@ class ModuleSpec:
     #: dataset, for the End of injection view (docs/EOI.md). Optional:
     #: without it the view is not offered for this platform.
     injection: Optional[str] = None
+    #: ``dyno(session) -> [ovtsuite.dyno.DynoModel]`` -- the full-load chain
+    #: of a calibration (driver's wish, torque and smoke limits, the
+    #: torque/fuel conversion), one model per dataset, for the calculated
+    #: dyno chart (docs/DYNO_PLAN.md). Optional: without it the chart is not
+    #: offered for this platform.
+    dyno: Optional[str] = None
     #: Data files this module owns: globs relative to the app's ``data``
     #: directory. Its code is its package (``<app>/<id>/``). Every data file
     #: belongs to exactly one module or to the base app -- the build checks.

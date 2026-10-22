@@ -189,12 +189,23 @@ def tab_label(ws, base: str) -> str:
     return out
 
 
+def title_label(doc) -> str:
+    """``A6 [A6-stage2.ovt]`` -- the project's name and the file it is in
+    (so a Save As shows); the file name alone when it is the name."""
+    if not doc.path:
+        return "%s [not saved]" % doc.title if doc.project.name else doc.title
+    fn = os.path.basename(doc.path)
+    if os.path.splitext(fn)[0].lower() == doc.title.lower():
+        return fn
+    return "%s [%s]" % (doc.title, fn)
+
+
 def window_title(ws) -> str:
-    """``A6 ▸ ECU · Stage 1 *`` -- the project, set and branch in front, and
-    whether the project has anything unsaved."""
+    """``A6 [A6-stage2.ovt] ▸ ECU · Stage 1 *`` -- the project and its file,
+    set and branch in front, and whether the project has anything unsaved."""
     ref = ws.project_ref
     doc = ref.doc
-    return "%s ▸ %s · %s%s" % (doc.title, ref.set.name, ref.branch.name,
+    return "%s ▸ %s · %s%s" % (title_label(doc), ref.set.name, ref.branch.name,
                               " *" if doc.is_dirty(ws.win) else "")
 
 

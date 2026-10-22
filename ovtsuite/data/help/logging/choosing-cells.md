@@ -30,8 +30,8 @@ The line under the cell table says which source is naming the cells.
 
 | ECU | Names |
 |---|---|
-| **EDC16** | From the car's own file: the calibration's group map points each cell at a signal, shown as its description and its name, for example "Boost Pressure (filtered) (BPSCD_pFltVal)". |
-| **EDC15** | From the car's own file: the measuring-block descriptors, for example "engine speed (G1/1)". |
+| **EDC16** | From the car's own file: the calibration's group map points each cell at a signal, shown as its description and its name, for example "Boost Pressure (filtered) (BPSCD_pFltVal)". With no file open, from the factory catalogue (see below). |
+| **EDC15** | From the car's own file: the measuring-block descriptors, for example "engine speed (G1/1)". With no file open, from the factory catalogue (see below). |
 | **ZF6HP** | From a built-in list of the 6HP19's blocks 1–17 ("Transmission cells are named from the 6HP block catalogue"). No file is needed. A few cells (group 15, cells 1 and 3) are not identified and log as "unlabelled". |
 | **ZF6HP-UDS** | The 6HP28's one live-data block, shown as group 161 with 41 cells, each named by the controller's own signal number ("6HP signal 0x1F [tD]"). The values are raw counts: no scaling to physical units is applied yet. |
 | **Aisin TRx** | Not named yet: cells are "Group N / Cell M". |
@@ -43,9 +43,37 @@ plausibly but wrongly.
 In the main window the logger uses the open tab whose file matches the
 connection's controller (an EDC16 tab for **EDC16**, a ZF 6HP tab for
 **ZF6HP**), not simply the tab in front. If no tab holds such a file, it
-falls back to the active tab; with no usable file the hint says "No
-measuring-block map for this controller is open, so cells are unnamed" and
-cells log as "Group N / Cell M".
+falls back to the active tab.
+
+### With no file open: the factory catalogue
+
+When no open file can name an EDC16 or EDC15's cells, the logger names them
+from a catalogue of factory files that ships with the **Bosch EDC16** and
+**Bosch EDC15** modules, looked up by the identity the ECU reports when you
+**Connect**:
+
+- **EDC16**: the part number and software version (for example
+  "03G906016LQ" software 0971).
+- **EDC15**: the identification text, which also says which dataset
+  (manual "SG" or automatic "AG") the ECU is coded to.
+
+It takes the first of these that the catalogue has:
+
+1. **The same part number and software.** The hint reads "Cells named from
+   the factory calibration of 03G906016LQ 0971".
+2. **The same part number, other software.** Where the part's software
+   versions differ, the layout most of them share is used (on EDC15, of the
+   same gearbox). The hint names the software it used.
+3. **The generic layout** of the platform: each cell named only where most
+   part numbers agree on it, so some cells stay "Group N / Cell M". This is
+   also what names the cells before you connect, so presets can be chosen
+   straight away; connecting then replaces it with the ECU's own entry.
+
+The catalogue describes factory calibrations. If the car's measuring blocks
+were edited, or the names come from step 2 or 3, open the car's file: an
+open file always takes precedence. Without the module installed, cells log
+as "Group N / Cell M". The identity is kept after **Disconnect**, so the
+cells stay named.
 
 Names are fixed when logging starts: switching tabs during a log does not
 rename its columns.
@@ -63,8 +91,8 @@ the selection alone.
 - If something the analysis needs is in no group the ECU serves, the hint
   starts with "Not in any block this ECU serves:" and the names of the values
   that are missing (for example "Boost (specified)").
-- Engine presets need the car's file open; without it the hint says "No
-  cells: no file is open for ...".
+- Engine presets come from the car's file when it is open, otherwise from the
+  factory catalogue (see above).
 
 Which presets there are, and how to drive each one, is on
 [Presets and how to drive them](presets.md).

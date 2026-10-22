@@ -15,6 +15,7 @@ the project.
 | [DTC / Fault-Path editor](tools/dtc.md) | **Tools > DTC / Fault-Path editor...** (Ctrl+D) | Switching fault codes on or off, and restoring them from stock |
 | [Measuring blocks](tools/measuring-blocks.md) | **Tools > Measuring blocks...** (Ctrl+M) | Which signals each measuring-block group shows to a scan tool or the logger |
 | [End of injection](tools/end-of-injection.md) | **Tools > End of injection...** | When the injection ends on an EDC15P / EDC16 unit-injector engine, and moving it |
+| [Dyno chart](tools/dyno.md) | **Tools > Dyno chart...**, or **Dyno** on the edit bar (Ctrl+4) | The power and torque an EDC15 / EDC16 file asks for at full load, against the original or another reference |
 | [Gear ratios](tools/gear-ratios.md) | **Tools > Gear ratios...** (Ctrl+G) | Gearbox ratios and gear recognition |
 | [VSS pulse settings](tools/vss.md) | **Tools > VSS pulse settings...** (Ctrl+U) | Vehicle-speed scaling, e.g. after a tyre-size change |
 

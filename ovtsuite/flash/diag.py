@@ -18,11 +18,23 @@ silence; CH340 cables are capped at 124800) -> measuring blocks via
 ``18 02 FF 00`` (count, then DTC-hi/DTC-lo/status; the DTC word is the
 5-digit VAG code) / ``14 FF 00`` to clear -> ``3E`` testerPresent keep-alive.
 
-EDC15 (KW1281): slow init at 9600 (10400 as fallback) -> identification
-blocks -> ``29 <group>`` GroupRead answered by ``E7`` (same cell triples;
-NAK for an unavailable group) -> ``07`` fault codes answered by ``FC``
-(3-byte records, ``FF FF 88`` = none) / ``05`` to clear -> ACK keep-alive.
-There is no link-speed switch in KW1281, so EDC15 logs at the wake-up baud.
+EDC15 (KW1281): 5-baud init to 0x01 (odd parity) at 9600 -> identification
+blocks (ASCII ident + coding/WSC block) -> ``29 <group>`` GroupRead answered
+by ``E7`` (same cell triples; anything else, NAK included, means the group is
+unavailable) -> ``07`` fault codes answered by ``FC`` (3-byte records,
+``FF FF 88`` = none) / ``05`` to clear -> ACK keep-alive. 9600 is the only
+rate: every EDC15/MSA15 image's KW1281 code loads S0BG = 0x33 (500 kHz / 52
+= 9615 baud at 16 MHz) and the calibration has no baud for it -- 10400
+(S0BG 0x2F) belongs to the separate 5-baud responder that answers with the
+KWP2000 key bytes 6B 8F. Its KWP2000 handler (every image that has one, VM+
+through late P+) serves startCommunication, startDiagnosticSession 85/89 and
+the OBD modes 01-04/06/07/09 and nothing else -- no 21, so no measuring
+blocks. So EDC15 is
+KW1281 only, and a KWP2000 answer is reported, not followed. There is no
+link-speed switch in KW1281; the logger uses KWHack's fast KW1281 timing. On
+a J2534 device KW1281 needs the byte-stream link
+:class:`~ovtsuite.flash.kline_j2534_raw.J2534RawKLine` (the logger's
+``kline_over_j2534`` picks it).
 
 Cells are decoded with the standard VAG measuring-block formula table
 (blafusel.de KW1281 formulas, as in KWHack's ``SensorValue``) into a numeric
@@ -37,7 +49,13 @@ from . import kwp as _kwp
 from .transport import KLineError, KLineTimeout, LinkStopped
 
 SPEEDS = {"Low": (0x00, 10400), "Medium": (0x87, 124800), "High": (0xA7, 244898)}
-EDC15_BAUDS = (9600, 10400)
+#: The only rate EDC15 KW1281 runs at (S0BG 0x33, hard-coded; see above).
+EDC15_BAUD = 9600
+#: Sync bytes a 9600-baud read makes of the EDC15's 10400-baud KWP2000 reply
+#: -- what the flasher's soft-brick check keys on (flash/edc15.py).
+EDC15_KWP_SYNC_AT_9600 = (0x95, 0xB5)
+BT_ASCII = 0xF6                 # KW1281 identification / ASCII data block
+BT_GROUP_READ_RESPONSE = 0xE7
 PAD_FORMULA = 0x25          # unused formula id the ECU pads fixed 8-cell records with
 CH34X_VID = 0x1A86
 
@@ -286,11 +304,46 @@ def cable_is_ch34x(port_name: str) -> bool:
     return False
 
 
+def kw1281_identity(blocks: Sequence[bytes]) -> Tuple[str, Optional[int], Optional[int]]:
+    """``(text, coding, workshop code)`` from a KW1281 wake-up's blocks.
+
+    The text is the ASCII identification blocks only, as KWHack's
+    ``ControllerInfo.AsciiText`` has it: one string the ECU cut into
+    fixed-length blocks (so pieces are joined with nothing between them, then
+    runs of spaces collapsed), each character's top bit dropped -- on the
+    first byte it is the "more data via ReadIdent" flag, not a character.
+    An ASCII block whose first data byte is 0x00 is not text but the
+    coding/WSC block: ``(b4*256 + b5) / 2`` is the software coding and
+    ``b6*256 + b7`` the workshop code, which overflows into the low bit of b5.
+    """
+    text = []
+    coding = wsc = None
+    for b in blocks:
+        if len(b) < 4 or b[2] != BT_ASCII:
+            continue
+        if b[3] == 0x00:
+            if len(b) >= 8:
+                coding = (b[4] * 256 + b[5]) // 2
+                wsc = b[6] * 256 + b[7] + (65536 if b[5] & 1 else 0)
+            continue
+        text.append("".join(chr(x & 0x7F) for x in b[3:]))
+    return " ".join("".join(text).split()), coding, wsc
+
+
+_EDC15_KWP_MODE = (
+    "The ECU answered with %s instead of KW1281: that is the EDC15's "
+    "KWP2000 mode, which serves only flash programming and generic OBD -- no "
+    "measuring blocks. If it was "
+    "just disconnected or flashed, switch the ignition off for a few seconds and "
+    "connect again; if it keeps answering this way it is stuck in its boot "
+    "loader -- recover it with the flasher.")
+
+
 # ---------------------------------------------------------------- session
 class DiagSession:
     """One diagnostic connection; drive it from a single worker thread."""
 
-    def __init__(self, link, ecu="EDC16", log=None):
+    def __init__(self, link, ecu="EDC16", log=None, fast_kw1281=False):
         self.k = link
         self.ecu = ecu
         self._log = log or (lambda s: None)
@@ -299,6 +352,13 @@ class DiagSession:
         self.baud = 0
         self.identity = ""
         self.ident_blocks: List[bytes] = []
+        #: EDC15 KW1281 software coding / workshop code from the wake-up's
+        #: coding block (None when the ECU sent none)
+        self.coding: Optional[int] = None
+        self.workshop_code: Optional[int] = None
+        #: KW1281 fast timing (1 ms R6, no block lead) -- the logger's choice,
+        #: as KWHack's live data always uses it
+        self.fast_kw1281 = bool(fast_kw1281)
 
     def log(self, msg):
         self._log(msg)
@@ -485,30 +545,40 @@ class DiagSession:
             self.log("No answer at %d baud; reverted to 10400." % baud)
 
     def _connect_kw1281(self, is_stop):
-        last = None
-        for baud in EDC15_BAUDS:
-            if is_stop and is_stop():
-                raise StopRequested()
-            try:
-                self.k.set_baud(baud)
-                self.log("Connecting (KW1281 slow init at %d)..." % baud)
-                version = self.k.wake_up(0x01, even_parity=False)
-                if version >= 2000:
-                    raise KLineError("KWP2000 keyword %d at %d baud (expected KW1281)"
-                                     % (version, baud))
-                kw = _kwp.Kw1281(self.k, self.log)
-                self.ident_blocks = kw.connect()
-                self.kw = kw
-                self.baud = baud
-                self.identity = " ".join(
-                    b[3:].decode("latin-1").strip() for b in self.ident_blocks
-                    if b[2] == 0xF6)
-                self.log("Connected at %d: %s" % (baud, self.identity))
-                return
-            except (KLineError, KLineTimeout) as ex:
-                last = ex
-                time.sleep(0.5)
-        raise last or KLineError("EDC15 did not answer")
+        """Wake an EDC15 in KW1281: 5-baud address 0x01 with odd parity (the
+        address it answers to is its calibration's ``xcwSGADR``), at 9600.
+
+        A KWP2000 answer is refused with the reason. On an EDC15 that is the
+        flash-programming responder (key bytes 6B 8F at 10400), not a
+        diagnostic session: it does not serve measuring blocks. At 9600 its
+        reply usually arrives as a 0x95/0xB5 sync byte instead, so that is
+        recognised too.
+        """
+        self._check_stop(is_stop)
+        self.k.set_baud(EDC15_BAUD)
+        self.log("Connecting (KW1281, 5-baud init at %d)..." % EDC15_BAUD)
+        try:
+            version = self.k.wake_up(0x01, even_parity=False)
+        except LinkStopped:
+            raise
+        except (KLineError, KLineTimeout) as ex:
+            if getattr(self.k, "last_sync", -1) in EDC15_KWP_SYNC_AT_9600:
+                got = "a 10400-baud reply (sync 0x%02X at 9600)" % self.k.last_sync
+                raise KLineError(_EDC15_KWP_MODE % got) from ex
+            raise
+        if version >= 2000:
+            raise KLineError(_EDC15_KWP_MODE % ("KWP2000 key bytes (KW %d)" % version))
+        self._continue_kw1281(EDC15_BAUD)
+
+    def _continue_kw1281(self, baud):
+        kw = _kwp.Kw1281(self.k, self.log, fast=self.fast_kw1281)
+        self.ident_blocks = kw.connect()
+        self.kw = kw
+        self.baud = baud
+        self.identity, self.coding, self.workshop_code = kw1281_identity(self.ident_blocks)
+        tail = ("  (coding %05d, WSC %05d)" % (self.coding, self.workshop_code)
+                if self.coding is not None else "")
+        self.log("Connected (KW1281) at %d: %s%s" % (baud, self.identity, tail))
 
     # ---- live data ----
     def read_group(self, group: int) -> Optional[List[Cell]]:
@@ -523,11 +593,12 @@ class DiagSession:
         kw = self.kw
         kw.send_block([0x29, group & 0xFF])
         blk = kw.receive_block()
-        title = blk[2]
-        if title == _kwp.BT_NAK:
+        if blk[2] != BT_GROUP_READ_RESPONSE:
+            # NAK, or a block this reader does not decode (the 02 text form,
+            # an ACK): the group is unavailable, as KWHack's GroupReadMany has
+            # it. The dialog is still in step -- the block arrived whole with
+            # the right counter -- so this is no reason to drop the session.
             return None
-        if title != 0xE7:
-            raise KLineError("KW1281: unexpected block 0x%02X to GroupRead" % title)
         return parse_cells(blk[3:], drop_echo=False)
 
     def read_memory(self, addr: int, length: int, addr_bytes: int = 3):

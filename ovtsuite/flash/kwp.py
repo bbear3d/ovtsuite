@@ -150,18 +150,29 @@ BT_END = 0x06
 
 R6 = 0.002              # inter-byte delay
 BLOCK_LEAD = 0.025
+#: KWHack's KW1281 "fast timing" (live data): R6 at the 1 ms spec minimum
+#: (SAE J2818 allows 1-50 ms) and no block lead-in -- the 25 ms lead is for
+#: one picky cluster (4D0919035AJ); engine ECUs do not need it.
+R6_FAST = 0.001
 
 
 class Kw1281:
-    """The block-dialog subset needed to open then cleanly close a KW1281
-    session (which flips an EDC15 into its KWP2000 boot stub on the next
-    slow-init)."""
+    """The KW1281 block dialog: connect (receive the identification blocks),
+    blocks both ways, and a clean end (which flips an EDC15 into its KWP2000
+    boot stub on the next slow-init)."""
 
-    def __init__(self, link, log=None):
+    def __init__(self, link, log=None, fast=False):
         self.k = link
         self._log = log or (lambda s: None)
         self._counter = None
         self._connected = False
+        #: trims the inter-byte and block lead-in delays (KWHack's
+        #: Kw1281FastTiming, always on for its live data)
+        self.fast = bool(fast)
+
+    @property
+    def _r6(self):
+        return R6_FAST if self.fast else R6
 
     def connect(self):
         """Receive the ECU's identification blocks (ACKing each) until it
@@ -176,14 +187,16 @@ class Kw1281:
 
     # ---- blocks ----
     def send_block(self, payload):
-        time.sleep(BLOCK_LEAD)
+        if not self.fast:
+            time.sleep(BLOCK_LEAD)
         block = bytearray([len(payload) + 2, self._counter & 0xFF]) + bytearray(payload)
         self._counter = (self._counter + 1) & 0xFF
-        time.sleep(R6)
+        r6 = self._r6
+        time.sleep(r6)
         for b in block:
             self.k.write_byte(b)
             self.k.read_complement(b)
-            time.sleep(R6)
+            time.sleep(r6)
         self.k.write_byte(0x03)                         # block end, not ACKed
 
     def _receive_blocks(self):
@@ -198,7 +211,7 @@ class Kw1281:
 
     def _read_and_ack(self):
         b = self.k.read_byte()
-        time.sleep(R6)
+        time.sleep(self._r6)
         self.k.write_byte((~b) & 0xFF)
         return b
 
@@ -212,7 +225,7 @@ class Kw1281:
             time.sleep(0.025)
             self.k.write_byte((~msb) & 0xFF)
             return self._read_and_ack_first(count + 1)
-        time.sleep(R6)
+        time.sleep(self._r6)
         self.k.write_byte((~b) & 0xFF)
         return b
 

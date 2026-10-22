@@ -39,8 +39,9 @@ Hover over a tab for the full names, the definition used, whether the
 comparison is live, and when the set was last flashed (*Last flashed
 <date> (<branch>, saved version | unsaved edits)*).
 
-The window title names the tab in front the same way -- *Project ▸ Set ·
-Branch* -- with `*` when its project has unsaved changes.
+The window title names the tab in front the same way, with the project's
+file name -- *Project [file.ovt] ▸ Set · Branch* -- and `*` when its project
+has unsaved changes.
 
 ## Opening, switching and closing
 
