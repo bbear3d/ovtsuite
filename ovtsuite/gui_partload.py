@@ -243,32 +243,40 @@ class AxisPanel(QtWidgets.QWidget):
             self.ft.blockSignals(False)
             self._seeded = True
 
-    def _tcc_entities(self):
+    def _tcc_set(self):
         if getattr(self, "_tcc", False) is False:
             try:
                 from .gui_gearbox_edit import schedule_set_for
-                t = schedule_set_for(self.ed.session, "tcc")
+                self._tcc = schedule_set_for(self.ed.session, "tcc")
             except Exception:
-                t = None
-            seen, ents = set(), []
-            for s in (t.schedules if t is not None else ()):
-                if id(s.entity) not in seen:
-                    seen.add(id(s.entity))
-                    ents.append(s.entity)
-            self._tcc = ents
+                self._tcc = None
         return self._tcc
 
+    def _tcc_entities(self, scope: GE.Scope):
+        """``(maps, skipped)``: the lock-up maps whose pedal axis moves with
+        the ticked shift programs -- a map moves only when everything it
+        serves is ticked (its axis is shared by every characteristic in it);
+        ``skipped`` names the maps that also serve a program not ticked."""
+        return PL.tcc_maps(self._tcc_set(), self.ed.sset, scope.schedules)
+
     def make_op(self, scope: GE.Scope) -> Optional[PL.RemapPedalAxis]:
+        extra, skipped = self._tcc_entities(scope) if self.tcc_chk.isChecked() else ((), [])
         op = PL.RemapPedalAxis(scope, self.ft.value(), keep_below=self.keep.value(),
-                               extra=self._tcc_entities() if self.tcc_chk.isChecked() else ())
+                               extra=extra)
         sel = scope.schedules
         if sel:
             old = list(self.ed.sset.schedules[sel[0]].pedal)
             new = op.new_axis(old)
-            self.preview.setText("%s: %s" % (
+            text = "%s: %s" % (
                 self.ed.sset.schedules[sel[0]].key,
                 "  ".join("%.1f→%.1f" % (a, b) for a, b in zip(old, new) if abs(a - b) > 0.05)
-                if new else "nothing to move"))
+                if new else "nothing to move")
+            if self.tcc_chk.isChecked():
+                text += "\nLock-up maps moved with them: %d." % len(extra)
+                if skipped:
+                    text += (" Left as they are, because they also serve programs "
+                             "not ticked: %s." % ", ".join(skipped))
+            self.preview.setText(text)
         return op
 
 

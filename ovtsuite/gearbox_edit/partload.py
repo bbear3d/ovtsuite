@@ -268,6 +268,55 @@ class RemapPedalAxis(Op):
         return out
 
 
+#: lock-up characteristics that serve nothing
+_IDLE_GROUPS = ("Unused", "Gear not located")
+
+
+def tcc_maps(tcc: Optional[ScheduleSet], sset: ScheduleSet, selected: Sequence[int]
+             ) -> Tuple[List[object], List[str]]:
+    """``(maps, skipped)``: the stored lock-up maps of ``tcc`` whose pedal
+    axis should move with the shift schedules ``selected`` of ``sset``.
+
+    A map's axis is shared by every characteristic stored in it, so a map
+    moves only when each of its characteristics that serves anything serves
+    the ticked programs only (by its program references, ``states``, in the
+    ticked programs' coding bank); a map serving a program not ticked is
+    left and named in ``skipped``. Without program references (8HP until
+    its mapping is solved) the ticked programs' coding bank decides. Maps
+    of unused characteristics alone do not move."""
+    if tcc is None or not selected:
+        return [], []
+    sel = [sset.schedules[i] for i in selected]
+    progs = {(s.bank, s.number) for s in sel}
+    banks = {s.bank for s in sel}
+    by_program = any(t.states for t in tcc.schedules)
+    by_map: Dict[int, List[object]] = {}
+    order: List[object] = []
+    for t in tcc.schedules:
+        if id(t.entity) not in by_map:
+            by_map[id(t.entity)] = []
+            order.append(t.entity)
+        by_map[id(t.entity)].append(t)
+    maps, skipped = [], []
+    for e in order:
+        live = [t for t in by_map[id(e)] if t.group not in _IDLE_GROUPS]
+        if not live:
+            continue
+        if by_program:
+            ours = [t for t in live if any((t.bank, n) in progs for n in t.states)]
+            other = [t for t in live if any((t.bank, n) not in progs for n in t.states)]
+        else:
+            ours = [t for t in live if t.bank in banks]
+            other = [t for t in live if t.bank not in banks]
+        if ours and not other:
+            maps.append(e)
+        elif ours:
+            sl = by_map[id(e)]
+            skipped.append(getattr(e, "name", "") or (
+                "%s-%s" % (sl[0].key, sl[-1].key) if len(sl) > 1 else sl[0].key))
+    return maps, skipped
+
+
 def encode_axis(entity, values: Sequence[float]) -> Optional[List[float]]:
     """``values`` as the axis can store them (decoded back), or None when
     two breakpoints would collapse onto one stored value or the order would

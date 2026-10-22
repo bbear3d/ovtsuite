@@ -188,3 +188,24 @@ def test_replay_counts_fuel_shifts_and_shortfall():
     c = corners(RP.Sample(1, 50, 20, 3, 1500, 5, program=36))
     assert c == [(3, 1.0)]
     assert corners(RP.Sample(1, 50, 20, 3, 1500, 5, program=99)) == [(0, 1.0)]
+
+
+def test_lock_up_maps_move_only_when_everything_they_serve_is_ticked():
+    """A lock-up map's pedal axis is shared by every characteristic stored
+    in it: it moves with the ticked shift programs only when each of its
+    characteristics serves ticked programs (unused ones do not count); one
+    that also serves another program is left and named."""
+    from types import SimpleNamespace as N
+    shift = N(schedules=[N(bank=0, number=10), N(bank=0, number=11), N(bank=0, number=12)])
+    a, b, c, d = (N(name="") for _ in range(4))
+    tcc = N(schedules=[
+        N(key="WK1", entity=a, bank=0, group="Unused", states=()),
+        N(key="WK2", entity=a, bank=0, group="Gear 2", states=(10, 11)),
+        N(key="WK3", entity=b, bank=0, group="Gear 3", states=(10,)),
+        N(key="WK4", entity=b, bank=0, group="Gear 4", states=(12,)),
+        N(key="WK5", entity=c, bank=1, group="Gear 2", states=(10,)),
+        N(key="WK6", entity=d, bank=0, group="Unused", states=())])
+    maps, skipped = PL.tcc_maps(tcc, shift, [0, 1])          # SKL 10 and 11
+    assert maps == [a] and skipped == ["WK3-WK4"]
+    maps, skipped = PL.tcc_maps(tcc, shift, [0, 1, 2])
+    assert maps == [a, b] and skipped == []                 # bank 1 and unused stay

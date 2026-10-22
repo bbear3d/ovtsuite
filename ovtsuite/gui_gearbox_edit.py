@@ -1326,8 +1326,9 @@ class GearboxEditDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._tcc_set = False
-        if self.fl_panel is not None:
-            self.fl_panel._tcc = False
+        for panel in (self.fl_panel, getattr(self, "ax_panel", None)):
+            if panel is not None:
+                panel._tcc = False
 
     def _recompute(self):
         self._reread()

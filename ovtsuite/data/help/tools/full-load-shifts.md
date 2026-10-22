@@ -1,7 +1,7 @@
 ---
 title: Full-load shift points
 order: 38
-context: GearboxEditDialog, FullLoadPanel
+context: FullLoadPanel
 ---
 # Full-load shift points from the engine's torque
 
