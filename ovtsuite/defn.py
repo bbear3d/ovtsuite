@@ -111,9 +111,10 @@ def _module_of(platform: Optional[str]):
 #: regenerated whenever the labels change, and hashing it would make a GUI
 #: change look like a knowledge-base change.
 #: Data files no definition is built from: the search index (it hashes the
-#: rest), and the logger's measuring-block catalogues.
+#: rest), the logger's measuring-block catalogues, and the fault-path name
+#: catalogue (DSM numbers).
 _NOT_MODEL_DATA = {"search_index.json.gz", "edc16_msblocks.json.gz",
-                   "edc15_msblocks.json.gz"}
+                   "edc15_msblocks.json.gz", "edc16_dsm_paths.json.gz"}
 
 
 def data_digest(platform: Optional[str] = None) -> str:

@@ -228,6 +228,7 @@ def tools_dtc(ctx):
     w = ctx.main_window(ctx.ref("edc16_lq"))
     dlg = _tool(ctx, w, "open_dtc", "dtc")
     dlg.filter.setText("EGR")
+    dlg.table.selectRow(0)            # the panel: every code of every type
     ctx.settle(100)
     return dlg
 
@@ -238,6 +239,7 @@ def tools_dtc_edc15(ctx):
     w = ctx.main_window(ctx.ref("edc15_bd"))
     dlg = _tool(ctx, w, "open_dtc", "dtc")
     dlg.filter.setText("P0380")
+    dlg.table.selectRow(2)            # Manual: its path, bit and MIL
     ctx.settle(100)
     return dlg
 

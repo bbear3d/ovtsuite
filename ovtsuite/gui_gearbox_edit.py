@@ -49,9 +49,13 @@ OPS = (("offset", "Offset"), ("scale", "Scale"), ("slide", "Slide along pedal"),
        ("band", "Band (keep order)"), ("set", "Set to value"),
        ("copy", "Copy from schedule"), ("smooth", "Smooth"),
        ("track", "Follow an upshift"), ("gap", "Set gap to the paired line"),
-       ("off", "Never (write \u201coff\u201d)"))
+       ("off", "Never (write \u201coff\u201d)"),
+       ("fullload", "Full-load optimum (engine torque)"),
+       ("partload", "Part-load strategy (economy / sport)"),
+       ("pedalaxis", "Pedal axis to the ECU's full torque"))
 #: Operations only one kind of editor offers.
-OPS_ONLY = {"track": "tcc", "off": "tcc"}
+OPS_ONLY = {"track": "tcc", "off": "tcc", "fullload": "shift", "partload": "shift",
+            "pedalaxis": "shift"}
 _SETS_KEY = "schedule_sets"
 _BLENDS_KEY = "blends"
 #: platform -> module giving default blends and project log events.
@@ -403,6 +407,18 @@ class GearboxEditDialog(QtWidgets.QDialog):
                                 and _log_module(self.session) is not None)
         if not self.log_chk.isEnabled():
             self.log_chk.setToolTip("Logs are read from the project this file was opened from")
+
+    def closeEvent(self, ev):
+        # a log load still running in the background stops with the window
+        if getattr(self, "replay_box", None) is not None:
+            self.replay_box.shutdown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc / Close end the dialog without a close event
+        if getattr(self, "replay_box", None) is not None:
+            self.replay_box.shutdown()
+        super().done(r)
 
     # ---------------------------------------------------------- navigator
     def _fit_to_screen(self, w: int, h: int) -> None:
@@ -870,14 +886,18 @@ class GearboxEditDialog(QtWidgets.QDialog):
                                   "line, so the two move together")
         self.with_pair.toggled.connect(lambda *_: self._schedule())
         f.addRow("", self.with_pair)
-        pr = QtWidgets.QHBoxLayout()
+        self.pedal_w = QtWidgets.QWidget()
+        pr = QtWidgets.QHBoxLayout(self.pedal_w)
+        pr.setContentsMargins(0, 0, 0, 0)
         self.p_from = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, suffix=" %")
         self.p_to = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, value=100.4, suffix=" %")
         pr.addWidget(self.p_from)
         pr.addWidget(QtWidgets.QLabel("to"))
         pr.addWidget(self.p_to)
-        f.addRow("Pedal", pr)
-        tr = QtWidgets.QHBoxLayout()
+        f.addRow("Pedal", self.pedal_w)
+        self.fade_w = QtWidgets.QWidget()
+        tr = QtWidgets.QHBoxLayout(self.fade_w)
+        tr.setContentsMargins(0, 0, 0, 0)
         self.taper = QtWidgets.QCheckBox("from")
         self.t_from = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, value=80, suffix=" %")
         self.t_to = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, value=100, suffix=" %")
@@ -885,12 +905,29 @@ class GearboxEditDialog(QtWidgets.QDialog):
         tr.addWidget(self.t_from)
         tr.addWidget(QtWidgets.QLabel("to 0 at"))
         tr.addWidget(self.t_to)
-        f.addRow("Fade", tr)
+        f.addRow("Fade", self.fade_w)
         self.taper.setToolTip("Full amount below the first pedal, fading to nothing at the second")
         self.direction = QtWidgets.QComboBox()
         for key, text in DIRECTIONS:
             self.direction.addItem(text, key)
         f.addRow("Direction", self.direction)
+        # the full-load optimum's own controls (shift editor only)
+        self.fl_panel = None
+        self.pl_panel = None
+        self.ax_panel = None
+        self._fl_sel = None
+        if self.kind != "tcc":
+            from .gui_fullload import FullLoadPanel
+            from .gui_partload import AxisPanel, PartLoadPanel
+            self.fl_panel = FullLoadPanel(self)
+            self.fl_panel.changed.connect(self._schedule)
+            f.addRow(self.fl_panel)
+            self.pl_panel = PartLoadPanel(self)
+            self.pl_panel.changed.connect(self._schedule)
+            f.addRow(self.pl_panel)
+            self.ax_panel = AxisPanel(self)
+            self.ax_panel.changed.connect(self._schedule)
+            f.addRow(self.ax_panel)
         for wdg in (self.amount, self.amount2, self.p_from, self.p_to, self.t_from,
                     self.t_to, self.blend):
             wdg.valueChanged.connect(lambda *_: self._schedule())
@@ -961,6 +998,23 @@ class GearboxEditDialog(QtWidgets.QDialog):
         self.same_fix.addItems(["Warn only", "Auto-fix: extend the edit to the rest"])
         cf.addWidget(self.same_on, 7, 0, 1, 2)
         cf.addWidget(self.same_fix, 8, 0, 1, 2)
+        self.step_on = QtWidgets.QCheckBox("No step steeper than 1.5 \u00d7 the factory's")
+        self.step_on.setToolTip(
+            "Warn where the edit makes a line rise between two pedal rows more steeply "
+            "than 1.5 times its own steepest factory rise (the kickdown step aside)")
+        self.step_on.setChecked(self.kind != "tcc")
+        self.step_on.setVisible(self.kind != "tcc")
+        cf.addWidget(self.step_on, 9, 0, 1, 2)
+        self.step_on.toggled.connect(lambda *_: self._schedule())
+        self.conv_on = QtWidgets.QCheckBox("Upshifts land with the converter locked")
+        self.conv_on.setToolTip(
+            "Warn where the edit puts an upshift below the lock-up map's OR for the next "
+            "gear in that program: the converter is still open after the shift, which costs "
+            "what an early (economy) shift was for")
+        self.conv_on.setChecked(self.kind != "tcc")
+        self.conv_on.setVisible(self.kind != "tcc")
+        cf.addWidget(self.conv_on, 10, 0, 1, 2)
+        self.conv_on.toggled.connect(lambda *_: self._schedule())
         self.same_on.toggled.connect(lambda *_: self._schedule())
         self.same_fix.currentIndexChanged.connect(lambda *_: self._schedule())
         self.lock_on.toggled.connect(lambda *_: self._schedule())
@@ -978,6 +1032,11 @@ class GearboxEditDialog(QtWidgets.QDialog):
             wdg.currentIndexChanged.connect(lambda *_: self._schedule())
         v.addWidget(cbox)
 
+        self.replay_box = None
+        if self.kind != "tcc":
+            from .gui_partload import ReplayBox
+            self.replay_box = ReplayBox(self)
+
         fbox = QtWidgets.QGroupBox("Preview")
         fv = QtWidgets.QVBoxLayout(fbox)
         self.summary = QtWidgets.QLabel()
@@ -987,6 +1046,8 @@ class GearboxEditDialog(QtWidgets.QDialog):
         self.findings.setWordWrap(True)
         fv.addWidget(self.findings, 1)
         v.addWidget(fbox, 1)
+        if self.replay_box is not None:
+            v.addWidget(self.replay_box)
 
         ab = QtWidgets.QHBoxLayout()
         self.version_chk = QtWidgets.QCheckBox("Save as a project version")
@@ -1026,6 +1087,35 @@ class GearboxEditDialog(QtWidgets.QDialog):
                                  "gap"),
                 "amount2": op == "band", "blend": op in ("band", "set", "copy"),
                 "source": op == "copy", "ref": op == "track", "anchor": op == "gap"}
+        fl = op == "fullload"
+        own = op in ("fullload", "partload", "pedalaxis")     # steps with their own rows
+        f = self.pedal_w.parentWidget().layout() if self.pedal_w.parentWidget() else None
+        for wdg in (self.pedal_w, self.fade_w, self.with_pair):
+            wdg.setVisible(not own)
+            lab = f.labelForField(wdg) if isinstance(f, QtWidgets.QFormLayout) else None
+            if lab is not None:
+                lab.setVisible(not own)
+        for panel, key in ((self.pl_panel, "partload"), (self.ax_panel, "pedalaxis")):
+            if panel is not None:
+                panel.setVisible(op == key)
+                if op == key:
+                    if key == "partload":
+                        for ln, c in self.op_lines.items():
+                            c.blockSignals(True)
+                            c.setChecked(self.sset.line(ln).kind == "up")
+                            c.blockSignals(False)
+                        self._lines_follow = False
+                    panel.activate()
+        if self.fl_panel is not None:
+            self.fl_panel.setVisible(fl)
+            if fl:
+                # the step reaches every upshift unless the user narrows it
+                for ln, c in self.op_lines.items():
+                    c.blockSignals(True)
+                    c.setChecked(self.sset.line(ln).kind == "up")
+                    c.blockSignals(False)
+                self._lines_follow = False
+                self.fl_panel.activate()
         for key, wdgs in (("amount", (self.amount, self.amount_lbl)),
                           ("amount2", (self.amount2, self.amount2_lbl)),
                           ("blend", (self.blend, self.blend_lbl)),
@@ -1146,6 +1236,12 @@ class GearboxEditDialog(QtWidgets.QDialog):
             return GE.SetGap(sc, v, u, self.anchor_box.currentData())
         if op == "off":
             return GE.SetOff(sc)
+        if op == "fullload" and self.fl_panel is not None:
+            return self.fl_panel.make_op(sc)
+        if op == "partload" and self.pl_panel is not None:
+            return self.pl_panel.make_op(sc)
+        if op == "pedalaxis" and self.ax_panel is not None:
+            return self.ax_panel.make_op(sc)
         if op == "track":
             ref = self.ref_box.currentText()
             if not ref:
@@ -1172,6 +1268,17 @@ class GearboxEditDialog(QtWidgets.QDialog):
             out.append(GE.ReferenceGapCheck(line=2, margin=float(self.lock_m.value())))
         if self.same_on.isChecked():
             out.append(GE.IdenticalCheck(autofix=self.same_fix.currentIndex() == 1))
+        if self.kind != "tcc" and self.step_on.isChecked():
+            out.append(GE.StepCheck(1.5))
+        if self.kind != "tcc" and self.conv_on.isChecked():
+            if getattr(self, "_tcc_set", False) is False:
+                try:
+                    self._tcc_set = schedule_set_for(self.session, "tcc")
+                except Exception:
+                    self._tcc_set = None
+            if self._tcc_set is not None:
+                from .gearbox_edit.partload import ConverterCheck
+                out.append(ConverterCheck(self._tcc_set))
         out.append(GE.SharedCheck())
         return out
 
@@ -1204,7 +1311,31 @@ class GearboxEditDialog(QtWidgets.QDialog):
     def _schedule(self):
         self._timer.start()
 
+    def _reread(self):
+        """The binary changed since the schedules were read (an undo, a
+        redo, an edit elsewhere): read their pedal axes again and drop the
+        lock-up sets kept, so the steps pick the rows the binary has."""
+        rev = getattr(self.session, "revision", None)
+        if rev == getattr(self, "_seen_rev", rev):
+            self._seen_rev = rev
+            return
+        self._seen_rev = rev
+        for sc in self.sset.schedules:
+            try:
+                sc.pedal = tuple(float(v) for v in sc.entity.y_values())
+            except Exception:
+                pass
+        self._tcc_set = False
+        if self.fl_panel is not None:
+            self.fl_panel._tcc = False
+
     def _recompute(self):
+        self._reread()
+        if self.fl_panel is not None and self.op_box.currentData() in ("fullload", "partload"):
+            sel = tuple(self._selected())
+            if sel != self._fl_sel:
+                self._fl_sel = sel
+                self.fl_panel.selection_changed()   # the open gears follow the programs
         self.edit = GE.Edit(self.sset, self._ops(), self._checks())
         self.result = self.edit.compute()
         n = len(self._selected())
@@ -1217,7 +1348,8 @@ class GearboxEditDialog(QtWidgets.QDialog):
             if fnd.fixed:
                 fixed[fnd.code] = fixed.get(fnd.code, 0) + 1
         names = {"gap": "gap to the opposite shift", "monotonic": "line falling with pedal",
-                 "rpm": "engine rpm limit"}
+                 "rpm": "engine rpm limit", "step": "steep step between pedal rows",
+                 "converter": "upshift into an open converter"}
         for code, n in fixed.items():
             it = QtWidgets.QListWidgetItem("✓ %d auto-fixed: %s" % (n, names.get(code, code)))
             it.setForeground(QtGui.QColor("#3a8a3a"))
@@ -1230,8 +1362,10 @@ class GearboxEditDialog(QtWidgets.QDialog):
             self.findings.addItem(it)
         if not self.result.findings and self.result.changes:
             self.findings.addItem("No check findings.")
-        self.apply_btn.setEnabled(bool(self.result.changes))
+        self.apply_btn.setEnabled(bool(self.result.changes or self.result.axes))
         self._redraw()
+        if getattr(self, "replay_box", None) is not None:
+            self.replay_box.edit_changed()
 
     def _redraw(self):
         if self.result is None:
@@ -1249,15 +1383,16 @@ class GearboxEditDialog(QtWidgets.QDialog):
             # it is left out of the line rather than drawn at 10000
             before = [(p, self.edit.origin[i][r * K + line] * f) for r, p in enumerate(s.pedal)
                       if not s.is_off(self.edit.origin[i][r * K + line])]
-            after = [(p, self.result.grid[i][r * K + line] * f) for r, p in enumerate(s.pedal)
+            ped_after = self.result.pedal_of(self.sset, i)
+            after = [(p, self.result.grid[i][r * K + line] * f) for r, p in enumerate(ped_after)
                      if not s.is_off(self.result.grid[i][r * K + line])]
             d = {"key": s.key, "color": self.colors[s.key], "before": before, "after": after,
-                 "changed": (i, line) in changed,
+                 "changed": (i, line) in changed or id(s.entity) in (self.result.axes or {}),
                  "tip": "%s  %s\n%s" % (s.key, s.role, s.group)}
             if pair is not None:
                 fp = self._factor(s, pair)
                 d["pair_after"] = [(p, self.result.grid[i][r * K + pair] * fp)
-                                   for r, p in enumerate(s.pedal)
+                                   for r, p in enumerate(ped_after)
                                    if not s.is_off(self.result.grid[i][r * K + pair])]
             if self.kind == "tcc" and self.refs_chk.isChecked():
                 users = ["SKL %d" % n for n in s.states]
@@ -1495,7 +1630,7 @@ class GearboxEditDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------ apply
     def _apply(self):
         res = self.edit.compute()
-        if not res.changes:
+        if not res.changes and not res.axes:
             return
         warn = [f for f in res.findings if f.severity == "warning" and not f.fixed]
         auto = TITLES.get(self.kind, "Editor") + ": " + "; ".join(
@@ -1518,7 +1653,17 @@ class GearboxEditDialog(QtWidgets.QDialog):
         if dlg.exec() != QtWidgets.QDialog.Accepted:
             return
         label = lab.text().strip() or auto
-        n = self.edit.apply(self.session, label, res)
+        try:
+            n = self.edit.apply(self.session, label, res)
+        except ValueError as ex:
+            QtWidgets.QMessageBox.warning(self, TITLES.get(self.kind, "Editor"),
+                                          "Nothing was written: %s" % ex)
+            return
+        if res.axes:
+            # the schedules' pedal axes moved: read them again (and the
+            # lock-up sets, whose axes may have moved with them)
+            self._seen_rev = None
+            self._reread()
         try:
             self.ws.model.refresh()
             self.ws._status()

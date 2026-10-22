@@ -12,7 +12,9 @@ same file. It works for Bosch EDC15 and EDC16 files and needs that module.
 - **Dyno** on the edit bar (Ctrl+4) shows it in the tab, above the table. It
   follows every edit and undo.
 - **Details...** on the panel, or **Tools > Dyno chart...**, opens the full
-  window: the reference, the conditions, every engine speed, and export.
+  window: the reference, other runs to compare (another tab, a branch or
+  version of any open project, a file, a pinned curve, a data log), the
+  conditions, every engine speed, what changed, road speed, and export.
 
 It is a calculation, not a measurement. The engine makes these figures only if
 the turbo reaches its target boost and the injectors and fuel system deliver
@@ -22,12 +24,14 @@ the fuel; nothing here knows about a worn turbo or a clogged filter.
 
 | What | Meaning |
 |---|---|
-| Orange line, left axis | Power |
-| Blue line, right axis | Torque |
-| Solid | This file |
-| Dashed | The reference |
-| Dots | This file's peak power and peak torque |
-| Coloured strip under the curves | Which limit governs at each engine speed. Hover for its name; **click a band to open that map** |
+| Solid line, left axis | Power |
+| Dashed line, right axis | Torque |
+| Colour | The run: this file blue, the reference orange, each run added its own colour (named in the legend above the chart). A run keeps its colour when another is removed |
+| Points | A data log: filled for power, rings for torque |
+| Dots with figures | This file's peak power and peak torque |
+| Coloured strip under the curves | Which limit governs at each engine speed in this file. Hover for its name; **click a band to open that map** |
+
+Hover over the chart for every run's figures at that engine speed.
 
 The line above the chart gives the peaks and the gain over the reference.
 Power can be shown in **kW** (default), **PS** or **hp**; torque in **Nm**
@@ -86,7 +90,13 @@ window:
 | **Original** (default) | The file as first opened -- in a project, the set as read |
 | **Comparison** | The tab's comparison file |
 | **Version: ...** (window) | Any saved version in the history |
+| A run you added | Another tab, a project's branch or version, a file, a pinned curve (see below) |
 | **None** | This file's own maps |
+
+Every run on the chart is read through the same reference, at the same
+conditions, so the runs compare like for like. A long version or file name
+is shortened in the lists (in full in the tooltip); it never widens the
+window or the panel.
 
 Past the reference's last breakpoint the value is extended in proportion; the
 table marks those rows with \*. Untick **Carry the quantity through the
@@ -117,7 +127,90 @@ duration maps** to take the ECU's quantity as it is.
 - The table lists every engine speed: power, torque, quantity, the quantity in
   the reference's terms, the limit that governs, boost and air. Double-click a
   **Limited by** cell to open that map.
-- **Export CSV...**, **Save image...** and **Copy image** export the curves.
+- **Export CSV...** writes every run, one row per engine speed (and the road
+  speed, when the chart is drawn across it), after `#` lines giving the file,
+  the runs, the reference and the conditions. **Save image...** and **Copy
+  image** give the chart with a caption under it: the file, each run's peaks,
+  and the conditions -- so it reads on its own.
+
+### Other runs
+
+**Add** puts another curve on the chart, up to six:
+
+| Add | The run |
+|---|---|
+| **This file > Original / Version** | This file at a saved version |
+| **Open tab** | Another tab's file as it is now -- it follows that tab's edits |
+| **Open project** | Any set of any open project: a branch's newest version, or any version of it |
+| **File...** | A binary on disk |
+| **Data log** | A log kept in an open project, or a log file (see below) |
+
+**Pin this curve** keeps this file's curve as it is now, so you can edit and
+watch the live curve move against it; pins last until the tab closes.
+Untick a run to hide it. Right-click a run to make it the reference, compare
+this file with it in **What changed**, rename a pin, or remove it.
+
+A run from another file is read with that file's own definition (the open
+tab's, or the file loaded afresh) -- never this file's, even when the two are
+the same size.
+
+### Data logs
+
+A log's injected quantity at full load (pedal at 90 % or more; every sample
+when the log has no pedal position) is gathered into 100 rpm bins and read
+through the same conversion as the calculated curves. It is drawn as points:
+what the ECU delivered on the road, beside what the calibration asks for. A
+log needs the engine speed and the injected quantity; the measuring blocks of
+[Data logging](../logging.md) carry both.
+
+### What changed
+
+The **What changed** tab compares this file with the reference or any other
+run. The engine-speed range is cut where the governing limit of either run
+changes; for each band it gives the limit in each, how far power, torque and
+quantity moved, and which of the maps behind those limits differ between the
+two files (how many cells, by how much, whether the breakpoints moved).
+Double-click a band to open the first of those maps.
+
+### Presets
+
+**Preset** sets the conditions in one go: the standard (sea level, warm), a
+cold or hot day, altitude, at the wheels or at the crank. **Save...** keeps
+the conditions as a preset of your own; **Delete** removes one of yours.
+
+### Road speed
+
+**Draw across: Road speed** draws the runs against road speed in a gear
+instead of engine speed. It needs the car's **gearbox** and **tyre**:
+
+- **Gearbox** -- choose one from the list of common VAG gearboxes (hover
+  over one for its gear ratios, final drive and where the figures come from),
+  or make your own with **New...**: its gear ratios, final drive(s) and, for
+  a twin-shaft box such as a DSG, which gears use which final drive.
+  **Edit...** changes or deletes one of yours. Gearbox codes cover many
+  variants; check the ratios against your gearbox's code letters.
+- **Tyre** -- the size (`225/45 R17`) or the rolling circumference in metres
+  (`1.93`). A size is turned into a rolling circumference 3 % under the
+  tyre's unloaded one.
+
+Road speed per 1000 rpm = 60 x rolling circumference / (gear ratio x final
+drive). Enter your own **km/h per 1000 rpm** for a gear to override it (0
+goes back to the gearbox's), and show it in km/h or mph.
+
+EDC16 files also keep the ECU's own gear model (overall ratios and the
+gear-recognition bands), offered as **The ECU's gear model**. It is what the
+ECU uses to recognise the gear and is often not the car's gearbox (stock
+03G906016LQ's main block is labelled for a CVT and gives 95 km/h at
+2000 rpm in 6th), so choose the gearbox
+where you know it. EDC15 keeps no gear ratios at all, only the thresholds
+between gears, so there the gearbox must be chosen.
+
+### In a project
+
+In a project tab the conditions, the engine, the runs you added (except pins
+and other tabs, which do not last), the reference and the road-speed settings
+belong to the set and are kept in the project -- a change to them is a change
+to the project, saved with it. A plain file's conditions are the app's.
 
 `mrwBDB2_KL` is not used: the ECU reads it only in the ECO mode of the
 automated gearbox (ASG), and the full-load limit is 100 mg otherwise.
