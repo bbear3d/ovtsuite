@@ -44,13 +44,16 @@ def fault_codes(ctx, handle, filter=None, enabled_only=False, limit=200):
     rows = []
     for fp in tab.sorted_paths():
         desc = fp.code_desc()
-        if flt and flt not in (fp.dfp + " " + desc + " " + (fp.pcode or "") + " "
-                               + fp.vag_str).lower():
+        hay = fp.search_text() if hasattr(fp, "search_text") else (
+            fp.dfp + " " + desc + " " + (fp.pcode or "") + " " + fp.vag_str).lower()
+        if flt and flt not in hay:
             continue
         on = tab.is_enabled(fp)
         if enabled_only and not on:
             continue
-        rows.append({"path": fp.name, "vag": fp.vag_str, "pcode": fp.pcode or "",
+        rows.append({"path": fp.name, "vag": fp.vag_str,
+                     "pcode": getattr(fp, "pcode_str", fp.pcode or ""),
+                     "codes_by_type": fp.type_lines() if hasattr(fp, "type_lines") else [],
                      "mil": tab.lights_mil(fp), "enabled": on,
                      "class": fp.current_class, "description": desc[:120]})
     sm = tab.summary()
@@ -75,17 +78,27 @@ def propose_fault_codes(ctx, handle, title_text="", rationale="", disable=None, 
             stock = None
     changes, done = [], []
 
+    placed = {id(e) for e in t.session.entities}
+
     def find(name):
-        low = name.lower()
+        low = name.lower().strip()
         hits = [fp for k, fp in tab.paths.items()
-                if low in (k.lower(), fp.name.lower(), fp.dfp.lower(), (fp.pcode or "").lower(),
-                           fp.vag_str.strip("*").lower())]
+                if low in (k.lower(), fp.name.lower(), fp.dfp.lower())
+                or low in [p.lower() for p in getattr(fp, "pcodes", [])]
+                or low in ["%05d" % c for c in getattr(fp, "vag_codes", [])]
+                or (low.isdigit() and int(low) in getattr(fp, "vag_codes", []))]
         if not hits:
             raise ToolError("no fault path %r; fault_codes lists them" % name)
         return hits
+    skipped = []
     for name in disable or ():
         for fp in find(name):
             if fp.cla is None:
+                continue
+            if id(fp.cla) not in placed:
+                # found from the image, not placed by the definition: the
+                # proposal path edits definition entities only
+                skipped.append(fp.dfp)
                 continue
             changes.append({"map": t.index.eid(fp.cla), "values": [[float(DISABLED_CLASS)]]})
             done.append("disable %s" % fp.dfp)
@@ -93,14 +106,21 @@ def propose_fault_codes(ctx, handle, title_text="", rationale="", disable=None, 
         for fp in find(name):
             if fp.cla is None:
                 continue
+            if id(fp.cla) not in placed:
+                skipped.append(fp.dfp)
+                continue
             want = None
-            if stock is not None and fp.name in stock.paths:
-                want = stock.paths[fp.name].current_class
+            src = tab.counterpart(stock, fp.name) if stock is not None else None
+            if src is not None:
+                want = src.current_class
             if want is None or want == DISABLED_CLASS:
                 want = tab._default_active_class()
             changes.append({"map": t.index.eid(fp.cla), "values": [[float(want)]]})
             done.append("enable %s (class %s)" % (fp.dfp, want))
     if not changes:
+        if skipped:
+            raise ToolError("%s: not placed by this file's definition -- switch "
+                            "them in the Fault codes window" % ", ".join(skipped))
         raise ToolError("nothing to change: name codes in disable or enable")
     prop = P.build(t, title_text or "Fault codes: %s" % ", ".join(done)[:80],
                    rationale, changes, client=ctx.client)

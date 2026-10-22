@@ -182,7 +182,10 @@ def test_window_exports(ws, tmp_path, monkeypatch):
     monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName",
                         staticmethod(lambda *a, **k: (str(out), "")))
     d._export_csv()
-    assert out.read_text(encoding="utf-8").startswith("rpm,")
+    text = out.read_text(encoding="utf-8")
+    head = [l for l in text.splitlines() if not l.startswith("#")][0]
+    assert text.startswith("# ") and head.startswith("rpm,")
+    assert "charge 50 °C" in text and "Reference" in text   # the conditions
     png = tmp_path / "lq.png"
     monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName",
                         staticmethod(lambda *a, **k: (str(png), "")))

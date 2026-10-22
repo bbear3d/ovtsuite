@@ -23,7 +23,12 @@ does that once, for any gearbox a module describes:
   before/after, findings, and one undoable ``autotune.Plan``;
 * :mod:`.blend`  -- the effective (blended) line for a set of weighted corners;
 * :mod:`.logfit` -- logged events against the schedules, and weights fitted
-  from them.
+  from them;
+* :mod:`.fullload` -- full-load upshifts from an engine torque curve (the
+  crossover, the lead, converter slip) and the operation that writes them;
+* :mod:`.partload` -- part-load strategies (economy / sport by mode) and the
+  pedal-axis move to where the engine asks for full torque;
+* :mod:`.replay` -- logged drives replayed against a set of lines.
 
 Nothing is locked: the user may edit any line of any schedule. Checks warn.
 """
@@ -35,6 +40,9 @@ from .checks import (GapCheck, IdenticalCheck, MonotonicCheck, ReferenceGapCheck
 from .edit import Edit
 from .blend import Blend, blend_pedal, effective_line
 from .logfit import Event, Fit, evaluate, fit_weights, lookup_from
+from .fullload import (FullLoadPlan, FullLoadTarget, ShiftTarget, StepCheck, TorqueCurve,
+                       VehicleModel, plan_upshifts)
+from .partload import PartLoadTarget, RemapPedalAxis, Strategy
 
 __all__ = [
     "Line", "Schedule", "ScheduleSet", "Scope", "parse_range",
@@ -44,4 +52,6 @@ __all__ = [
     "Finding",
     "Edit", "Blend", "blend_pedal", "effective_line",
     "Event", "Fit", "evaluate", "fit_weights", "lookup_from",
+    "FullLoadPlan", "FullLoadTarget", "ShiftTarget", "StepCheck", "TorqueCurve",
+    "VehicleModel", "plan_upshifts", "PartLoadTarget", "RemapPedalAxis", "Strategy",
 ]

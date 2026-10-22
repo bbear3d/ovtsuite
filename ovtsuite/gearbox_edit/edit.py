@@ -35,6 +35,15 @@ class Result:
     grid: Dict[int, List[float]]
     changes: List[Change]
     findings: List[Finding]
+    #: pedal axes an operation moves (``RemapPedalAxis``):
+    #: ``{id(entity): (entity, old breakpoints, new breakpoints)}``
+    axes: Dict[int, Tuple[object, List[float], List[float]]] = None
+
+    def pedal_of(self, sset: ScheduleSet, i: int) -> Tuple[float, ...]:
+        """Schedule ``i``'s pedal axis as the edit leaves it."""
+        s = sset.schedules[i]
+        got = (self.axes or {}).get(id(s.entity))
+        return tuple(got[2]) if got else tuple(s.pedal)
 
     @property
     def cells(self) -> int:
@@ -45,12 +54,15 @@ class Result:
         return len({c.key[0] for c in self.changes})
 
     def summary(self, sset: ScheduleSet) -> str:
+        ax = len(self.axes or {})
+        axes = "pedal axes of %d map%s" % (ax, "" if ax == 1 else "s") if ax else ""
         if not self.changes:
-            return "nothing would change"
+            return axes or "nothing would change"
         up = sum(1 for c in self.changes if c.new > c.old)
         lines = sorted({sset.line(c.key[2]).label for c in self.changes})
-        return "%d cells in %d schedules (%d raised, %d lowered) on %s" % (
-            self.cells, self.schedules, up, self.cells - up, ", ".join(lines))
+        return "%d cells in %d schedules (%d raised, %d lowered) on %s%s" % (
+            self.cells, self.schedules, up, self.cells - up, ", ".join(lines),
+            "; " + axes if axes else "")
 
 
 class Edit:
@@ -77,6 +89,11 @@ class Edit:
         findings: List[Finding] = []
         for chk in self.checks:
             findings.extend(chk.run(self.sset, self.origin, grid, changed))
+        axes = {}
+        for op in self.ops:
+            got = getattr(op, "axes", None)
+            if callable(got):
+                axes.update(got(self.sset))
         changes = []
         for i, vals in grid.items():
             s = self.sset.schedules[i]
@@ -84,7 +101,7 @@ class Edit:
                 if a != b:
                     key = (i, k // s.cols, k % s.cols)
                     changes.append(Change(key, a, b, why.get(key, ["auto-fix"])))
-        return Result(grid, changes, findings)
+        return Result(grid, changes, findings, axes)
 
     def to_plan(self, session, label: str, result: Optional[Result] = None):
         from ..autotune.plan import Plan, WARNING, NOTE
@@ -101,6 +118,23 @@ class Edit:
         return plan
 
     def apply(self, session, label: str, result: Optional[Result] = None) -> int:
-        """Write the edit as one undoable step. Returns cells written."""
-        plan = self.to_plan(session, label, result)
-        return plan.apply(force=True) or 0
+        """Write the edit as one undoable step -- cells and any moved pedal
+        axes together. Returns cells (and breakpoints) written."""
+        res = result or self.compute()
+        plan = self.to_plan(session, label, res)
+        if not res.axes:
+            return plan.apply(force=True) or 0
+        from .partload import encode_axis
+        n = 0
+        with session.transaction(label):
+            n += plan.apply(force=True) or 0
+            for e, old, new in res.axes.values():
+                stored = encode_axis(e, new)
+                if stored is None:
+                    raise ValueError("%s: the new pedal axis cannot be stored "
+                                     "(two breakpoints would meet)" % getattr(e, "name", "map"))
+                for k, (a, b) in enumerate(zip(old, new)):
+                    if abs(a - b) > 1e-9:
+                        session.edit_axis(e.y, k, b)
+                        n += 1
+        return n

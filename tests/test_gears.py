@@ -73,15 +73,16 @@ def test_gear_single_copy_when_no_variant():
 
 @needs_ref
 def test_vag_code_five_digit():
+    """Every VAG code shows as a scan tool shows it: at least five digits,
+    zero-padded. A path's own DSM number (a placeholder, n < 1000 on P350)
+    is not a code and is not shown as one."""
     s = TunerSession(os.path.join(BIN, "038906016Q.Bin"))
     dt = DtcTable(s)
     for fp in dt.paths.values():
-        vs = fp.vag_str
-        if vs != "-":
-            assert len(vs) >= 5 and vs.isdigit()   # zero-padded, min 5 digits
-    # a small internal code pads to five digits
-    small = [fp for fp in dt.paths.values() if fp.vag_code and fp.vag_code < 1000]
-    assert small and all(len(fp.vag_str) == 5 for fp in small)
+        if fp.vag_str != "-":
+            assert all(len(v) >= 5 and v.isdigit()
+                       for v in fp.vag_str.split(", "))
+    assert all(c >= 1000 for fp in dt.paths.values() for c in fp.vag_codes)
 
 
 def test_fault_name_decoding():
@@ -95,32 +96,21 @@ def test_fault_name_decoding():
 
 
 @needs_ref
-def test_vag_recovery_p475():
-    """The 03G p475_83 binaries have a misaligned CDK block; codes must be
-    recovered from the canonical reference and Q (p350) must stay verbatim."""
+def test_vag_codes_p475_read_as_stored():
+    """P475 stores the customer code as the SAE word (0x0103 for P0103):
+    the block is not misaligned -- only its first error type used to be
+    read -- and the codes are read verbatim, never replaced by P350's."""
     from ovtsuite.dtc import DtcTable
     kn = os.path.join(BIN, "03G906016KN.bin")
     if not os.path.exists(kn):
         pytest.skip("KN reference not present")
     dt = DtcTable(TunerSession(kn))
-    assert dt.vag_block_reliable is False
-    # most codes now land in the standard VAG range, not the 33xxx garbage
-    inr = sum(1 for fp in dt.paths.values()
-              if fp.vag_code and 16000 <= fp.vag_code < 20000)
-    assert inr > 120
-    # a known fault recovers its canonical value and is flagged
     afs = dt.paths.get("AFSCD_SRCAirm")
-    assert afs.vag_code == 16487 and afs.vag_source == "p-code table"
-    assert afs.vag_str.endswith("*")
-    acd = dt.paths.get("ACCD")
-    assert acd.vag_code == 18065 and acd.vag_source == "name table"
-
-    # p350 binary is trusted verbatim (no override, no asterisk)
+    assert afs.vag_codes == [0x0103, 0x0102]
+    assert afs.vag_str == "00259, 00258"
+    assert dt.paths["ACCD"].vag_codes == [5719, 5718, 1605, 5636]
     q = DtcTable(TunerSession(os.path.join(BIN, "038906016Q.Bin")))
-    assert q.vag_block_reliable is True
-    assert all(fp.vag_code == fp.vag_raw for fp in q.paths.values())
-    assert all(not fp.vag_str.endswith("*") for fp in q.paths.values()
-               if fp.vag_str != "-")
+    assert q.paths["AFSCD_SRCAirm"].vag_codes[:2] == [16487, 16486]
 
 
 @needs_ref

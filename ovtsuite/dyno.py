@@ -152,6 +152,14 @@ class Conditions:
     #: the time-limited overboost torque limit in full, where the model has
     #: one (:attr:`DynoModel.has_overboost`); off = the steady limit
     overboost: bool = False
+    #: one gear of the drive (1 = 1st): a model with per-gear limits (the
+    #: EDC16 ``Gearbx_trqMaxGear<n>_CUR``) applies that gear's instead of the
+    #: highest. None = any gear
+    gear: Optional[int] = None
+    #: road speed per engine speed in that gear, (km/h)/rpm: where the ECU
+    #: picks its driver's-wish map by v/n (EDC16 ``AccPed_stGearSel_CUR``),
+    #: the map(s) it would pick there instead of the highest. None = any
+    v_per_n: Optional[float] = None
 
 
 # ---------------------------------------------------------------- results
@@ -265,6 +273,13 @@ class DynoModel:
 
     def full_load(self, rpm: float, cond: Conditions) -> FullLoad:
         raise NotImplementedError
+
+    def demand(self, rpm: float, pedal: float, cond: Conditions) -> Optional[float]:
+        """The quantity (mg/stroke) the driver's wish asks for at ``pedal`` %
+        -- before any limit -- in the units of :attr:`FullLoad.q`; None when
+        the model has no driver's wish. ``cond.gear`` / ``v_per_n`` pick the
+        map as at full load."""
+        return None
 
     def torque_of(self, rpm: float, q: float, cond: Conditions
                   ) -> Optional[Tuple[float, bool]]:
@@ -486,6 +501,21 @@ def calculate(model: DynoModel, cond: Optional[Conditions] = None,
     return Curve(label or model.label, pts, dict(model.limiters), src, notes)
 
 
+def demand_fraction(model: DynoModel, rpm: float, pedal: float,
+                    cond: Optional[Conditions] = None) -> Optional[float]:
+    """How much of what the engine delivers at full load the driver's wish
+    asks for at ``pedal`` % and ``rpm`` (1.0 = full load: no more pedal adds
+    torque there); None when the model has no driver's wish."""
+    cond = cond or Conditions()
+    d = model.demand(rpm, pedal, cond)
+    if d is None:
+        return None
+    full = model.full_load(rpm, cond).q
+    if full <= 0:
+        return None
+    return max(0.0, min(1.0, d / full))
+
+
 def matching(models: Sequence[DynoModel], group: str) -> Optional[DynoModel]:
     """The model of ``group`` among ``models`` (a reference file's), else the
     first; None when there are none."""
@@ -529,6 +559,9 @@ def models_error(session) -> str:
 #: reference choices (``ReferenceChoice.kind``)
 REF_ORIGINAL, REF_COMPARISON, REF_VERSION, REF_NONE = (
     "original", "comparison", "version", "none")
+#: a run the dyno window added (``ovtsuite.dyno_sources``): another tab,
+#: a project's branch or version, a file, a pinned curve
+REF_SOURCE = "source"
 
 
 def original_bytes(session) -> Optional[bytes]:
@@ -591,7 +624,7 @@ __all__ = ["POWER_UNITS", "TORQUE_UNITS", "DEFAULT_POWER", "DEFAULT_TORQUE",
            "power_label", "torque_label", "power_in", "torque_in", "power_kw",
            "fuel_torque", "fuel_q", "air_mass", "LHV_DIESEL", "AFR_STOICH",
            "Conditions", "Limiter", "FullLoad", "Point", "Curve", "DynoModel",
-           "binding", "rpm_grid", "calculate", "FuelMap", "fuel_map", "matching", "models",
+           "binding", "rpm_grid", "calculate", "demand_fraction", "FuelMap", "fuel_map", "matching", "models",
            "original_bytes", "version_bytes", "session_of", "to_csv",
-           "REF_ORIGINAL", "REF_COMPARISON", "REF_VERSION", "REF_NONE",
+           "REF_ORIGINAL", "REF_COMPARISON", "REF_VERSION", "REF_NONE", "REF_SOURCE",
            "Table", "is_rpm_axis"]

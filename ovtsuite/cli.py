@@ -1406,14 +1406,15 @@ def cmd_dtc(args):
     print("%d fault paths: %d enabled, %d disabled" % (sm["total"], sm["enabled"], sm["disabled"]))
     for fp in t.sorted_paths():
         if args.filter and args.filter.lower() not in (
-                fp.dfp + " " + fp.code_desc() + " " + (fp.pcode or "")).lower():
+                fp.search_text() if hasattr(fp, "search_text") else
+                (fp.dfp + " " + fp.code_desc() + " " + (fp.pcode or "")).lower()):
             continue
         if args.enabled and not t.is_enabled(fp):
             continue
         print("  %s %-22s %-6s %-6s %-6s %s"
               % ("on " if t.is_enabled(fp) else "off", fp.dfp, fp.vag_str,
-                 fp.pcode or "-", "MIL" if t.lights_mil(fp) else "-",
-                 fp.code_desc()[:70]))
+                 getattr(fp, "pcode_str", fp.pcode or "-"),
+                 "MIL" if t.lights_mil(fp) else "-", fp.code_desc()[:70]))
     if changed and args.out:
         s.save(args.out)
         print("written %s" % args.out)

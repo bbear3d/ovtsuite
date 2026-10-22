@@ -47,7 +47,6 @@ from . import catalogue as _catalogue
 from .groups import GROUP_HELP as _GROUP_HELP, ADVANCED as _ADVANCED_GROUPS
 from .groups import is_advanced as _is_advanced
 from .model import Entity
-from .dtc import DtcTable, FaultPath
 from .transfer import build_overlay
 from .diff import same_extent as _same_extent, cells_differ as _cells_differ
 from .diff import axis_changes as _axis_changes
@@ -1813,347 +1812,6 @@ if HAVE_QT:
         except (TypeError, ValueError):
             return "."
         return chr(code) if 0x20 <= code <= 0x7E else "."
-
-    class DtcDialog(QtWidgets.QDialog):
-        """Enable/disable trouble codes via their DSM fault-path class."""
-
-        def __init__(self, session: TunerSession, parent=None, compare=None):
-            super().__init__(parent)
-            self.session = session
-            self.dtc = DtcTable(session)
-            self._compare = compare
-            self._mainwin = parent
-            self.cmp_dtc = None
-            if compare is not None:
-                try:
-                    self.cmp_dtc = DtcTable(compare)
-                except Exception:
-                    self.cmp_dtc = None
-            self._has_cmp = self.cmp_dtc is not None
-            self.setWindowTitle("DTC / Fault-Path editor")
-            self.resize(760, 560)
-            v = QtWidgets.QVBoxLayout(self)
-
-            self.summary = QtWidgets.QLabel()
-            v.addWidget(self.summary)
-
-            row = QtWidgets.QHBoxLayout()
-            self.filter = QtWidgets.QLineEdit()
-            self.filter.setPlaceholderText("Filter fault paths...")
-            self.filter.textChanged.connect(self._populate)
-            row.addWidget(self.filter)
-            self.only_enabled = QtWidgets.QCheckBox("Enabled only")
-            self.only_enabled.stateChanged.connect(self._populate)
-            row.addWidget(self.only_enabled)
-            v.addLayout(row)
-
-            _cols = ["On", "Fault path", "VAG code", "OBD-II", "Class"]
-            if self._has_cmp:
-                _cols += ["Cmp on", "Cmp class"]
-            _cols += ["MIL", "Description"]
-            self._dtc_cols = _cols
-            self.table = QtWidgets.QTableWidget(0, len(_cols))
-            self.table.setHorizontalHeaderLabels(_cols)
-            self.table.horizontalHeader().setSectionResizeMode(
-                len(_cols) - 1, QtWidgets.QHeaderView.Stretch)
-            self.table.verticalHeader().setVisible(False)
-            self.table.itemChanged.connect(self._on_check)
-            if self._has_cmp:
-                self.table.setContextMenuPolicy(
-                    QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-                self.table.customContextMenuRequested.connect(self._dtc_menu)
-            v.addWidget(self.table)
-
-            self.vag_note = QtWidgets.QLabel()
-            self.vag_note.setStyleSheet("color: gray")
-            self.vag_note.setWordWrap(True)
-            if not getattr(self.dtc, "vag_block_reliable", True):
-                n = sum(1 for fp in self.dtc.paths.values()
-                        if fp.vag_source in ("p-code table", "name table"))
-                self.vag_note.setText(
-                    "This binary's stored VAG-code block is misaligned; %d "
-                    "codes marked * were recovered from the reference table "
-                    "(matched by OBD-II code or fault name). Codes with no "
-                    "reference match are shown as –." % n)
-                v.addWidget(self.vag_note)
-
-            btns = QtWidgets.QHBoxLayout()
-            hint = QtWidgets.QLabel(
-                "Tick to enable a code, untick to disable it.")
-            hint.setStyleSheet("color: gray")
-            btns.addWidget(hint)
-            btns.addStretch(1)
-            self._ecu_codes = {}            # vag code -> Dtc read from the ECU
-            self.ecu_note = QtWidgets.QLabel("")
-            self.ecu_note.setStyleSheet("color: gray")
-            self.ecu_note.setWordWrap(True)
-            read_ecu = QtWidgets.QPushButton("Read codes from ECU...")
-            read_ecu.setToolTip("Read the stored fault codes over K-line and highlight them here")
-            read_ecu.clicked.connect(self._read_ecu_codes)
-            btns.addWidget(read_ecu)
-            restore = QtWidgets.QPushButton("Restore all from stock...")
-            restore.clicked.connect(self._restore_stock)
-            btns.addWidget(restore)
-            if self._has_cmp:
-                copyc = QtWidgets.QPushButton("Copy differences from comparison")
-                copyc.setToolTip(
-                    "For every fault path whose enable state or class differs, "
-                    "set the primary to the comparison binary's class. One "
-                    "undoable step.")
-                copyc.clicked.connect(self._copy_all_dtc_from_cmp)
-                btns.addWidget(copyc)
-            close = QtWidgets.QPushButton("Close")
-            close.clicked.connect(self.accept)
-            btns.addWidget(close)
-            v.addWidget(self.ecu_note)
-            v.addLayout(btns)
-
-            self._populate()
-
-        def _read_ecu_codes(self):
-            try:
-                from .datalog.gui_log import EcuCodesDialog
-            except Exception as ex:
-                QtWidgets.QMessageBox.critical(self, "Fault codes", str(ex))
-                return
-            dlg = EcuCodesDialog(self.parent() or self, self)
-            dlg.exec()
-            if dlg.codes is None:
-                return
-            self._ecu_codes = {c.code: c for c in dlg.codes}
-            known = {fp.vag_code for fp in self.dtc.paths.values() if fp.vag_code}
-            unmatched = [c for c in dlg.codes if c.code not in known]
-            if not dlg.codes:
-                self.ecu_note.setText("ECU: no fault codes stored.")
-            else:
-                self.ecu_note.setText(
-                    "ECU: %d code(s) stored - highlighted below%s." % (
-                        len(dlg.codes),
-                        ("; not in this binary's fault paths: %s" % ", ".join(
-                            c.text for c in unmatched)) if unmatched else ""))
-            self._populate()
-
-        def _populate(self):
-            needle = self.filter.text().lower().strip()
-            only = self.only_enabled.isChecked()
-
-            def match(fp):
-                hay = "%s %s %s %s" % (fp.name, fp.pcode or "",
-                                       fp.vag_code or "", fp.code_desc())
-                return not needle or needle in hay.lower()
-
-            paths = [fp for fp in self.dtc.sorted_paths()
-                     if match(fp) and (not only or self.dtc.is_enabled(fp))]
-            self.table.blockSignals(True)
-            self.table.setRowCount(len(paths))
-            for r, fp in enumerate(paths):
-                en = self.dtc.is_enabled(fp)
-                chk = QtWidgets.QTableWidgetItem()
-                chk.setFlags(QtCore.Qt.ItemIsUserCheckable
-                             | QtCore.Qt.ItemIsEnabled
-                             | QtCore.Qt.ItemIsSelectable)
-                chk.setCheckState(QtCore.Qt.Checked if en
-                                  else QtCore.Qt.Unchecked)
-                chk.setData(QtCore.Qt.UserRole, fp)
-                chk.setToolTip("Fault stored / lamp active when ticked")
-                self.table.setItem(r, 0, chk)
-                cells = [
-                    fp.dfp,
-                    fp.vag_str,
-                    fp.pcode or "-",
-                    str(fp.current_class),
-                ]
-                cmp_cols = ()
-                cmp_diff = False
-                if self._has_cmp:
-                    cfp = self.cmp_dtc.paths.get(fp.name)
-                    if cfp is None:
-                        cmp_on_txt = cmp_cls_txt = "\u2014"
-                    else:
-                        cen = self.cmp_dtc.is_enabled(cfp)
-                        cc = cfp.current_class
-                        cmp_on_txt = "on" if cen else "off"
-                        cmp_cls_txt = str(cc) if cc is not None else "\u2014"
-                        cmp_diff = (cen != en) or (cc != fp.current_class)
-                    cells += [cmp_on_txt, cmp_cls_txt]
-                    cmp_cols = (4, 5)          # cells-list indices of cmp cols
-                cells += [
-                    "MIL" if self.dtc.lights_mil(fp) else "-",
-                    fp.code_desc(),
-                ]
-                tip = "%s   %s\n%s" % (fp.dfp, fp.pcode or "", fp.code_desc())
-                stored = self._ecu_codes.get(fp.vag_code) if fp.vag_code else None
-                if stored is not None:
-                    tip += "\nSTORED ON ECU: %s (status 0x%02X)" % (stored.text, stored.status)
-                    chk.setBackground(DIFF_BG)
-                for i, txt in enumerate(cells):
-                    it = QtWidgets.QTableWidgetItem(txt)
-                    it.setFlags(QtCore.Qt.ItemIsSelectable
-                                | QtCore.Qt.ItemIsEnabled)
-                    it.setData(QtCore.Qt.UserRole, fp)
-                    it.setToolTip(tip)
-                    if stored is not None:
-                        it.setBackground(DIFF_BG)
-                        it.setForeground(CELL_DARK_FG)
-                    elif self._has_cmp and cmp_diff and i in cmp_cols:
-                        it.setBackground(EDIT_BG)
-                        it.setForeground(CELL_DARK_FG)
-                    elif not en:
-                        it.setForeground(QtGui.QColor(150, 150, 150))
-                    self.table.setItem(r, i + 1, it)
-            self.table.blockSignals(False)
-            self.table.resizeColumnsToContents()
-            self.table.horizontalHeader().setStretchLastSection(True)
-            self._refresh_summary()
-
-        def refresh_from_session(self):
-            """Show edits made outside this window (the grid, undo, a patch,
-            another tool) -- called by the tab while this window is open."""
-            self._populate()
-
-        def _on_check(self, item):
-            if item.column() != 0:
-                return
-            fp = item.data(QtCore.Qt.UserRole)
-            if fp is None:
-                return
-            want = item.checkState() == QtCore.Qt.Checked
-            if want != self.dtc.is_enabled(fp):
-                self.dtc.set_enabled(fp, want)
-                self._populate()
-
-        def _selected_fps(self):
-            out, seen = [], set()
-            for ix in self.table.selectedIndexes():
-                it = self.table.item(ix.row(), 0)
-                if it is None:
-                    continue
-                fp = it.data(QtCore.Qt.UserRole)
-                if fp is not None and id(fp) not in seen:
-                    seen.add(id(fp))
-                    out.append(fp)
-            return out
-
-        def _dtc_menu(self, pos):
-            if not self._has_cmp:
-                return
-            fps = self._selected_fps()
-            if not fps:
-                return
-            menu = QtWidgets.QMenu(self)
-            act = menu.addAction(
-                "Copy comparison state to primary (%d row(s))" % len(fps))
-            act.triggered.connect(lambda: self._copy_dtc_from_cmp(fps))
-            menu.exec(self.table.viewport().mapToGlobal(pos))
-
-        def _copy_dtc_from_cmp(self, fps):
-            if self.cmp_dtc is None:
-                return
-            pairs, seen = [], set()
-            for fp in fps:
-                if fp.cla is None or fp.cla.addr in seen:
-                    continue
-                cfp = self.cmp_dtc.paths.get(fp.name)
-                if cfp is None:
-                    continue
-                want = cfp.current_class
-                if want is None:
-                    continue
-                cur = fp.current_class
-                if cur is None or int(round(cur)) != int(round(want)):
-                    seen.add(fp.cla.addr)
-                    pairs.append((fp.cla, float(want)))
-            if pairs:
-                self.session.edit_values(
-                    pairs, "copy DTC classes from comparison")
-                self._populate()
-
-        def _copy_all_dtc_from_cmp(self):
-            self._copy_dtc_from_cmp(list(self.dtc.paths.values()))
-
-        def _show_detail(self):
-            for it in self.table.selectedItems():
-                if it.column() == 0:
-                    continue
-                ch = it.data(QtCore.Qt.UserRole)
-                if ch in EMPTY_IDS:
-                    self.detail.setText("Block %s, channel %d - empty slot "
-                                        "(id %d)." % (
-                        self.table.item(it.row(), 0).text(),
-                        it.column(), ch))
-                    return
-                info = self.catalog.info(ch)
-                if info.known:
-                    txt = "<b>%s</b>" % info.label()
-                    if info.note:
-                        txt += "<br><span style='color:gray'>%s</span>" % (
-                            info.note)
-                    self.detail.setText(txt)
-                else:
-                    self.detail.setText(
-                        "Signal id %d - no catalog name for family %s."
-                        % (ch, self.session.family))
-                return
-            self.detail.setText("Select a channel to see its signal details.")
-
-        def _refresh_summary(self):
-            s = self.dtc.summary()
-            self.summary.setText(
-                "%d fault paths - %d enabled, %d disabled%s" % (
-                    s["total"], s["enabled"], s["disabled"],
-                    "   (unsaved changes)" if self.session.modified else ""))
-
-        def _restore_stock(self):
-            from .recent import get_last_dir, set_last_dir
-            stock = None
-            ws = self._mainwin
-            ref = getattr(ws, "project_ref", None)
-            root = None
-            if ref is not None:
-                try:
-                    root = ref.set.root_of(ref.branch.head)
-                except Exception:
-                    root = None
-            if root is not None:
-                # in a project, stock is the set's original as read
-                SB = QtWidgets.QMessageBox.StandardButton
-                box = QtWidgets.QMessageBox(
-                    QtWidgets.QMessageBox.Icon.Question, "Restore from stock",
-                    "Restore every fault class from %s's original (%s, %s)?"
-                    % (ref.set.name, "as read" if root.kind == "read"
-                       else root.label or "imported",
-                       (root.ts or "").replace("T", " ")[:16]),
-                    SB.Cancel, self)
-                use = box.addButton("Use the original",
-                                    QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-                other = box.addButton("Another file...",
-                                      QtWidgets.QMessageBox.ButtonRole.ActionRole)
-                box.setDefaultButton(use)
-                box.exec()
-                if box.clickedButton() is use:
-                    try:
-                        stock = _gp._session_at(ws, root.id,
-                                                "%s - original" % ref.set.name)
-                    except Exception as ex:
-                        QtWidgets.QMessageBox.critical(self, "Error", str(ex))
-                        return
-                elif box.clickedButton() is not other:
-                    return
-            if stock is None:
-                path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                    self, "Open stock binary to restore classes from",
-                    get_last_dir())
-                if not path:
-                    return
-                set_last_dir(path)
-                try:
-                    stock = TunerSession(path)
-                except Exception as ex:
-                    QtWidgets.QMessageBox.critical(self, "Error", str(ex))
-                    return
-            self.dtc.restore_from(DtcTable(stock))
-            self._populate()
-
 
     class Zf6hpDtcDialog(QtWidgets.QDialog):
         """The ZF fault-code tables (kdi_Tool / kdi_Steuer).
@@ -8292,7 +7950,8 @@ if HAVE_QT:
             if getattr(self.primary, "platform", "") == "zf6hp":
                 self.open_tool("dtc", lambda: Zf6hpDtcDialog(self.primary, self))
             else:
-                self.open_tool("dtc", lambda: DtcDialog(
+                from .gui_dtc import DtcDialog as _DtcDialog
+                self.open_tool("dtc", lambda: _DtcDialog(
                     self.primary, self, compare=self.comparison))
 
         def open_patch_builder(self, swap=None):
@@ -8605,8 +8264,9 @@ if HAVE_QT:
             return _view6.vehicle_of(self.primary, saved)
 
         def open_vehicle(self):
-            """Ask for the final drive and tyre size. Only these two: they are
-            all road speed needs on top of what the map already says."""
+            """Ask for the final drive and tyre size -- all road speed needs on
+            top of what the map already says -- and the vehicle's mass, which
+            the shift editor's full-load optimum works the shift lead from."""
             cur = self._vehicle()
             stated = _view6.axle_ratio_of(self.primary)
             dlg = QtWidgets.QDialog(self)
@@ -8619,6 +8279,14 @@ if HAVE_QT:
             axle.setValue(cur.axle_ratio)
             tyre = QtWidgets.QLineEdit(cur.tyre)
             tyre.setPlaceholderText("225/50R17")
+            mass = QtWidgets.QSpinBox()
+            mass.setRange(500, 5000)
+            mass.setSingleStep(10)
+            mass.setSuffix(" kg")
+            try:
+                mass.setValue(int(float(_settings().value("zf6hp/mass", 1800) or 1800)))
+            except (TypeError, ValueError):
+                mass.setValue(1800)
             override = QtWidgets.QCheckBox(
                 "Use my ratio instead of the calibration's")
             override.setChecked(
@@ -8629,11 +8297,13 @@ if HAVE_QT:
                 ("This calibration states a final drive of %.3f, which is "
                  "used unless you override it.\n" % stated if stated
                  else "This calibration does not state a final drive.\n")
-                + "Used only to show output-shaft speed as road speed.\n"
-                  "Nothing in the binary is changed by either setting.")
+                + "Final drive and tyre show output-shaft speed as road speed;\n"
+                  "the mass (with driver) is used by the shift editor's\n"
+                  "full-load optimum. Nothing in the binary is changed by these.")
             note.setStyleSheet("color:#888")
             form.addRow("Final drive ratio:", axle)
             form.addRow("Tyre size:", tyre)
+            form.addRow("Vehicle mass:", mass)
             if stated is not None:
                 form.addRow("", override)
             form.addRow(note)
@@ -8656,6 +8326,7 @@ if HAVE_QT:
             st = _settings()
             st.setValue("zf6hp/axle", axle.value())
             st.setValue("zf6hp/tyre", tyre.text().strip())
+            st.setValue("zf6hp/mass", mass.value())
             st.setValue("zf6hp/axle_override",
                         bool(override.isChecked()) if stated is not None
                         else False)

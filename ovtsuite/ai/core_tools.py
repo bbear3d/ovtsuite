@@ -740,6 +740,10 @@ def register(reg: Registry) -> None:
     from . import eoi_tools
     eoi_tools.register(reg)
 
+    # ------------------------------------------------------------ gearbox
+    from . import gearbox_tools
+    gearbox_tools.register(reg)
+
 
 _ENGINE = {}
 _ENGINE_LOCK = threading.Lock()

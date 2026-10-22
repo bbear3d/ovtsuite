@@ -12,9 +12,9 @@ part that was never fitted, or a system that changed in an engine or gearbox
 swap — or to put a calibration's codes back the way the factory had them.
 
 It works on **Bosch EDC16** and **Bosch EDC15** files (it needs the matching
-module and a file the app has a definition for). On a **ZF 6HP** gearbox file
-the same menu item opens the gearbox's own fault-code editor instead, which
-works differently — see [ZF 6HP](../modules/zf6hp/index.md).
+module). On a **ZF 6HP** gearbox file the same menu item opens the gearbox's
+own fault-code editor instead, which works differently — see
+[ZF 6HP](../modules/zf6hp/index.md).
 
 ![The DTC / Fault-Path editor on an EDC16 file, filtered to EGR](../images/tools-dtc.png)
 
@@ -22,15 +22,36 @@ works differently — see [ZF 6HP](../modules/zf6hp/index.md).
 > not fix whatever made the code appear. Only switch off a code when you know
 > why it is set.
 
+## Find a code
+
+Type into the search box at the top. You can search for:
+
+- a fault number **as your scan tool shows it** — `00257`, `257`, `16485`,
+  `05719`;
+- an **OBD-II code** — `P0101`, `P0380`;
+- a **name or a word** from the description — `EGR`, `glow`, `boost`,
+  `A/C`.
+
+Several words narrow the list (every word must match). Every code a fault
+can set is searched, not just the first one — on EDC16 one fault path can
+carry up to four OBD-II codes and four VAG codes.
+
+**Show** narrows the list further: **Enabled**, **Disabled**, **With a fault
+code**, **Lights the MIL**, **Lights the glow-plug lamp**, and, with a
+comparison open, **Differs from comparison**. After **Read codes from ECU...** it also offers **Stored on the
+ECU**.
+
+Click a column heading to sort by it.
+
 ## Switch a code off or on
 
-1. Open the file and choose **Tools > DTC / Fault-Path editor...**.
-2. Type part of a name, a fault number or an OBD-II code (e.g. `P0380`) into
-   **Filter fault paths...** to find the code. Tick **Enabled only** to hide
-   the codes that are already off.
-3. Untick the box in the **On** column to switch the code off; tick it to
-   switch it back on. The row turns grey when the code is off, and the line at
-   the top counts the codes that are on and off.
+1. Find the code (above).
+2. Untick the box in the **On** column to switch it off; tick it to switch it
+   back on. The row turns grey when it is off.
+3. To switch several at once, select the rows (Shift- or Ctrl-click, or
+   Ctrl+A for everything the search shows) and press **Disable selected** or
+   **Enable selected**, or right-click them. That is one undo step however
+   many rows change.
 4. Save (**File > Save**, Ctrl+S): the edits become a new version of the
    tab's branch in the project, and the checksums are corrected as it is
    saved.
@@ -38,6 +59,66 @@ works differently — see [ZF 6HP](../modules/zf6hp/index.md).
 Every change is an ordinary edit: **Edit > Undo** (Ctrl+Z) takes it back. The
 window can stay open while you work in the main window, and it follows edits
 made there (undo, a patch, the table grid).
+
+## Keep a code but switch a warning lamp off
+
+A fault can light two lamps: the engine warning lamp (**MIL**) and the
+**glow-plug lamp**, which these diesels also flash or light for engine
+faults. Each has its own tick box column, **MIL** and **Glow**.
+
+Untick a box to keep the fault — it is still detected and stored, and a scan
+tool still reads it — without that lamp. Tick it again to bring the lamp back.
+For several rows, select them and use **Warning lamps** (under the table) or
+right-click: **MIL off, keep the fault**, **MIL on**, **Glow-plug lamp off,
+keep the fault**, **Glow-plug lamp on**. Each is one undo step.
+
+A lamp box can only be switched on a row that is on; a row without a tick box
+says why when you hover over it.
+
+How a lamp is switched depends on the platform:
+
+- **EDC16**: each fault class says how it drives the MIL and the system lamp
+  (off, on or flashing). The system lamp is the glow-plug lamp: the ECU's
+  fault-lamp handler hands system-lamp faults to the glow control, which lights
+  the glow-plug lamp. A lamp is switched for one fault path by moving it to the
+  class closest to its own that differs only in that lamp — the other lamp
+  exactly as it was, and as many of the class's other settings (how many
+  detections enter the fault, how long it stays stored, OBD readiness) as
+  possible. On P475 and P350 software the classes come in pairs that differ
+  only in the glow-plug lamp (11 and 12, 13 and 14...), so switching the glow
+  lamp moves between the two of a pair; switching the MIL off goes to class 1
+  (no lamp) or 2 (glow-plug lamp only) on P475. Hover over a box, or look at the
+  panel under the table, to see which class it will be. Switching the lamp back
+  puts back the class the path had. To pick the class yourself, right-click
+  and choose **Set fault class**: every class is listed with the lamps it
+  lights.
+- **EDC15**: the lamps are bits of the fault path's class byte
+  (`fbwS<PATH>PRI`): bit 1 is the MIL and bit 2 the diagnosis lamp ("DIA"),
+  which the ECU shows on the glow-plug lamp. They switch for the whole fault
+  path in that dataset — every sub-fault filed under it. The tooltip says which
+  path and how many sub-faults.
+
+## Every code a row can set
+
+Select a row and the panel under the table lists what it can set.
+
+On **EDC16** a fault path watches for four kinds of error, and each can have
+its own codes:
+
+| Error type | Meaning |
+|---|---|
+| **Max** | above range / too high (for a circuit: short to plus) |
+| **Min** | below range / too low (short to ground) |
+| **Sig** | signal fault (no signal, open circuit) |
+| **Npl** | implausible |
+
+For each type the panel shows the **VAG** number and the **OBD-II** code. A
+VAG number on software that stores it as an SAE code also shows the P-code it
+stands for, e.g. `VAG 05719 (P1657)`. A type with no VAG code of its own is
+not listed as one; reading the ECU still finds the fault if it reports it.
+
+On **EDC15** each row is one sub-fault; the panel shows its code and which
+fault path and bit the ECU files it under.
 
 ## What "off" means
 
@@ -47,9 +128,14 @@ different value on each.
 | | EDC16 | EDC15 |
 |---|---|---|
 | A row is | one fault path (`Dfp_...`) | one sub-fault of a fault path, once per dataset — the dataset is shown in brackets, e.g. **GZS_I (Manual)** |
-| **Class** shows | the path's error class: the number that decides whether the fault is stored and which warning lamp it lights | the time until the fault is finally set, in the ECU's raw units (10 ms steps) |
-| Switching off | sets the class to 0 (no reaction) | sets that time to "never" (the value the factory calibration itself uses for faults that are not fitted) |
-| Switching back on | restores the class it had before; if none is known, a class that lights the MIL and stores the fault | restores the time it had before; if none is known, 1.0 s |
+| **Class** shows | the path's fault class: which lamp the fault lights and how it is stored | the time until the fault is finally set, in the ECU's raw units (10 ms steps) |
+| Switching off | sets the class to 0 (no class: the path does nothing — the factory calibration itself uses it for paths that are not used) | sets that time to "never" (the value the factory calibration itself uses for faults that are not fitted) |
+| Switching back on | restores the class it had before; if none is known, a class that lights the MIL | restores the time it had before; if none is known, 1.0 s |
+
+Every EDC16 class other than 0 stores the fault. Many — class 1 is the
+commonest — light no lamp at all, so a code can be **on** without ever
+showing on the dash; a scan tool still reads it. The **MIL** column shows
+which ones light the engine warning lamp.
 
 The value a code had before you switched it off is remembered while the file
 is open. For a file that was already modified before you opened it, use
@@ -63,40 +149,57 @@ the dataset your car uses — or all of them if you are not sure. See
 
 | Column | What it shows |
 |---|---|
-| **On** | Ticked when the code is active (it is stored and/or lights a lamp). |
-| **Fault path** | The calibration's own name for the fault. |
-| **VAG code** | The five-digit VW fault number a scan tool shows. **\*** marks a number taken from the app's reference table (see below); **-** means none is known. |
-| **OBD-II** | The standard P-code, where the fault has one. |
+| **On** | Ticked when the fault is active (it is detected and stored). |
+| **Fault path** | The calibration's own name for the fault. A path no definition names shows as **fault path _n_**; it can still be switched. |
+| **VAG code** | Every VW fault number the row can set, as a scan tool shows it (at least five digits). On EDC15, **(path: ...)** lists the path's numbers when which one the sub-fault sets is not known. **-** means none. |
+| **OBD-II** | Every standard P-code the row can set. |
 | **Class** | See the table above. |
 | **Cmp on**, **Cmp class** | Only with a comparison file open: the same fault in the comparison. Highlighted where it differs from the primary. |
-| **MIL** | **MIL** when the code lights the engine warning lamp. |
-| **Description** | The standard OBD-II text for the P-code where there is one, otherwise a plain description of the fault path. |
+| **MIL** | Ticked (**MIL**) when the code lights the engine warning lamp. Untick it to keep the fault without the lamp (above). |
+| **Glow** | Ticked (**Glow**) when the code lights (or flashes) the glow-plug lamp. Untick it to keep the fault without the lamp (above). |
+| **Description** | A plain description of the fault path, else the standard OBD-II text for its code. |
 
-Hover over a row to see its fault path, P-code and description together.
+The line under the title says where the fault tables were found and how many
+paths have names.
 
-On some EDC16 software the block that stores the VAG fault numbers cannot be
-read reliably. The editor then says so under the list, and recovers the
-numbers from its reference table by OBD-II code or fault name; those numbers
-are marked **\***.
+## Where the codes come from
+
+Nothing in this window is guessed from another file.
+
+- **EDC16**: the fault-path tables are found from the ECU's own table of
+  calibration pointers, so every path in the file is listed even where the
+  matched definition does not cover it. The codes are read exactly as
+  stored. Path names come from the matched definition, checked against each
+  path's own number; where the definition does not fit the file, names come
+  from a catalogue built from reference files whose definitions name every
+  path, and the window says so.
+- **EDC15**: which path and bit a sub-fault files under comes from the code
+  that raises it, not from its name — the names in the factory data do not
+  always match (the boost-control deviation faults are named after the boost
+  valve but filed under the boost-pressure path). On MSA15 / EDC15V files the
+  definition's grouping is used.
 
 ## Buttons
 
 | Button | What it does |
 |---|---|
-| **Read codes from ECU...** | Opens the **Fault codes from ECU** window, which reads the codes stored in the car's ECU (see [Reading fault codes](../logging/fault-codes.md)). The matching rows are then highlighted, and codes the ECU has stored that are not in this file are listed under the table. |
+| **Disable selected** / **Enable selected** | Switches every selected row off or on, as one undoable step. |
+| **Warning lamps** | For the selected rows: MIL off / on, glow-plug lamp off / on, keeping the faults. One undoable step. |
+| **Read codes from ECU...** | Opens the **Fault codes from ECU** window, which reads the codes stored in the car's ECU (see [Reading fault codes](../logging/fault-codes.md)). Every row that can set one of the codes read is then highlighted (one code can belong to several rows) and **Show** switches to **Stored on the ECU** — pick **All fault paths** to see them highlighted among the rest; codes the ECU has stored that are not in this file are listed under the table. |
 | **Restore all from stock...** | Copies every fault path's class (EDC16) or time (EDC15) from a stock binary of the same software, as one undoable step — a quick way to undo all fault-code changes in a tune. In a project you are offered the set's original (as read): **Use the original**, or **Another file...** to pick a stock file. |
-| **Copy differences from comparison** | Only with a comparison open. Sets every fault path whose state or class differs to the comparison's value, as one undoable step. |
+| **Copy differences from comparison** | Only with a comparison open. Sets every row whose state differs to the comparison's value, as one undoable step. |
 | **Close** | Closes the window. Your changes stay in the tab until you save or undo them. |
 
-With a comparison open you can also select rows, right-click and choose
-**Copy comparison state to primary** to copy just those.
+Right-click selected rows for **Disable**, **Enable**, the lamp switches,
+**Set fault class** (EDC16), **Copy codes to clipboard** and, with a
+comparison open, **Copy comparison state to primary**.
 
 ## Tips
 
 - An EDC16 class number is not a simple on/off: different classes light
-  different lamps and store the fault differently. Prefer switching a code off
-  and on with the tick box, or copying from a stock file, over typing class
-  numbers into the fault-code tables in the main window.
+  different lamps and store the fault differently. Prefer the **On**, **MIL**
+  and **Glow** boxes, **Set fault class**, or copying from a stock file over
+  typing class numbers into the fault-code tables in the main window.
 - The fault-path settings are also in the main window's tree under
   **Fault codes (DTCs)**, grouped by system, if you need to see the other
   values a fault path carries.
