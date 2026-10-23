@@ -12,8 +12,17 @@ then A2L functional category:
 
     <tier> / <category> / <entity>
 
-TunerPro is an ANSI application, so non-Latin-1 characters are transliterated.
+TunerPro is an ANSI application: a Latin-1 character (an umlaut, a degree
+sign) is written as a character reference (``&#228;``), as TunerPro and the
+OLS-to-XDF converter write them; the few others are transliterated.
+
+Each value carries its display precision (``decimalpl`` and ``outputtype``:
+the definition's decimal places, else as many as the factor needs), its
+physical range (``min`` / ``max``: the stored width through the conversion)
+and its signedness (``datatype`` 1 = signed).
 """
+
+import math
 
 from typing import List, Optional
 
@@ -21,16 +30,82 @@ from .model import Entity
 from .tiers import tier_name, TIER_NAMES
 from . import branding
 
+#: characters outside Latin-1, which an ANSI application cannot show
 _ASCII = str.maketrans({
-    "—": "-", "–": "-", "·": "-", "→": "->",
-    "×": "x", "…": "...", "°": "deg", "µ": "u",
+    "—": "-", "–": "-", "→": "->", "…": "...", "‘": "'", "’": "'",
+    "“": '"', "”": '"', "≤": "<=", "≥": ">=", "Ω": "Ohm",
 })
 
 
 def _esc(s):
-    s = str(s).translate(_ASCII).encode("ascii", "replace").decode("ascii")
-    return (s.replace("&", "&amp;").replace("<", "&lt;")
-             .replace(">", "&gt;").replace('"', "&quot;"))
+    s = str(s).translate(_ASCII)
+    s = (s.replace("&", "&amp;").replace("<", "&lt;")
+          .replace(">", "&gt;").replace('"', "&quot;"))
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if o < 32 and ch not in "\t\n\r":
+            continue                        # not allowed in XML 1.0
+        out.append(ch if o < 128 else ("&#%d;" % o if o < 256 else "?"))
+    return "".join(out)
+
+
+def _g(v: float) -> str:
+    """A number the way the XDF fields hold it: up to 6 significant digits."""
+    if not math.isfinite(v):
+        return "0"
+    t = "%.6g" % v
+    return "0" if t in ("-0", "0") else t
+
+
+def _decimals(obj) -> int:
+    """Display decimals: the definition's own, else what the conversion
+    factor needs (0.01 -> 2), else 0."""
+    d = getattr(obj, "decimals", None)
+    if d is not None:
+        return max(0, min(15, int(d)))
+    try:
+        eq = obj.eq
+        f = abs(eq.factor) if eq.linear else 0.0
+    except Exception:
+        f = 0.0
+    if 0 < f < 1:
+        return max(0, min(15, -int(math.floor(math.log10(f) + 1e-9))))
+    return 0
+
+
+def _range(obj, bits: int, signed: bool):
+    """The physical values the stored width can hold, low to high."""
+    lo, hi = ((-(1 << (bits - 1)), (1 << (bits - 1)) - 1) if signed
+              else (0, (1 << bits) - 1))
+    try:
+        a, b = obj.eq.decode(lo), obj.eq.decode(hi)
+        a, b = float(a), float(b)
+    except Exception:
+        a, b = float(lo), float(hi)
+    return min(a, b), max(a, b)
+
+
+def _display_xml(obj, bits: int, signed: bool, indent: str = "      ",
+                 is_float: bool = False) -> str:
+    """``decimalpl``, ``min``, ``max``, ``outputtype`` and ``datatype``."""
+    dec = _decimals(obj)
+    out = "%s<decimalpl>%d</decimalpl>\n" % (indent, dec)
+    if not is_float:
+        lo, hi = _range(obj, bits, signed)
+        out += "%s<min>%s</min>\n%s<max>%s</max>\n" % (indent, _g(lo), indent, _g(hi))
+    out += "%s<outputtype>%d</outputtype>\n" % (indent, 1 if dec > 0 or is_float else 2)
+    out += "%s<datatype>%d</datatype>\n" % (indent, 1 if signed else 0)
+    return out
+
+
+def _title(e) -> str:
+    return getattr(e, "xdf_title", None) or e.title
+
+
+def _description(e) -> str:
+    d = getattr(e, "xdf_description", None)
+    return e.description if d is None else d
 
 
 def _typeflags(e: Entity, le: bool = False):
@@ -64,7 +139,7 @@ def _axis_flags(is_float: bool, le: bool, signed: bool = False) -> str:
 
 
 def _axis_xml(aid, addr, count, bits, equation, units, is_float, le=False,
-              signed=False):
+              signed=False, ax=None):
     if addr is None:
         return (
             '    <XDFAXIS id="%s" uniqueid="0x0">\n'
@@ -86,13 +161,15 @@ def _axis_xml(aid, addr, count, bits, equation, units, is_float, le=False,
         '      <units>%s</units>\n'
         '      <indexcount>%d</indexcount>\n'
         '      <embedinfo type="1" />\n'
-        '      <datatype>%d</datatype>\n'
+        '%s'
         '      <unittype>0</unittype>\n'
         '      <DALINK index="0" />\n'
         '      <MATH equation="%s"><VAR id="X" /></MATH>\n'
         '    </XDFAXIS>\n' % (
             aid, flag, addr, bits, count, _esc(units), count,
-            3 if is_float else 0, _esc(equation)))
+            (_display_xml(ax, bits, signed, is_float=is_float) if ax is not None
+             else '      <datatype>%d</datatype>\n' % (3 if is_float else 0)),
+            _esc(equation)))
 
 
 def _fixed_axis_xml(aid, ax, count) -> Optional[str]:
@@ -290,7 +367,7 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
             catmems.append('      <CATEGORYMEM index="%d" category="%d" />'
                            % (depth, cat_id(c) + 1))
         catmem = "\n".join(catmems)
-        dt = 1 if e.bits == 16 else (2 if e.bits == 32 else 0)
+        isf = bool(getattr(e, "is_float", False))
 
         if e.kind == "constant":
             out.append(
@@ -302,26 +379,27 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
                 'mmedelementsizebits="%d" mmedmajorstridebits="0" '
                 'mmedminorstridebits="0" />\n'
                 '    <units>%s</units>\n'
-                '    <datatype>%d</datatype>\n'
+                '%s'
                 '    <unittype>0</unittype>\n'
                 '    <DALINK index="0" />\n'
                 '    <MATH equation="%s"><VAR id="X" /></MATH>\n'
                 '  </XDFCONSTANT>\n' % (
-                    uid, _esc(e.title), _esc(e.description), catmem,
-                    _typeflags(e, le), e.addr, e.bits, _esc(e.units), dt,
+                    uid, _esc(_title(e)), _esc(_description(e)), catmem,
+                    _typeflags(e, le), e.addr, e.bits, _esc(e.units),
+                    _display_xml(e, e.bits, bool(e.signed), "    ", isf),
                     _esc(e.equation)))
             continue
 
         # table (map or curve)
         out.append('  <XDFTABLE uniqueid="0x%X" flags="0x30">\n' % uid)
-        out.append('    <title>%s</title>\n' % _esc(e.title))
-        out.append('    <description>%s</description>\n' % _esc(e.description))
+        out.append('    <title>%s</title>\n' % _esc(_title(e)))
+        out.append('    <description>%s</description>\n' % _esc(_description(e)))
         out.append(catmem + "\n")
         # X axis (columns)
         if e.x is not None and e.x.addr is not None:
             out.append(_axis_xml("x", e.x.addr, e.cols, e.x.bits,
                                  e.x.equation, e.x.units, e.x.is_float, le,
-                                 _axis_signed(e, e.x)))
+                                 _axis_signed(e, e.x), e.x))
         else:
             out.append(_fixed_axis_xml("x", e.x, e.cols)
                        or _axis_xml("x", None, e.cols, 16, "X", "", False))
@@ -329,7 +407,7 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
         if e.y is not None and e.y.addr is not None:
             out.append(_axis_xml("y", e.y.addr, e.rows, e.y.bits,
                                  e.y.equation, e.y.units, e.y.is_float, le,
-                                 _axis_signed(e, e.y)))
+                                 _axis_signed(e, e.y), e.y))
         else:
             out.append(_fixed_axis_xml("y", e.y, e.rows)
                        or _axis_xml("y", None, e.rows, 16, "X", "", False))
@@ -342,11 +420,14 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
             'mmedelementsizebits="%d" mmedrowcount="%d" mmedcolcount="%d" '
             'mmedmajorstridebits="%d" mmedminorstridebits="0" />\n'
             '      <units>%s</units>\n'
-            '      <outputtype>1</outputtype>\n'
+            '%s'
             '      <MATH equation="%s"><VAR id="X" /></MATH>\n' % (
                 _typeflags(e, le), e.addr, e.bits, e.rows, e.cols,
                 # column-major: minor stride down a column, major across rows
-                e.bits if colmajor else 0, _esc(e.units), _esc(e.equation)))
+                e.bits if colmajor else 0, _esc(e.units),
+                _display_xml(e, e.bits, bool(e.signed),
+                             is_float=bool(getattr(e, "is_float", False))),
+                _esc(e.equation)))
         # A ZF shift, TCC or tip-limit map stores output-shaft speed, and each
         # column converts to engine RPM by its own gear ratio. TunerPro takes
         # one MATH per column, which is how the source definitions express it

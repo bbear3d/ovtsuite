@@ -865,6 +865,8 @@ def folder_path(wf: WinOlsFile, fid: int) -> List[str]:
 
 #: the category of a map's code block (a project with several)
 CODEBLOCK = "Codeblock "
+#: WinOLS's folder for maps the user filed nowhere (resource 9000)
+MY_MAPS = "My maps"
 
 
 def category_order(names) -> List[str]:
@@ -923,15 +925,18 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
         if rec.label and rec.label not in ("-", "?") and rec.label != desc:
             # the value's own label, as the "Z:" part the panel shows
             desc = (desc + " | " if desc else "") + "Z: " + rec.label
+        # a map in no folder is in WinOLS's own "My maps" (as WinOLS and the
+        # OLS-to-XDF converter show it)
         cats = (["%s%d" % (CODEBLOCK, cb)] if multi else []) + \
-            folder_path(wf, rec.folder)
+            (folder_path(wf, rec.folder) or [MY_MAPS])
         t = TableDef(name=name, kind=k, z=z, rows=rows, cols=cols,
                      description=desc,
                      categories=cats,
                      x=_axis_def(rec.x, cols) if k != "constant" else None,
                      y=_axis_def(rec.y, rows) if k == "map" else None,
-                     decimals=max(0, rec.precision - 1)
-                     if 0 < rec.precision < 12 else None)
+                     # WinOLS's own decimal places, as the OLS-to-XDF
+                     # converter and WinOLS's map view show them
+                     decimals=rec.precision if 0 < rec.precision < 16 else None)
         defn.tables.append(t)
     if skipped:
         defn.warnings.append("%d maps use a data organisation this version "

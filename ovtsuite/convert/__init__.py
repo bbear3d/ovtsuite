@@ -465,6 +465,33 @@ def prepare(job: Job, warnings: Optional[List[str]] = None, progress=None,
     return defn, base, size, image, loss, n_in
 
 
+def _winols_titles(ents, tag: str) -> None:
+    """A WinOLS map in an XDF as the OLS-to-XDF converter writes it: titled
+    by its description (its name when it has none), described as
+    ``OLS: <name> | <description> | Z: <value label> | X: .. | Y: ..`` --
+    so TunerPro's tree reads in words and the identifier is still there."""
+    for e in ents:
+        t = getattr(e, "_tabledef", None)
+        name = (t.name if t is not None else e.name) or e.name
+        desc = (t.description if t is not None else e.description) or ""
+        zlab = ""
+        if " | Z: " in desc:
+            desc, zlab = desc.split(" | Z: ", 1)
+        elif desc.startswith("Z: "):
+            desc, zlab = "", desc[3:]
+        parts = ["%s: %s" % (tag, name)]
+        if desc and desc != name:
+            parts.append(desc)
+        if zlab and zlab not in (name, desc):
+            parts.append("Z: " + zlab)
+        for k, ax in (("X", getattr(e, "x", None)), ("Y", getattr(e, "y", None))):
+            lab = getattr(ax, "label_text", "") if ax is not None else ""
+            if lab and lab not in ("-", "?"):
+                parts.append("%s: %s" % (k, lab))
+        e.xdf_title = desc or name
+        e.xdf_description = " | ".join(parts)
+
+
 def _key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
@@ -937,17 +964,14 @@ def write(defn: Definition, tgt: str, size: int, image: Optional[bytes],
         text, n = fmt_dam.dumps(defn, size, image, warn, res.loss)
         res.warnings.extend(warn)
         return text.encode("latin-1", "replace"), n
-    if tgt == "xdf":
-        # the XDF writer keeps ASCII only: spell umlauts out rather than
-        # lose them as "?"
-        from .xdfcats import spelled
-        defn = spelled(defn)
     ents = _entities(defn, 0, size, image, None, job.dynamic, res.loss)
     le = defn.byte_order() == "<"
     warn = []
     if tgt == "xdf":
         from ..xdf_export import export_xdf
         src = defn.info.get("source_type", "")
+        if src in ("ols", "kp"):
+            _winols_titles(ents, src.upper())
         text = export_xdf(
             ents, title, fileversion=defn.info.get("fileversion", ""),
             image_size=size, little_endian=le, platform="",

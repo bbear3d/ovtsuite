@@ -236,9 +236,10 @@ def test_ols_categories_match_the_ols_to_xdf_tool(tmp_path):
 
 def test_categories_of_a_project_with_one_code_block(tmp_path):
     """No code block category when the maps are listed once; folders by
-    name; German letters spelled out (the XDF is ASCII), not lost as '?'."""
+    name; German letters kept as character references (as TunerPro and
+    the OLS-to-XDF converter write them), not lost as '?'."""
     from ovtsuite import convert as C
-    from ovtsuite.convert.xdfcats import spell_ascii
+    from ovtsuite.xdf_export import _esc
     _data(M235)
     out = str(tmp_path / "o.xdf")
     C.run(C.Job(sources=[M235], target="xdf", out=out, self_check=False))
@@ -247,5 +248,30 @@ def test_categories_of_a_project_with_one_code_block(tmp_path):
     assert not any(n.startswith("Codeblock") for n in names)
     assert names == sorted(names, key=str.lower)
     assert all(len(m) == 1 and m[0][0] == 0 for _a, m in tables)
-    assert spell_ascii("Bremskraftverst\xe4rker \xdcberwachung Gro\xdf") == \
-        "Bremskraftverstaerker Ueberwachung Gross"
+    assert _esc("Bremskraftverst\xe4rker \xdcberwachung Gro\xdf 5\xb0C") == \
+        "Bremskraftverst&#228;rker &#220;berwachung Gro&#223; 5&#176;C"
+
+
+def test_winols_xdf_fields_match_the_ols_to_xdf_tool(tmp_path):
+    """Titles from the description, 'OLS: name | ...' descriptions with the
+    axis names, WinOLS's decimals, the range, signedness, umlauts kept."""
+    import re
+    from ovtsuite import convert as C
+    gq = os.path.join(r"C:\Claude\OLS to XDF Converter\Tests\OLS-tests",
+                      "( 038906019GQ  0281010941 (Original) - 363213).ols")
+    if not os.path.exists(gq):
+        pytest.skip("needs the OLS-to-XDF test project")
+    out = str(tmp_path / "o.xdf")
+    C.run(C.Job(sources=[gq], target="xdf", out=out, self_check=False))
+    text = open(out, encoding="utf-8").read()
+    i = text.index("OLS: mrwBMVE_KL")
+    block = text[text.rindex("<XDFTABLE", 0, i):text.index("</XDFTABLE>", i)]
+    assert "<title>BEG Schwellwert VE Begrenzungsmenge M_E = f(N)</title>" in block
+    assert "| Z: Umrechnung Menge | X: Umrechnung Drehzahl</description>" in block
+    assert "<decimalpl>4</decimalpl>" in block
+    assert "<min>-327.68</min>" in block and "<max>327.67</max>" in block
+    assert "<outputtype>1</outputtype>" in block
+    i = text.index("OLS: mrwV_ANFAH")
+    const = text[text.rindex("<XDFCONSTANT", 0, i):text.index("</XDFCONSTANT>", i)]
+    assert "<datatype>0</datatype>" in const and "<max>655.35</max>" in const
+    assert "?" not in re.sub(r"<\?xml[^>]*\?>", "", text[:2000])

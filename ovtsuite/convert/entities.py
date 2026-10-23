@@ -199,5 +199,9 @@ def entities(defn: Definition, base: int, size: int,
                 else:
                     e.y = None
         e._tabledef = t
+        e.decimals = t.decimals                 # display precision, for the XDF
+        for ax, ad in ((e.x, t.x), (e.y, t.y)):
+            if ax is not None and ad is not None and ad.name:
+                ax.label_text = ad.name
         out.append(e)
     return out
