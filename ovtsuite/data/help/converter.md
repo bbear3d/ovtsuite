@@ -231,8 +231,9 @@ carries its decimal places (WinOLS's own), its range (*min* / *max*, what
 the stored width can hold) and whether it is signed. Umlauts and other
 accented letters stay as they are (*Überwachung*, *Groß*, *°C*).
 
-The converter reads WinOLS's own map list; a map the
-project lists twice identically is written once.
+The converter reads WinOLS's
+own map list and writes every map it lists, a map listed twice (in two
+folders, or twice in one) included.
 
 ## Checksum plugin (XDF)
 
