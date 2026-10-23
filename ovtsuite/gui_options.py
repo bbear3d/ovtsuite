@@ -578,7 +578,7 @@ class OptionsDialog(QtWidgets.QDialog):
             if box.isChecked():
                 _sm.install()
             else:
-                _sm.remove()
+                _sm.remove(everywhere=True)
             self._shell_was = box.isChecked()
         except _sm.ShellMenuError as exc:
             QtWidgets.QMessageBox.warning(self, "Right-click menu", str(exc))

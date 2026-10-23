@@ -369,3 +369,23 @@ def test_search_finds_a_code_by_the_other_vag_numbering(lq):
     assert "16485" in code_forms("P0101") and "00257" in code_forms("P0101")
     hits = [fp.name for fp in lq.paths.values() if "19456" in fp.search_text()]
     assert hits == ["GlwCD_LampCan"]
+
+
+def test_every_older_vag_number_finds_its_fault_on_a_newer_ecu(lq):
+    """The P350 (038906016Q) stores 5-digit VAG numbers; the LQ the SAE word.
+    Every number the P350 stores, for a code the LQ also has, finds it there
+    -- not just 19456."""
+    _need(Q)
+    from ovtsuite.dtc import vag_text
+    q = DtcTable(TunerSession(Q))
+    where = {}
+    for fp in lq.paths.values():
+        for t in fp.types:
+            if t.vag_pcode:
+                where.setdefault(t.vag_pcode, []).append(fp)
+    pairs = {(t.vag, t.vag_pcode) for fp in q.paths.values() for t in fp.types
+             if t.vag and t.vag_pcode in where}
+    assert len(pairs) > 200
+    missing = [(n, pc) for n, pc in pairs
+               if not any(vag_text(n) in fp.search_text() for fp in where[pc])]
+    assert missing == []

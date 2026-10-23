@@ -138,24 +138,75 @@ def test_cli_watch_needs_a_target(tmp_path, capsys):
     assert "--to" in capsys.readouterr().err
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux file managers")
-def test_shell_menu_linux(tmp_path, monkeypatch, capsys):
+def test_shell_menu_linux_files_show_for_the_converters_files_only(tmp_path, monkeypatch):
+    """No entry on every file: Dolphin and GNOME by the converter's own MIME
+    types (registered by extension, below every standard type), Nemo by
+    extension. Written the same on any system, so tested anywhere."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
-    assert shellmenu.installed() == []
-    where = shellmenu.install()
+    monkeypatch.setattr(shellmenu, "_refresh_mime", lambda: None)
+    legacy = shellmenu._legacy_script()
+    os.makedirs(os.path.dirname(legacy))
+    open(legacy, "w").close()
+    where = shellmenu._linux_install()
     assert set(where) == {"GNOME Files", "Nemo", "Dolphin"}
+    assert not os.path.exists(legacy)              # the old every-file script goes
     files = shellmenu._linux_files()
-    script = open(files["GNOME Files"]).read()
-    assert "--converter" in script and os.access(files["GNOME Files"], os.X_OK)
+    dolphin = open(files["Dolphin"]).read()
+    assert "all/allfiles" not in dolphin and "application/x-ovt-a2l;" in dolphin
+    gnome = open(files["GNOME Files"]).read()
+    assert "MimeType=application/x-ovt-a2l;" in gnome and "%F" in gnome
     nemo = open(files["Nemo"]).read()
     assert "Extensions=" in nemo and "a2l;" in nemo and "%F" in nemo
-    assert "Exec=" in open(files["Dolphin"]).read()
-    assert set(shellmenu.installed()) == set(where)
-    from ovtsuite.cli import main
-    assert main(["convert", "--shell-menu", "status"]) == 0
-    assert "Installed in" in capsys.readouterr().out
-    assert set(shellmenu.remove()) == set(where)
-    assert shellmenu.installed() == [] and not any(os.path.exists(p) for p in files.values())
+    xml = open(shellmenu._mime_package()).read()
+    assert '<glob pattern="*.a2l" weight="10"/>' in xml
+    assert set(shellmenu._linux_installed()) == set(where)
+    assert set(shellmenu._linux_remove()) == set(where)
+    assert shellmenu._linux_installed() == []
+    assert not os.path.exists(shellmenu._mime_package())
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="the Windows registry")
+def test_shell_menu_two_installs_never_remove_each_other(tmp_path, monkeypatch):
+    """The app and the standalone converter each write their own entry; one
+    shows, the other waits; uninstalling either leaves the other's."""
+    import winreg
+    sandbox = r"Software\OVTSuiteTest-%d" % os.getpid()
+    monkeypatch.setattr(shellmenu, "_CLASSES", sandbox + r"\%s\shell")
+    monkeypatch.setattr(shellmenu, "EXTENSIONS", (".a2l", ".xdf"))
+    monkeypatch.setattr(shellmenu, "_user_hives", lambda: [])
+    monkeypatch.setattr(shellmenu, "_win_refresh", lambda: None)
+    apps = {}
+    for name in ("app", "tool"):
+        d = tmp_path / name
+        d.mkdir()
+        exe = d / "OVTConverter.exe"
+        exe.write_bytes(b"MZ")
+        apps[name] = [str(exe)]
+    try:
+        monkeypatch.setattr(shellmenu, "command", lambda: apps["app"])
+        shellmenu.install()
+        monkeypatch.setattr(shellmenu, "command", lambda: apps["tool"])
+        shellmenu.install()
+        ent = shellmenu._win_entries()
+        assert len(ent) == 2
+        assert sorted(h for _e, h in ent.values()) == [False, True]   # one shows
+        shellmenu.remove()                         # the tool's uninstaller
+        ent = shellmenu._win_entries()
+        assert [e for e, _h in ent.values()] == apps["app"]
+        assert not any(h for _e, h in ent.values())  # the app's shows again
+        assert shellmenu.installed()
+        shellmenu.install()                        # (the tool's again)
+        shellmenu.remove(everywhere=True)          # the user turns it off
+        assert shellmenu._win_entries() == {} and not shellmenu.installed()
+    finally:
+        for verb in list(shellmenu._win_entries()):
+            shellmenu._win_delete_verb(verb)
+        for k in (sandbox + r"\.a2l\shell", sandbox + r"\.xdf\shell",
+                  sandbox + r"\.a2l", sandbox + r"\.xdf", sandbox):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, k)
+            except OSError:
+                pass
 
 
 def test_shell_menu_command_and_windows_line():
@@ -163,7 +214,8 @@ def test_shell_menu_command_and_windows_line():
     assert cmd[-1] == "--converter" or cmd[0].lower().endswith(("ovtconverter.exe", "ovtconverter"))
     line = shellmenu._win_cmdline(["C:\\Program Files\\OVT\\OVTConverter.exe"])
     assert line == '"C:\\Program Files\\OVT\\OVTConverter.exe" "%1"'
-    assert all(k.endswith("\\shell\\" + shellmenu.VERB) for k in shellmenu._win_keys())
+    mine = "%s.%s" % (shellmenu.VERB, shellmenu._tag())
+    assert all(k.endswith("\\shell\\" + mine) for k in shellmenu._win_keys())
     assert ".xml" not in shellmenu.EXTENSIONS        # no menu on every XML file
 
 

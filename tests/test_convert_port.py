@@ -173,6 +173,21 @@ def test_diff_names_every_kind_of_change(tmp_path):
     assert "1 added" in res.values[0] and "1 renamed" in res.values[0]
 
 
+def test_diff_keeps_every_table_whose_name_repeats():
+    """XDFs often reuse a title: each table of that name is compared, paired
+    first with the one at the same place."""
+    from ovtsuite.convert import transforms
+    from ovtsuite.definitions.model import Definition, Storage, TableDef
+
+    def tab(addr, factor=1.0):
+        return TableDef(name="Torque limit", kind="constant", rows=1, cols=1,
+                        z=Storage(addr=addr, bits=16, factor=factor, endian=">"))
+    a = Definition(type="xdf", title="a", tables=[tab(0x100), tab(0x200), tab(0x300)])
+    b = Definition(type="xdf", title="b", tables=[tab(0x300), tab(0x100, 0.5)])
+    got = {(r["name"], r["change"]) for r in transforms.diff(a, b)}
+    assert got == {("Torque limit [1]", "rescaled"), ("Torque limit [2]", "removed")}
+
+
 def test_diff_takes_exactly_two_definitions(tmp_path):
     pa, _pb = _write_pair(tmp_path)
     with pytest.raises(C.ConvertError, match="two definitions"):

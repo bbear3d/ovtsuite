@@ -108,8 +108,7 @@ def diff(a: Definition, b: Definition) -> List[dict]:
     moved, been resized, rescaled (conversion or units) or retyped (width,
     sign, float)."""
     rows = []
-    ia = {t.symbol or t.name: t for t in a.tables}
-    ib = {t.symbol or t.name: t for t in b.tables}
+    ia, ib = _keyed(a.tables, b.tables)
     gone = sorted(ia.keys() - ib.keys())
     new = sorted(ib.keys() - ia.keys())
 
@@ -159,6 +158,48 @@ def diff(a: Definition, b: Definition) -> List[dict]:
     order = {k: i for i, k in enumerate(DIFF_KINDS)}
     rows.sort(key=lambda r: (order.get(r["change"], 99), r["name"]))
     return rows
+
+
+def _keyed(ta, tb):
+    """``({key: table}, {key: table})`` for two definitions' tables, one key
+    per table even where a name repeats (XDFs often reuse a title): a name
+    that repeats is paired first with the table at the same place in the
+    other definition, then in order, and keyed ``name [n]``. A key-by-name
+    dict would keep one of them and leave the rest out of the comparison."""
+    def groups(ts):
+        g = {}
+        for t in ts:
+            g.setdefault(t.symbol or t.name, []).append(t)
+        return g
+    ga, gb = groups(ta), groups(tb)
+    ia, ib = {}, {}
+    for name in set(ga) | set(gb):
+        la, lb = list(ga.get(name, [])), list(gb.get(name, []))
+        if len(la) <= 1 and len(lb) <= 1:
+            if la:
+                ia[name] = la[0]
+            if lb:
+                ib[name] = lb[0]
+            continue
+        pairs = []
+        for x in list(la):                   # the same place first
+            y = next((y for y in lb if y.z.addr is not None and y.z.addr == x.z.addr), None)
+            if y is not None:
+                pairs.append((x, y))
+                la.remove(x)
+                lb.remove(y)
+        while la and lb:                     # then in order
+            pairs.append((la.pop(0), lb.pop(0)))
+        pairs += [(x, None) for x in la] + [(None, y) for y in lb]
+        pairs.sort(key=lambda p: min(t.z.addr if t is not None and t.z.addr is not None
+                                     else 1 << 62 for t in p))
+        for i, (x, y) in enumerate(pairs, 1):
+            k = "%s [%d]" % (name, i)
+            if x is not None:
+                ia[k] = x
+            if y is not None:
+                ib[k] = y
+    return ia, ib
 
 
 def _hex(v) -> str:
