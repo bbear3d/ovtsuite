@@ -151,7 +151,8 @@ def _limits(equation: str, bits: int, signed: bool, flt: bool) -> Tuple[float, f
 
 def export_a2l(entities: List[Entity], title: str, image_size: int,
                little_endian: Optional[bool] = None, platform: str = "",
-               warnings: Optional[List[str]] = None) -> str:
+               warnings: Optional[List[str]] = None, tiers: bool = True,
+               base: int = 0) -> str:
     """The A2L text for ``entities`` (in the loaded image's own addresses).
     ``little_endian`` defaults to the image's byte order; what could not be
     expressed is appended to ``warnings`` (and commented in the file)."""
@@ -191,7 +192,7 @@ def export_a2l(entities: List[Entity], title: str, image_size: int,
         lo, hi = _limits(ax.equation, ax.bits, signed, ax.is_float)
         ax_blocks.append(
             "  /begin AXIS_PTS %s %s 0x%X NO_INPUT_QUANTITY %s 0 %s %d %s %s\n"
-            "  /end AXIS_PTS\n" % (name, _text("axis at 0x%X" % ax.addr), ax.addr,
+            "  /end AXIS_PTS\n" % (name, _text("axis at 0x%X" % ax.addr), ax.addr + base,
                                    layout(dt, "AX"), cm, count, _num(lo), _num(hi)))
         axis_pts[key] = name
         return name
@@ -235,7 +236,7 @@ def export_a2l(entities: List[Entity], title: str, image_size: int,
         if getattr(e, "text_kind", "") == "ascii":
             chars.append("  /begin CHARACTERISTIC %s %s ASCII 0x%X %s 0 %s 0 255\n"
                          "    NUMBER %d\n  /end CHARACTERISTIC\n"
-                         % (name, _text(desc), e.addr, layout("UBYTE", "V"),
+                         % (name, _text(desc), e.addr + base, layout("UBYTE", "V"),
                             compus.get("X", ""), max(1, e.n_cells)))
         else:
             cm = compus.get(e.equation, e.units)
@@ -259,12 +260,12 @@ def export_a2l(entities: List[Entity], title: str, image_size: int,
                 body += "    BIT_MASK 0x%X\n" % e.sel_mask
             chars.append("  /begin CHARACTERISTIC %s %s %s 0x%X %s 0 %s %s %s\n%s"
                          "  /end CHARACTERISTIC\n"
-                         % (name, _text(desc), ctype, e.addr,
+                         % (name, _text(desc), ctype, e.addr + base,
                             layout(dt, "V", direction), cm, _num(lo), _num(hi), body))
         if note:
             chars[-1] = "  /* %s */\n" % note.replace("*/", "* /") + chars[-1]
-        path = [tier_name(e.tier)] + list(getattr(e, "category_path", None)
-                                          or e.categories[:1] or [])
+        path = ([tier_name(e.tier)] if tiers else []) + list(
+            getattr(e, "category_path", None) or e.categories[:1] or [])
         funcs.setdefault(" / ".join(p for p in path if p), []).append(name)
 
     out = ["/* %s A2L export of %s */\n" % (branding.APP_NAME, title.replace("*/", "")),
@@ -279,10 +280,12 @@ def export_a2l(entities: List[Entity], title: str, image_size: int,
                % (_text("byte order of the image"),
                   "MSB_LAST" if little_endian else "MSB_FIRST"))
     out.append("  /begin MOD_PAR %s\n"
-               "    /begin MEMORY_SEGMENT Image %s DATA FLASH INTERN 0x0 0x%X "
+               "    /begin MEMORY_SEGMENT Image %s DATA FLASH INTERN 0x%X 0x%X "
                "-1 -1 -1 -1 -1\n    /end MEMORY_SEGMENT\n  /end MOD_PAR\n"
-               % (_text("addresses are offsets in the image file"),
-                  _text("the image file"), image_size))
+               % (_text("addresses are offsets in the image file" if not base
+                        else "addresses are ECU addresses; the image file "
+                        "starts at 0x%X" % base),
+                  _text("the image file"), base, image_size))
     out.extend(layouts.values())
     out.extend(compus.blocks)
     out.extend(ax_blocks)

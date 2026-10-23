@@ -1046,9 +1046,22 @@ def _cap_combo(cb: QtWidgets.QComboBox, chars: int = 22) -> None:
     cb.setMinimumContentsLength(chars)
     view = cb.view()
     view.setTextElideMode(QtCore.Qt.ElideMiddle)
-    scr = cb.screen() or QtGui.QGuiApplication.primaryScreen()
-    if scr is not None:                 # the list, too, stays on the screen
-        view.setMaximumWidth(int(scr.availableGeometry().width() * 0.6))
+
+    def fit_list(*_a):
+        # the open list as wide as its longest item, up to 60% of the
+        # screen (longer names elide in the middle). Capping the view's
+        # maximum instead left the popup frame wider than the list: the
+        # scroll bar sat mid-popup with blank space beside it.
+        scr = cb.screen() or QtGui.QGuiApplication.primaryScreen()
+        cap = int(scr.availableGeometry().width() * 0.6) if scr else 900
+        fm = view.fontMetrics()
+        longest = max((fm.horizontalAdvance(cb.itemText(i))
+                       for i in range(cb.count())), default=0)
+        want = longest + view.verticalScrollBar().sizeHint().width() + 24
+        view.setMinimumWidth(min(cap, want))
+    fit_list()
+    cb.model().rowsInserted.connect(fit_list)
+    cb.model().modelReset.connect(fit_list)
     cb.currentIndexChanged.connect(lambda _i: cb.setToolTip(cb.currentText()))
 
 
@@ -1111,7 +1124,8 @@ class DynoPanel(QtWidgets.QFrame):
                                    QtWidgets.QSizePolicy.Preferred)
         self.summary.setMinimumWidth(0)
         bar.addWidget(self.summary, 1)
-        bar.addWidget(QtWidgets.QLabel("Reference:"))
+        self._ref_lbl = QtWidgets.QLabel("Reference:")
+        bar.addWidget(self._ref_lbl)
         self.ref_box = _ref_combo(self.state, with_versions=False)
         _cap_combo(self.ref_box, 16)    # a long version name never widens the tab
         bar.addWidget(self.ref_box)
@@ -1148,6 +1162,14 @@ class DynoPanel(QtWidgets.QFrame):
     def _ref_changed(self, _i):
         kind, vid = ref_of(self.ref_box.currentData())
         self.state.set_reference(kind, vid)
+
+    def set_compact(self, on: bool) -> None:
+        """A narrower bar, for a panel beside the table or another panel:
+        no "Reference:" label (the box's tooltip says it) and a shorter box."""
+        self._ref_lbl.setVisible(not on)
+        self.ref_box.setMinimumContentsLength(8 if on else 16)
+        self.ref_box.setToolTip("Reference: %s" % self.ref_box.currentText()
+                                if on else self.ref_box.currentText())
 
     def _sync(self):
         st = self.state
@@ -1233,7 +1255,8 @@ def set_shown(ws, on: bool, remember: bool = True):
 
 
 def _save_sizes(ws):
-    if not is_shown(ws):
+    from . import gui_panelayout as _gpl    # (another layout keeps its own)
+    if not is_shown(ws) or not _gpl.is_stacked(ws):
         return
     sizes = ws.dyno_split.sizes()
     if len(sizes) == 2 and all(x > 0 for x in sizes):
@@ -1243,6 +1266,9 @@ def _save_sizes(ws):
 
 
 def _restore_sizes(ws):
+    from . import gui_panelayout as _gpl
+    if not _gpl.is_stacked(ws):
+        return
     raw = _settings().value(SIZES_KEY, "")
     if isinstance(raw, (list, tuple)):
         raw = ",".join(str(x) for x in raw)
@@ -1556,6 +1582,12 @@ class DynoDialog(QtWidgets.QDialog):
         for cb in (self.ref_box, self.group_box, self.wish_box, self.diff_box):
             _cap_combo(cb)
         _cap_combo(self.preset_box, 14)
+        # fields keep their own width (a wide combo no longer stretches every
+        # spin box to match), and a label goes above its field rather than
+        # the column scrolling sideways when it is narrow
+        for fl in right.findChildren(QtWidgets.QFormLayout):
+            fl.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
+            fl.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
         self._fit_side()
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 1)

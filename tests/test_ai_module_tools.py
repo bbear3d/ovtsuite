@@ -171,7 +171,9 @@ def test_zf6hp_fault_code_switch_is_a_checked_byte_proposal(env):
              disable=[code["code"]], coding_variant=code["coding_variant"])
     prop = P.load(r["proposal"])
     (b,) = prop["bytes"]
-    assert b["new"] == "00" and b["old"] != "00"
+    # the factory's unused-class form: the class's settings (bytes 1-6)
+    # cleared, its priority kept
+    assert b["new"] == "00" * 6 and b["old"] != "00" * 6
     s = ctx.workspace.get("h1").session
     # a stale proposal never overwrites newer work
     s.edit_bytes(int(b["addr"]), bytes([0x55]))
@@ -180,7 +182,8 @@ def test_zf6hp_fault_code_switch_is_a_checked_byte_proposal(env):
     s.undo()
     res = P.apply_to_session(prop, s)
     assert res.applied == ["bytes@0x%X" % b["addr"]]
-    assert s.binfile.data[int(b["addr"])] == 0
+    a = int(b["addr"])
+    assert bytes(s.binfile.data[a:a + 6]) == bytes(6)
     s.undo()
 
 

@@ -176,8 +176,9 @@ class Catalogue:
 
     # ---- namers ----
     def _groups(self, m: int) -> Dict[int, List[Optional[tuple]]]:
-        return {int(g): [tuple(self.labels[i]) if i >= 0 else None for i in cells]
-                for g, cells in self.maps[m].items()}
+        raw = {int(g): [tuple(self.labels[i]) if i >= 0 else None for i in cells]
+               for g, cells in self.maps[m].items()}
+        return fold_extension_rows(raw) if self.platform == "edc16" else raw
 
     def namer(self, key: Optional[str], how: str = "exact",
               reported: str = "") -> Optional["CatalogueNamer"]:
@@ -191,12 +192,36 @@ class Catalogue:
                               ent.get("family", ""), match=how, reported=reported)
 
 
-_cache: Dict[str, Optional[Catalogue]] = {}
+def fold_extension_rows(groups: Dict[int, List[Optional[tuple]]]
+                        ) -> Dict[int, List[Optional[tuple]]]:
+    """EDC16: put map rows 128..254 where the ECU sends them -- cells 5-8 of
+    group ``row - 127`` (:mod:`ovtsuite.msblock`). Catalogues built before
+    that was known file those rows as groups of their own; a catalogue built
+    since already has 8-cell groups and passes through unchanged."""
+    from ..msblock import EXTENSION_OFFSET, LAST_GROUP, SLOTS_PER_ROW
+    out = {g: list(c) for g, c in groups.items() if g <= LAST_GROUP}
+    for g, cells in groups.items():
+        if g <= LAST_GROUP:
+            continue
+        base = g - EXTENSION_OFFSET
+        if base < 1:
+            continue
+        row = list(out.get(base, []))
+        if len(row) > SLOTS_PER_ROW:
+            continue                       # already folded (new-format entry)
+        row += [None] * (SLOTS_PER_ROW - len(row))
+        out[base] = row + list(cells[:SLOTS_PER_ROW])
+    return out
+
+
+_cache: Dict[str, Catalogue] = {}
 
 
 def load(platform: str) -> Optional[Catalogue]:
     """The installed catalogue for ``platform`` (None when its module, or the
-    file, is not installed)."""
+    file, is not installed). Only a catalogue that loaded is cached, so one
+    installed while the app runs (a module added in-app) is found on the next
+    lookup rather than after a restart."""
     if platform in _cache:
         return _cache[platform]
     cat = None
@@ -208,7 +233,8 @@ def load(platform: str) -> Optional[Catalogue]:
                 cat = Catalogue(json.load(fh))
     except Exception:
         cat = None
-    _cache[platform] = cat
+    if cat is not None:
+        _cache[platform] = cat
     return cat
 
 

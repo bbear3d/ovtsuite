@@ -44,6 +44,9 @@ class Storage:
     offset: float = 0.0
     equation: str = ""              # a non-linear conversion in X, if any
     units: str = ""
+    #: a verbal conversion (A2L ``COMPU_VTAB``): raw value -> its text.
+    #: Value files (DCM, CDFX) write such values as their texts.
+    texts: Optional[Dict[int, str]] = None
 
     @property
     def size(self) -> int:
@@ -63,6 +66,9 @@ class AxisDef:
     fixed: Optional[List[float]] = None     # given by the definition itself
     labels: Optional[List[str]] = None      # a text per point (enumerations)
     name: str = ""                          # what the axis is (description)
+    #: the shared axis object this axis is (A2L ``AXIS_PTS_REF`` /
+    #: ``CURVE_AXIS_REF``); value files address shared axes by this name
+    ref: str = ""
 
 
 @dataclass
@@ -90,6 +96,15 @@ class TableDef:
     #: counts or header, ahead of the axes) when the format says so (A2L,
     #: DAMOS); None: the first stored element
     record: Optional[int] = None
+    #: the identifier the source format names the table by (an A2L / DAMOS
+    #: symbol), kept apart from ``name`` so translating display text never
+    #: touches it; "" when the format has none beyond ``name``
+    symbol: str = ""
+    #: source-language text of each field a translation rewrote
+    #: (``{"name": ..., "description": ...}``)
+    originals: Dict[str, str] = field(default_factory=dict)
+    #: what a writer could not express for this table (filled when written)
+    loss: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -113,6 +128,20 @@ class Definition:
     #: the image the definition was made for, when the file carries it (a
     #: WinOLS project): ``(bytes, base)``, definition address - base = offset
     reference: Optional[tuple] = field(default=None, repr=False, compare=False)
+    #: checksum blocks the definition carries (an XDF's XDFCHECKSUM entries,
+    #: as dicts of their fields; ``"raw"`` holds the element as read) or that
+    #: an export should write
+    checksums: List[dict] = field(default_factory=list)
+    #: TunerPro XDFPATCH blocks, byte-literal: ``{"title", "description",
+    #: "categories": [...], "entries": [{"name", "address" (a definition
+    #: address), "patch": bytes, "base": bytes or None}]}``
+    patches: List[dict] = field(default_factory=list)
+    #: every image the file embeds, ``[(label, bytes, base)]`` (a WinOLS
+    #: project's original and its stored versions)
+    images: List[tuple] = field(default_factory=list, repr=False, compare=False)
+    #: format-specific records kept verbatim so a same-format write can
+    #: re-emit what it did not change (a DAMOS file's raw records)
+    passthrough: Optional[object] = field(default=None, repr=False, compare=False)
 
     def base_in(self, data) -> int:
         """The base for this image: found in it when the definition can,

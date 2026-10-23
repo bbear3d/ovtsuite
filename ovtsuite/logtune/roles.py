@@ -165,8 +165,38 @@ TCU_ROLE_LABELS: Dict[str, str] = {
     "tcu_afterrun": "Control module afterrun", "tcu_thermal": "Thermal protection",
 }
 
+#: EDC15: the KW1281 message numbers that mean the same thing on every EDC15
+#: image (``edc15.msblock15.MESSAGE_KEYS``) join the engine roles, so the
+#: engine presets plan onto an EDC15's blocks too -- whichever of them its
+#: blocks can carry. The PD start/duration setpoints keep the DAMOS names the
+#: End-of-injection column already keys on.
+EDC15_ROLE_SIGNALS: Dict[str, Tuple[str, ...]] = {
+    "rpm": ("Edc15_nEng",), "iq": ("Edc15_qInj",),
+    "maf": ("Edc15_mAir",), "maf_spec": ("Edc15_mAirDes",),
+    "boost": ("Edc15_pBoost",), "boost_spec": ("Edc15_pBoostDes",),
+    "atm": ("Edc15_pAtm",), "pedal": ("Edc15_rPedal",),
+    "vss": ("Edc15_vVeh",), "clt": ("Edc15_tClnt",),
+    "iat": ("Edc15_tAir",), "tfuel": ("Edc15_tFuel",),
+    "egr": ("Edc15_rEgr",),
+    "soi": ("Edc15_phiSoiDes", "zmmFBsoll"), "dur": ("zmmFDsoll",),
+}
+for _role, _sigs in EDC15_ROLE_SIGNALS.items():
+    ROLES[_role] = tuple(ROLES[_role]) + _sigs
+
 ROLES.update(TCU_ROLES)
 ROLE_LABELS.update(TCU_ROLE_LABELS)
+
+
+def recipes_for(namer, recipes: Sequence["Recipe"]) -> List["Recipe"]:
+    """The recipes whose needed roles ``namer``'s blocks can carry at all --
+    used where a controller's blocks cover only part of the engine roles
+    (EDC15: no boost actuator duty, no exhaust temperature)."""
+    if namer is None or not getattr(namer, "available", False):
+        return []
+    have = set()
+    for roles in _carries(namer).values():
+        have |= roles
+    return [r for r in recipes if set(r.needs) <= have]
 
 _SIGNAL_ROLE: Dict[str, str] = {sig: role for role, sigs in ROLES.items() for sig in sigs}
 _SYMBOL_RE = re.compile(r"\(([A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+)\)")
@@ -472,9 +502,10 @@ def plan_groups(namer, roles: Sequence[str], max_groups: int = 6,
     of them is reported as uncovered. They used to come back as a "last
     resort", and that is how the 2026-10-10 cruise preset picked group 133 for
     the gear (a role it only *wanted*): the ECU answered N/A for the whole
-    drive, as it has for every block of 100 or more ever logged on the car
-    (133, 194, 213). An uncovered role is said up front; a dead column is only
-    found after the drive.
+    drive. Rows from 128 up are the second halves of groups 1..127 (the ECU
+    sends row 133 as cells 5-8 of group 6), so the namers fold them into those
+    groups and the gear is reachable there; an uncovered role is still said
+    up front, since a dead column is only found after the drive.
     """
     if namer is None or not getattr(namer, "available", False):
         return [], list(roles)

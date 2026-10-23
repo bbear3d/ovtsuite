@@ -1513,6 +1513,15 @@ def main(argv=None):
         if argv[0] == "--simulator":
             return gui.run_simulator()
         return gui.run_logger(argv[1:])
+    if argv and argv[0] == "--converter":
+        # OVT Converter on its own: `ovtsuite --converter [file ...]`
+        from . import gui
+        if not gui.HAVE_QT:
+            print("PySide6 is not installed; run: pip install PySide6 "
+                  "(or use: ovtsuite convert ...)")
+            return 1
+        from .gui_convert import run_converter
+        return run_converter(argv[1:])
     if (len(argv) == 1 and argv[0].lower().endswith(".ovtmod")
             and os.path.isfile(argv[0])):
         # a module package opened with the app (file association)
@@ -1585,6 +1594,9 @@ def main(argv=None):
     s.add_argument("--format", choices=("xdf", "a2l", "kp"),
                    help="default: from the output's extension (else xdf)")
     s.set_defaults(fn=cmd_export)
+
+    from .convert.cli import add_parser as _convert_parser
+    _convert_parser(sub, [_common])
 
     s = sub.add_parser("tune", help="build and optionally apply a tune profile",
                        parents=[_common])

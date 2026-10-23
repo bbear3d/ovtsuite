@@ -43,7 +43,8 @@
         dist\module-installers\OVTSuite-<Module>-Checksum-<module version>-setup.exe
                                                    (-Installers modules-checksum)
         dist\OVTFlasher-<version>-setup.exe   dist\OVTSniffer-<version>-setup.exe
-        dist\OVTLogger-<version>-setup.exe    dist\OVTTools-<version>-setup.exe
+        dist\OVTLogger-<version>-setup.exe    dist\OVTConverter-<version>-setup.exe
+        dist\OVTTools-<version>-setup.exe
 
     A module installer refuses to install unless OVT-Suite or OVT Tools is
     installed. The tool installers offer every module's checksum variant.
@@ -109,7 +110,8 @@
       modules   one installer per module (full variant)
       modules-checksum   one installer per module, checksum-only variant
       flasher   OVT Flasher only        sniffer   OVT Sniffer only
-      logger    OVT Logger only         tools     all three tools, no main app
+      logger    OVT Logger only         converter OVT Converter only
+      tools     all of these tools, no main app
     The tool installers ship the same build minus the other tools' launchers
     and the full modules (OVTSuite.exe included: every launcher starts it),
     install to their own folder, and upgrade/uninstall on their own, so they
@@ -151,26 +153,33 @@
     dist\OVTSuite\app-manifest.json (+ .sig): the SHA-256 of every file the
     installer ships. A signed build then, automatically (no switch needed):
 
+      * reads the releases published on GitHub and marks each archived
+        version that was published as released -- from the build archived
+        last before its installer was uploaded (uploaded again for a
+        re-release of the same number: marked again from the build before
+        that upload). Offline, the archive's marks stand.
       * removes the delta packages an earlier build left in dist\,
       * makes dist\OVTSuite-Update-<previous>-to-<version>.zip, where
-        <previous> is the highest release archived in Reference\AppReleases
-        that is older than this version (never this version itself, never a
-        prerelease): the files that changed, signed,
-      * keeps this build's manifest as Reference\AppReleases\<version>\,
-        replacing the one an earlier build of the same version left there.
+        <previous> is the highest RELEASED version in Reference\AppReleases
+        older than this one (never this version itself, never a prerelease,
+        never a version that was built but not published): the files that
+        changed, signed, against the manifest as it was published,
+      * keeps this build's manifest in Reference\AppReleases\<version>\
+        (and under builds\<time>\, every build).
 
     So building the same version again (files changed, version not raised
-    yet) rebuilds its delta against the new build and replaces its archived
-    manifest. With nothing older archived (0.4.8, the first release with an
-    archived manifest) it only archives; deltas start with the next release.
-    Upload the delta with the release; installed copies update with a chain
-    of these instead of the full installer.
+    yet) rebuilds its delta against the new build. Versions raised but never
+    released (0.4.10, 0.4.11) are skipped: the next delta is from the last
+    published release. 'python tools\app_release.py releases' lists what the
+    archive knows; 'mark-released' marks a release by hand. Upload the delta
+    with the release; installed copies update with a chain of these instead
+    of the full installer.
 
 .PARAMETER DeltaFrom
     Override which releases to make delta packages from: versions archived in
     Reference\AppReleases (e.g. 0.4.8,0.4.9 -- a direct delta from an older
     release shortens chains), manifest files/folders, or 'none'. Default: the
-    newest archived release older than this build. Skipped with -Unsigned.
+    newest released version older than this build. Skipped with -Unsigned.
 
 .PARAMETER NoDelta
     Make no delta packages and leave Reference\AppReleases alone: a test
@@ -229,7 +238,7 @@ param(
     [string]$InnoSetup,
     [switch]$NoInstaller,
     [ValidateSet('full', 'main', 'base', 'modules', 'modules-checksum',
-                 'flasher', 'sniffer', 'logger', 'tools')]
+                 'flasher', 'sniffer', 'logger', 'converter', 'tools')]
     [string[]]$Installers = @('full'),
     [string[]]$Modules = @('all'),
     [switch]$BaseOnly,
@@ -1245,7 +1254,8 @@ if ($NoInstaller) {
         $Built = Join-Path $DistDir 'OVTSuite'
         # the per-module installers get a folder of their own
         $ModuleInstallers = Join-Path $DistDir 'module-installers'
-        $AllExes = @('OVTSuite.exe', 'OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe')
+        $AllExes = @('OVTSuite.exe', 'OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe',
+                     'OVTConverter.exe')
         $FullInc = Join-Path $InstallerWork 'modules_full.iss'
         $CksInc  = Join-Path $InstallerWork 'modules_checksum.iss'
         $ModRows = @()
@@ -1378,8 +1388,11 @@ if ($NoInstaller) {
                     $exe = @{ flasher = @('OVTSuite.exe', 'OVTFlasher.exe');
                               sniffer = @('OVTSuite.exe', 'OVTSniffer.exe');
                               logger = @('OVTSuite.exe', 'OVTLogger.exe');
-                              tools = @('OVTSuite.exe', 'OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe') }[$which]
+                              converter = @('OVTSuite.exe', 'OVTConverter.exe');
+                              tools = @('OVTSuite.exe', 'OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe',
+                                        'OVTConverter.exe') }[$which]
                     $base = @{ flasher = 'OVTFlasher'; sniffer = 'OVTSniffer'; logger = 'OVTLogger';
+                               converter = 'OVTConverter';
                                tools = 'OVTTools' }[$which]
                     $defs = @("/DTool=$which") + $FtdiDefs
                     if ($which -in @('flasher', 'tools')) { $defs += $AddonDefs }
@@ -1469,11 +1482,12 @@ if (-not $OneFile -and (Test-Path (Join-Path $DistDir 'OVTSuite\app-manifest.jso
     if ($NoDelta) {
         Write-Step 'Skipping delta update packages (-NoDelta; Reference\AppReleases left alone)'
     } else {
-        # tools\app_release.py auto: drops the earlier build's packages from
-        # dist\, makes the delta from the newest archived release OLDER than
-        # this version (a rebuild of this version never makes one from itself),
-        # then archives this build's manifest, replacing that of an earlier
-        # build of the same version. Unsigned: none made, nothing archived.
+        # tools\app_release.py auto: marks the versions published on GitHub
+        # released, drops the earlier build's packages from dist\, makes the
+        # delta from the newest RELEASED version older than this one (a
+        # version built but never published is skipped; a rebuild never makes
+        # one from itself), then archives this build's manifest. Unsigned:
+        # none made, nothing archived.
         $title = 'Delta update packages'
         if ($Unsigned) { $title += ' (none: -Unsigned, the app refuses unsigned ones)' }
         Write-Step $title

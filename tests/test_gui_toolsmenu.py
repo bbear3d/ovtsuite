@@ -78,3 +78,17 @@ def test_another_platforms_tools_are_hidden(win):
     if zf6.isEnabled():
         assert shown[zf6.text()]
     win.tools_menu.aboutToHide.emit()
+
+
+def test_engine_settings_tools_leave_a_gearbox_tab(win):
+    """Gear ratios and VSS are the engine ECU's: not offered on a TCU."""
+    if not os.path.exists(LQ) or not os.path.exists(ZF):
+        pytest.skip("reference binaries missing")
+    assert win.open_path(LQ)
+    shown = _shown(win)
+    assert shown["Gear ratios..."] and shown["VSS pulse settings..."]
+    win.tools_menu.aboutToHide.emit()
+    assert win.open_path(ZF, new_tab=True)
+    shown = _shown(win)
+    assert not shown["Gear ratios..."] and not shown["VSS pulse settings..."]
+    win.tools_menu.aboutToHide.emit()

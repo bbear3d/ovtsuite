@@ -63,6 +63,27 @@ def vag_text(code: Optional[int]) -> str:
     return "%05d" % code if code else ""
 
 
+def code_forms(pcode: str) -> List[str]:
+    """The numbers a scan tool may show for ``pcode`` ('P3000'), under
+    both ways VAG ECUs report it: the older 5-digit VAG number
+    (``0x4000 + d*1024 + xyz``: P3000 -> 19456) and the SAE word as a
+    number (P3000 -> 12288). A tuner holding a code from one ECU family
+    finds the path in an image of the other."""
+    out = []
+    if len(pcode) != 5 or pcode[0] not in "PCBU":
+        return out
+    try:
+        word = ("PCBU".index(pcode[0]) << 14) | int(pcode[1:], 16)
+    except ValueError:
+        return out
+    if word < 0x10000:
+        out += [vag_text(word), str(word)]
+    if pcode[0] == "P" and pcode[1:].isdigit() and int(pcode[1]) < 4:
+        vag5 = 0x4000 + int(pcode[1]) * 1024 + int(pcode[2:])
+        out += [vag_text(vag5), str(vag5)]
+    return out
+
+
 # The value a fault path's class is set to in order to disable the code.
 DISABLED_CLASS = 0
 
@@ -239,6 +260,11 @@ class FaultPath:
                 bits.append("VAG %s%s" % (vag_text(t.vag),
                                           " (%s)" % t.vag_pcode if t.vag_pcode
                                           and t.vag_pcode != t.pcode else ""))
+                other = [f for f in code_forms(t.vag_pcode)
+                         if len(f) == 5 and f.isdigit()
+                         and int(f) != t.vag]
+                if other:
+                    bits[-1] += " [%s on other VAG ECUs]" % other[0]
             if t.pcode:
                 d = pd.get(t.pcode)
                 bits.append("OBD %s%s" % (t.pcode, " - %s" % d if d else ""))
@@ -253,9 +279,11 @@ class FaultPath:
         for t in self.types:
             if t.pcode:
                 bits.append(t.pcode)
+                bits += code_forms(t.pcode)
             if t.vag:
                 bits += [vag_text(t.vag), str(t.vag), "0x%04x" % t.vag,
                          t.vag_pcode]
+                bits += code_forms(t.vag_pcode)
             if t.used:
                 bits.append(t.text)
         return " ".join(b for b in bits if b).lower()

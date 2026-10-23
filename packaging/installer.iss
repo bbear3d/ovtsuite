@@ -112,6 +112,9 @@ Name: "associate_ovt"; \
     GroupDescription: "File associations:"
 Name: "associate"; Description: "Associate &.bin files with {#AppName}"; \
     GroupDescription: "File associations:"; Flags: unchecked
+Name: "shellmenu"; \
+    Description: "Add ""Convert with {#ConverterName}"" to the right-click menu"; \
+    GroupDescription: "Right-click menu:"; Flags: unchecked
 
 [Files]
 ; The one-folder PyInstaller output -- the base app. Its modules\ folder is
@@ -138,6 +141,8 @@ Name: "{group}\{#LoggerName}"; Filename: "{app}\{#LoggerExe}"; \
     AppUserModelID: "{#LoggerAppId}"
 Name: "{group}\{#SimulatorName}"; Filename: "{app}\{#SimulatorExe}"; \
     AppUserModelID: "{#SimulatorAppId}"
+Name: "{group}\{#ConverterName}"; Filename: "{app}\{#ConverterExe}"; \
+    AppUserModelID: "{#ConverterAppId}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
     Tasks: desktopicon
@@ -204,6 +209,11 @@ Root: HKA; Subkey: "Software\Classes\.bin\OpenWithProgids"; \
     Flags: uninsdeletevalue; Tasks: associate
 
 [Run]
+; The right-click menu (task above): the same code as the converter's own
+; More menu and "ovtsuite convert --shell-menu", for the user who ran setup.
+; No file association -- a menu entry only.
+Filename: "{app}\{#AppExeName}"; Parameters: "convert --shell-menu install"; \
+    Flags: runhidden waituntilterminated runasoriginaluser; Tasks: shellmenu
 Filename: "{app}\{#AppExeName}"; \
     Description: "Launch {#AppName}"; \
     Flags: nowait postinstall skipifsilent
@@ -211,6 +221,12 @@ Filename: "{app}\{#AppExeName}"; \
 ; the app again when it is done (as the user who started setup, not elevated).
 Filename: "{app}\{#AppExeName}"; \
     Flags: nowait runasoriginaluser; Check: WizardSilent and RelaunchRequested
+
+[UninstallRun]
+; Always: the menu may have been added from the converter window too, and must
+; not be left pointing at a removed program.
+Filename: "{app}\{#AppExeName}"; Parameters: "convert --shell-menu remove"; \
+    Flags: runhidden waituntilterminated; RunOnceId: "OVTShellMenu"
 
 [InstallDelete]
 ; A delta update (in-app, docs/UPDATES.md) changes the app folder without this

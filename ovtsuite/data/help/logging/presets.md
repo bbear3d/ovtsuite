@@ -16,8 +16,9 @@ The list in **Preset:** depends on the **ECU**:
 | ECU | Presets offered |
 |---|---|
 | **EDC16** | the engine presets below |
+| **EDC15** | the engine presets whose values its blocks carry — typically **Full-load fuelling**, **Cruise efficiency** and, on unit-injector (PD) engines, **Injection timing** and **Warm-up running**. EDC15 values are recognised by the ECU's own message numbers (engine speed, injected quantity, air mass, boost, pedal, temperatures...), which are the same on every EDC15. Presets that need a value no EDC15 block carries (boost actuator duty, exhaust temperature) are not listed. |
 | **ZF6HP** | the transmission presets below |
-| **ZF6HP-UDS**, **EDC15**, **Aisin TRx** | none — the **Preset:** box is greyed out and the hint says why; tick the cells by hand. (The engine presets are worked out from EDC16 signal names, which these controllers do not carry.) |
+| **ZF6HP-UDS**, **Aisin TRx** | none — the **Preset:** box is greyed out and the hint says why; tick the cells by hand. |
 
 ## How a preset picks blocks
 
@@ -27,10 +28,11 @@ The list in **Preset:** depends on the **ECU**:
    — blocks for the wanted extras. Each preset has a block limit (six for most
    engine presets, two or three for the others), because every extra block
    costs sample rate.
-3. On an EDC16 it never uses block 100 or higher. Those blocks are listed in
-   the calibration, but on the cars tested the ECU answered "N/A" for them on
-   every sample. A value only found there is reported as missing up front
-   rather than logging an empty column.
+3. On an EDC16 it only uses blocks 1–127. The calibration's block table
+   has rows up to 255, but the ECU sends the rows from 128 up as the second
+   half of a lower block — row 133 arrives as cells 5–8 of block 6 — and
+   answers "N/A" if they are asked for directly. So those values are planned
+   through the lower block, and a block can contribute up to eight values.
 
 The hint starts with the blocks chosen ("Blocks 1, 10, 11."). When a needed
 value is in no usable block it starts with "Not in any block this ECU

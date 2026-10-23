@@ -171,7 +171,7 @@ def test_every_in_tree_module_declares_itself():
         assert spec.id == mid
         assert spec.module_api in api.SUPPORTED_API
         assert set(spec.platforms) <= set(platforms.PLATFORMS)
-        for hook in ("build", "after_restore", "checksum", "load_kb"):
+        for hook in ("build", "after_restore", "checksum", "load_kb", "faults"):
             if getattr(spec, hook):
                 assert callable(spec.resolve(hook)), (mid, hook)
         if spec.has(api.DEFINITIONS):

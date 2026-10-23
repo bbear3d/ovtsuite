@@ -24,6 +24,22 @@ new tab, and the app the next time it starts, open the same way. Each tab
 shows or hides its own surface. While it is hidden it costs nothing — it is
 neither drawn nor kept up to date, and catches up as soon as it is shown.
 
+### With the dyno chart open too
+
+The surface and the dyno chart (**Dyno** on the edit bar, Ctrl+4) both sit
+above the table, one over the other, which leaves the table little room.
+**View > Table panels** (also **Tools > Options > Editor**) places them
+differently, in every tab at once:
+
+| Layout | Where the panels go |
+|---|---|
+| **Stacked above the table** | One over the other, above the table (the default). |
+| **Side by side above the table** | Next to each other above the table: the table keeps most of its rows. |
+| **Beside the table, on the right** | One over the other, to the right of the table: the table keeps all its rows. |
+
+Each layout remembers where its splitters were left. With only one panel
+open it takes the whole area; with neither, the table takes everything.
+
 The surface follows the table: open another map and the surface shows that
 one (a curve or a single value shows "Not a 2-D map"); an edit — made on the
 surface, in the grid, by a tool or by **Undo** / **Redo** — redraws it at

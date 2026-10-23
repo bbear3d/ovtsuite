@@ -537,6 +537,7 @@ def _folded() -> dict:
 _ENDINGS = ("ern", "ens", "es", "en", "er", "em", "ns", "e", "n", "s")
 
 _WORD_RE = _re.compile(r"([A-Za-zÄÖÜäöüß]+)")
+_UMLAUT_CH = _re.compile("[äöüß]")
 
 
 def _plain(lw: str, words: dict):
@@ -547,6 +548,10 @@ def _plain(lw: str, words: dict):
         k = _folded().get(lw)
         if k is not None:
             en = words.get(k)
+    if en is None and _UMLAUT_CH.search(lw):
+        # the table has it in its ASCII spelling ("oelpumpe"), the text with
+        # the umlaut ("Ölpumpe")
+        en = words.get(_ascii_umlaut(lw))
     return en
 
 
@@ -566,9 +571,19 @@ def _lookup(lw: str):
     return _inflected(lw, words)
 
 
+_PARTICIPLE = ("enden", "ender", "endes", "endem", "ende", "end")
+
+
 def _inflected(lw: str, words: dict, compound: bool = True):
     """``lw`` without a German inflection ending, when that is a known German
-    word ("linearer" -> linear, "Schaltungen" -> Schaltung)."""
+    word ("linearer" -> linear, "Schaltungen" -> Schaltung); a present
+    participle as the -ing form of its verb ("begrenzenden" -> limiting)."""
+    for end in _PARTICIPLE:
+        if lw.endswith(end) and len(lw) - len(end) >= 4:
+            v = _plain(lw[:-len(end)] + "en", words)
+            if v:
+                return _gerund(v)
+            break
     for end in _ENDINGS:
         base = lw[:-len(end)]
         if len(base) < 4 or not lw.endswith(end):
@@ -706,6 +721,11 @@ def translate_german(text: str) -> str:
         if tok in _CAPS and german:
             parts.append(_CAPS[tok])            # "EIN" / "AUS" switch states
             continue
+        if tok in _VERBS and german:
+            # written small, "ist" / "soll" are verbs ("ist negativ", "soll
+            # erreicht werden"); "Ist-" and "Soll-" are actual and setpoint
+            parts.append(_VERBS[tok])
+            continue
         en = _lookup(lw)
         if not en and lw in _DE_SHORT:
             en = _DE_FUNC.get(lw) or en
@@ -748,6 +768,8 @@ def translate_german(text: str) -> str:
 
 #: switch states written in capitals ("Anfangswert EIN")
 _CAPS = {"EIN": "ON", "AUS": "OFF"}
+#: verbs whose capitalised form is a Bosch prefix ("Ist-Drehzahl")
+_VERBS = {"ist": "is", "sind": "are", "soll": "should", "sollen": "should"}
 
 #: marks the full stop of an abbreviation that was written out in full
 _DOT = "\x00"
@@ -780,53 +802,123 @@ _PREFIX = {
 }
 
 
+#: parts of fewer than four letters that are words of their own inside a
+#: compound ("Öl|pegel", "Rad|moment", "Aktivierungs|art")
+_SHORT_PARTS = {"öl": "oil", "oel": "oil", "gas": "throttle", "rad": "wheel",
+                "tür": "door", "tuer": "door", "kat": "catalyst", "hub": "lift",
+                "weg": "travel", "zug": "traction", "art": "type", "not": "emergency"}
+
+
+#: verb stems that begin compounds ("Heizbetrieb" -> heating operation); an
+#: explicit list, since a word that merely takes -en ("höchst", "sonder") is
+#: no verb
+_STEM_PARTS = {
+    "heiz": "heating", "aufheiz": "heat-up", "vorheiz": "preheating",
+    "nachheiz": "post-heating", "kühl": "cooling", "kuehl": "cooling",
+    "mess": "measuring", "spül": "purge", "spuel": "purge", "schalt": "shift",
+    "regel": "control", "prüf": "test", "pruef": "test", "steuer": "control",
+    "lade": "charge", "saug": "intake", "brenn": "combustion", "dosier": "dosing",
+    "schließ": "closing", "schliess": "closing", "lern": "learning", "zähl": "count",
+    "zaehl": "count", "stell": "actuating", "misch": "mixing", "wärm": "heating",
+    "waerm": "heating", "fahr": "driving", "anfahr": "drive-off",
+    "abschalt": "switch-off", "einschalt": "switch-on", "umschalt": "switchover",
+    "zuschalt": "engagement", "abstell": "shutdown", "rückstell": "reset",
+    "rueckstell": "reset", "einspritz": "injection", "entprell": "debounce",
+    "verstell": "adjustment", "halte": "holding", "warte": "waiting",
+    "lösch": "delete", "loesch": "delete", "schreib": "write", "lese": "read",
+    "such": "search", "sperr": "inhibit",
+}
+
+
+def _gerund(en: str) -> str:
+    """The -ing form of an English verb's first word ("heat" -> heating,
+    "measure" -> measuring, "switch off" -> switching off)."""
+    head, _sp, rest = en.partition(" ")
+    if not head.isalpha() or head.endswith("ing"):
+        return en
+    if head.endswith("e") and not head.endswith(("ee", "ye", "oe")):
+        head = head[:-1]
+    return head + "ing" + (" " + rest if rest else "")
+
+
 def _compound(w: str, words: dict, depth: int = 0):
     """A German compound the word table has no entry for, as the words it
-    is made of: "fehlerklassentabelle" -> "fault class table" (a linking
-    s / n / en / es between the parts is allowed; the parts may be written
-    with ue/ae/oe/ss, and the last may be inflected or an English word the
-    German borrowed: "Fehlercode" -> "fault code"). None when it does not
-    split into known words."""
-    if len(w) < 7 or depth > 2:
+    is made of: "fehlerklassentabelle" -> "fault class table",
+    "startzuendwinkelrampe" -> "start ignition angle ramp". Every way of
+    cutting the word into table words is tried and the one with the fewest
+    parts wins (then the longest first part). A linking s / n / en / es may
+    follow any part but the last; the parts may be written with ue/ae/oe/ss;
+    the first may be a prefix ("Istgang" -> actual gear) or an English word
+    the German borrowed ("Signalnummer"), the last an English word
+    ("Fehlercode" -> fault code) or an inflected form ("...rampen"). At
+    least one part must be plainly German. None when nothing fits.
+    (``depth`` is kept for callers; the search is not recursive.)"""
+    n = len(w)
+    if n < 7:
         return None
-    for i in range(len(w) - 4, 2, -1):
-        left = w[:i]
-        english_left = False
-        if left in _DE_FUNC or left in _PREFIX:
-            en_l = _PREFIX.get(left)     # "Istgang" -> actual gear
-        else:
-            en_l = _plain(left, words)
-            if en_l == "" and len(left) >= 4 and depth == 0:
-                en_l, english_left = left, True   # "Signalnummer"
-        if not en_l:
+    links = ("", "s", "n", "en", "es")
+    shared = _shared()
+
+    def piece(a: int, b: int, first: bool, last: bool):
+        """(english, german?) for w[a:b] as one part, or None."""
+        p = w[a:b]
+        if first and (p in _DE_FUNC or p in _PREFIX):
+            en = _PREFIX.get(p)
+            return (en, True) if en else None
+        if p in _DE_FUNC:
+            return None              # "allgemein" is not "allgem" + "ein"
+        if p in _SHORT_PARTS:
+            return _SHORT_PARTS[p], True
+        if len(p) < 4:
+            return None              # three letters: "war", "der" -- too many false cuts
+        en = _plain(p, words)
+        if en is None and not last and p in _STEM_PARTS:
+            return _STEM_PARTS[p], True  # "Heiz|betrieb", "Kühl|stufe"
+        if en:
+            return en, en.lower() != p and p not in shared
+        if en == "" and len(p) >= 4 and (first or last):
+            return p, False          # an English word the German borrowed
+        if last and len(p) >= 6:
+            en = _inflected(p, words, compound=False)    # "seite" is not "seit" + e
+            if en:
+                return en, True
+        return None
+
+    # best[i]: the best way to cut w[:i] -- (parts, -len(first), [(en, de?)])
+    best = {0: (0, 0, [])}
+    for i in range(n):
+        if i not in best:
             continue
-        for link in ("", "s", "n", "en", "es"):
-            right = w[i:]
-            if link:
-                if not right.startswith(link):
-                    continue
-                right = right[len(link):]
-            if len(right) < 4 or right in _DE_FUNC:
-                continue        # "allgemein" is not "allgem" + "ein"
-            en_r = _plain(right, words)
-            if english_left:
-                # an English word joined to a German one: only a plain
-                # German head makes the whole word German
-                if en_r and en_r.lower() != right and right not in _shared():
-                    return "%s %s" % (en_l, en_r)
+        parts, firstlen, seq = best[i]
+        if parts >= 5:
+            continue
+        for j in range(i + 2, n + 1):
+            last = j == n
+            got = piece(i, j, i == 0, last)
+            if got is None:
                 continue
-            if en_r:
-                return "%s %s" % (en_l, en_r)
-            if en_r == "" and not link and len(left) >= 4:
-                return "%s %s" % (en_l, right)      # borrowed English head
-            sub = _compound(right, words, depth + 1)
-            if sub:
-                return "%s %s" % (en_l, sub)
-            if len(right) >= 5:
-                en_r = _inflected(right, words, compound=False)
-                if en_r:
-                    return "%s %s" % (en_l, en_r)
-    return None
+            if last:
+                ends = [(j, "")]
+            else:
+                ends = [(j + len(lk), lk) for lk in links
+                        if w.startswith(lk, j) and j + len(lk) < n]
+            for k, lk in ends:
+                if got[1] is False and i > 0 and not last:
+                    continue             # English only at either end
+                if last and got[1] is False and i > 0 and (
+                        len(w) - i == n or seq and seq[-1][2]):
+                    continue             # borrowed head needs no link before it
+                cand = (parts + 1, -j if i == 0 else firstlen, seq + [(got[0], got[1], lk)])
+                old = best.get(k)
+                if old is None or cand[:2] < old[:2]:
+                    best[k] = cand
+    got = best.get(n)
+    if not got or got[0] < 2 or not any(de for _en, de, _lk in got[2]):
+        return None
+    seq = got[2]
+    if seq[0][1] is False and not any(de for _en, de, _lk in seq[1:]):
+        return None
+    return " ".join(en for en, _de, _lk in seq if en)
 
 
 def _old_translate(text: str) -> str:

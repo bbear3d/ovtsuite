@@ -58,6 +58,7 @@ FLASHER_APP_ID = EXE_NAME + ".Flasher"
 SNIFFER_APP_ID = EXE_NAME + ".Sniffer"
 LOGGER_APP_ID = EXE_NAME + ".Logger"
 SIMULATOR_APP_ID = EXE_NAME + ".Simulator"
+CONVERTER_APP_ID = EXE_NAME + ".Converter"
 
 #: The standalone tools' own executables and display names. The Windows build
 #: puts one small launcher exe per tool beside the main one (packaging/launcher/
@@ -66,9 +67,9 @@ SIMULATOR_APP_ID = EXE_NAME + ".Simulator"
 #: at, and what the tool-only installers (packaging/tool_installer.iss) ship
 #: with OVTSuite.exe.
 TOOL_EXES = {"flasher": "OVTFlasher", "sniffer": "OVTSniffer", "logger": "OVTLogger",
-             "simulator": "OVTSimulator"}
+             "simulator": "OVTSimulator", "converter": "OVTConverter"}
 TOOL_NAMES = {"flasher": "OVT Flasher", "sniffer": "OVT Sniffer", "logger": "OVT Logger",
-              "simulator": "OVT Simulator"}
+              "simulator": "OVT Simulator", "converter": "OVT Converter"}
 
 #: Console launcher for the MCP server (``ovtsuite mcp``) in the Windows
 #: bundle: the main exe is windowed, so an MCP client starts this console
@@ -126,7 +127,7 @@ LEGACY_CONFIG_DIRS = tuple(
 LEGACY_QSETTINGS = tuple(
     (org, app) for app, _pkg, _exe, org in LEGACY_RELEASES)
 
-__version__ = "0.4.10"
+__version__ = "0.5.0"
 
 
 def title(subject: str = "") -> str:

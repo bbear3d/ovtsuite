@@ -93,19 +93,35 @@ the zip is the one `manifest_sha256` names and lists `to_manifest`.
 A delta is made against the previous release's manifest -- only the manifest:
 the payload comes from the new build. A signed build keeps its manifest in
 `Reference\AppReleases\<version>\` (beside `Reference\ModuleReleases`; the
-folder is not in git, back it up with the signing key). A later build of the
-same version replaces it, so the archive holds the build that was released --
-**publish the last build of a version**. If the archive and the published
-build ever disagree, users' pre-flight fails and they get the full installer:
-safe, just bigger.
+folder is not in git, back it up with the signing key) -- the version's last
+build -- and in `<version>\builds\<UTC time>\`, every build.
+
+**Only a published version is a delta's base.** A version number can be
+raised and built without being released (0.4.10 and 0.4.11 were); nobody
+runs those, so a delta from one is useless. `<version>\released\` holds
+the manifest as published, with `release.json` (when, from which build, how
+it is known). `tools/app_release.py sync` -- run by every `auto` -- reads the
+releases on GitHub (`/releases`, drafts left out) and marks each archived
+version published there: from the **last build archived before the release's
+`OVTSuite-Base-<v>-setup.exe` was uploaded**. A re-release of the same
+number (the installer uploaded again after a quick fix) changes that upload
+time, so the next sync marks it again from the build before the new upload;
+a build made after the upload never replaces the published manifest. A
+published version with no build from before its upload is reported, not
+guessed: `app_release.py mark-released <v> --build <time>` marks it by hand
+(also for a release made with no network). `app_release.py releases` lists
+the archive. If the archive and the published build ever disagree anyway,
+users' pre-flight fails and they get the full installer: safe, just bigger.
 
 Every signed one-folder build runs `tools/app_release.py auto` after the
 installers -- nothing to pass, no version to name:
 
+0. The published releases are synced (above; `--offline` skips it, and a
+   failure only warns: the marks already in the archive stand).
 1. The delta packages an earlier build left in `dist\` are removed (this
    build makes its own; a stale one would otherwise be checksummed and
    uploaded).
-2. The previous release is chosen: the **highest archived version strictly
+2. The previous release is chosen: the **highest released version strictly
    older than this build**, compared as the app compares versions
    (`updates.compare_versions`: numeric, so 0.4.10 follows 0.4.9). Never this
    version itself -- its folder is in the archive from its own last build --
@@ -113,13 +129,13 @@ installers -- nothing to pass, no version to name:
    releases (`delta_hops`), so a delta from a prerelease would strand everyone
    on the release before it. A prerelease build is made against the last
    release before it, too.
-3. `OVTSuite-Update-<previous>-to-<version>.zip` is built and signed.
-4. This build's manifest is archived as `<version>\`, replacing the one an
-   earlier build of the same version left.
+   Versions built since then but never released are named in the log.
+3. `OVTSuite-Update-<previous>-to-<version>.zip` is built and signed, from
+   `<previous>\released\`.
+4. This build's manifest is archived as `<version>\` and under `builds\`.
 
 So **rebuilding a version** (files changed, version not raised yet) rebuilds
-its delta from the same previous release against the new build and replaces
-its archived manifest -- the archive always describes the last build.
+its delta from the same previous release against the new build.
 **The first release** with an archived manifest (0.4.8) has nothing older to
 start from: the build says so, makes no delta and archives it. Deltas start
 with 0.4.9 (from 0.4.8).

@@ -305,7 +305,7 @@ PACKAGING_INPUTS = ("packaging/ovtsuite.spec", "packaging/entry.py",
                     "packaging/version_info.txt", "packaging/ovtsuite.ico",
                     "packaging/ovtsuite_flasher.ico", "packaging/ovtsuite_sniffer.ico",
                     "packaging/ovtsuite_logger.ico", "packaging/ovtsuite_simulator.ico",
-                    "tools/build_modules.py")
+                    "packaging/ovtsuite_converter.ico", "tools/build_modules.py")
 
 
 def cmd_freeze_key(args):

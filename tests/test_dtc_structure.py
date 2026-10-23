@@ -359,3 +359,13 @@ def test_ecu_codes_are_found_and_highlighted(lq, monkeypatch):
     assert not d.dtc.find_code(31420)
     assert "31420" in d.ecu_note.text()
     d.close()
+
+
+def test_search_finds_a_code_by_the_other_vag_numbering(lq):
+    """LQ stores the SAE word (0x3000 for P3000); a scan tool on an older
+    VW ECU shows the same fault as 19456. Either number finds it."""
+    from ovtsuite.dtc import code_forms
+    assert "19456" in code_forms("P3000") and "12288" in code_forms("P3000")
+    assert "16485" in code_forms("P0101") and "00257" in code_forms("P0101")
+    hits = [fp.name for fp in lq.paths.values() if "19456" in fp.search_text()]
+    assert hits == ["GlwCD_LampCan"]

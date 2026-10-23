@@ -411,6 +411,23 @@ StartupWMClass=$B_EXE
 EOF
 chmod 0644 "$PAY/usr/share/applications/$B_PKG.desktop"
 
+# OVT Converter on its own (definitions and binaries, no project open):
+# files dropped on it, or opened with it, are its sources.
+cat > "$PAY/usr/share/applications/$B_PKG-converter.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=OVT Converter
+GenericName=ECU definition and binary converter
+Comment=Convert XDF, A2L, DAMOS, WinOLS, HEX and S-record files
+Exec=/opt/$B_PKG/$B_EXE --converter %F
+Icon=$B_PKG-converter
+Terminal=false
+Categories=Development;Utility;
+Keywords=XDF;A2L;DAMOS;WinOLS;KP;HEX;S-record;convert;
+StartupWMClass=$B_EXE
+EOF
+chmod 0644 "$PAY/usr/share/applications/$B_PKG-converter.desktop"
+
 # The .ovt project type: by extension, and by its content -- a ZIP whose first,
 # stored entry is "mimetype" holding application/x-ovt-project (byte 38 on;
 # docs/OVT_CONTAINER.md section 2.1), so a renamed project is still known.
@@ -433,7 +450,9 @@ chmod 0644 "$PAY/usr/share/mime/packages/$B_PKG.xml"
 
 ICO="$ROOT/packaging/$B_PKG.ico"
 if [ -f "$ICO" ]; then
-    "$VPY" - "$ICO" "$PAY/usr/share/icons/hicolor" "$B_PKG" <<'EOF' || warn "icon conversion failed - packaging without an icon"
+  for pair in "$ICO:$B_PKG" "$ROOT/packaging/${B_PKG}_converter.ico:$B_PKG-converter"; do
+    [ -f "${pair%%:*}" ] || continue
+    "$VPY" - "${pair%%:*}" "$PAY/usr/share/icons/hicolor" "${pair##*:}" <<'EOF' || warn "icon conversion failed - packaging without an icon"
 import os, sys
 from PIL import Image
 ico, dest, name = sys.argv[1:]
@@ -444,6 +463,7 @@ for size in sorted(im.info.get("sizes", {im.size})):
     im.ico.getimage(size).save(os.path.join(d, name + ".png"))
     print("   icon %dx%d" % size)
 EOF
+  done
     [ -d "$PAY/usr/share/icons" ] && find "$PAY/usr/share/icons" -type d -exec chmod 0755 {} + \
         && find "$PAY/usr/share/icons" -type f -exec chmod 0644 {} +
 else
@@ -756,10 +776,13 @@ cp -a "$PAY/." %{buildroot}/
 /opt/$B_PKG
 /usr/bin/$B_PKG
 /usr/share/applications/$B_PKG.desktop
+/usr/share/applications/$B_PKG-converter.desktop
 /usr/share/mime/packages/$B_PKG.xml
 /usr/lib/udev/rules.d/70-$B_PKG.rules
 %doc /usr/share/doc/$B_PKG
 $( [ -d "$PAY/usr/share/icons" ] && echo "/usr/share/icons/hicolor/*/apps/$B_PKG.png" )
+$( ls "$PAY"/usr/share/icons/hicolor/*/apps/$B_PKG-converter.png >/dev/null 2>&1 \
+   && echo "/usr/share/icons/hicolor/*/apps/$B_PKG-converter.png" )
 $( ls "$PAY"/usr/share/icons/hicolor/*/mimetypes/application-x-ovt-project.png >/dev/null 2>&1 \
    && echo "/usr/share/icons/hicolor/*/mimetypes/application-x-ovt-project.png" )
 

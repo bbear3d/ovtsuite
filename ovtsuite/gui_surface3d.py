@@ -955,7 +955,8 @@ def set_shown(ws, on: bool, remember: bool = True, focus: bool = True):
 
 
 def _save_sizes(ws):
-    if not is_shown(ws):
+    from . import gui_panelayout as _gpl    # (another layout keeps its own)
+    if not is_shown(ws) or not _gpl.is_stacked(ws):
         return
     sizes = ws.surface_split.sizes()
     if len(sizes) == 2 and all(x > 0 for x in sizes):
@@ -977,6 +978,9 @@ def saved_sizes() -> Optional[List[int]]:
 
 
 def _restore_sizes(ws):
+    from . import gui_panelayout as _gpl
+    if not _gpl.is_stacked(ws):
+        return
     split = ws.surface_split
     sizes = saved_sizes()
     if sizes is None:

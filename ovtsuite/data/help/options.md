@@ -28,6 +28,7 @@ and sniffer use them too (the theme, for example).
 | **Recent files listed** | How many projects **File > Open Recent** keeps. |
 | **Closed projects kept** | How many projects **File > Restore project from history** keeps. |
 | **Check for updates at start-up** | Look for a newer version a few seconds after the app starts, at most once a day. See [Checking for updates](updates.md). |
+| **Right-click menu** | Adds or removes **Convert with OVT Converter** in the right-click menu of definitions, value files and binaries (Windows Explorer; on Linux the file manager's menu), for your user only. The installer offers it too; this is where to change your mind later. See [Converter](converter.md). |
 
 ## Projects and saving
 
@@ -43,6 +44,7 @@ and sniffer use them too (the theme, for example).
 | Setting | What it does |
 |---|---|
 | **Versions listed in Compare with saved version** | How many saves the menu lists before **Version history...**. |
+| **3D surface and dyno chart** | Where the two panels go around the table: stacked above it, side by side above it, or beside it on the right. Also in **View > Table panels**. See [3D surface](editor/3d-surface.md). |
 
 ## Appearance
 

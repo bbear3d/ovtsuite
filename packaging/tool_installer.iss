@@ -4,9 +4,9 @@
 ; License, v. 2.0. If a copy of the MPL was not distributed with this
 ; file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ; Inno Setup script for the standalone tools WITHOUT the main OVT-Suite app:
-; one tool (flasher, sniffer, logger), or all three together (tools).
+; one tool (flasher, sniffer, logger, converter), or all of them together (tools).
 ;
-; build.ps1 -Installers flasher,sniffer,logger,tools passes the tool and the
+; build.ps1 -Installers flasher,sniffer,logger,converter,tools passes the tool and the
 ; usual version / folder / output defines:
 ;
 ;   ISCC.exe /DTool=flasher /DAppVersion=0.3.0 /DSourceDir=..\dist\OVTSuite ^
@@ -49,6 +49,7 @@
 #define WithFlasher (Tool == "flasher" || Tool == "tools")
 #define WithSniffer (Tool == "sniffer" || Tool == "tools")
 #define WithLogger  (Tool == "logger"  || Tool == "tools")
+#define WithConverter (Tool == "converter" || Tool == "tools")
 
 ; Per product: name, a stable AppId (never change one: it is what makes the
 ; next version an upgrade), the exe it is "about", and the setup's own icon.
@@ -67,13 +68,18 @@
   #define ProductGuid "F1DAC2AA-B8F8-4E30-97C3-23FD67A925C8"
   #define ProductExe  LoggerExe
   #define ProductIcon "ovtsuite_logger.ico"
+#elif Tool == "converter"
+  #define ProductName ConverterName
+  #define ProductGuid "6B1E3C52-9F4D-4A71-8E2B-3D5C7A90F1E4"
+  #define ProductExe  ConverterExe
+  #define ProductIcon "ovtsuite_converter.ico"
 #elif Tool == "tools"
   #define ProductName "OVT Tools"
   #define ProductGuid "F8C48995-BA97-43C5-AF25-531EE44B3A17"
   #define ProductExe  FlasherExe
   #define ProductIcon "ovtsuite.ico"
 #else
-  #error Tool must be flasher, sniffer, logger or tools
+  #error Tool must be flasher, sniffer, logger, converter or tools
 #endif
 
 #ifndef OutputName
@@ -100,6 +106,9 @@
 #endif
 #if !WithLogger
   #define Excl Excl + ",\" + LoggerExe
+#endif
+#if !WithConverter
+  #define Excl Excl + ",\" + ConverterExe
 #endif
 ; (\modules above: the build's modules folder holds every FULL module; this
 ; product takes only their checksum variants, as components -- ModulesInclude)
@@ -152,6 +161,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create &desktop shortcuts"; \
     GroupDescription: "Additional shortcuts:"; Flags: unchecked
+#if WithConverter
+Name: "shellmenu"; \
+    Description: "Add ""Convert with {#ConverterName}"" to the right-click menu"; \
+    GroupDescription: "Right-click menu:"; Flags: unchecked
+#endif
 
 [Files]
 Source: "{#SourceDir}\*"; Excludes: "{#Excl}"; DestDir: "{app}"; \
@@ -182,6 +196,27 @@ Name: "{#ShortcutDir}\{#LoggerName}"; Filename: "{app}\{#LoggerExe}"; \
     AppUserModelID: "{#LoggerAppId}"
 Name: "{autodesktop}\{#LoggerName}"; Filename: "{app}\{#LoggerExe}"; \
     AppUserModelID: "{#LoggerAppId}"; Tasks: desktopicon
+#endif
+#if WithConverter
+Name: "{#ShortcutDir}\{#ConverterName}"; Filename: "{app}\{#ConverterExe}"; \
+    AppUserModelID: "{#ConverterAppId}"
+Name: "{autodesktop}\{#ConverterName}"; Filename: "{app}\{#ConverterExe}"; \
+    AppUserModelID: "{#ConverterAppId}"; Tasks: desktopicon
+#endif
+
+#if WithConverter
+[Run]
+; The right-click menu (task above): the same code as the converter's own
+; More menu and "ovtsuite convert --shell-menu", for the user who ran setup.
+; No file association -- a menu entry only.
+Filename: "{app}\{#MainExe}"; Parameters: "convert --shell-menu install"; \
+    Flags: runhidden waituntilterminated runasoriginaluser; Tasks: shellmenu
+
+[UninstallRun]
+; Always: the menu may have been added from the converter window too, and must
+; not be left pointing at a removed program.
+Filename: "{app}\{#MainExe}"; Parameters: "convert --shell-menu remove"; \
+    Flags: runhidden waituntilterminated; RunOnceId: "OVTShellMenu"
 #endif
 
 #if Tool != "tools"

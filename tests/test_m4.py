@@ -248,8 +248,9 @@ def test_measuring_blocks_model_and_edit():
     mb = MeasuringBlocks(s)
     assert mb.available
     groups = mb.groups()
-    assert len(groups) == 255
+    assert len(groups) == 127             # rows 128+ are cells 5-8 of 1..127
     assert groups[0].number == 1          # 1-based like a scan tool
+    assert groups[0].slots == 8
     assert mb.related                      # definition tables located
     g = next(x for x in groups if x.populated)
     before = g.channels()

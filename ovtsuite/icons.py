@@ -78,6 +78,7 @@ FOR_ACTION = {
     "tools/dyno-chart": "chart-spline",
     "tools/bus-sniffer-j2534": "radio",
     "tools/ecu-simulator-bench": "flask-conical",
+    "tools/converter-definitions-values-and-binaries": "file-symlink",
     "tools/ai/assistant": "sparkles",
     "tools/modules": "puzzle",
     "tools/options": "settings",

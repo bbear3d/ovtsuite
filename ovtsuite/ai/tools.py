@@ -181,6 +181,11 @@ def default_registry(include_modules: bool = True) -> Registry:
     from . import core_tools
     reg = Registry()
     core_tools.register(reg)
+    try:
+        from ..convert import ai_tools as _convert_tools
+        _convert_tools.register(reg)
+    except Exception:                   # noqa: BLE001 - never blocks the rest
+        pass
     if include_modules:
         for t in module_tools():
             if reg.get(t.name) is None:

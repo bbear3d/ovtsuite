@@ -506,7 +506,8 @@ def test_tool_installers_ship_the_main_exe_but_not_the_app():
     assert ",\\app-manifest.json" in text
     assert 'Excludes: "{#Excl}"' in text
     assert _iss_defines(TOOL_ISS)["MainExe"] == branding.EXE_NAME + ".exe"
-    # four products, four distinct, fixed AppIds -- and none is the main app's
+    # five products (flasher, sniffer, logger, converter, all of them), five
+    # distinct, fixed AppIds -- and none is the main app's
     guids = re.findall(r'#define ProductGuid "([0-9A-F-]{36})"', text)
     main_id = re.search(r"AppId=\{\{([0-9A-F-]{36})\}", open(ISS, encoding="utf-8").read()).group(1)
-    assert len(guids) == 4 and len(set(guids)) == 4 and main_id not in guids
+    assert len(guids) == 5 and len(set(guids)) == 5 and main_id not in guids

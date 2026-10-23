@@ -135,13 +135,33 @@ def zf6hp_vehicle(ctx):
     return ctx.keep(new[-1])
 
 
-@shot("zf6hp-dtc", ZF6, size=(900, 560),
-      what="The ZF fault-code editor")
+@shot("zf6hp-dtc", ZF6, size=(940, 600),
+      what="The ZF 6HP fault-code window")
 def zf6hp_dtc(ctx):
-    from ovtsuite import gui
     w = ctx.main_window(ctx.ref("zf6hp28_tdi"))
-    dlg = gui.Zf6hpDtcDialog(w.current.primary, w)
-    return ctx.keep(dlg)
+    ws = w.current
+    ws.open_dtc()
+    dlg = ws.tool("dtc")
+    if dlg is None:
+        raise Skip("the fault-code window did not open")
+    dlg.filter.setText("temperature")
+    dlg.table.selectRow(0)            # the panel: VAG code, class byte, entry
+    ctx.settle(150)
+    return dlg
+
+
+@shot("zf8hp-dtc", ZF8, size=(940, 600),
+      what="The ZF 8HP fault-code window")
+def zf8hp_dtc(ctx):
+    w = ctx.main_window(ctx.ref("zf8hp"))
+    ws = w.current
+    ws.open_dtc()
+    dlg = ws.tool("dtc")
+    if dlg is None:
+        raise Skip("the fault-code window did not open")
+    dlg.table.selectRow(0)            # the panel: every sub-type's codes
+    ctx.settle(150)
+    return dlg
 
 
 @shot("zf6hp-fileinfo", ZF6, size=(900, 400),

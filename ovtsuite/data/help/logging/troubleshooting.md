@@ -24,9 +24,12 @@ order: 80
 |---|---|
 | Cells read "Group N / Cell M" | No file with a measuring-block map for this controller is open. Open the car's own file in a tab (OVT Logger: **Open project or binary...**). The hint under the cell table says which file is naming the cells. |
 | The names look wrong | The open file is not the car's own software version, or — with two tabs open in the main window — check the hint names the file you expect. |
-| A preset hint starts "Not in any block this ECU serves:" | The values listed are in no block this calibration offers (or only in blocks 100 and up, which presets leave out). The rest of the preset still logs. |
+| A preset hint starts "Not in any block this ECU serves:" | The values listed are in no block this calibration offers. The rest of the preset still logs. |
+| An EDC16 block shows more than four values | Normal: the ECU sends a block's own row as cells 1–4 and the row 127 above it as cells 5–8, and the logger names all of them. A cell shown as "(empty)" is an unused slot in the middle of a block. |
+| An EDC16 block from 128 up answers "N/A" | Those rows are not blocks of their own — they are cells 5–8 of the block 127 below (e.g. 133 is block 6). Tick them there. |
 | A preset hint starts "No cells:" | Presets are worked out from the car's own file: open it and pick the preset again. |
-| **Preset:** is greyed out (EDC15, ZF6HP-UDS, Aisin TRx) | There are no presets for that controller; the hint under it says why. Tick cells by hand. |
+| **Preset:** is greyed out (ZF6HP-UDS, Aisin TRx, or an EDC15 whose blocks are not named yet) | There are no presets for that controller; the hint under it says why. Tick cells by hand. |
+| The cell-naming line says the ECU reported a different part number than the open file | The open file names the cells, but it is not this car's software, so some names may be wrong. Open the car's own file, or close the file to name them from the catalogue. |
 
 ## While logging
 

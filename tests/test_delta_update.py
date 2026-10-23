@@ -617,6 +617,9 @@ def test_app_release_tool(tmp_path, keypair, monkeypatch, capsys):
     assert app_release.main(["archive", a, "--to", arch]) == 0
     assert os.path.isfile(os.path.join(arch, "0.5.0", du.MANIFEST_NAME))
     assert os.path.isfile(os.path.join(arch, "0.5.0", du.MANIFEST_SIG))
+    # built is not released: only a published version is a delta's base
+    assert app_release.previous_version(arch, "0.5.1") == ""
+    assert app_release.main(["mark-released", "0.5.0", "--archive", arch]) == 0
     assert app_release.main(["manifest", b, "--version", "0.5.1"]) == 0
     out = str(tmp_path / "dist")
     # no --from: the newest archived release older than the build
@@ -641,6 +644,7 @@ def test_app_release_tool(tmp_path, keypair, monkeypatch, capsys):
     os.makedirs(os.path.join(arch, "0.5.10"))
     with open(os.path.join(arch, "0.5.10", du.MANIFEST_NAME), "w") as fh:
         fh.write("{}")
+    app_release.mark_released(arch, "0.5.10")
     assert app_release.previous_version(arch, "0.5.11") == "0.5.10"
     assert app_release.previous_version(arch, "0.5.9") == "0.5.0"
 

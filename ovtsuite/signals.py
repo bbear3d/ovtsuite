@@ -6,9 +6,10 @@
 """Signal-ID catalog for the measuring-block editor.
 
 The measuring-block map (UACC_RSigBlkGrp_MAP) stores each display slot as an
-internal *signal id*. The ECU turns that id into a live value through a
-signal-descriptor table in firmware; the id-to-meaning mapping is NOT in the
-calibration data. This module keeps a *pluggable* catalog of what those ids
+ESB index -- an entry of UACC_ESBSigNr_C, whose value is the firmware's
+internal signal number (see :mod:`ovtsuite.msblock`). The ECU turns that
+number into a live value through a signal-descriptor table in firmware; the
+number-to-meaning mapping is NOT in the calibration data. This module keeps a *pluggable* catalog of what those ids
 mean, from whichever source we can get:
 
   * an original A2L / DAMOS MEASUREMENT section (names + addresses), or
@@ -23,9 +24,9 @@ found wherever it is installed (:mod:`ovtsuite.datafiles`) -- as
 just means no names yet. Whatever the source, the editor gains labels the
 moment such a file is dropped in -- no code change.
 
-Even with no catalog, ``observed_ids`` gathers every id actually used across a
-binary's signal-block tables, so the dropdown always offers the known-valid
-set (with usage counts) rather than a blind number field.
+Even with no catalog, ``observed_ids`` offers every ESB index the binary
+defines (with how often the group map uses it), so the dropdown always lists
+the valid set rather than a blind number field.
 """
 
 import json
@@ -72,6 +73,8 @@ class SignalInfo:
             intnum = self._intnum()
             if intnum is not None and intnum >= 8000:
                 return "%d - CAN bus signal (internal %d)" % (self.id, intnum)
+            if intnum is not None:
+                return "%d - unnamed (internal %d)" % (self.id, intnum)
             return "%d" % self.id
         u = " [%s]" % self.unit if self.unit else ""
         if self.human:
@@ -93,6 +96,7 @@ class SignalCatalog:
     def __init__(self, family: Optional[str] = None, session=None):
         self.family = family
         self._map: Dict[int, SignalInfo] = {}
+        self._intnums: Dict[int, int] = {}
         #: the family whose catalog supplied the names, when it is not the
         #: session's own (a sub-family sharing its parent's signal numbering)
         self.source_family: Optional[str] = None
@@ -110,6 +114,8 @@ class SignalCatalog:
                 parent = _parent_catalog_family(family, session)
                 if parent is not None and self._load(parent):
                     self.source_family = parent
+        if session is not None:
+            self._read_intnums(session)
 
     def _load(self, family: str, session=None) -> bool:
         path = datafiles.path("signals_%s.json" % family)
@@ -167,7 +173,27 @@ class SignalCatalog:
             self._map = remapped
 
     def info(self, sid: int) -> SignalInfo:
-        return self._map.get(sid, SignalInfo(sid))
+        got = self._map.get(sid)
+        if got is not None:
+            return got
+        intnum = self._intnums.get(sid)
+        if intnum:
+            return SignalInfo(sid, note="intnum=%d unresolved" % intnum)
+        return SignalInfo(sid)
+
+    def _read_intnums(self, session) -> None:
+        """ESB index -> internal signal number from the session's own
+        UACC_ESBSigNr_C, so an unnamed id still says which signal it is."""
+        ent = next((e for e in getattr(session, "entities", ())
+                    if e.name == ESB_SIGNR_TABLE), None)
+        if ent is None:
+            return
+        try:
+            nums = [int(round(ent.cell(r, c)))
+                    for r in range(ent.rows) for c in range(ent.cols)]
+        except Exception:
+            return
+        self._intnums = {i: n for i, n in enumerate(nums) if n}
 
     def label(self, sid: int) -> str:
         if sid in EMPTY_IDS:
@@ -248,18 +274,23 @@ def _parent_catalog_family(family: str, session) -> Optional[str]:
 
 
 def observed_ids(session) -> Dict[int, int]:
-    """Every signal id used across a session's signal-block tables -> count."""
+    """Every id a measuring-block cell can usefully hold -> how many group
+    slots use it now (0 = defined but unused).
+
+    EDC16: every ESB index with a signal behind it, plus whatever the group
+    map holds. The related tables (test toggle, basic settings, short trip)
+    are no longer mixed in: UACC_ShtrpApplSigBlk_MAP, for one, is not in the
+    ESB namespace at all (it holds values like 32767), and they offered ids
+    the group map cannot use."""
     if getattr(session, "is_edc15", False):
         from .edc15.msblock15 import observed_ids as _o15
         return _o15(session)
-    by = {e.name: e for e in session.entities}
-    counts: Dict[int, int] = {}
-    for name in SIGNAL_TABLES:
-        e = by.get(name)
-        if e is None or e.kind not in ("map", "curve"):
-            continue
-        for r in range(e.rows):
-            for c in range(e.cols):
-                sid = int(round(e.cell(r, c)))
-                counts[sid] = counts.get(sid, 0) + 1
+    from .msblock import MeasuringBlocks
+    mb = MeasuringBlocks(session)
+    counts: Dict[int, int] = {i: 0 for i in mb.defined_ids()}
+    for g in mb.groups():
+        for sid in g.channels():
+            if sid in EMPTY_IDS:
+                continue
+            counts[sid] = counts.get(sid, 0) + 1
     return counts

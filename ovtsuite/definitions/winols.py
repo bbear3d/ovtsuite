@@ -9,7 +9,8 @@ Both start with the same header -- ``u32 11, "WinOLS File\\0"``, ``u32``
 format version -- and keep their maps as one list of records, written field
 after field with no padding. The record layout was reconstructed from
 projects of format versions 114, 117, 250, 292, 397, 479, 503 and 597 (OLS 4 ... 5.x);
-every record of every sample parses in sequence and the list ends exactly
+(and 303, 373 - 375 and 440 from a larger corpus); every record of every
+sample parses in sequence and the list ends exactly
 where the next section starts, so nothing here searches or guesses: a record
 is read field by field, and a list that does not parse to its declared count
 is reported, not patched over.
@@ -36,7 +37,7 @@ translations, from format 397)::
              8 texts), u32 address, u32 data organisation, u32 size,
              u32 number base, 2 / 14 bytes, i32 precision, u8 signed,
              u32 n + n bytes of values, i32, i32,
-             [str id, u32 n + n x (str, 12 bytes) texts]   (format >= 397)
+             [str id, u32 n + n x mlstr point texts]        (format >= 373)
              [4 bytes]                                       (format >= 479)
 
 Values are ``raw * factor + offset``; data organisation 1 = 8 bit,
@@ -107,7 +108,20 @@ PROFILES = (
     _Profile("597", False, True, True, 117, 32, 14, True, 4, 64, True, 25),
     _Profile("503", False, True, True, 117, 32, 14, True, 4, 60, True, 25),
     _Profile("479", False, True, True, 117, 32, 14, True, 4, 48, True, 25),
+    # 440: the 479 layout (no NULs, 4 bytes after each axis) with the
+    # 36-byte record tail of 397. 35 projects of it parse to their count and
+    # end exactly at the folder section.
+    _Profile("440", False, True, True, 117, 32, 14, True, 4, 36, True, 25),
     _Profile("397", True, True, True, 117, 32, 14, True, 0, 36, False, 25),
+    # 373 - 375: the 397 layout with a 12-byte record tail (BMW EDC17C41 /
+    # MED17.2.3, EDC17CP46, Delco E39 projects: each parses to its count and
+    # ends at the folder section).
+    _Profile("373", True, True, True, 117, 32, 14, True, 0, 12, True, 25),
+    # 303: the 292 layout with the 117-byte block before the counts (18
+    # projects, from 27 to 47,596 records). An axis carries no id or texts:
+    # the alternative that reads one 12 bytes later breaks on projects whose
+    # axes are stored, which this reads with sane precisions and signs.
+    _Profile("303", True, True, False, 117, 32, 14, False, 0, -1, False, 15),
     _Profile("292", True, True, False, 61, 32, 14, False, 0, -1, False, 15),
     # Format 250 (OLS 5.0) is a hybrid: records carry NO i32 -1 prefix (like
     # 117) but use the 292-era field sizes (precx 61), with its own ztail 24
@@ -248,8 +262,9 @@ def _axis(r: _R) -> Axis:
         if n > 100000:
             raise ValueError("%d axis texts at 0x%X" % (n, r.p - 4))
         for _ in range(n):
-            texts.append(r.str() or "")
-            r.p += 12
+            # a point text with its translations (as every multilingual
+            # string; with none, the 12 bytes read past it before)
+            texts.append(r.mlstr() or "")
         r.p += P.axextra
     return Axis(label, units, factor, offset, source, addr, org, size, signed,
                 prec, data, texts)
@@ -281,7 +296,11 @@ def _record(r: _R) -> Record:
     y = _axis(r)
     # record tail: counts again, display settings, the 01 01 01 marker
     r.p += 6 + 4 + 4 + 4 + 1 + 1 + 8 + 8 + 4 + 1 + 8 + 8 + 8 + 4 + 8
-    if r.raw(3) != b"\x01\x01\x01":
+    # three on/off display settings (usually 01 01 01; a Simos 18.1 and an
+    # MG1 project carry 01 01 00): anything else means the record was read
+    # out of step
+    flags = r.raw(3)
+    if any(b > 1 for b in flags) or not flags[0]:
         raise ValueError("record tail out of step at 0x%X" % (r.p - 3))
     if P.tailn >= 0:
         r.p += 4 + P.tailn
@@ -503,8 +522,13 @@ def _parse_at(d: bytes, h: Header, p: int) -> WinOlsFile:
 
 # --------------------------------------------------------------- definition
 def _storage(org: int, signed: bool, addr: Optional[int], factor: float,
-             offset: float, units: str) -> Optional[Storage]:
+             offset: float, units: str, size: int = 0) -> Optional[Storage]:
     spec = ORG.get(org)
+    if spec is None and size == 1:
+        # an organisation this reader has no entry for (9: Valeo projects'
+        # on/off parameters), whose record says each element is one byte --
+        # which has no byte order to get wrong
+        spec = (8, "", False)
     if spec is None:
         return None
     bits, endian, flt = spec
@@ -519,7 +543,7 @@ def _axis_def(a: Axis, count: int) -> Optional[AxisDef]:
     name = a.label if a.label not in ("-", "?") else ""
     units = a.units if a.units not in ("-", "?") else ""
     if a.source in (1, 3) and a.addr:
-        st = _storage(a.org, a.signed, a.addr, a.factor, a.offset, units)
+        st = _storage(a.org, a.signed, a.addr, a.factor, a.offset, units, a.size)
         if st is not None:
             # A set "signed" is WinOLS's own; an unset one is not proof of
             # unsigned -- projects built from a DAMOS leave it unset on
@@ -529,7 +553,7 @@ def _axis_def(a: Axis, count: int) -> Optional[AxisDef]:
             return AxisDef(count, values=st, name=name,
                            labels=a.texts[:count] if any(a.texts) else None)
     if a.source in (4, 8) and a.data:
-        st = _storage(a.org, a.signed, None, a.factor, a.offset, units)
+        st = _storage(a.org, a.signed, None, a.factor, a.offset, units, a.size)
         if st is not None and len(a.data) >= count * st.size:
             fmt = (st.endian or "<") + {(8, False): "B", (16, False): "H",
                                         (32, False): "I", (32, True): "f"}[
@@ -558,7 +582,7 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
         if rec.type == 1 or not rec.addr:
             continue                            # hexdump view / no data
         z = _storage(rec.org, rec.signed, rec.addr, rec.factor, rec.offset,
-                     rec.units if rec.units not in ("-", "?") else "")
+                     rec.units if rec.units not in ("-", "?") else "", rec.size)
         if z is None:
             skipped += 1
             continue
