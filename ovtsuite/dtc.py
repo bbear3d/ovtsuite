@@ -464,6 +464,10 @@ class DtcTable:
             target = enable_class if enable_class is not None \
                 else fp._orig_class
             if target is None or target == DISABLED_CLASS:
+                # disabled by another table (a feature switch, an earlier
+                # window): the class the file had as it was opened
+                target = self.opened_class(fp)
+            if target is None or target == DISABLED_CLASS:
                 # nothing to restore to; leave a sensible active default
                 target = self._default_active_class()
             self.session.edit_cells(fp.cla, [(0, 0, float(target))])
@@ -638,6 +642,16 @@ class DtcTable:
             fp._orig_class = cur
         fp._lamp_class.clear()          # a class chosen outright: no way back
         self.session.edit_cells(fp.cla, [(0, 0, float(number))])
+
+    def opened_class(self, fp: FaultPath) -> Optional[int]:
+        """``fp``'s class in the bytes the session was opened with (None
+        when unknown)."""
+        orig = getattr(self.session, "original", None)
+        e = fp.cla
+        if orig is None or e is None or getattr(e, "bits", 8) != 8 \
+                or not 0 <= e.addr < len(orig):
+            return None
+        return orig[e.addr]
 
     def _default_active_class(self) -> int:
         # a class that lights the MIL and stores, preferring a low number

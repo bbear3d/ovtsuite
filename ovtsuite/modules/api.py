@@ -161,6 +161,11 @@ class ModuleSpec:
     #: that correct this platform's images, so the converter can write an
     #: XDFCHECKSUM block for them. Optional: a module without it offers none.
     tunerpro: Optional[str] = None
+    #: ``features() -> ovtsuite.featureswitch.model.FeatureSet`` -- the
+    #: functions this platform's calibration can switch as bundles, for the
+    #: base app's Feature switches window. Optional: without it the window
+    #: is not offered.
+    features: Optional[str] = None
     #: Data files this module owns: globs relative to the app's ``data``
     #: directory. Its code is its package (``<app>/<id>/``). Every data file
     #: belongs to exactly one module or to the base app -- the build checks.
