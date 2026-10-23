@@ -328,9 +328,9 @@ def read_vcds(path: str) -> DataLog:
     # the Gxxx/Fy marker row (if present) gives exact group/field identities
     gf = []
     for r in rows[:hi]:
-        if len(r) > 2 and re.match(r"^G\d{3}$", r[2].strip() or ""):
+        if len(r) > 2 and re.match(r"^G\d{3,}$", r[2].strip() or ""):
             gf = [(int(r[i][1:]), int(r[i + 1][1:])) for i in range(2, len(r) - 1, 2)
-                  if re.match(r"^G\d{3}$", r[i].strip() or "") and re.match(r"^F\d+$", r[i + 1].strip() or "")]
+                  if re.match(r"^G\d{3,}$", r[i].strip() or "") and re.match(r"^F\d+$", r[i + 1].strip() or "")]
             break
     channels = []
     col = 1

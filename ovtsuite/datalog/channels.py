@@ -10,6 +10,11 @@ each slot carries: EDC16 ``UACC_RSigBlkGrp_MAP`` cell -> ESB index -> the
 signal catalogue (A2L measurement name, unit); EDC15 ``xcwKNN_x`` slot ->
 ``xcwGrpXX`` descriptor -> message name. So log columns can be labelled with
 the ECU's own signal identities instead of label files.
+
+An EDC16 group has up to eight cells: the firmware sends its own map row as
+cells 1-4 and the row 127 above it as cells 5-8 (see :mod:`ovtsuite.msblock`),
+so cells 5-8 are named from that row too. Only groups 1..127 exist; the rows
+above them are never groups of their own.
 """
 from typing import Dict, List, Optional, Tuple
 
@@ -18,10 +23,14 @@ from ..signal_names import english_units
 
 
 class ChannelNamer:
-    def __init__(self, session, dataset: Optional[str] = None):
+    def __init__(self, session, dataset: Optional[str] = None,
+                 identity: str = ""):
         """``dataset``: on an EDC15 image, the calibration dataset (its label,
-        e.g. "Manual") whose blocks to name; default the first one."""
+        e.g. "Manual") whose blocks to name. Without one, ``identity`` (what a
+        connected EDC15 reported) picks the dataset whose ident it matches --
+        the one the ECU is coded to; only when neither says, the first."""
         self.session = session
+        self.dataset = dataset
         self._mb = None
         self._cat = None
         self._groups: Dict[int, object] = {}
@@ -37,6 +46,10 @@ class ChannelNamer:
         if self._mb is None:
             return
         if getattr(session, "is_edc15", False):
+            if dataset is None and identity:
+                from ..edc15.msblock15 import dataset_for_identity
+                dataset = dataset_for_identity(session, identity)
+                self.dataset = dataset
             for g in self._mb.groups():
                 if dataset is not None and g.group != dataset:
                     continue

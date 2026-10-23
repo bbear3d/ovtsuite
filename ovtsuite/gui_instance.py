@@ -12,6 +12,10 @@ it, sends the file it was given (or nothing, to bring the window forward)
 and exits. ``gui --new-instance`` (File > New window) starts a window of its
 own anyway -- the project locks (gui_files.lock_project) keep two windows
 off one project.
+
+A tool can have a channel of its own (``kind``): OVT Converter uses one, so
+files right-clicked together ("Convert with OVT Converter") all land in one
+converter window.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from __future__ import annotations
 import getpass
 import hashlib
 import os
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence, Union
 
 from PySide6 import QtCore
 
@@ -31,26 +35,30 @@ except Exception:       # pragma: no cover - depends on the bundle
     QtNetwork = None
 
 
-def server_name() -> str:
+def server_name(kind: str = "") -> str:
+    """The socket of the user's window (``kind``: a tool's own, e.g.
+    ``"converter"``; empty: the main app's)."""
     try:
         user = getpass.getuser()
     except Exception:
         user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
-    tag = hashlib.sha1(("%s|%s" % (branding.APP_NAME, user)).encode(
-        "utf-8")).hexdigest()[:16]
-    return "ovtsuite-%s" % tag
+    seed = "%s|%s" % (branding.APP_NAME, user) + ("|" + kind if kind else "")
+    tag = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+    return "ovtsuite-%s%s" % (kind + "-" if kind else "", tag)
 
 
-def hand_over(path: Optional[str], timeout_ms: int = 400,
-              ack_ms: int = 2000) -> bool:
-    """Give ``path`` to a window already running. True when one took it."""
+def hand_over(path: Union[None, str, Sequence[str]], timeout_ms: int = 400,
+              ack_ms: int = 2000, name: Optional[str] = None) -> bool:
+    """Give ``path`` (or several paths) to a window already running. True
+    when one took it. ``name``: the channel (default: the main app's)."""
     if QtNetwork is None:
         return False
     sock = QtNetwork.QLocalSocket()
-    sock.connectToServer(server_name())
+    sock.connectToServer(name or server_name())
     if not sock.waitForConnected(timeout_ms):
         return False
-    msg = (os.path.abspath(path) if path else "") + "\n"
+    paths = [path] if isinstance(path, str) or path is None else list(path)
+    msg = "\n".join(os.path.abspath(p) for p in paths if p) + "\n"
     sock.write(msg.encode("utf-8"))
     sock.flush()
     sock.waitForBytesWritten(timeout_ms)
@@ -69,12 +77,12 @@ def hand_over(path: Optional[str], timeout_ms: int = 400,
     return reply.strip() == b"ok"
 
 
-def listen(win, open_path: Callable[[str], object]):
+def listen(win, open_path: Callable[[str], object], name: Optional[str] = None):
     """Take files from later starts: each opens in ``win`` (which comes to
     the front). Returns the server, or None when it could not listen."""
     if QtNetwork is None:
         return None
-    name = server_name()
+    name = name or server_name()
     server = QtNetwork.QLocalServer(win)
     if not server.listen(name):
         # a socket left by a window that crashed (on Unix it stays behind)

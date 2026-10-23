@@ -19,6 +19,7 @@ window's size and position.
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -80,6 +81,9 @@ def _apply(win, key: str) -> None:
         gui_toolbar.rebuild(win)            # tooltips name the shortcuts
     elif key == "ui/menu_icons":
         _ga.apply_icons(win)
+    elif key == "ui/table_panels":
+        from . import gui_panelayout
+        gui_panelayout.apply_all(win, gui_panelayout.mode())
     elif key == "ui/theme":
         from . import gui_theme
         gui_theme.apply()
@@ -253,6 +257,8 @@ class OptionsDialog(QtWidgets.QDialog):
             v.addWidget(b, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         elif name == ADVANCED_PAGE:
             self._advanced(v)
+        elif name == _opt.GENERAL:
+            self._integration(v)
         if name not in (_opt.TOOLBAR, SHORTCUTS_PAGE):
             v.addStretch(1)
         return w
@@ -531,6 +537,53 @@ class OptionsDialog(QtWidgets.QDialog):
             top.setHidden(not any_shown)
 
     # -- advanced ----------------------------------------------------------
+    def _integration(self, v) -> None:
+        """General: the converter's entry in the file manager's right-click
+        menu -- the installer offers it; this adds or removes it later.
+        It is a setting of this PC (the registry, or the desktop's menu
+        files), not of the options file, so it is read from there."""
+        self.shell_box = None
+        try:
+            from .convert import shellmenu as _sm
+        except Exception:
+            return
+        if not _sm.supported():
+            return
+        box = QtWidgets.QGroupBox("Right-click menu")
+        bl = QtWidgets.QVBoxLayout(box)
+        self.shell_box = QtWidgets.QCheckBox(
+            "Show \"%s\" when right-clicking definitions, value files and "
+            "binaries" % _sm.LABEL)
+        try:
+            self._shell_was = bool(_sm.installed())
+        except Exception:
+            self._shell_was = False
+        self.shell_box.setChecked(self._shell_was)
+        bl.addWidget(self.shell_box)
+        bl.addWidget(_note(
+            "Opens the files in the converter; files right-clicked together "
+            "open in one window. Double-clicking a file still opens what "
+            "opened it before. For your user only; no administrator rights "
+            "needed." + ("\nOn Windows 11 it is under \"Show more options\"."
+                         if os.name == "nt" else "")))
+        v.addSpacing(8)
+        v.addWidget(box)
+
+    def _apply_integration(self) -> None:
+        box = getattr(self, "shell_box", None)
+        if box is None or box.isChecked() == self._shell_was:
+            return
+        from .convert import shellmenu as _sm
+        try:
+            if box.isChecked():
+                _sm.install()
+            else:
+                _sm.remove()
+            self._shell_was = box.isChecked()
+        except _sm.ShellMenuError as exc:
+            QtWidgets.QMessageBox.warning(self, "Right-click menu", str(exc))
+            box.setChecked(self._shell_was)
+
     def _advanced(self, v) -> None:
         v.addWidget(_note("Keep your options, toolbar and shortcuts in a file, "
                           "to back them up or use them on another computer."))
@@ -651,6 +704,7 @@ class OptionsDialog(QtWidgets.QDialog):
             if stored.get(aid) != want:
                 changes[aid] = want
         _opt.set_shortcuts(changes)
+        self._apply_integration()
         return True
 
     def accept(self) -> None:

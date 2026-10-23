@@ -116,6 +116,6 @@ def test_measuring_blocks_are_named(family):
     names = [cat.info(i).name for i in g1]
     assert names[0] == "Eng_nAvrg" and names[3] == "CTSCD_tClnt", names
     assert names[1].startswith("InjCtl_q") and names[2].startswith("InjVlv_phiMI1Dur")
-    used = [i for i in observed_ids(s) if i != 255]
+    used = [i for i, n in observed_ids(s).items() if i != 255 and n]
     named = sum(1 for i in used if cat.info(i).known)
     assert named >= 0.85 * len(used), (named, len(used))

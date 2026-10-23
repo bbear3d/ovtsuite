@@ -23,7 +23,7 @@ own with the **OVT Logger** shortcut.
 | **EDC16** | Bosch EDC16 diesel engine ECU | K-line or CAN | the car's own EDC16 file, open in a tab |
 | **EDC15** | Bosch EDC15 diesel engine ECU | K-line only | the car's own EDC15 file, open in a tab |
 | **ZF6HP** | ZF 6HP19 transmission (measuring blocks 1–17) | CAN only | a built-in 6HP19 block list — no file needed |
-| **ZF6HP-UDS** | ZF 6HP28 transmission (one live-data block) | CAN only | built in; values are raw counts |
+| **ZF6HP-UDS** | ZF 6HP28 transmission (UDS data identifiers) | CAN only | built in; F4xx DIDs scaled, the rest raw counts |
 | **Aisin TRx** | Aisin 09D transmission | CAN only | not named yet ("Group N / Cell M") |
 
 ## Log a drive in five steps

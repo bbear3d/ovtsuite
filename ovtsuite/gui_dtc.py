@@ -195,6 +195,9 @@ class DtcDialog(QtWidgets.QDialog):
             self.detail.setText(note or "No fault paths were found in this binary.")
         self._populate()
         self.table.sortItems(1, QtCore.Qt.SortOrder.AscendingOrder)
+        # wide enough for the codes and a readable description, on screen
+        from .gui_fit import fit_table_window
+        fit_table_window(self, self.table, 980, 680, last_cap=560)
 
     # -- helpers -------------------------------------------------------
     def _key(self, fp):

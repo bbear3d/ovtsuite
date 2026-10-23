@@ -80,6 +80,12 @@ def decode_cell(fid: int, a: int, b: int):
     """(value, unit, text). value is None for non-numeric formulas (bit
     fields, text, states); text is always the display string."""
     f = fid
+    if f == PAD_FORMULA and a == 0 and b == 0:
+        # An EDC16 group record is always eight slots; an unused one is sent
+        # as 25 00 00. Trailing ones are dropped by parse_cells, but one in
+        # the middle (a group whose own row is empty and whose +127 row is
+        # not) keeps its place so the cells after it keep their numbers.
+        return None, "", "(empty)"
     if f == 1:
         v, u = 0.2 * a * b, "rpm"
     elif f == 2:

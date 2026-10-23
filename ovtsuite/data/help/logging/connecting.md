@@ -59,7 +59,7 @@ used.
 | **EDC16** | K-line: wake-up at 10400 baud, diagnostic session, identification, then the link-speed raise you chose. CAN: a TP 2.0 channel to the engine, then the same session (no speed raise). |
 | **EDC15** | KW1281: 5-baud slow init at 9600 baud, then identification and coding. 9600 is the only rate an EDC15 talks KW1281 at, so there is no speed choice. An EDC15 that answers in KWP2000 instead is in the mode it uses for flash programming and generic OBD, which has no measuring blocks: the logger says so and does not connect. Works on a KKL cable and on a J2534 device (the device does the 5-baud init). |
 | **ZF6HP** | TP 2.0 channel to the transmission, diagnostic session, identification. Reads measuring blocks 1–17 of the 6HP19. |
-| **ZF6HP-UDS** | TP 2.0 channel to the transmission, then polls its single live-data block. The 6HP28 does not serve the 6HP19's measuring blocks. |
+| **ZF6HP-UDS** | UDS to the transmission on CAN ids 0x7E1/0x7E9, routed by the gateway: the same route the flasher uses to read and write the 6HP28 (the 6HP28 does not answer TP 2.0). The gateway is woken first, then the extended diagnostic session opens and the ticked DIDs are polled with ReadDataByIdentifier, several per request when the transmission allows it. A DID the transmission refuses is dropped for the rest of the connection. The 6HP28 does not serve the 6HP19's measuring blocks. |
 | **Aisin TRx** | TP 2.0 channel to the transmission, the same session as **ZF6HP**. |
 
 ## Speed (EDC16 on K-line)

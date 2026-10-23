@@ -50,7 +50,7 @@ def _no_current_tool():
 def test_every_launcher_has_a_tool():
     exes = launcher.tool_exes()
     assert exes == dict(branding.TOOL_EXES, mcp=branding.MCP_EXE)
-    assert set(exes) == {"flasher", "sniffer", "logger", "simulator", "mcp"}
+    assert set(exes) == {"flasher", "sniffer", "logger", "simulator", "converter", "mcp"}
 
 
 @pytest.mark.parametrize("argv, tool, rest", [

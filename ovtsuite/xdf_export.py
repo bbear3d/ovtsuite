@@ -15,7 +15,7 @@ then A2L functional category:
 TunerPro is an ANSI application, so non-Latin-1 characters are transliterated.
 """
 
-from typing import List
+from typing import List, Optional
 
 from .model import Entity
 from .tiers import tier_name, TIER_NAMES
@@ -39,6 +39,10 @@ def _typeflags(e: Entity, le: bool = False):
     # returned 0x02 for an unsigned big-endian value, which silently flagged
     # every unsigned EDC16 parameter as little-endian (byte-swapped in TunerPro).
     flags = 0
+    if getattr(e, "is_float", False):
+        # IEEE-754 cells: TunerPro's float flag (0x10000), as WinOLS and
+        # TunerPro write it; the cells were read as integers before
+        return "0x%X" % (0x10000 | (0x02 if le else 0))
     if e.signed:
         flags |= 0x01
     if le:
@@ -48,7 +52,9 @@ def _typeflags(e: Entity, le: bool = False):
 
 def _axis_flags(is_float: bool, le: bool, signed: bool = False) -> str:
     if is_float:
-        return "0x04"
+        # 0x10000 is TunerPro's float flag; 0x04 (written here before) is
+        # its column-major flag
+        return "0x%X" % (0x10000 | (0x02 if le else 0))
     flags = 0
     if signed:
         flags |= 0x01
@@ -89,9 +95,36 @@ def _axis_xml(aid, addr, count, bits, equation, units, is_float, le=False,
             3 if is_float else 0, _esc(equation)))
 
 
+def _fixed_axis_xml(aid, ax, count) -> Optional[str]:
+    """An axis a definition gives as values or texts (not stored in the
+    image): one LABEL per point, as TunerPro writes such an axis."""
+    labels = list(getattr(ax, "labels", None) or [])
+    vals = list(getattr(ax, "values", None) or [])
+    pts = labels if len(labels) == count else (
+        ["%g" % float(v) for v in vals] if len(vals) == count else None)
+    if not pts or count < 2:
+        return None
+    out = ['    <XDFAXIS id="%s" uniqueid="0x0">\n' % aid,
+           '      <EMBEDDEDDATA mmedelementsizebits="8" '
+           'mmedmajorstridebits="-32" mmedminorstridebits="0" />\n',
+           '      <units>%s</units>\n' % _esc(getattr(ax, "units", "") or ""),
+           '      <indexcount>%d</indexcount>\n' % count,
+           '      <datatype>0</datatype>\n',
+           '      <unittype>0</unittype>\n',
+           '      <DALINK index="0" />\n']
+    for i, p in enumerate(pts):
+        out.append('      <LABEL index="%d" value="%s" />\n' % (i, _esc(p)))
+    out.append('      <MATH equation="X"><VAR id="X" /></MATH>\n'
+               '    </XDFAXIS>\n')
+    return "".join(out)
+
+
 def _axis_signed(e, ax) -> bool:
     """An axis is exported signed when its values only read monotonic that
-    way (the same rule ``Entity.axis_values`` applies)."""
+    way (the same rule ``Entity.axis_values`` applies). Without an image
+    (a conversion), what the definition states."""
+    if getattr(getattr(e, "binfile", None), "data", None) is None:
+        return bool(getattr(ax, "signed", False))
     try:
         if ax.is_float or ax.addr is None:
             return False
@@ -139,12 +172,39 @@ def _zf_z_math(entity):
         return []
 
 
+def _checksum_xml(c: dict, uid: int) -> str:
+    """One XDFCHECKSUM block: as read (``raw``), else from its fields."""
+    if c.get("raw"):
+        return "  " + c["raw"].strip() + "\n"
+    out = ['  <XDFCHECKSUM uniqueid="0x%X">\n' % uid,
+           '    <title>%s</title>\n' % _esc(c.get("title", "Checksum")),
+           '    <REGION>\n']
+    for k in ("pluginmoduleid", "datastart", "dataend", "storesizebits",
+              "storeaddress", "calculationmethod"):
+        if c.get(k) not in (None, ""):
+            out.append('      <%s>%s</%s>\n' % (k, _esc(c[k]), k))
+    out.append('    </REGION>\n  </XDFCHECKSUM>\n')
+    return "".join(out)
+
+
 def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
                image_size: int = 0x200000, little_endian: bool = None,
-               platform: str = "edc16") -> str:
+               platform: str = "edc16", tiers: bool = True,
+               description: Optional[str] = None,
+               checksums: Optional[List[dict]] = None,
+               include_indexed: bool = False,
+               patches: Optional[List[dict]] = None) -> str:
     """``little_endian`` defaults to the entities' binary byte order (EDC15
     images are little-endian); ``platform`` selects the header text and
-    whether the EDC16 checksum-plugin block is emitted."""
+    whether the EDC16 checksum-plugin block is emitted.
+
+    For a conversion (:mod:`ovtsuite.convert`): ``tiers=False`` keeps the
+    definition's own categories only, ``description`` replaces the header
+    text, and ``checksums`` (a list, possibly empty) replaces the platform's
+    checksum block with exactly those blocks, and ``include_indexed`` writes
+    value blocks without an axis as tables (the session leaves them out).
+    ``patches`` adds TunerPro XDFPATCH blocks (:attr:`Definition.patches`
+    form, addresses as image offsets)."""
     if little_endian is None:
         little_endian = any(getattr(e.binfile, "endian", ">") == "<"
                             for e in entities[:1])
@@ -159,10 +219,14 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
             cats.append(name)
         return cat_index[name]
 
-    for tier in sorted({e.tier for e in entities}):
-        cat_id(tier_name(tier))
+    if tiers:
+        for tier in sorted({e.tier for e in entities}):
+            cat_id(tier_name(tier))
     for e in entities:
         for c in e.categories:
+            cat_id(c)
+    for p in patches or ():
+        for c in p.get("categories") or ():
             cat_id(c)
 
     out = []
@@ -172,9 +236,12 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
     out.append('    <flags>0x1</flags>\n')
     out.append('    <fileversion>%s</fileversion>\n' % _esc(fileversion))
     out.append('    <deftitle>%s</deftitle>\n' % _esc(title))
-    out.append('    <description>Generated by ' + branding.APP_NAME +
-               ' from the primary '
-               'binary (%s)</description>\n' % _esc(platform.upper()))
+    if description is not None:
+        out.append('    <description>%s</description>\n' % _esc(description))
+    else:
+        out.append('    <description>Generated by ' + branding.APP_NAME +
+                   ' from the primary '
+                   'binary (%s)</description>\n' % _esc(platform.upper()))
     out.append('    <BASEOFFSET offset="0" subtract="0" />\n')
     out.append('    <DEFAULTS datasizeinbits="8" sigdigits="3" '
                'outputtype="2" signed="0" lsbfirst="%d" float="0" />\n'
@@ -191,7 +258,10 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
     # auto-corrects both checksums whenever the tune is saved. The plugin
     # handles 2 MB images only; for 1 MB EDC16U1 the block is omitted (this
     # app still corrects on save). dataend is the last byte address.
-    if image_size == 0x200000 and platform == "edc16":
+    if checksums is not None:
+      for i, c in enumerate(checksums):
+        out.append(_checksum_xml(c, 0x7F0 + i))
+    elif image_size == 0x200000 and platform == "edc16":
       out.append('  <XDFCHECKSUM uniqueid="0x1">\n')
       out.append('    <title>EDC16 Checksums</title>\n')
       out.append('    <REGION>\n')
@@ -207,7 +277,7 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
 
     uid = 0x1000
     for e in entities:
-        if e.kind == "indexed":
+        if e.kind == "indexed" and not include_indexed:
             continue
         if platform == "edc16" and _is_unpopulated(e):
             # (EDC15 datasets use 0xC3 filler; an all-0xFFFF table there is a
@@ -215,8 +285,8 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
             continue
         uid += 1
         catmems = ['      <CATEGORYMEM index="0" category="%d" />'
-                   % (cat_id(tier_name(e.tier)) + 1)]
-        for depth, c in enumerate(e.categories, start=1):
+                   % (cat_id(tier_name(e.tier)) + 1)] if tiers else []
+        for depth, c in enumerate(e.categories, start=len(catmems)):
             catmems.append('      <CATEGORYMEM index="%d" category="%d" />'
                            % (depth, cat_id(c) + 1))
         catmem = "\n".join(catmems)
@@ -253,14 +323,16 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
                                  e.x.equation, e.x.units, e.x.is_float, le,
                                  _axis_signed(e, e.x)))
         else:
-            out.append(_axis_xml("x", None, e.cols, 16, "X", "", False))
+            out.append(_fixed_axis_xml("x", e.x, e.cols)
+                       or _axis_xml("x", None, e.cols, 16, "X", "", False))
         # Y axis (rows)
         if e.y is not None and e.y.addr is not None:
             out.append(_axis_xml("y", e.y.addr, e.rows, e.y.bits,
                                  e.y.equation, e.y.units, e.y.is_float, le,
                                  _axis_signed(e, e.y)))
         else:
-            out.append(_axis_xml("y", None, e.rows, 16, "X", "", False))
+            out.append(_fixed_axis_xml("y", e.y, e.rows)
+                       or _axis_xml("y", None, e.rows, 16, "X", "", False))
         # Z data -- EDC16 stores maps column-major (major stride = one
         # element), EDC15 first-axis-major = plain row-major (stride 0)
         colmajor = (e.kind == "map" and getattr(e, "order", "col") == "col")
@@ -283,5 +355,28 @@ def export_xdf(entities: List[Entity], title: str, fileversion: str = "",
             out.append('      <MATH col="%d" equation="%s"><VAR id="X" /></MATH>\n'
                        % (col, _esc(eq)))
         out.append('    </XDFAXIS>\n  </XDFTABLE>\n')
+    for i, p in enumerate(patches or ()):
+        out.append(_patch_xml(p, 0x7000 + i, [cat_id(c) + 1 for c in p.get("categories") or ()]))
     out.append('</XDFFORMAT>\n')
+    return "".join(out)
+
+
+def _patch_xml(p: dict, uid: int, cats: List[int]) -> str:
+    """One TunerPro XDFPATCH: its entries' new bytes and, when known, the
+    bytes they replace (so TunerPro can tell it is applied and remove it)."""
+    out = ['  <XDFPATCH uniqueid="0x%X">\n' % uid,
+           '    <title>%s</title>\n' % _esc(p.get("title") or "Patch")]
+    if p.get("description"):
+        out.append('    <description>%s</description>\n' % _esc(p["description"]))
+    for k, c in enumerate(cats):
+        out.append('    <CATEGORYMEM index="%d" category="%d" />\n' % (k, c))
+    for e in p.get("entries") or ():
+        data = bytes(e["patch"])
+        base = e.get("base")
+        out.append('    <XDFPATCHENTRY name="%s" address="0x%X" datasize="0x%X" '
+                   'patchdata="%s"%s />\n' % (
+                       _esc(str(e.get("name", ""))), e["address"], len(data),
+                       data.hex().upper(),
+                       ' basedata="%s"' % bytes(base).hex().upper() if base else ""))
+    out.append('  </XDFPATCH>\n')
     return "".join(out)

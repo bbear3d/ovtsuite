@@ -12,9 +12,10 @@ part that was never fitted, or a system that changed in an engine or gearbox
 swap — or to put a calibration's codes back the way the factory had them.
 
 It works on **Bosch EDC16** and **Bosch EDC15** files (it needs the matching
-module). On a **ZF 6HP** gearbox file the same menu item opens the gearbox's
-own fault-code editor instead, which works differently — see
-[ZF 6HP](../modules/zf6hp/index.md).
+module). On a **ZF 6HP** or **ZF 8HP** gearbox file the same menu item opens
+the gearbox fault-code window instead, which works differently — see
+[ZF 6HP fault codes](../modules/zf6hp/fault-codes.md) and
+[ZF 8HP fault codes](../modules/zf8hp/fault-codes.md).
 
 ![The DTC / Fault-Path editor on an EDC16 file, filtered to EGR](../images/tools-dtc.png)
 
@@ -35,6 +36,12 @@ Type into the search box at the top. You can search for:
 Several words narrow the list (every word must match). Every code a fault
 can set is searched, not just the first one — on EDC16 one fault path can
 carry up to four OBD-II codes and four VAG codes.
+
+VW ECUs report the same fault under two numbering schemes: older ones as a
+five-digit VAG number (`19456` for P3000, `16485` for P0101), later ones as
+the OBD word itself (`12288` for P3000, `00257` for P0101). The search
+finds a fault by either number, whichever one this ECU stores, and the
+panel under the table shows the other one in brackets.
 
 **Show** narrows the list further: **Enabled**, **Disabled**, **With a fault
 code**, **Lights the MIL**, **Lights the glow-plug lamp**, and, with a

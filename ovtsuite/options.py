@@ -98,6 +98,13 @@ OPTIONS: Tuple[Option, ...] = (
     # -- Editor --------------------------------------------------------------
     Option("history/version_menu_max", 25, "Versions listed in Compare with "
            "saved version", EDITOR, "int", minimum=5, maximum=200),
+    Option("ui/table_panels", "stack", "3D surface and dyno chart", EDITOR,
+           "choice", "Where the two panels go around the table when they are "
+           "open. Side by side or beside the table leaves the table more "
+           "rows. Also in View > Table panels.",
+           choices=(("stack", "Stacked above the table"),
+                    ("side", "Side by side above the table"),
+                    ("right", "Beside the table, on the right"))),
     # -- Appearance ----------------------------------------------------------
     Option("ui/theme", "system", "Theme", APPEARANCE, "choice",
            "System follows Windows' light or dark app mode.",

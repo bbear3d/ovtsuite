@@ -387,7 +387,8 @@ def _storage(m: _Module, dtype: str, addr: Optional[int], compu: Compu,
     return Storage(addr=addr, bits=size * 8, signed=signed and not flt,
                    float=flt, endian=order if size > 1 else "",
                    factor=compu.factor, offset=compu.offset,
-                   equation=compu.equation, units=units or compu.unit)
+                   equation=compu.equation, units=units or compu.unit,
+                   texts=dict(compu.texts) if compu.texts else None)
 
 
 def _place(m: _Module, lay: Layout, counts: Dict[str, int], cells: int):
@@ -443,14 +444,16 @@ def _axis_def(m: _Module, ad: Block, lay: Layout, placed, base_addr: int,
         st = _axis_pts_storage(m, ap, order)
         if st is None:
             return None, count
-        return AxisDef(count, values=st, name=name or str(ap.args()[0])), count
+        return AxisDef(count, values=st, name=name or str(ap.args()[0]),
+                       ref=str(ap.args()[0])), count
     if attr == "CURVE_AXIS":
         ref = ad.keyword("CURVE_AXIS_REF")
         cb = m.char_by_name.get(str(ref[0])) if ref else None
         if cb is not None:
             t = _characteristic(m, cb, order, [], {})
             if t is not None and t.kind == "curve":
-                return AxisDef(count, values=t.z, name=name or t.name), count
+                return AxisDef(count, values=t.z, name=name or t.name,
+                               ref=t.name), count
         return None, count
     if attr == "FIX_AXIS":
         vals = None
@@ -470,7 +473,12 @@ def _axis_def(m: _Module, ad: Block, lay: Layout, placed, base_addr: int,
             from ..equation import Equation
             eq = Equation(st.equation_text())
             phys = [eq.decode(v) for v in vals]
-            return AxisDef(len(vals), fixed=phys, name=name), len(vals)
+            labels = None
+            if compu.texts and all(float(v).is_integer() and int(v) in compu.texts
+                                   for v in vals):
+                # an enumeration axis: each point's text from the verbal table
+                labels = [compu.texts[int(v)] for v in vals]
+            return AxisDef(len(vals), fixed=phys, labels=labels, name=name), len(vals)
         return None, count
     warnings.append("%s: %s axes are not read" % (char, attr))
     return None, count
@@ -640,8 +648,14 @@ def _characteristic(m: _Module, b: Block, order: str, warnings: List[str],
         else:
             return None
         kind = "map" if ny > 1 else ("curve" if nx > 1 else "constant")
+    elif ctype == "ASCII":
+        # characters (a part number): NUMBER of them, or MATRIX_DIM
+        num = b.keyword("NUMBER") or b.keyword("MATRIX_DIM", 1)
+        if not num or not str(num[0]).isdigit():
+            return None
+        nx, ny, kind = max(1, _int(num[0])), 1, "curve"
     else:
-        return None                             # ASCII, CUBOID, CUBE_4 ...
+        return None                             # CUBOID, CUBE_4 ...
     counts = {"X": nx, "Y": ny}
     placed = _place(m, lay, counts, nx * ny)
     off, dt = placed["FNC_VALUES"]
@@ -669,7 +683,8 @@ def _characteristic(m: _Module, b: Block, order: str, warnings: List[str],
                  cols=nx if kind != "constant" else 1,
                  description=description,
                  categories=[cats[name]] if name in cats else [],
-                 order=order_rc, x=x, y=y, decimals=_decimals(compu.fmt))
+                 order=order_rc, x=x, y=y, decimals=_decimals(compu.fmt),
+                 text_kind="ascii" if ctype == "ASCII" else "")
     if ctype in ("CURVE", "MAP"):
         std, com = {}, {}
         for ax, ad in zip(("X", "Y"), axes[:2]):

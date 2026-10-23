@@ -198,7 +198,8 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
 
 def write_kp(entities, image_size: int, title: str = "",
              little_endian: Optional[bool] = None,
-             warnings: Optional[List[str]] = None) -> bytes:
+             warnings: Optional[List[str]] = None,
+             tiers: bool = True) -> bytes:
     """The map pack for ``entities`` (addresses: offsets in the image)."""
     from ..tiers import tier_name
     warnings = warnings if warnings is not None else []
@@ -213,8 +214,8 @@ def write_kp(entities, image_size: int, title: str = "",
     for e in entities:
         if e.kind not in ("map", "curve", "constant", "indexed"):
             continue
-        path = [tier_name(e.tier)] + list(getattr(e, "category_path", None)
-                                          or e.categories[:1] or [])
+        path = ([tier_name(e.tier)] if tiers else []) + list(
+            getattr(e, "category_path", None) or e.categories[:1] or [])
         label = " / ".join(p for p in path if p) or "Maps"
         fid = folders.setdefault(label, len(folders) + 1)
         if _record(rec, e, fid, image_size, little_endian, warnings):

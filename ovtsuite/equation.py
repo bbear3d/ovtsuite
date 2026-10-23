@@ -14,6 +14,11 @@ is ``display = factor * raw + offset``.
 import re
 
 _ALLOWED = re.compile(r"^[0-9X\s\.\+\-\*\/\(\)Ee]+$")
+_N = r"([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)"
+#: ``(p*X + q) / (r + s*X)`` as the A2L reader writes a rational function
+#: (``(f*X-c)/(b-e*X)``): its coefficients are read, not fitted
+_RATIONAL = re.compile(r"^\(\s*%s\s*\*\s*X\s*([-+])\s*%s\s*\)\s*/\s*"
+                       r"\(\s*%s\s*([-+])\s*%s\s*\*\s*X\s*\)$" % (_N, _N, _N, _N))
 
 
 class Equation:
@@ -43,7 +48,7 @@ class Equation:
         else:
             self.offset, self.factor, self.linear = 0.0, 0.0, False
         if not self.linear:
-            self._mobius = self._fit_mobius()
+            self._mobius = self._exact_mobius() or self._fit_mobius()
             if f1 is not None and f2 is not None:
                 self.factor = f2 - f1
                 self.offset = f1 - self.factor
@@ -57,6 +62,28 @@ class Equation:
         except (ZeroDivisionError, OverflowError, ValueError):
             return None
         return v if v == v and abs(v) != float("inf") else None
+
+    def _exact_mobius(self):
+        """``(a, b, d)`` read from the equation's own coefficients when it is
+        written ``(p*X+q)/(r+s*X)``. A fit is good to about 1e-13 of its
+        scale, which for a reciprocal conversion of a 32-bit value is
+        hundreds of counts; the coefficients are exact."""
+        m = _RATIONAL.match(self.text.replace(" ", ""))
+        if not m:
+            return None
+        p, sq, q, r, ss, s = m.groups()
+        p, q, r, s = float(p), float(q), float(r), float(s)
+        q = -q if sq == "-" else q
+        s = -s if ss == "-" else s
+        if s == 0:
+            return None
+        a, b, d = p / s, q / s, r / s
+        for x in (1.0, 7.0, 1000.0):
+            y = self._safe(x)
+            if y is None or x + d == 0 or \
+                    abs((a * x + b) / (x + d) - y) > 1e-9 * max(1e-300, abs(y)):
+                return None
+        return (a, b, d)
 
     def _fit_mobius(self):
         """``(a, b, d)`` with display = (a*X + b) / (X + d), if the equation

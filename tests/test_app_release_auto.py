@@ -45,13 +45,15 @@ def _build(root, version, files, sign=True):
     return str(root)
 
 
-def _archive(arch, version, files=None):
-    """An archived release (only its manifest matters)."""
+def _archive(arch, version, files=None, released=True):
+    """An archived build (only its manifest matters), marked released."""
     d = os.path.join(arch, version)
     os.makedirs(d, exist_ok=True)
     man = du.AppManifest(version=version, files=files or {})
     with open(os.path.join(d, du.MANIFEST_NAME), "wb") as fh:
         fh.write(man.to_bytes())
+    if released:
+        app_release.mark_released(arch, version)
 
 
 def _deltas(out):
@@ -59,7 +61,9 @@ def _deltas(out):
 
 
 def _auto(dist, out, arch, *extra):
-    return app_release.main(["auto", dist, "--out", out, "--archive", arch] + list(extra))
+    # (no GitHub in tests: releases are marked by hand)
+    return app_release.main(["auto", dist, "--out", out, "--archive", arch,
+                             "--offline"] + list(extra))
 
 
 # ------------------------------------------------------------------ choosing
@@ -141,6 +145,7 @@ def test_the_next_release_gets_its_delta_and_a_rebuild_replaces_both(tmp_path, k
     arch, out = str(tmp_path / "AppReleases"), str(tmp_path / "dist")
     os.makedirs(out)
     assert _auto(_build(tmp_path / "b1", "0.4.8", V1), out, arch) == 0
+    app_release.mark_released(arch, "0.4.8")
     assert _auto(_build(tmp_path / "b2", "0.4.9", V2), out, arch) == 0
     name = "OVTSuite-Update-0.4.8-to-0.4.9.zip"
     assert _deltas(out) == [name]
@@ -165,10 +170,60 @@ def test_the_next_release_gets_its_delta_and_a_rebuild_replaces_both(tmp_path, k
     assert now != first and now == open(os.path.join(b2, du.MANIFEST_NAME), "rb").read()
     assert app_release.archived_versions(arch) == ["0.4.8", "0.4.9"]
 
-    # 0.4.10 after that: from 0.4.9 (numerically the newest older one), and
-    # 0.4.9's package from the last build is not left lying in dist
-    assert _auto(_build(tmp_path / "b3", "0.4.10", V2), out, arch) == 0
+    # 0.4.10 while 0.4.9 was never published: from 0.4.8, the last release
+    # (nobody runs 0.4.9), and the log says why
+    capsys.readouterr()
+    b3 = _build(tmp_path / "b3", "0.4.10", V2)
+    assert _auto(b3, out, arch) == 0
+    assert _deltas(out) == ["OVTSuite-Update-0.4.8-to-0.4.10.zip"]
+    assert "0.4.9 was built but never released" in capsys.readouterr().out
+    # once 0.4.9 is released: from 0.4.9 (numerically the newest older one),
+    # and the earlier package is not left lying in dist
+    app_release.mark_released(arch, "0.4.9")
+    assert _auto(b3, out, arch) == 0
     assert _deltas(out) == ["OVTSuite-Update-0.4.9-to-0.4.10.zip"]
+
+
+def test_the_released_build_is_the_one_before_the_upload(tmp_path, key):
+    """A version built again after it was published keeps its published
+    manifest; uploaded again (a re-release), the build before the new upload
+    becomes the released one."""
+    arch = str(tmp_path / "AppReleases")
+    b1 = _build(tmp_path / "b1", "0.4.9", V1)
+    b2 = _build(tmp_path / "b2", "0.4.9", V2)
+    app_release.archive_manifest(b1, arch, now=1000.0)
+    rel = os.path.join(arch, "0.4.9", "released", du.MANIFEST_NAME)
+    first = open(os.path.join(b1, du.MANIFEST_NAME), "rb").read()
+    log = app_release.sync(arch, [("0.4.9", 1500.0), ("0.4.7", 10.0)])
+    assert len(log) == 1 and "marked 0.4.9" in log[0]
+    assert open(rel, "rb").read() == first
+    # built again after the release (a fix, number not raised yet)
+    app_release.archive_manifest(b2, arch, now=2000.0)
+    assert app_release.sync(arch, [("0.4.9", 1500.0)]) == []       # same upload
+    assert open(rel, "rb").read() == first
+    assert app_release.previous_version(arch, "0.4.10") == "0.4.9"
+    # re-released: the installer uploaded again
+    log = app_release.sync(arch, [("0.4.9", 2500.0)])
+    assert "re-marked 0.4.9" in log[0]
+    assert open(rel, "rb").read() == open(os.path.join(b2, du.MANIFEST_NAME), "rb").read()
+    # published, but no build from before it: said, not guessed
+    app_release.archive_manifest(_build(tmp_path / "b3", "0.4.10", V2), arch, now=5000.0)
+    log = app_release.sync(arch, [("0.4.10", 4000.0)])
+    assert "WARNING" in log[0] and not app_release.release_info(arch, "0.4.10")
+
+
+def test_published_releases_reads_the_upload_time():
+    rows = [{"tag_name": "v0.4.9", "draft": False, "published_at": "2026-10-21T04:15:09Z",
+             "assets": [{"name": "OVTSuite-Base-0.4.9-setup.exe",
+                         "updated_at": "2026-10-21T04:12:11Z"},
+                        {"name": "edc16-1.0.13.ovtmod", "updated_at": "2026-10-25T00:00:00Z"}]},
+            {"tag_name": "v0.4.10", "draft": True, "published_at": None, "assets": []},
+            {"tag_name": "v0.4.8", "draft": False, "published_at": "2026-10-15T06:06:14Z",
+             "assets": []}]
+    got = dict(app_release.published_releases(get=lambda _u: rows))
+    assert set(got) == {"0.4.9", "0.4.8"}
+    assert got["0.4.9"] == app_release._iso("2026-10-21T04:12:11Z")   # the installer's
+    assert got["0.4.8"] == app_release._iso("2026-10-15T06:06:14Z")
 
 
 def test_an_unsigned_build_is_not_a_release(tmp_path, key, capsys):

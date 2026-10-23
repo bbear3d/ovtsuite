@@ -163,12 +163,31 @@ def test_catalogue_namer_behaves_like_channel_namer():
     assert (ch.label, ch.signal, ch.unit) == RPM
 
 
-def test_presets_keep_off_unserved_blocks_with_a_catalogue_namer():
+def test_an_old_catalogue_row_above_127_becomes_cells_5_to_8_of_its_group():
+    """Catalogues built before the +127 rule was known filed row 133 as a
+    group of its own; the ECU sends it as cells 5-8 of group 6."""
     b = M.Builder("edc16")
-    b.add("K 0001", "p", {g: [RPM] for g in (1, 3, 99, 100, 133)}, "x")
+    b.add("K 0001", "p", {1: [RPM], 6: [RPM, None], 100: [RPM], 133: [RPM, RPM]}, "x")
     n = M.Catalogue(b.document()).namer("K 0001")
-    assert unserved_for(n) == [100, 133]
-    assert unserved_for(M.Catalogue(b.document()).namer(None, "generic")) == [100, 133]
+    assert n.populated_groups() == [1, 6, 100]
+    assert n.slots(6) == 6
+    assert n.resolve(6, 4)[1] == RPM[1] and n.resolve(6, 5)[1] == RPM[1]
+    assert n.resolve(6, 2) == ("Group 6 / Cell 3", "", "")
+    assert unserved_for(n) == []
+
+
+def test_fold_leaves_new_format_groups_alone():
+    eight = [RPM] * 8
+    assert M.fold_extension_rows({6: eight}) == {6: eight}
+    assert M.fold_extension_rows({6: [RPM] * 4, 133: [RPM]}) == {6: [RPM] * 4 + [RPM]}
+
+
+def test_a_missing_catalogue_is_not_remembered():
+    """A module installed while the app runs must be found on the next
+    lookup, so 'not installed' is never cached."""
+    M._cache.pop("nosuch", None)
+    assert M.load("nosuch") is None
+    assert "nosuch" not in M._cache
 
 
 def test_controllers_without_a_catalogue_get_nothing():

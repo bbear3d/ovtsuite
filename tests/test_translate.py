@@ -5,6 +5,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """German->English rendering of A2L descriptions."""
 
+from ovtsuite import signal_names as sn
 from ovtsuite.signal_names import translate_german as T
 
 
@@ -80,3 +81,40 @@ def test_category_headings_translated():
     assert "Koordination" not in T("Antriebs-Koordination")
     out = T("Koordinator fuer Luftfilterventil Komponententreiber")
     assert "fuer" not in out and "Komponententreiber" not in out
+
+
+# ---- 2026-10-22: gaps found on the DAMOS/A2L library (docs/CONVERTER.md)
+def test_umlaut_text_finds_a_word_the_table_spells_with_oe():
+    # the table has "oelpumpe"; the description writes "Ölpumpe"
+    assert sn.translate_german("Ölpumpe liefert hohen Druck").startswith("Oil pump")
+
+
+def test_compound_of_three_or_more_parts():
+    W = sn._words()
+    assert sn._compound("startzündwinkelrampe", W) == "start ignition angle ramp"
+    assert sn._compound("ladedrucksollwertbegrenzung", W).startswith("boost pressure setpoint")
+    # a short everyday word is not cut into nonsense
+    assert sn._compound("warntexte", W) != "was texts"
+    assert sn._compound("rückseite", W) != "reverse since"
+
+
+def test_verb_stems_short_parts_and_participles():
+    assert sn._lookup("heizbetrieb") == "heating operation"
+    assert sn._lookup("ölpegel") == "oil level"
+    assert sn._lookup("antriebsstrangaktivierungsart") == "drivetrain activation type"
+    assert sn._lookup("begrenzenden") == "limiting"
+    # a word that merely takes -en is no verb stem
+    assert sn._lookup("sondercode") in (None, "special code")
+
+
+def test_small_ist_and_soll_are_verbs():
+    out = sn.translate_german("Faktor, der von der Überdosierung abhängt, ist negativ")
+    assert "is negative" in out and "actual" not in out
+    assert sn.translate_german("Ist-Drehzahl des Motors").startswith("Actual")
+
+
+def test_library_words():
+    for de, en in (("Kurbelgehäuse", "crankcase"), ("zulässig", "permissible"),
+                   ("Speicherfähigkeit", "storage capacity"), ("Saughub", "intake stroke"),
+                   ("Saugmotor", "naturally aspirated engine")):
+        assert sn._lookup(de.lower()) == en, de

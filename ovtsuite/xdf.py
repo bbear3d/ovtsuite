@@ -31,6 +31,10 @@ class XdfAxis:
     equation: str = "X"
     units: str = ""
     labels: List[str] = field(default_factory=list)
+    #: EMBEDDEDDATA type flag 0x10000: IEEE-754 float
+    is_float: bool = False
+    #: the axis's <datatype> and <decimalpl>, when written
+    decimals: Optional[int] = None
 
 
 @dataclass
@@ -53,6 +57,11 @@ class XdfTable:
     #: 0x04 column-major (each column stored contiguously)
     z_lsb_first: bool = False
     z_colmajor: bool = False
+    #: 0x10000: the cells are IEEE-754 floats
+    z_float: bool = False
+    #: EMBEDDEDDATA mmedmajorstridebits of the Z data (0: the default)
+    z_major_stride: int = 0
+    z_decimals: Optional[int] = None
 
     def _real(self, ax: Optional[XdfAxis]) -> bool:
         """Is ``ax`` a stored axis, or the converter's placeholder?
@@ -153,6 +162,8 @@ class XdfConstant:
     min: Optional[float] = None
     max: Optional[float] = None
     lsb_first: bool = False
+    is_float: bool = False
+    decimals: Optional[int] = None
 
 
 @dataclass
@@ -165,6 +176,14 @@ class XdfDef:
     #: XDFHEADER/BASEOFFSET: added to (or, with subtract, taken from) every
     #: address in the file -- 0 for the definitions this project generates
     base_offset: int = 0
+    #: XDFCHECKSUM entries: ``{"title", "pluginmoduleid", "datastart", ...,
+    #: "raw": <the element's XML>}``
+    checksums: List[dict] = field(default_factory=list)
+    #: the REGION size in the header (the image size it was made for), or 0
+    region_size: int = 0
+    #: XDFPATCH blocks: ``{"title", "description", "categories", "entries":
+    #: [{"name", "address", "patch": bytes, "base": bytes or None}]}``
+    patches: List[dict] = field(default_factory=list)
 
 
 def _hexint(s, default=None):
@@ -181,6 +200,7 @@ def _axis_of(el) -> XdfAxis:
         ax.bits = int(emb.get("mmedelementsizebits", "16"))
         flags = _hexint(emb.get("mmedtypeflags"), 0)
         ax.signed = bool(flags & 0x01)
+        ax.is_float = bool(flags & 0x10000)
     ic = el.find("indexcount")
     if ic is not None and ic.text:
         ax.count = int(ic.text)
@@ -191,7 +211,48 @@ def _axis_of(el) -> XdfAxis:
     if u is not None and u.text:
         ax.units = u.text.strip()
     ax.labels = [lab.get("value", "") for lab in el.findall("LABEL")]
+    ax.decimals = _decimals(el)
     return ax
+
+
+def _decimals(el) -> Optional[int]:
+    t = el.findtext("decimalpl")
+    try:
+        return int(t) if t not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def _patch(el, categories) -> Optional[dict]:
+    """One XDFPATCH: its title and entries (``patchdata`` / ``basedata`` as
+    bytes); None when an entry is not readable."""
+    entries = []
+    for pe in el.findall("XDFPATCHENTRY"):
+        try:
+            addr = _hexint(pe.get("address"), 0)
+            n = _hexint(pe.get("datasize"), 0)
+            patch = bytes.fromhex(pe.get("patchdata", ""))
+            base = bytes.fromhex(pe.get("basedata")) if pe.get("basedata") else None
+        except ValueError:
+            return None
+        if n and len(patch) != n:
+            return None
+        entries.append({"name": pe.get("name", ""), "address": addr,
+                        "patch": patch, "base": base})
+    return {"title": (el.findtext("title") or "").strip(),
+            "description": (el.findtext("description") or "").strip(),
+            "categories": list(categories), "entries": entries}
+
+
+def _checksum(el) -> dict:
+    out = {"title": (el.findtext("title") or "").strip(),
+           "uniqueid": el.get("uniqueid", "")}
+    reg = el.find("REGION")
+    if reg is not None:
+        for c in reg:
+            out[c.tag] = (c.text or "").strip()
+    out["raw"] = ET.tostring(el, encoding="unicode")
+    return out
 
 
 def _read_xml(path: str):
@@ -250,6 +311,11 @@ def _parse(root) -> XdfDef:
                 off = 0
             d.base_offset = -off if bo.get("subtract", "0") not in ("0", "") \
                 else off
+        for rg in hdr.findall("REGION"):
+            try:
+                d.region_size = max(d.region_size, int(rg.get("size", "0"), 0))
+            except ValueError:
+                pass
     d.categories = cat_names
 
     def cats_of(el):
@@ -279,6 +345,12 @@ def _parse(root) -> XdfDef:
                 tab.z_signed = bool(flags & 0x01)
                 tab.z_lsb_first = bool(flags & 0x02)
                 tab.z_colmajor = bool(flags & 0x04)
+                tab.z_float = bool(flags & 0x10000)
+                try:
+                    tab.z_major_stride = int(emb.get("mmedmajorstridebits", "0") or 0)
+                except ValueError:
+                    tab.z_major_stride = 0
+                tab.z_decimals = _decimals(axel)
                 tab.rows = int(emb.get("mmedrowcount", "1") or 1)
                 tab.cols = int(emb.get("mmedcolcount", "1") or 1)
                 m = axel.find("MATH")
@@ -319,5 +391,13 @@ def _parse(root) -> XdfDef:
             min=float(mn) if mn else None,
             max=float(mx) if mx else None,
             lsb_first=bool(flags & 0x02),
+            is_float=bool(flags & 0x10000),
+            decimals=_decimals(el),
         ))
+    for el in root.findall("XDFCHECKSUM"):
+        d.checksums.append(_checksum(el))
+    for el in root.findall("XDFPATCH"):
+        p = _patch(el, cats_of(el))
+        if p is not None:
+            d.patches.append(p)
     return d

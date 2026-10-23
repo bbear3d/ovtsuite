@@ -31,9 +31,9 @@ The line under the cell table says which source is naming the cells.
 | ECU | Names |
 |---|---|
 | **EDC16** | From the car's own file: the calibration's group map points each cell at a signal, shown as its description and its name, for example "Boost Pressure (filtered) (BPSCD_pFltVal)". With no file open, from the factory catalogue (see below). |
-| **EDC15** | From the car's own file: the measuring-block descriptors, for example "engine speed (G1/1)". With no file open, from the factory catalogue (see below). |
+| **EDC15** | From the car's own file: the measuring-block descriptors of the dataset the ECU says it is coded to (Manual, Automatic...), for example "engine speed (G1/1)". With no file open, from the factory catalogue (see below). |
 | **ZF6HP** | From a built-in list of the 6HP19's blocks 1–17 ("Transmission cells are named from the 6HP block catalogue"). No file is needed. A few cells (group 15, cells 1 and 3) are not identified and log as "unlabelled". |
-| **ZF6HP-UDS** | The 6HP28's one live-data block, shown as group 161 with 41 cells, each named by the controller's own signal number ("6HP signal 0x1F [tD]"). The values are raw counts: no scaling to physical units is applied yet. |
+| **ZF6HP-UDS** | The 6HP28's UDS data identifiers (DIDs), one per group, listed by DID in hex ("F40C - Engine speed", "1024 - RAM u16, rolling history, slot 1 of 7"). The known signals come first: engine speed, transmission input and output speed, road speed, ATF temperature, coolant, both supply voltages, ignition status and the brake-signal flags. Those marked "(raw)" are identified but not yet scaled. The F4xx DIDs (engine speed, road speed, coolant, load, pedal, voltage) are scaled to physical units. The rest are raw counts at the width the transmission's own table gives them, labelled like "6HP28 DID 1024 (u16)"; "computed" DIDs are one cell holding the whole answer in hex. Log a few F4xx DIDs alongside the raw ones: they are what names the raw columns later. |
 | **Aisin TRx** | Not named yet: cells are "Group N / Cell M". |
 
 For an engine ECU the file has to be **the car's own** — the group map

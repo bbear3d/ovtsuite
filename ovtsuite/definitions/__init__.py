@@ -57,40 +57,77 @@ def from_xdf(xdef) -> Definition:
     """A parsed TunerPro XDF (:mod:`ovtsuite.xdf`) as a Definition."""
     defn = Definition(type="xdf", title=xdef.title or "XDF",
                       base=-int(xdef.base_offset or 0))
+    if getattr(xdef, "region_size", 0):
+        defn.info["image_size"] = str(xdef.region_size)
+    if getattr(xdef, "description", ""):
+        defn.info["description"] = xdef.description
+    defn.checksums = [dict(c) for c in getattr(xdef, "checksums", [])]
+    defn.patches = [dict(p, entries=[dict(e) for e in p["entries"]])
+                    for p in getattr(xdef, "patches", [])]
 
-    def axis(ax, real) -> Optional[AxisDef]:
-        if ax is None or not real or ax.addr is None:
+    def fixed(ax, n: int) -> Optional[AxisDef]:
+        """An axis the XDF gives as LABELs (no address): its points, or
+        its texts when they are not numbers -- only when there is one label
+        per row / column (a lone 0.0 is a writer's placeholder)."""
+        labels = [str(v) for v in (ax.labels or [])]
+        if n < 2 or len(labels) != n:
+            return None
+        try:
+            vals = [float(v) for v in labels]
+        except ValueError:
+            return AxisDef(len(labels), labels=labels,
+                           values=Storage(addr=None, units=ax.units))
+        return AxisDef(len(vals), fixed=vals,
+                       values=Storage(addr=None, units=ax.units))
+
+    def axis(ax, real, n) -> Optional[AxisDef]:
+        if ax is None:
+            return None
+        if ax.addr is None:
+            return fixed(ax, n)
+        if not real:
             return None
         st = Storage(addr=ax.addr, bits=ax.bits, equation=ax.equation or "X",
-                     units=ax.units, endian="")
+                     units=ax.units, endian="",
+                     float=bool(getattr(ax, "is_float", False)))
         st.signed = None                # as before: decided from the values
         return AxisDef(ax.count, values=st, labels=list(ax.labels) or None)
 
     for t in xdef.tables:
         order = "<" if t.z_lsb_first else ">"
-        z = Storage(addr=t.z_addr, bits=t.z_bits, signed=t.z_signed,
-                    endian=order if t.z_bits > 8 else "",
+        flt = bool(getattr(t, "z_float", False))
+        z = Storage(addr=t.z_addr, bits=t.z_bits, signed=t.z_signed and not flt,
+                    float=flt, endian=order if t.z_bits > 8 else "",
                     equation=t.z_equation or "X", units=t.z_units)
         kind = {"map": "map", "curve": "curve"}.get(t.kind, "curve")
-        x = axis(t.x, t._real(t.x))
-        y = axis(t.y, t._real(t.y))
+        x = axis(t.x, t._real(t.x), t.cols)
+        y = axis(t.y, t._real(t.y), t.rows) if kind == "map" else None
         for a in (x, y):
-            if a is not None and a.values.bits > 8:
+            if a is not None and a.values is not None and a.values.bits > 8:
                 a.values.endian = order
         if t.kind == "indexed" and t.rows * t.cols == 1:
             kind = "constant"
+        # column-major: the 0x04 flag, or (as this app writes it) a major
+        # stride of one element
+        colmajor = t.z_colmajor or (
+            getattr(t, "z_major_stride", 0) == t.z_bits
+            and t.rows > 1 and t.cols > 1)
         defn.tables.append(TableDef(
             name=t.name or "table @0x%X" % t.z_addr, kind=kind, z=z,
             rows=max(1, t.rows), cols=max(1, t.cols),
             description=t.description, categories=list(t.categories),
-            order="col" if t.z_colmajor else "row", x=x, y=y))
+            order="col" if colmajor else "row", x=x, y=y,
+            decimals=getattr(t, "z_decimals", None)))
     for c in xdef.constants:
+        flt = bool(getattr(c, "is_float", False))
         defn.tables.append(TableDef(
             name=c.name or "value @0x%X" % c.addr, kind="constant",
-            z=Storage(addr=c.addr, bits=c.bits, signed=c.signed,
+            z=Storage(addr=c.addr, bits=c.bits, signed=c.signed and not flt,
+                      float=flt,
                       endian=("<" if c.lsb_first else ">") if c.bits > 8 else "",
                       equation=c.equation or "X", units=c.units),
-            description=c.description, categories=list(c.categories)))
+            description=c.description, categories=list(c.categories),
+            decimals=getattr(c, "decimals", None)))
     return defn
 
 

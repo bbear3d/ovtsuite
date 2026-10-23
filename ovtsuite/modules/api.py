@@ -91,6 +91,28 @@ class NoDefinition(Exception):
 
 
 @dataclass(frozen=True)
+class TunerProPlugin:
+    """A TunerPro checksum plugin a module knows, as the XDFCHECKSUM block an
+    XDF names it with. The block's field values may use ``{end}`` (the last
+    byte offset of the image) and ``{size}``; nothing here computes a
+    checksum -- TunerPro's plugin does, when the tune is saved."""
+    id: str                               # stable, e.g. "edc16-flash"
+    name: str                             # the block's <title>
+    plugin_id: str                        # <pluginmoduleid> GUID
+    families: Tuple[str, ...] = ()        # platform ids it is for
+    #: XDFCHECKSUM REGION fields, in the order written
+    fields: Tuple[Tuple[str, str], ...] = ()
+    #: image sizes the plugin handles (empty: any)
+    sizes: Tuple[int, ...] = ()
+    dll: str = ""                         # the plugin's file name
+    #: what the plugin does not correct, shown at export and written into
+    #: the XDF's description
+    limitations: str = ""
+    #: may the DLL be copied next to an exported XDF
+    redistributable: bool = False
+
+
+@dataclass(frozen=True)
 class ModuleSpec:
     id: str                               # == package name under ovtsuite
     name: str
@@ -131,6 +153,14 @@ class ModuleSpec:
     #: dyno chart (docs/DYNO_PLAN.md). Optional: without it the chart is not
     #: offered for this platform.
     dyno: Optional[str] = None
+    #: ``faults(session) -> ovtsuite.tcu_dtc.FaultModel | None`` -- the
+    #: gearbox fault codes and how to switch them, for the base app's fault
+    #: code window. Optional: without it the window is not offered.
+    faults: Optional[str] = None
+    #: ``tunerpro() -> [TunerProPlugin]`` -- the TunerPro checksum plugins
+    #: that correct this platform's images, so the converter can write an
+    #: XDFCHECKSUM block for them. Optional: a module without it offers none.
+    tunerpro: Optional[str] = None
     #: Data files this module owns: globs relative to the app's ``data``
     #: directory. Its code is its package (``<app>/<id>/``). Every data file
     #: belongs to exactly one module or to the base app -- the build checks.

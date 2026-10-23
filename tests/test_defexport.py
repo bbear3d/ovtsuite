@@ -86,7 +86,9 @@ def test_a2l_reads_back_as_written():
     d = a2l.load(text.encode())
     assert not d.warnings
     by = {t.name: t for t in d.tables}
-    assert set(by) == {"VAL", "CUR", "MAP", "MAPFIX", "IDX", "RAT"}, "text skipped by the reader"
+    assert set(by) == {"VAL", "CUR", "MAP", "MAPFIX", "IDX", "RAT", "TXT"}
+    # a part number (ASCII) reads back as text, its characters counted
+    assert by["TXT"].text_kind == "ascii" and by["TXT"].cols == 4
     for e in ents[:-1]:
         t = by[e.name]
         assert t.z.addr == e.addr and t.z.bits == e.bits and t.z.signed == e.signed

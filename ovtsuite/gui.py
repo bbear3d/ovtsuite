@@ -1813,184 +1813,47 @@ if HAVE_QT:
             return "."
         return chr(code) if 0x20 <= code <= 0x7E else "."
 
-    class Zf6hpDtcDialog(QtWidgets.QDialog):
-        """The ZF fault-code tables (kdi_Tool / kdi_Steuer).
-
-        A separate dialog from the EDC16 one on purpose: the data model is
-        unrelated. There, a fault has its own DSM path and class; here the
-        tool field maps an internal ``class.code`` to an OBD-II and a VAG code,
-        and whether it is active is byte 0 of its CLASS record in a companion
-        control table. So disabling 19.0 disables every code in class 19, and
-        the dialog has to say so before it writes rather than after.
-        """
-
-        def __init__(self, session: TunerSession, parent=None):
-            super().__init__(parent)
-            self.session = session
-            self.tables = list(getattr(session, "dtc", None) or ())
-            self.setWindowTitle("ZF fault codes (H3326)")
-            self.setWindowIcon(app_icon())
-            self.resize(880, 600)
-            v = QtWidgets.QVBoxLayout(self)
-
-            self.summary = QtWidgets.QLabel()
-            self.summary.setWordWrap(True)
-            v.addWidget(self.summary)
-
-            row = QtWidgets.QHBoxLayout()
-            self.variant = QtWidgets.QComboBox()
-            for t in self.tables:
-                self.variant.addItem("Coding variant %d" % t.variant, t.variant)
-            self.variant.currentIndexChanged.connect(self._populate)
-            row.addWidget(self.variant)
-            self.filter = QtWidgets.QLineEdit()
-            self.filter.setPlaceholderText(
-                "Filter by code, class or description…")
-            self.filter.textChanged.connect(self._populate)
-            row.addWidget(self.filter, 1)
-            self.coded_only = QtWidgets.QCheckBox("With a code only")
-            self.coded_only.setChecked(True)
-            self.coded_only.stateChanged.connect(self._populate)
-            row.addWidget(self.coded_only)
-            v.addLayout(row)
-
-            cols = ["On", "Internal", "OBD-II", "VAG", "Path", "Description"]
-            self._cols = cols
-            self.table = QtWidgets.QTableWidget(0, len(cols))
-            self.table.setHorizontalHeaderLabels(cols)
-            self.table.horizontalHeader().setSectionResizeMode(
-                len(cols) - 1, QtWidgets.QHeaderView.Stretch)
-            self.table.verticalHeader().setVisible(False)
-            self.table.itemChanged.connect(self._on_check)
-            v.addWidget(self.table)
-
-            self.note = QtWidgets.QLabel(
-                "A fault's on/off byte belongs to its whole CLASS, so turning "
-                "one code off turns off every code that shares its class "
-                "number. You are told how many before anything is written.")
-            self.note.setStyleSheet("color: gray")
-            self.note.setWordWrap(True)
-            v.addWidget(self.note)
-
-            btns = QtWidgets.QHBoxLayout()
-            btns.addStretch(1)
-            close = QtWidgets.QPushButton("Close")
-            close.clicked.connect(self.accept)
-            btns.addWidget(close)
-            v.addLayout(btns)
-
-            self._loading = False
-            self._populate()
-
-        def refresh_from_session(self):
-            """Show edits made outside this window (the grid, undo, a patch,
-            another tool) -- called by the tab while this window is open."""
-            try:
-                self.tables = list(_dtc6().read(
-                    bytes(self.session.binfile.data),
-                    self.session.result.items, self.session.kb) or ())
-            except Exception:
-                pass                        # keep the last good parse
-            self._populate()
-
-        # -- state -----------------------------------------------------
-        def _current(self):
-            i = self.variant.currentIndex()
-            return self.tables[i] if 0 <= i < len(self.tables) else None
-
-        def _populate(self):
-            t = self._current()
-            self.table.setRowCount(0)
-            if t is None:
-                self.summary.setText("This image carries no fault-code table.")
-                return
-            where = ("named by the knowledge base" if t.source == "kb"
-                     else "found by structure (no definition for this image)")
-            self.summary.setText(
-                "%d fault codes, %d enabled · tool field @0x%X, control "
-                "table @%s (%d records) · %s"
-                % (len(t.entries), sum(1 for e in t.entries if e.enabled),
-                   t.addr,
-                   ("0x%X" % t.steuer_addr) if t.steuer_addr else "not found",
-                   t.steuer_rows, where))
-
-            needle = self.filter.text().strip().lower()
-            self._loading = True
-            for entry in t.entries:
-                if self.coded_only.isChecked() and not entry.p_code:
-                    continue
-                desc = _dtc6().describe(entry)
-                text = " ".join((entry.label(),
-                                 _dtc6().format_p_code(entry.p_code),
-                                 _dtc6().format_vag(entry.customer),
-                                 desc)).lower()
-                if needle and needle not in text:
-                    continue
-                r = self.table.rowCount()
-                self.table.insertRow(r)
-                chk = QtWidgets.QTableWidgetItem()
-                chk.setFlags(QtCore.Qt.ItemIsUserCheckable
-                             | QtCore.Qt.ItemIsEnabled
-                             | QtCore.Qt.ItemIsSelectable)
-                chk.setCheckState(QtCore.Qt.Checked if entry.enabled
-                                  else QtCore.Qt.Unchecked)
-                chk.setData(QtCore.Qt.UserRole, entry)
-                if not entry.steuer_addr:
-                    chk.setFlags(QtCore.Qt.ItemIsSelectable)
-                    chk.setToolTip("No control-table byte for this fault")
-                self.table.setItem(r, 0, chk)
-                for col, val in enumerate((
-                        entry.label(),
-                        _dtc6().format_p_code(entry.p_code),
-                        _dtc6().format_vag(entry.customer),
-                        "%d" % (entry.sub >> 8),
-                        desc), start=1):
-                    it = QtWidgets.QTableWidgetItem(val)
-                    it.setFlags(QtCore.Qt.ItemIsEnabled
-                                | QtCore.Qt.ItemIsSelectable)
-                    self.table.setItem(r, col, it)
-            self._loading = False
-            self.table.resizeColumnsToContents()
-
-        # -- editing ---------------------------------------------------
-        def _on_check(self, item):
-            if self._loading or item.column() != 0:
-                return
-            entry = item.data(QtCore.Qt.UserRole)
-            table = self._current()
-            if entry is None or table is None:
-                return
-            enable = item.checkState() == QtCore.Qt.Checked
-            edit, affected, note = _dtc6().toggle(table, entry, enable)
-            if edit is None:
-                QtWidgets.QMessageBox.information(self, "Fault codes", note)
-                self._populate()
-                return
-            if len(affected) > 1 and QtWidgets.QMessageBox.question(
-                    self, "Fault codes", note.capitalize() + "?"
-            ) != QtWidgets.QMessageBox.Yes:
-                self._populate()
-                return
-            addr, data = edit
-            with self.session.transaction(note):
-                self.session.edit_bytes(addr, data)
-            for e in affected:
-                e.enabled = enable
-                if enable:
-                    pass                       # priority restored to its own
-                else:
-                    e.orig_priority = e.orig_priority or 0
-            self._populate()
+    def Zf6hpDtcDialog(session, parent=None, compare=None):
+        """The ZF 6HP fault-code window -- the shared gearbox window
+        (:mod:`ovtsuite.gui_tcu_dtc`) on the 6HP module's model. Kept under
+        this name for callers that open it directly."""
+        from .gui_tcu_dtc import open_for
+        return open_for(session, parent, compare=compare)
 
     class SignalDelegate(QtWidgets.QStyledItemDelegate):
         """Editable combobox of signal ids (named where the catalog knows
         them) for the measuring-block channel cells. Still accepts a typed
-        id not in the list, so nothing is locked out."""
+        id not in the list, so nothing is locked out.
+
+        The cell's id lives in its UserRole, not its text: the text is a
+        label ("12 - Engine Speed"), and reading the id back out of it is how
+        an untouched editor used to fall back to id 0 -- engine speed -- and
+        write it into the slot on Enter."""
 
         def __init__(self, choices, catalog, parent=None):
             super().__init__(parent)
             self.choices = choices            # list of (id, label)
             self.catalog = catalog
+            self.popup_next = False           # a click opened it: show the list
+
+        def paint(self, painter, option, index):
+            super().paint(painter, option, index)
+            if not (index.flags() & QtCore.Qt.ItemIsEditable):
+                return
+            # a drop-down arrow says the cell is a list to pick from
+            opt = QtWidgets.QStyleOption()
+            opt.initFrom(option.widget or self.parent())
+            side = max(6, min(10, option.rect.height() - 6))
+            r = option.rect
+            opt.rect = QtCore.QRect(r.right() - side - 4,
+                                    r.top() + (r.height() - side) // 2,
+                                    side, side)
+            if option.state & QtWidgets.QStyle.State_Selected:
+                opt.palette.setColor(QtGui.QPalette.ButtonText,
+                                     option.palette.highlightedText().color())
+            st = (option.widget.style() if option.widget is not None
+                  else QtWidgets.QApplication.style())
+            st.drawPrimitive(QtWidgets.QStyle.PE_IndicatorArrowDown, opt, painter)
 
         def createEditor(self, parent, option, index):
             cb = QtWidgets.QComboBox(parent)
@@ -2006,34 +1869,64 @@ if HAVE_QT:
             cb.view().setMinimumWidth(min(longest + 64, 920))
             cb.setSizeAdjustPolicy(
                 QtWidgets.QComboBox.AdjustToContentsOnFirstShow)
+            # let typing filter the long list instead of only jumping to a prefix
+            comp = cb.completer()
+            if comp is not None:
+                comp.setFilterMode(QtCore.Qt.MatchContains)
+                comp.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
+
+            # picking from the list is the edit: no Enter or click-away needed
+            def _picked(_i, cb=cb):
+                self.commitData.emit(cb)
+                self.closeEditor.emit(cb, QtWidgets.QAbstractItemDelegate.NoHint)
+            cb.activated.connect(_picked)
+            if self.popup_next:
+                self.popup_next = False
+                QtCore.QTimer.singleShot(0, cb.showPopup)
             return cb
 
         def setEditorData(self, editor, index):
-            try:
-                cur = int(index.model().data(index, QtCore.Qt.EditRole))
-            except (TypeError, ValueError):
-                cur = 0
-            i = editor.findData(cur)
+            cur = index.data(QtCore.Qt.UserRole)
+            if cur is None:
+                txt = str(index.data(QtCore.Qt.EditRole) or "").strip()
+                head = txt.split(" ", 1)[0]
+                cur = int(head) if head.isdigit() else None
+            if cur is None:
+                editor.setEditText("")
+                return
+            i = editor.findData(int(cur))
             if i >= 0:
                 editor.setCurrentIndex(i)
             else:
                 editor.setEditText(str(cur))
 
         def setModelData(self, editor, model, index):
+            txt = editor.currentText().strip()
             sid = editor.currentData()
-            if sid is None:
+            i = editor.findText(txt)
+            if i < 0 or editor.itemData(i) != sid:
                 # typed value: accept a plain integer, or "N - name"
-                txt = editor.currentText().strip()
                 head = txt.split(" ", 1)[0]
                 try:
-                    sid = int(head)
+                    sid = int(head, 0)
                 except ValueError:
-                    return
+                    try:
+                        sid = int(head)        # "007" is not valid base-0
+                    except ValueError:
+                        return
+            if sid is None:
+                return
+            if index.data(QtCore.Qt.UserRole) == int(sid):
+                return                         # unchanged: no write, no undo step
             model.setData(index, str(int(sid)), QtCore.Qt.EditRole)
 
-
     class MsBlockDialog(QtWidgets.QDialog):
-        """View/edit the measuring-block (signal-block) structure."""
+        """View/edit the measuring-block (signal-block) structure.
+
+        EDC16: groups 1-127 with up to eight cells -- the ECU sends a group's
+        own map row as cells 1-4 and the row 127 above it as cells 5-8
+        (:mod:`ovtsuite.msblock`). EDC15: blocks per dataset, four cells, plus
+        the group descriptors (display type, norm, message) on their own tab."""
 
         def __init__(self, session: TunerSession, parent=None, compare=None):
             super().__init__(parent)
@@ -2041,10 +1934,12 @@ if HAVE_QT:
             self.mb = MeasuringBlocks(session)
             self._compare = compare
             self._mainwin = parent
+            self._edc15 = bool(getattr(session, "is_edc15", False))
             self.cmp_mb = None
             self.cmp_catalog = None
             self._cmp_by_num = {}
-            if compare is not None and self.mb.available:
+            if compare is not None and self.mb.available and (
+                    bool(getattr(compare, "is_edc15", False)) == self._edc15):
                 try:
                     _cmb = MeasuringBlocks(compare)
                     if _cmb.available:
@@ -2053,44 +1948,90 @@ if HAVE_QT:
                 except Exception:
                     self.cmp_mb = None
             self._has_cmp = self.cmp_mb is not None
-            self.setWindowTitle("Measuring blocks / signal-block structure")
-            self.resize(1040 if self._has_cmp else 720, 600)
+            self.setWindowTitle("Measuring blocks")
             v = QtWidgets.QVBoxLayout(self)
 
-            info = QtWidgets.QLabel(
-                "Each measuring block (as a scan tool numbers them) shows up "
-                "to four channels. A cell is the internal signal id fed to "
-                "that slot, shown as \"id - name\"; 255 = empty. Double-click "
-                "a channel to pick another signal (or type an id). Editing a "
-                "slot changes what that block displays on a scan tool.")
-            info.setWordWrap(True)
-            info.setStyleSheet("color: gray;")
-            v.addWidget(info)
-            self._catalog_note = QtWidgets.QLabel()
-            self._catalog_note.setStyleSheet("color: gray; font-style: italic;")
-            v.addWidget(self._catalog_note)
-
             if not self.mb.available:
+                self.resize(520, 160)
+                what = ("xcwK measuring-block constants" if self._edc15
+                        else "measuring-block map (UACC_RSigBlkGrp_MAP)")
                 v.addWidget(QtWidgets.QLabel(
-                    "This binary has no UACC_RSigBlkGrp_MAP "
-                    "(measuring-block group table)."))
+                    "This binary's definition has no %s, so there are no "
+                    "measuring blocks to show." % what))
                 b = QtWidgets.QPushButton("Close")
                 b.clicked.connect(self.accept)
                 v.addWidget(b)
                 return
+
+            self._nslots = self.mb.max_slots
+            if self._edc15:
+                text = ("Each measuring block (as a scan tool numbers it) shows four "
+                        "cells, per calibration dataset. A cell selects a group "
+                        "descriptor (xcwGrp), shown as \"id - name\"; 255 = empty. "
+                        "Click a cell to pick another descriptor from its list "
+                        "(type to filter it). The "
+                        "Descriptors tab sets what each descriptor reads and how "
+                        "the scan tool scales it.")
+            else:
+                text = ("Groups 1-127, as a scan tool numbers them. The ECU sends a "
+                        "group's own map row as cells 1-4 and the row 127 above it "
+                        "as cells 5-8, so a group can show up to eight values. A "
+                        "cell selects an ESB entry (signal + display scaling), "
+                        "shown as \"id - name\"; 255 = empty. Click a cell to pick "
+                        "another signal from its list (type to filter it), or "
+                        "select a cell and type an id.")
+            info = QtWidgets.QLabel(text)
+            info.setWordWrap(True)
+            info.setStyleSheet("color: gray;")
+            v.addWidget(info)
+            self._catalog_note = QtWidgets.QLabel()
+            self._catalog_note.setWordWrap(True)
+            self._catalog_note.setStyleSheet("color: gray; font-style: italic;")
+            v.addWidget(self._catalog_note)
 
             self.summary = QtWidgets.QLabel()
             v.addWidget(self.summary)
 
             row = QtWidgets.QHBoxLayout()
             self.filter = QtWidgets.QLineEdit()
-            self.filter.setPlaceholderText("Filter by block number or signal name...")
+            self.filter.setPlaceholderText("Block number, or part of a signal name...")
+            self.filter.setClearButtonEnabled(True)
             self.filter.textChanged.connect(self._populate)
-            row.addWidget(self.filter)
+            row.addWidget(self.filter, 1)
+            self.ds_box = None
+            self.all_ds = None
+            if self._edc15:
+                self.ds_box = QtWidgets.QComboBox()
+                self.ds_box.addItem("All datasets", None)
+                for ds in self.mb.datasets():
+                    self.ds_box.addItem(ds, ds)
+                self.ds_box.currentIndexChanged.connect(self._populate)
+                self.ds_box.currentIndexChanged.connect(
+                    lambda *_: self._populate_descriptors())
+                row.addWidget(self.ds_box)
             self.pop_only = QtWidgets.QCheckBox("Populated only")
+            self.pop_only.setChecked(True)
             self.pop_only.stateChanged.connect(self._populate)
             row.addWidget(self.pop_only)
+            self.cmp_cols = None
+            if self._has_cmp:
+                self.cmp_cols = QtWidgets.QCheckBox("Comparison columns")
+                self.cmp_cols.setToolTip(
+                    "Show the comparison binary's cells beside this one's. "
+                    "Hidden, a cell that differs is still shaded and its "
+                    "tooltip names the comparison's signal.")
+                self.cmp_cols.setChecked(True)
+                self.cmp_cols.toggled.connect(self._show_cmp_cols)
+                row.addWidget(self.cmp_cols)
             v.addLayout(row)
+            if self._edc15 and len(self.mb.datasets()) > 1:
+                self.all_ds = QtWidgets.QCheckBox(
+                    "Apply edits to every dataset (Manual / Automatic ...)")
+                self.all_ds.setToolTip(
+                    "When ticked, changing a block cell or a descriptor writes the "
+                    "same value into the same block / descriptor of every dataset, "
+                    "as one undo step.")
+                v.addWidget(self.all_ds)
 
             self.catalog = SignalCatalog(session.family, session)
             self.observed = observed_ids(session)
@@ -2101,59 +2042,85 @@ if HAVE_QT:
                         self._compare.family, self._compare)
                 except Exception:
                     self.cmp_catalog = None
-            _mcols = ["Block", "Ch 1", "Ch 2", "Ch 3", "Ch 4"]
+            n = self._nslots
+            _mcols = ["Block"] + ["Cell %d" % (i + 1) for i in range(n)]
             if self._has_cmp:
-                _mcols += ["Cmp 1", "Cmp 2", "Cmp 3", "Cmp 4"]
+                _mcols += ["Cmp %d" % (i + 1) for i in range(n)]
             self._mb_cols = _mcols
             self.table = QtWidgets.QTableWidget(0, len(_mcols))
             self.table.setHorizontalHeaderLabels(_mcols)
+            if not self._edc15 and n > 4:
+                for i in range(4, n):
+                    hi = self.table.horizontalHeaderItem(1 + i)
+                    hi.setToolTip("Sent from the map row 127 above the group's own")
             self.table.verticalHeader().setVisible(False)
             hdr = self.table.horizontalHeader()
-            hdr.setSectionResizeMode(
-                0, QtWidgets.QHeaderView.ResizeToContents)
+            hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+            # with a comparison there are twice the cells: narrower ones
+            self._cell_w = 130 if self._has_cmp else 150
             for _c in range(1, len(_mcols)):
-                hdr.setSectionResizeMode(_c, QtWidgets.QHeaderView.Stretch)
+                hdr.setSectionResizeMode(_c, QtWidgets.QHeaderView.Interactive)
+                hdr.resizeSection(_c, self._cell_w if _c <= n else 120)
+            hdr.setStretchLastSection(True)
             self.table.setSelectionBehavior(
                 QtWidgets.QAbstractItemView.SelectItems)
             self.table.itemSelectionChanged.connect(self._show_detail)
             delegate = SignalDelegate(self._choices, self.catalog, self.table)
-            for col in (1, 2, 3, 4):
+            self._delegate = delegate
+            for col in range(1, n + 1):
                 self.table.setItemDelegateForColumn(col, delegate)
+            # one click opens a cell's list (a double-click still works, and
+            # typing on a selected cell or F2 starts an edit)
+            self.table.setEditTriggers(
+                QtWidgets.QAbstractItemView.DoubleClicked
+                | QtWidgets.QAbstractItemView.EditKeyPressed
+                | QtWidgets.QAbstractItemView.AnyKeyPressed)
+            self.table.clicked.connect(self._click_edit)
             self.table.itemChanged.connect(self._on_item_changed)
-            if self._has_cmp:
-                self.table.setContextMenuPolicy(
-                    QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-                self.table.customContextMenuRequested.connect(self._mb_menu)
-            v.addWidget(self.table)
+            self.table.setContextMenuPolicy(
+                QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            self.table.customContextMenuRequested.connect(self._mb_menu)
 
-            row2 = QtWidgets.QHBoxLayout()
-            row2.addWidget(QtWidgets.QLabel("Reference tables:"))
-            self.ref_box = QtWidgets.QComboBox()
-            for e in self.mb.related:
-                self.ref_box.addItem("%s  (%dx%d)" % (e.name, e.rows, e.cols),
-                                     e)
-            open_ref = QtWidgets.QPushButton("Open in editor")
-            open_ref.clicked.connect(self._open_ref)
-            row2.addWidget(self.ref_box, 1)
-            row2.addWidget(open_ref)
-            v.addLayout(row2)
+            if self._edc15:
+                self.tabs = QtWidgets.QTabWidget()
+                self.tabs.addTab(self.table, "Blocks")
+                self.tabs.addTab(self._build_descriptor_tab(), "Descriptors")
+                v.addWidget(self.tabs, 1)
+            else:
+                v.addWidget(self.table, 1)
+
+            if self.mb.related:
+                row2 = QtWidgets.QHBoxLayout()
+                row2.addWidget(QtWidgets.QLabel("Related tables:"))
+                self.ref_box = QtWidgets.QComboBox()
+                for e in self.mb.related:
+                    self.ref_box.addItem("%s  (%dx%d)" % (e.name, e.rows, e.cols), e)
+                open_ref = QtWidgets.QPushButton("Show in editor")
+                open_ref.setToolTip("Select the table in the main window; this "
+                                    "window stays open.")
+                open_ref.clicked.connect(self._open_ref)
+                row2.addWidget(self.ref_box, 1)
+                row2.addWidget(open_ref)
+                v.addLayout(row2)
 
             self.detail = QtWidgets.QLabel()
             self.detail.setWordWrap(True)
+            self.detail.setTextFormat(QtCore.Qt.RichText)
             self.detail.setStyleSheet(
                 "padding:4px; background:palette(midlight); border-radius:4px;")
-            self.detail.setText("Select a channel to see its signal details.")
+            self.detail.setText("Select a cell to see its signal details.")
             v.addWidget(self.detail)
 
             btns = QtWidgets.QHBoxLayout()
-            clr = QtWidgets.QPushButton("Clear selected block")
+            clr = QtWidgets.QPushButton("Clear selected block(s)")
             clr.clicked.connect(self._clear_sel)
             btns.addWidget(clr)
             if self._has_cmp:
                 copyb = QtWidgets.QPushButton("Copy block(s) from comparison")
                 copyb.setToolTip(
-                    "Set the selected block's channels to the comparison "
-                    "binary's channels for the same block number. One undoable "
+                    "Set the selected blocks' cells to what the comparison binary "
+                    "shows in the same block. Signals are matched by meaning, so "
+                    "this works between different software versions. One undoable "
                     "step.")
                 copyb.clicked.connect(self._copy_mb_sel_from_cmp)
                 btns.addWidget(copyb)
@@ -2162,118 +2129,223 @@ if HAVE_QT:
             close.clicked.connect(self.accept)
             btns.addWidget(close)
             v.addLayout(btns)
+            from .gui_fit import fit_to_screen
+            want = 120 + self._cell_w * n + (120 * n if self._has_cmp else 0)
+            fit_to_screen(self, min(1320 if self._has_cmp else 1500, want),
+                          640, frac_w=0.85, frac_h=0.8)
 
             self._loading = False
             self._populate()
 
+        # ---------------------------------------------------- helpers
+        def _click_edit(self, index):
+            """A click on an editable cell opens its list straight away."""
+            if not (1 <= index.column() <= self._nslots):
+                return
+            it = self.table.item(index.row(), index.column())
+            if it is None or not (it.flags() & QtCore.Qt.ItemIsEditable):
+                return
+            if QtWidgets.QApplication.keyboardModifiers() & (
+                    QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier):
+                return                         # extending a selection
+            if self.table.state() == QtWidgets.QAbstractItemView.EditingState:
+                return
+            self._delegate.popup_next = True
+            self.table.edit(index)
+            self._delegate.popup_next = False
+
+        def _show_cmp_cols(self, on):
+            n = self._nslots
+            for c in range(n):
+                self.table.setColumnHidden(1 + n + c, not on)
+
+        def _ds_for(self, g):
+            return getattr(g, "group", None) if self._edc15 else None
+
+        def _info(self, sid, g=None):
+            """SignalInfo for a cell; on EDC15 from the cell's own dataset."""
+            if self._edc15 and g is not None:
+                d = self.mb.descriptor(g.group, sid)
+                if d is not None:
+                    from .signals import SignalInfo
+                    note = ""
+                    if d.message is not None:
+                        note = "message 0x%04X" % d.message
+                        if d.read_ram:
+                            note += ", RAM 0x%04X" % d.read_ram
+                        note += ", display type %s, norm %s" % (d.display, d.norm)
+                    return SignalInfo(sid, "xcwGrp%02d" % sid, "", note, d.name)
+            return self.catalog.info(sid)
+
+        def _cell_text(self, sid, g=None) -> str:
+            if sid in EMPTY_IDS:
+                return "%d - (empty)" % sid
+            info = self._info(sid, g)
+            if info.known:
+                return "%d - %s" % (sid, info.human or info.name)
+            return info.label()
+
+        def _cmp_cell_text(self, sid: int, cg=None) -> str:
+            if sid in EMPTY_IDS:
+                return "%d - (empty)" % sid
+            if self._edc15 and cg is not None:
+                d = self.cmp_mb.descriptor(cg.group, sid)
+                if d is not None and d.name:
+                    return "%d - %s" % (sid, d.name)
+                return str(sid)
+            if self.cmp_catalog is None:
+                return str(sid)
+            info = self.cmp_catalog.info(sid)
+            if info.known:
+                return "%d - %s" % (sid, info.human or info.name)
+            return info.label()
+
+        def _translated(self, g, cid):
+            """The comparison's id ``cid`` expressed in the primary's terms."""
+            if self._edc15:
+                return self.mb.translate_from(self.cmp_mb, g.group, cid)
+            return self.mb.translate_from(self.cmp_mb, cid)
+
+        def _matches(self, g, needle: str) -> bool:
+            if needle.isdigit():
+                blk = getattr(g, "block", g.number)
+                return int(needle) == int(blk)
+            nl = needle.lower()
+            for ch in g.channels():
+                if ch in EMPTY_IDS:
+                    continue
+                info = self._info(ch, g)
+                if nl in (info.name or "").lower() or nl in (info.human or "").lower():
+                    return True
+            return False
+
+        # ---------------------------------------------------- the table
         def _populate(self):
             self._loading = True
             needle = self.filter.text().strip()
             groups = (self.mb.populated_groups() if self.pop_only.isChecked()
                       else self.mb.groups())
+            if self.ds_box is not None and self.ds_box.currentData():
+                groups = [g for g in groups if g.group == self.ds_box.currentData()]
             if needle:
-                if needle.isdigit():
-                    groups = [g for g in groups if needle in str(g.number)]
-                else:
-                    nl = needle.lower()
-                    def _match(g):
-                        for ch in g.channels():
-                            info = self.catalog.info(ch)
-                            if info.known and (
-                                    nl in info.name.lower()
-                                    or nl in (info.human or "").lower()):
-                                return True
-                        return False
-                    groups = [g for g in groups if _match(g)]
+                groups = [g for g in groups if self._matches(g, needle)]
+            n = self._nslots
             self.table.setRowCount(len(groups))
             for r, g in enumerate(groups):
                 num = QtWidgets.QTableWidgetItem(str(g.number))
-                num.setFlags(QtCore.Qt.ItemIsSelectable
-                             | QtCore.Qt.ItemIsEnabled)
+                num.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
                 num.setData(QtCore.Qt.UserRole, g)
                 self.table.setItem(r, 0, num)
-                for c, ch in enumerate(g.channels()):
-                    it = QtWidgets.QTableWidgetItem(self._cell_text(ch))
+                chans = g.channels()
+                for c in range(n):
+                    if c >= len(chans) or (hasattr(g, "editable") and not g.editable(c)):
+                        it = QtWidgets.QTableWidgetItem("—")
+                        it.setFlags(QtCore.Qt.ItemIsSelectable)
+                        it.setToolTip("No map row for this half of the group")
+                        self.table.setItem(r, c + 1, it)
+                        continue
+                    ch = chans[c]
+                    it = QtWidgets.QTableWidgetItem(self._cell_text(ch, g))
                     it.setData(QtCore.Qt.UserRole, ch)
-                    info = self.catalog.info(ch)
-                    if ch not in EMPTY_IDS and info.known:
+                    if ch not in EMPTY_IDS:
+                        info = self._info(ch, g)
                         tip = info.label()
-                        if info.note:
+                        if info.note and "intnum=" not in info.note:
                             tip += "\n" + info.note
                         it.setToolTip(tip)
+                    else:
+                        it.setForeground(QtGui.QColor(150, 150, 150))
                     self.table.setItem(r, c + 1, it)
                 if self._has_cmp:
                     cg = self._cmp_by_num.get(g.number)
                     cch = cg.channels() if cg is not None else []
-                    pch = g.channels()
-                    for c in range(4):
+                    for c in range(n):
                         cid = cch[c] if c < len(cch) else None
                         it = QtWidgets.QTableWidgetItem(
-                            "\u2014" if cid is None
-                            else self._cmp_cell_text(cid))
-                        it.setFlags(QtCore.Qt.ItemIsSelectable
-                                    | QtCore.Qt.ItemIsEnabled)
+                            "—" if cid is None else self._cmp_cell_text(cid, cg))
+                        it.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
                         if cid is not None:
                             it.setData(QtCore.Qt.UserRole, cid)
-                            info = (self.cmp_catalog.info(cid)
-                                    if self.cmp_catalog is not None else None)
-                            if info is not None and cid not in EMPTY_IDS \
-                                    and info.known:
-                                tip = info.label()
-                                if info.note:
-                                    tip += "\n" + info.note
-                                it.setToolTip(tip)
-                            if c >= len(pch) or cid != pch[c]:
+                            mine = chans[c] if c < len(chans) else None
+                            same = self._translated(g, cid) == mine
+                            if not same:
                                 it.setBackground(EDIT_BG)
                                 it.setForeground(CELL_DARK_FG)
-                        self.table.setItem(r, 5 + c, it)
+                                own = self.table.item(r, c + 1)
+                                if own is not None and own.data(QtCore.Qt.UserRole) is not None:
+                                    own.setBackground(EDIT_BG)
+                                    own.setForeground(CELL_DARK_FG)
+                                    own.setToolTip(
+                                        (own.toolTip() + "\n" if own.toolTip() else "")
+                                        + "Comparison: " + it.text())
+                                if self._translated(g, cid) is None:
+                                    it.setToolTip("This signal has no definition in "
+                                                  "the primary binary")
+                        self.table.setItem(r, 1 + n + c, it)
             self._loading = False
             self._refresh_summary()
 
         def refresh_from_session(self):
             """Show edits made outside this window (the grid, undo, a patch,
             another tool) -- called by the tab while this window is open."""
+            if not self.mb.available:
+                return
+            if self._edc15:
+                self.mb.refresh_descriptors()
+                self._populate_descriptors()
+            elif hasattr(self.mb, "forget_cache"):
+                self.mb.forget_cache()
             self._populate()
-
-        def _cell_text(self, sid: int) -> str:
-            if sid in EMPTY_IDS:
-                return str(sid)
-            info = self.catalog.info(sid)
-            if info.known:
-                return "%d - %s" % (sid, info.human or info.name)
-            return str(sid)
 
         def _show_detail(self):
             for it in self.table.selectedItems():
                 if it.column() == 0:
                     continue
+                g = self.table.item(it.row(), 0).data(QtCore.Qt.UserRole)
                 ch = it.data(QtCore.Qt.UserRole)
-                if ch in EMPTY_IDS:
-                    self.detail.setText("Block %s, channel %d - empty slot "
-                                        "(id %d)." % (
-                        self.table.item(it.row(), 0).text(),
-                        it.column(), ch))
+                n = self._nslots
+                cmp_col = it.column() > n
+                slot = (it.column() - 1 - n) if cmp_col else (it.column() - 1)
+                where = "Block %s, cell %d" % (g.number, slot + 1)
+                if not self._edc15 and not cmp_col and slot >= 4 and g.ext_row is not None:
+                    where += " (map row %d)" % (g.ext_row + 1)
+                if cmp_col:
+                    where += " - comparison"
+                if ch is None:
+                    self.detail.setText(where + ": no map row for this half of the group.")
                     return
-                info = self.catalog.info(ch)
-                if info.known:
-                    txt = "<b>%s</b>" % info.label()
+                if ch in EMPTY_IDS:
+                    self.detail.setText("%s: empty (id %d)." % (where, ch))
+                    return
+                info = (self._info(ch, g) if not cmp_col
+                        else (self.cmp_catalog.info(ch) if self.cmp_catalog is not None
+                              and not self._edc15 else self._info(ch, g)))
+                txt = "<b>%s</b>: %s" % (where, info.label())
+                if self._edc15:
                     if info.note:
-                        txt += "<br><span style='color:gray'>%s</span>" % (
-                            info.note)
-                    self.detail.setText(txt)
+                        txt += "<br><span style='color:gray'>%s</span>" % info.note
                 else:
-                    self.detail.setText(
-                        "Signal id %d - no catalog name for family %s."
-                        % (ch, self.session.family))
+                    mb = self.cmp_mb if cmp_col else self.mb
+                    ent = mb.esb_entry(ch)
+                    if ent is not None:
+                        txt += ("<br><span style='color:gray'>ESB index %d: internal "
+                                "signal %d, display formula %d, norm %d</span>"
+                                % (ent.index, ent.signal, ent.formula, ent.norm))
+                self.detail.setText(txt)
                 return
-            self.detail.setText("Select a channel to see its signal details.")
+            self.detail.setText("Select a cell to see its signal details.")
 
         def _refresh_summary(self):
             s = self.mb.summary()
+            unit = "blocks" if self._edc15 else "groups"
             self.summary.setText(
-                "%d blocks - %d populated, %d empty%s" % (
-                    s["groups"], s["populated"], s["empty"],
+                "%d %s - %d populated, %d empty%s" % (
+                    s["groups"], unit, s["populated"], s["empty"],
                     "   (unsaved changes)" if self.session.modified else ""))
+            if self._edc15:
+                self._catalog_note.setText(
+                    "Cells are named from this binary's own group descriptors.")
+                return
             nk = self.catalog.named_count
             src = getattr(self.catalog, "source_family", None)
             if nk and src:
@@ -2288,86 +2360,204 @@ if HAVE_QT:
             else:
                 self._catalog_note.setText(
                     "Signal names: not available for this software (family "
-                    "%s), so cells show the signal id numbers. You can still "
-                    "pick or type an id for any channel." % self.session.family)
+                    "%s), so cells show the ESB id and its internal signal "
+                    "number. You can still pick or type an id for any cell."
+                    % self.session.family)
+
+        def _say_error(self, text):
+            self.detail.setText("<span style='color:#c0392b'><b>%s</b></span>" % text)
 
         def _on_item_changed(self, item):
-            # only the primary channel columns (1-4) are editable; block 0 and
-            # the read-only comparison columns (>=5) never write.
-            if self._loading or not (1 <= item.column() <= 4):
+            # only the primary cells (1..n) are editable; the block column and
+            # the read-only comparison columns never write.
+            n = self._nslots
+            if self._loading or not (1 <= item.column() <= n):
                 return
             g = self.table.item(item.row(), 0).data(QtCore.Qt.UserRole)
+            slot = item.column() - 1
+            old = g.channels()[slot]
             head = item.text().strip().split(" ", 1)[0]
             try:
-                val = int(head)
+                val = int(head, 0)
             except ValueError:
+                try:
+                    val = int(head)
+                except ValueError:
+                    self._populate()
+                    return
+            if val == old:
+                self._populate()               # just re-label; nothing to write
+                return
+            ok = (self.mb.valid_id(val, g.group) if self._edc15
+                  else self.mb.valid_id(val))
+            if not ok:
+                mx = self.mb.max_index
+                if self._edc15:
+                    self._say_error("%d is not a descriptor of dataset %s (use one "
+                                    "of its xcwGrp ids, or 255 for empty)."
+                                    % (val, g.group))
+                else:
+                    self._say_error("%d is not a defined ESB entry%s - the ECU would "
+                                    "read past its tables. Use 255 for an empty cell."
+                                    % (val, (" (0-%d)" % mx) if mx is not None else ""))
                 self._populate()
                 return
-            self.mb.set_channel(g, item.column() - 1, val)
-            # re-render this cell as a label without retriggering the signal
-            self._loading = True
-            item.setText(self._cell_text(val))
-            item.setData(QtCore.Qt.UserRole, val)
-            self._loading = False
-            self._refresh_summary()
+            edits = [(g, slot, val)]
+            if self.all_ds is not None and self.all_ds.isChecked():
+                edits += [(sg, slot, val) for sg in self.mb.siblings(g)
+                          if self.mb.valid_id(val, sg.group)]
+            with self.session.transaction("edit measuring block %s" % g.number):
+                self.mb.set_channels(edits)
+            self._populate()
+            self._show_detail()
+
+        def _selected_groups(self):
+            rows = sorted({i.row() for i in self.table.selectedIndexes()})
+            out = []
+            for r in rows:
+                it = self.table.item(r, 0)
+                if it is not None:
+                    out.append(it.data(QtCore.Qt.UserRole))
+            return out
 
         def _clear_sel(self):
-            rows = {i.row() for i in self.table.selectedIndexes()}
-            # every selected block (and, on EDC15, every slot entity) is ONE
-            # undo step
+            groups = self._selected_groups()
+            if not groups:
+                return
+            edits = []
+            for g in groups:
+                targets = [g]
+                if self.all_ds is not None and self.all_ds.isChecked():
+                    targets += self.mb.siblings(g)
+                for t in targets:
+                    edits += [(t, s, 255) for s in range(t.slots)
+                              if not hasattr(t, "editable") or t.editable(s)]
+            # every selected block is ONE undo step
             with self.session.transaction("clear measuring block(s)"):
-                for r in rows:
-                    g = self.table.item(r, 0).data(QtCore.Qt.UserRole)
-                    self.mb.clear_group(g)
+                self.mb.set_channels(edits)
             self._populate()
 
-        def _cmp_cell_text(self, sid: int) -> str:
-            if sid in EMPTY_IDS or self.cmp_catalog is None:
-                return str(sid)
-            info = self.cmp_catalog.info(sid)
-            if info.known:
-                return "%d - %s" % (sid, info.human or info.name)
-            return str(sid)
-
         def _mb_menu(self, pos):
-            if not self._has_cmp:
-                return
-            rows = {i.row() for i in self.table.selectedIndexes()}
-            if not rows:
+            groups = self._selected_groups()
+            if not groups:
                 return
             menu = QtWidgets.QMenu(self)
-            act = menu.addAction(
-                "Copy channels from comparison (%d block(s))" % len(rows))
-            act.triggered.connect(self._copy_mb_sel_from_cmp)
+            ix = self.table.indexAt(pos)
+            it = self.table.item(ix.row(), ix.column()) if ix.isValid() else None
+            if (it is not None and 1 <= ix.column() <= self._nslots
+                    and it.flags() & QtCore.Qt.ItemIsEditable):
+                ch = menu.addAction("Change this cell...")
+                ch.triggered.connect(lambda: self._click_edit(ix))
+                menu.addSeparator()
+            a = menu.addAction("Clear %d block(s)" % len(groups))
+            a.triggered.connect(self._clear_sel)
+            if self._has_cmp:
+                act = menu.addAction(
+                    "Copy cells from comparison (%d block(s))" % len(groups))
+                act.triggered.connect(self._copy_mb_sel_from_cmp)
             menu.exec(self.table.viewport().mapToGlobal(pos))
 
         def _copy_mb_sel_from_cmp(self):
             if not self._has_cmp:
                 return
-            rows = sorted({i.row() for i in self.table.selectedIndexes()})
-            cells = []
-            for r in rows:
-                it = self.table.item(r, 0)
-                if it is None:
-                    continue
-                g = it.data(QtCore.Qt.UserRole)
+            edits, lost = [], 0
+            for g in self._selected_groups():
                 cg = self._cmp_by_num.get(g.number)
                 if cg is None:
                     continue
                 cch = cg.channels()
-                pch = g.channels()
                 for slot in range(min(len(cch), g.slots)):
-                    if pch[slot] != cch[slot]:
-                        cells.append((g.index, slot, float(int(cch[slot]))))
-            if cells:
-                self.session.edit_cells(self.mb.group_map, cells)
-                self._populate()
+                    if hasattr(g, "editable") and not g.editable(slot):
+                        continue
+                    want = self._translated(g, cch[slot])
+                    if want is None:
+                        lost += 1
+                        continue
+                    edits.append((g, slot, want))
+            with self.session.transaction("copy measuring blocks from comparison"):
+                done = self.mb.set_channels(edits)
+            self._populate()
+            msg = "Copied %d cell(s) from the comparison." % done
+            if lost:
+                msg += (" %d cell(s) were left as they are: the primary binary has "
+                        "no definition for that signal." % lost)
+            self.detail.setText(msg)
 
         def _open_ref(self):
             e = self.ref_box.currentData()
-            if e is not None and self.parent() is not None:
-                self.parent().show_entity(e)
-                self.accept()
+            win = self._mainwin
+            if e is not None and win is not None and hasattr(win, "show_entity"):
+                win.show_entity(e)
+
+        # ------------------------------------------- EDC15 descriptors
+        _DESC_COLS = ["Dataset", "Id", "Reads", "Message", "Display type", "Norm"]
+        _DESC_FIELD = {3: "M", 4: "A", 5: "N"}
+
+        def _build_descriptor_tab(self):
+            w = QtWidgets.QWidget()
+            lay = QtWidgets.QVBoxLayout(w)
+            note = QtWidgets.QLabel(
+                "A descriptor is what a block cell points at: the message number "
+                "picks the value the ECU reads, the display type and norm tell the "
+                "scan tool how to scale it (e.g. a bigger MAP sensor needs the boost "
+                "descriptors rescaled). Double-click a number to change it; hex "
+                "such as 0x0F10 is accepted.")
+            note.setWordWrap(True)
+            note.setStyleSheet("color: gray;")
+            lay.addWidget(note)
+            self.desc_tbl = QtWidgets.QTableWidget(0, len(self._DESC_COLS))
+            self.desc_tbl.setHorizontalHeaderLabels(self._DESC_COLS)
+            self.desc_tbl.verticalHeader().setVisible(False)
+            dh = self.desc_tbl.horizontalHeader()
+            dh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+            dh.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+            self.desc_tbl.itemChanged.connect(self._on_desc_changed)
+            lay.addWidget(self.desc_tbl, 1)
+            self._populate_descriptors()
+            return w
+
+        def _populate_descriptors(self):
+            if not getattr(self, "desc_tbl", None):
+                return
+            self._loading = True
+            want_ds = self.ds_box.currentData() if self.ds_box is not None else None
+            rows = []
+            for ds, desc in self.mb.descriptors.items():
+                if want_ds and ds != want_ds:
+                    continue
+                for i, d in sorted(desc.items()):
+                    rows.append((ds, i, d))
+            self.desc_tbl.setRowCount(len(rows))
+            for r, (ds, i, d) in enumerate(rows):
+                vals = [ds, "%d" % i, d.name or "", "0x%04X" % (d.message or 0),
+                        "%s" % d.display, "%s" % d.norm]
+                for c, t in enumerate(vals):
+                    it = QtWidgets.QTableWidgetItem(t)
+                    it.setData(QtCore.Qt.UserRole, (ds, i))
+                    if c not in self._DESC_FIELD or d.entities.get(self._DESC_FIELD[c]) is None:
+                        it.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+                    self.desc_tbl.setItem(r, c, it)
+            self._loading = False
+
+        def _on_desc_changed(self, item):
+            if self._loading or item.column() not in self._DESC_FIELD:
+                return
+            ds, idx = item.data(QtCore.Qt.UserRole)
+            fld = self._DESC_FIELD[item.column()]
+            try:
+                val = int(item.text().strip(), 0)
+            except ValueError:
+                self._populate_descriptors()
+                return
+            hi = 0xFFFF if fld == "M" else 0xFF
+            if not 0 <= val <= hi:
+                self._say_error("%s must be 0-%d." % (self._DESC_COLS[item.column()], hi))
+                self._populate_descriptors()
+                return
+            every = self.all_ds is not None and self.all_ds.isChecked()
+            self.mb.set_descriptor(ds, idx, fld, val, all_datasets=every)
+            self._populate_descriptors()
+            self._populate()
 
 
     class GearRatioDialog(QtWidgets.QDialog):
@@ -6031,7 +6221,8 @@ if HAVE_QT:
             rv.addWidget(self.editbar)
             from . import gui_surface3d as _s3d     # 3-D surface above it
             from . import gui_dyno as _gdy          # the dyno chart above that
-            rv.addWidget(_gdy.attach(self, _s3d.attach(self)), 1)
+            from . import gui_panelayout as _gpl    # ... or beside: an option
+            rv.addWidget(_gpl.install(self, _gdy.attach(self, _s3d.attach(self))), 1)
 
             split = QtWidgets.QSplitter()
             split.addWidget(left)
@@ -7940,15 +8131,17 @@ if HAVE_QT:
         def open_dtc(self):
             """The fault-code editor for whichever platform is loaded.
 
-            Two dialogs rather than one with a flag: an EDC16 fault has its
-            own DSM path and class, while a ZF one is an entry in the tool
-            field whose on/off byte belongs to its whole class. Nothing about
-            the two views is shared but the name of the menu item.
-            """
+            Two windows: the engine one (an EDC16 fault has its own DSM path,
+            class and lamps; an EDC15 sub-fault its defect time) and the
+            gearbox one, which shows whatever model the gearbox module gives
+            (a ZF 6HP code switched through its class's priority byte, a ZF
+            8HP fault through its own diagnosis-on bit)."""
             if self.primary is None:
                 return
-            if getattr(self.primary, "platform", "") == "zf6hp":
-                self.open_tool("dtc", lambda: Zf6hpDtcDialog(self.primary, self))
+            if getattr(self.primary, "platform", "") in ("zf6hp", "zf8hp"):
+                from .gui_tcu_dtc import open_for as _tcu_dtc
+                self.open_tool("dtc", lambda: _tcu_dtc(
+                    self.primary, self, compare=self.comparison))
             else:
                 from .gui_dtc import DtcDialog as _DtcDialog
                 self.open_tool("dtc", lambda: _DtcDialog(
@@ -9923,6 +10116,8 @@ if HAVE_QT:
             self._act(view, "Project panel", lambda: _gp.toggle_panel(self),
                       "Ctrl+Shift+P").setToolTip(
                 "Show the Project panel expanded, or collapse it to its strip")
+            from . import gui_panelayout as _gpl
+            _gpl.add_menu(self, view)
             view.addSeparator()
             self._act(view, "Next tab", lambda: self._cycle_tab(1), "Ctrl+Tab")
             self._act(view, "Previous tab", lambda: self._cycle_tab(-1),
@@ -9934,8 +10129,15 @@ if HAVE_QT:
             full = lambda: getattr(cw().primary, "support", "full") == "full"  # noqa: E731
             self._act(tools, "DTC / Fault-Path editor...", self._on_ws("open_dtc"),
                       "Ctrl+D", needs_file=True, enabled_when=full)
+            def _msb_ok():
+                # only binaries that carry measuring-block definitions (EDC15
+                # xcwK / EDC16 group map); a ZF, Aisin or VDO file has none
+                from .msblock import has_measuring_blocks
+                c = cw()
+                return full() and has_measuring_blocks(getattr(c, "primary", None))
+
             self._act(tools, "Measuring blocks...", self._on_ws("open_msblock"),
-                      "Ctrl+M", needs_file=True, enabled_when=full)
+                      "Ctrl+M", needs_file=True, enabled_when=_msb_ok)
 
             def _eoi_open(_c=False):
                 from . import gui_eoi as _ge   # End of injection (eoi.py)
@@ -9965,10 +10167,14 @@ if HAVE_QT:
                     return False
             self._act(tools, "Dyno chart...", _dyno_open,
                       needs_file=True, enabled_when=_dyno_ok)
+            # an engine ECU's (or a cluster's) settings: not on a gearbox tab
+            from . import toolrel as _tr
             self._act(tools, "Gear ratios...", self._on_ws("open_gears"), "Ctrl+G",
-                      needs_file=True, enabled_when=full)
+                      needs_file=True,
+                      enabled_when=lambda: full() and _tr.has_gear_ratios(cw().primary))
             self._act(tools, "VSS pulse settings...", self._on_ws("open_vss"),
-                      "Ctrl+U", needs_file=True, enabled_when=full)
+                      "Ctrl+U", needs_file=True,
+                      enabled_when=lambda: full() and _tr.has_vss(cw().primary))
             self._act(tools, "Hex editor...", self._on_ws("open_hex"), "Ctrl+H",
                       needs_file=True)
             self._act(tools, "Verify checksums...", self._on_ws("verify_checksums"),
@@ -9995,6 +10201,8 @@ if HAVE_QT:
                       needs_file=True, enabled_when=_logtune_ok)
             self._act(tools, "Bus sniffer (J2534)...", self.open_sniffer)
             self._act(tools, "ECU simulator (bench)...", self.open_simulator)
+            self._act(tools, "Converter (definitions, values and binaries)...",
+                      self.open_converter)
             tools.addSeparator()
             # tools of one module only: a sub-menu per module
             def _mod_menu(mid, fallback):
@@ -10201,6 +10409,12 @@ if HAVE_QT:
             self._datalog_dlg = DataLogDialog(self)
             self._datalog_dlg.setWindowModality(QtCore.Qt.WindowModality.NonModal)
             self._datalog_dlg.show()
+
+        def open_converter(self):
+            """Tools > Converter...: definitions and binaries from one format
+            to another (ovtsuite.gui_convert)."""
+            from .gui_convert import open_in_app
+            open_in_app(self)
 
         def open_sniffer(self):
             try:

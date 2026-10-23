@@ -50,6 +50,41 @@ SPEED_KEYS = ["Low", "Medium", "High"]
 #: the pairing here rather than in ``_transport_changed`` is what stopped the
 #: old "CAN/TP2.0 is EDC16 only" line from having to be a hard-coded index.
 ECUS = ("EDC16", "EDC15", "ZF6HP", "ZF6HP-UDS", "Aisin TRx")
+
+
+def _binary_platform(session):
+    """"EDC15" / "EDC16" for a session whose measuring blocks the engine
+    namers read, else None."""
+    if session is None:
+        return None
+    try:
+        from ..msblock import has_measuring_blocks
+        if not has_measuring_blocks(session):
+            return None
+    except Exception:
+        return None
+    return "EDC15" if getattr(session, "is_edc15", False) else "EDC16"
+
+
+def _identity_note(session, ecu: str, identity: str, namer) -> str:
+    """A warning when the open file is not the software the ECU reported --
+    its names are then only as good as the two calibrations' agreement."""
+    if not identity:
+        return ""
+    try:
+        if ecu == "EDC16":
+            from .. import fileinfo
+            got = _msbcat.edc16_identity(identity)
+            ident = fileinfo.ident16(bytes(session.binfile.data))
+            if got and ident.get("part") and got[0] != ident["part"]:
+                return ("The ECU reported %s but the file is %s, so some names "
+                        "may not match this car." % (got[0], ident["part"]))
+        elif ecu == "EDC15" and getattr(namer, "dataset", None) is None:
+            return ("The ECU's ident matches none of the file's datasets, so "
+                    "cells are named from its first dataset.")
+    except Exception:
+        return ""
+    return ""
 CAN_ECUS = ("EDC16", "ZF6HP", "ZF6HP-UDS", "Aisin TRx")
 KLINE_ECUS = ("EDC16", "EDC15")
 PALETTE = [QtGui.QColor(c) for c in ("#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
@@ -265,7 +300,13 @@ class LogWorker(QtCore.QThread):
         sess = None
         try:
             speed, cap = self._speed, self._cap
-            if self._transport == "can":
+            if self._ecu == "ZF6HP-UDS":
+                # The 6HP28 does not answer TP 2.0: UDS over ISO-TP 0x7E1 ->
+                # 0x7E9, routed by the gateway (the flasher's route). The
+                # session opens and owns that route itself.
+                self._can = open_j2534(self._port)
+                speed, cap = "Low", False
+            elif self._transport == "can":
                 from ..flash import j2534 as _j
                 from ..flash.tp20_transport import CanKLine
                 self._can = open_j2534(self._port)
@@ -288,7 +329,8 @@ class LogWorker(QtCore.QThread):
             self._link = link
             if self._ecu == "ZF6HP-UDS":
                 from .zf6hp_uds_live import Zf6hpUdsLiveSession
-                sess = Zf6hpUdsLiveSession(link, self._ecu, self.status.emit)
+                sess = Zf6hpUdsLiveSession.over_can(self._can, self._can_rate,
+                                                    self.status.emit, self._ecu)
             else:
                 sess = _diag.DiagSession(link, self._ecu, self.status.emit)
                 sess.fast_kw1281 = True   # KW1281 fast timing, as KWHack's live data uses
@@ -1185,6 +1227,11 @@ class ConnPane(QtWidgets.QWidget):
             return TCU_RECIPES
         if ecu == "EDC16":
             return RECIPES
+        if ecu == "EDC15":
+            # the engine recipes, where this ECU's blocks carry their needs
+            # (message-number keys -- see edc15.msblock15.MESSAGE_KEYS)
+            from ..logtune.roles import recipes_for
+            return recipes_for(getattr(self, "_namer", None), RECIPES)
         return []                        # see _no_presets_why
 
     def _no_presets_why(self) -> str:
@@ -1193,10 +1240,14 @@ class ConnPane(QtWidgets.QWidget):
         engine recipes are EDC16 A2L signals, which no other controller carries."""
         ecu = self.conn.ecu()
         if ecu == "EDC15":
-            why = ("EDC15 measuring blocks are named by their xcwGrp descriptors, "
-                   "which carry none of the EDC16 signals the engine presets are built from")
+            if self._recipes():
+                return ""
+            why = ("none of its named cells carries what the engine presets need "
+                   "(engine speed, injected quantity and the like are keyed on the "
+                   "ECU's message numbers, so open the car's file or connect to "
+                   "name them)")
         elif ecu == "ZF6HP-UDS":
-            why = "no preset has been written for the 6HP28 live block yet"
+            why = "no preset has been written for the 6HP28 DIDs yet"
         elif ecu == "Aisin TRx":
             why = "its measuring-block map is not known yet, so its cells are unnamed"
         else:
@@ -1217,9 +1268,22 @@ class ConnPane(QtWidgets.QWidget):
             # unrelated calibration happens to be open. A ChannelNamer with no
             # session reports available=False, which gives exactly that.
             return ChannelNamer(None)
-        n = ChannelNamer(self._primary())
-        if n.available:
-            return n                     # the binary always wins
+        self._binary_note = ""
+        ecu = self.conn.ecu()
+        prim = self._primary()
+        plat = _binary_platform(prim)
+        n = ChannelNamer(None)       # nothing names the cells: "Group N / Cell M"
+        if plat is not None and plat != ecu:
+            # an EDC15 file cannot name EDC16 cells, nor the reverse: the
+            # group numbers mean different things on the two
+            self._binary_note = ("The open file is an %s binary, so it does not name "
+                                 "this %s's cells." % (plat, ecu))
+        elif plat is not None:
+            ident = self._ecu_identity()
+            n = ChannelNamer(prim, identity=ident if ecu == "EDC15" else "")
+            if n.available:
+                self._binary_note = _identity_note(prim, ecu, ident, n)
+                return n                 # the binary always wins
         # No binary that can name these blocks: the catalogue -- the entry for
         # the software the ECU reported, else its part number's, else the
         # platform's generic layout (also before connecting)
@@ -1253,8 +1317,9 @@ class ConnPane(QtWidgets.QWidget):
             return False
         self._namer = self._namer_for()
         self._namer_sig_cur = want
-        if prev is None or prev[0] != want[0]:
-            self._fill_presets()         # the two must never disagree
+        # the two must never disagree -- and EDC15's presets depend on what
+        # this namer's cells carry, so refill on every namer change
+        self._fill_presets()
         self._fill_groups()
         self._channels = [c if c.is_derived else self._namer.channel(c.group, c.field)
                           for c in self._channels]
@@ -1413,12 +1478,18 @@ class ConnPane(QtWidgets.QWidget):
         """(Re)list the groups this pane's binary knows, keeping the selected
         group when it is still there."""
         keep = self.group_box.currentData() if self.group_box.count() else None
-        groups = self._namer.populated_groups() if self._namer.available else list(range(1, 256))
+        # EDC16 serves groups 1..127 only (rows above are their cells 5-8)
+        top = 128 if self.conn.ecu() == "EDC16" else 256
+        groups = self._namer.populated_groups() if self._namer.available else list(range(1, top))
         if not groups:
-            groups = list(range(1, 256))
+            groups = list(range(1, top))
         self.group_box.blockSignals(True)
         self.group_box.clear()
+        label = getattr(self._namer, "group_label", None) if self._namer.available else None
         for g in groups:
+            if label is not None:           # e.g. the 6HP28's hex DIDs
+                self.group_box.addItem(label(g), g)
+                continue
             summ = self._namer.group_summary(g) if self._namer.available else ""
             self.group_box.addItem(("%d - %s" % (g, summ)) if summ else "Group %d" % g, g)
         i = self.group_box.findData(keep) if keep is not None else -1
@@ -1435,18 +1506,24 @@ class ConnPane(QtWidgets.QWidget):
             self.src_hint.setText("Tick a cell to log it. Transmission cells are named from "
                                   "the 6HP block catalogue.")
         elif self.conn.ecu() == "ZF6HP-UDS":
-            self.src_hint.setText("Tick a cell to log it. 6HP28 live signals come from the "
-                                  "04A1 UDS block; values are raw counts until calibrated.")
+            self.src_hint.setText("Tick a cell to log it. 6HP28 values are UDS DIDs from the "
+                                  "transmission's own DID table: the known signals are "
+                                  "listed first; unnamed ones are raw counts.")
         elif isinstance(self._namer, _msbcat.CatalogueNamer):
             n = self._namer
             if n.match == "exact":
                 tail = "if this car's measuring blocks were edited, open its file to name them from it"
             else:
                 tail = "names can differ on this software, so open the car's file to name them exactly"
-            self.src_hint.setText("Tick a cell to log it. Cells named from %s; %s."
-                                  % (n.describe(), tail))
+            note = getattr(self, "_binary_note", "")
+            self.src_hint.setText("Tick a cell to log it. Cells named from %s; %s.%s"
+                                  % (n.describe(), tail, (" " + note) if note else ""))
         elif name and getattr(self._namer, "available", False):
-            self.src_hint.setText("Tick a cell to log it. Cells named from %s." % name)
+            note = getattr(self, "_binary_note", "")
+            ds = getattr(self._namer, "dataset", None)
+            self.src_hint.setText("Tick a cell to log it. Cells named from %s%s.%s"
+                                  % (name, (" (dataset %s)" % ds) if ds else "",
+                                     (" " + note) if note else ""))
         else:
             where = ("with Open project or binary..." if getattr(self._window, "standalone", False)
                      else "in a tab")
