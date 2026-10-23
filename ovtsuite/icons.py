@@ -76,6 +76,7 @@ FOR_ACTION = {
     "tools/tune-from-logs": "sliders-horizontal",
     "tools/end-of-injection": "syringe",
     "tools/dyno-chart": "chart-spline",
+    "tools/feature-switches": "toggle-right",
     "tools/bus-sniffer-j2534": "radio",
     "tools/ecu-simulator-bench": "flask-conical",
     "tools/converter-definitions-values-and-binaries": "file-symlink",

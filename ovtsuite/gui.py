@@ -10167,6 +10167,20 @@ if HAVE_QT:
                     return False
             self._act(tools, "Dyno chart...", _dyno_open,
                       needs_file=True, enabled_when=_dyno_ok)
+
+            def _fsw_open(_c=False):
+                from . import gui_featureswitch as _gfs   # feature switches
+                if cw() is not None:
+                    _gfs.open_for(cw())
+
+            def _fsw_ok():
+                try:
+                    from . import gui_featureswitch as _gfs
+                    return _gfs.availability(cw()) is None
+                except Exception:
+                    return False
+            self._act(tools, "Feature switches...", _fsw_open,
+                      needs_file=True, enabled_when=_fsw_ok)
             # an engine ECU's (or a cluster's) settings: not on a gearbox tab
             from . import toolrel as _tr
             self._act(tools, "Gear ratios...", self._on_ws("open_gears"), "Ctrl+G",
