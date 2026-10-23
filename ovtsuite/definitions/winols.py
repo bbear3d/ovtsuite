@@ -63,6 +63,7 @@ FILE_MAGIC = b"\x0b\x00\x00\x00WinOLS File\x00"
 RECORDS_MAGIC = b"\x77\x33\x88\x11"
 FOLDERS_MAGIC = b"\x11\x88\x63\x98"
 IMAGE_SIG = b"\x33\x88\x72\x98"
+NO_PARENT = b"\xff\xff\xff\xff"
 
 #: data organisation -> (bits, endian, float)
 ORG = {1: (8, "", False), 2: (16, ">", False), 3: (16, "<", False),
@@ -414,25 +415,165 @@ def project_info(h: Header) -> Dict[str, str]:
 
 
 # -------------------------------------------------------------------- folders
-def read_folders(d: bytes, p: int, prof: _Profile) -> Dict[int, str]:
-    if d[p:p + 4] != FOLDERS_MAGIC or d[p + 8:p + 12] != FOLDERS_MAGIC:
-        return {}
-    r = _R(d, p + 12, prof)
-    out: Dict[int, str] = {}
-    try:
-        n = r.u32()
-        for _ in range(min(n, 100000)):
-            fid, _res = r.u32(), r.u32()
-            name = r.mlstr() if prof.folder_ml else r.str()
-            r.u8()
-            nv = r.u32()
-            if nv > 1000:
-                break
-            r.p += nv + prof.folder_tail
-            out[fid] = (name or "").strip()
-    except (ValueError, struct.error, IndexError):
-        pass
+def _folder_entry(d: bytes, p: int, nul: bool, ml: bool):
+    """``(id, resource, name, end)`` of the folder entry at ``p`` (up to its
+    version bytes), or ValueError."""
+    fid, res = struct.unpack_from("<II", d, p)
+    if fid > 1000000 or res > 100000:
+        raise ValueError("not a folder entry")
+    r = _R(d, p + 8, _Profile("f", nul, False, ml, 0, 0, 0, False, 0, 0, ml, 0))
+    name = r.mlstr() if ml else r.str()
+    if name is None or any(ord(c) < 0x20 and c not in "\t\r\n" for c in name):
+        raise ValueError("not a folder name")
+    if not name and res not in (9000, 9001, 9002):
+        raise ValueError("unnamed folder")
+    r.u8()
+    nv = r.u32()
+    if nv > 1000:
+        raise ValueError("folder versions")
+    return fid, res, name, r.p + nv
+
+
+def _folder_list(d: bytes, p: int, nul: bool, ml: bool, tail: int, n: int):
+    """Every entry of a folder list read with one layout: ``[(id, name,
+    parent)]`` -- ValueError when one does not parse."""
+    out = []
+    for _ in range(n):
+        fid, _res, name, q = _folder_entry(d, p, nul, ml)
+        p = q + tail
+        if p > len(d):
+            raise ValueError("folder list past the end")
+        out.append((fid, (name or "").strip(), q))
     return out
+
+
+def read_folder_tree(d: bytes, p: int, prof: _Profile, ver: int = 0
+                     ) -> Tuple[Dict[int, str], Dict[int, int]]:
+    """The folder section after the map list: ``({id: name}, {id: parent
+    id})``. The section is ``11 88 63 98``, ``u32 k`` and k map templates
+    (usually none), then ``11 88 63 98``, ``u32 n`` and n entries --
+    ``u32 id``, ``u32`` resource id (9000 *My maps*, 9001 *Hexdump*, 9002
+    *Potential maps*), the name (a ``str``; an ``mlstr`` in some formats),
+    ``u8``, ``u32`` version count + that many bytes, then a tail whose
+    length differs between formats (0 / 15 / 25 / 29 bytes; from 25 bytes
+    its ``i32`` 8 bytes before the next entry is the parent folder, -1 at
+    the top). The layout is the one that reads every entry in sequence:
+    the profile's first, then the others."""
+    if d[p:p + 4] != FOLDERS_MAGIC:
+        return {}, {}
+    k = struct.unpack_from("<I", d, p + 4)[0]
+    starts = []
+    if d[p + 8:p + 12] == FOLDERS_MAGIC:
+        starts.append(p + 8)
+    if k:
+        # map templates come first: the folder list is at a later marker
+        q = p + 8
+        for _ in range(16):
+            q = d.find(FOLDERS_MAGIC, q)
+            if q < 0:
+                break
+            if q not in starts:
+                starts.append(q)
+            q += 4
+    nul = ver < 400 if ver else prof.nul
+    combos = []
+    for ml in (prof.folder_ml, not prof.folder_ml):
+        for t in (prof.folder_tail, 0, 15, 25, 29) + tuple(range(48)):
+            if (ml, t) not in combos:
+                combos.append((ml, t))
+    for q in starts:
+        n = struct.unpack_from("<I", d, q + 4)[0]
+        if not 0 < n <= 200000:
+            continue
+        for ml, tail in combos:
+            try:
+                ents = _folder_list(d, q + 8, nul, ml, tail, n)
+            except (ValueError, struct.error, IndexError):
+                continue
+            names = {fid: name for fid, name, _q in ents}
+            parents = {}
+            # a folder inside another names it in its tail, where a folder
+            # at the top (the first, Hexdump) has -1; formats without it
+            # have no -1 there
+            o = d.find(NO_PARENT, ents[0][2], ents[0][2] + tail)
+            if tail >= 4 and o >= 0 and o + 4 <= ents[0][2] + tail:
+                o -= ents[0][2]
+                for fid, _n, q2 in ents:
+                    par = struct.unpack_from("<i", d, q2 + o)[0]
+                    if par >= 0 and par != fid and par in names:
+                        parents[fid] = par
+            return names, parents
+    return {}, {}
+
+
+def read_folders(d: bytes, p: int, prof: _Profile) -> Dict[int, str]:
+    return read_folder_tree(d, p, prof)[0]
+
+
+# ------------------------------------------------------------------ versions
+VERSIONS_MAGIC = b"\x99\x78\x00\x42"
+VERSION_SIG = b"\x01\x92\xbc\x93"
+
+
+@dataclass
+class Version:
+    """One version of the binary a project holds (the first is the one
+    WinOLS imported, normally named Original)."""
+    name: str
+    comment: str
+    data: bytes = field(repr=False, default=b"")
+
+
+def _vstr(d: bytes, p: int, nul: bool) -> Tuple[str, int]:
+    n = struct.unpack_from("<i", d, p)[0]
+    p += 4
+    if n < 0:
+        return "", p
+    if n > 0x10000 or p + n > len(d):
+        raise ValueError("version text")
+    t = d[p:p + n].decode("latin-1")
+    p += n
+    if nul and p < len(d) and d[p] == 0:
+        p += 1
+    return t, p
+
+
+def read_versions(d: bytes, start: int, limit: int, ver: int
+                  ) -> Tuple[int, List[Tuple[str, str]]]:
+    """The version list just before the map list: ``(size of one version's
+    image, [(name, comment)])``, or ``(0, [])``. It is ``u32`` image size,
+    ``99 78 00 42``, ``u32 n``, then n entries -- ``str`` name, ``str``
+    comment, ``01 92 BC 93``, two times and (in later formats) the checksum
+    state. Every version's image is stored in full, one after the other,
+    after the image marker at the end of the file."""
+    q = d.rfind(VERSIONS_MAGIC, start, limit)
+    if q < 4:
+        return 0, []
+    size, = struct.unpack_from("<I", d, q - 4)
+    n, = struct.unpack_from("<I", d, q + 4)
+    if not 0 < n <= 1000 or not size:
+        return 0, []
+    nul = ver < 400
+    out: List[Tuple[str, str]] = []
+    p = q + 8
+    for i in range(n):
+        got = None
+        for skip in range(0, 64 if i else 1):
+            try:
+                name, r = _vstr(d, p + skip, nul)
+                comment, r = _vstr(d, r, nul)
+            except (ValueError, struct.error):
+                continue
+            if d[r:r + 4] == VERSION_SIG and name.isprintable():
+                got = (name, comment, r + 12)
+                break
+        if got is None:
+            out += [("Original" if k == 0 else "Version %d" % k, "")
+                    for k in range(len(out), n)]
+            break
+        out.append((got[0].strip(), got[1].strip()))
+        p = got[2]
+    return size, out
 
 
 # ------------------------------------------------------------------ the files
@@ -442,10 +583,17 @@ class WinOlsFile:
     header: Header
     records: List[Record]
     folders: Dict[int, str]
-    image: bytes = b""              # .ols: the embedded binary
+    image: bytes = b""              # .ols: the embedded binary (the original)
     segments: List[Tuple[int, int]] = field(default_factory=list)
     problems: List[str] = field(default_factory=list)
     declared: int = 0
+    #: .ols: every version of the binary, the original first
+    versions: List[Version] = field(default_factory=list)
+    #: folder id -> the folder it is in (nested folders only)
+    parents: Dict[int, int] = field(default_factory=dict)
+    #: the memory areas the image was put together from (``#1``, ``#2``
+    #: ...: ``(name, start, end)`` as image offsets), when there are several
+    areas: List[Tuple[str, int, int]] = field(default_factory=list)
 
 
 def _segments(d: bytes, limit: int, image_len: int, nul: bool) -> List[Tuple[int, int]]:
@@ -473,6 +621,29 @@ def _segments(d: bytes, limit: int, image_len: int, nul: bool) -> List[Tuple[int
     if segs[0][0] != 0 or segs[-1][1] + 1 != image_len:
         return []
     return segs
+
+
+def _areas(d: bytes, limit: int, image_len: int) -> List[Tuple[str, int, int]]:
+    """The memory areas ``#1``, ``#2`` ... in the header that tile the
+    image, in order (areas outside the file, such as RAM, are passed
+    over): ``[(name, start, end)]``, or [] with fewer than two."""
+    out: List[Tuple[str, int, int]] = []
+    pos = 0
+    for k in range(1, 17):
+        t = ("#%d" % k).encode()
+        hit = d.find(struct.pack("<I", len(t)) + t, pos, limit)
+        if hit < 8:
+            break
+        start, end = struct.unpack_from("<II", d, hit - 8)
+        if end < start or start != (out[-1][2] + 1 if out else 0):
+            return []
+        out.append(("#%d" % k, start, end))
+        pos = hit + 4 + len(t)
+        if end + 1 >= image_len:
+            break
+    if len(out) < 2 or out[-1][2] + 1 != image_len:
+        return []
+    return out
 
 
 def parse(data: bytes) -> WinOlsFile:
@@ -510,14 +681,69 @@ def _parse_at(d: bytes, h: Header, p: int) -> WinOlsFile:
             raise DefinitionError("map pack without its record archive (%s)" % ex)
         n = struct.unpack_from("<I", intern, 1)[0]
         recs, _end, prof, probs = read_records(intern, 5, n, ver, kp=True)
-        folders = read_folders(d, start + 4 + count, prof)
-        return WinOlsFile("kp", h, recs, folders, problems=probs, declared=n)
+        folders, parents = read_folder_tree(d, start + 4 + count, prof, ver)
+        return WinOlsFile("kp", h, recs, folders, problems=probs, declared=n,
+                          parents=parents)
     recs, end, prof, probs = read_records(d, start + 4, count, ver)
-    folders = read_folders(d, end, prof)
-    sig = d.find(IMAGE_SIG, end)
-    image = d[sig + 4:] if sig >= 0 else b""
+    folders, parents = read_folder_tree(d, end, prof, ver)
+    versions = _versions(d, h, p, end)
+    image = versions[0].data if versions else b""
     segs = _segments(d, p, len(image), prof.nul) if image else []
-    return WinOlsFile("ols", h, recs, folders, image, segs, probs, count)
+    areas = _areas(d, p, len(image)) if image else []
+    return WinOlsFile("ols", h, recs, folders, image, segs, probs, count,
+                      versions=versions, parents=parents, areas=areas)
+
+
+def _versions(d: bytes, h: Header, limit: int, end: int = 0) -> List[Version]:
+    """Every version of the binary in a project, the original first. The
+    images follow the image marker to the end of the file, one whole image
+    per version; a project whose version list does not account for what is
+    there keeps it as one image."""
+    size, names = read_versions(d, h.end, limit, h.version)
+    if size and names:
+        at = len(d) - size * len(names) - 4
+        if at > limit and d[at:at + 4] == IMAGE_SIG:
+            return [Version(n, c, d[at + 4 + i * size:at + 4 + (i + 1) * size])
+                    for i, (n, c) in enumerate(names)]
+    sig = d.find(IMAGE_SIG, end or limit)
+    if sig < 0:
+        return []
+    region = d[sig + 4:]
+    if not region:
+        return []
+    if size and names and len(region) > size and len(region) % size == 0:
+        k = len(region) // size
+        names = (names + [("Version %d" % i, "") for i in range(len(names), k)])[:k]
+        return [Version(n, c, region[i * size:(i + 1) * size])
+                for i, (n, c) in enumerate(names)]
+    name, comment = names[0] if names else ("Original", "")
+    return [Version(name or "Original", comment, region)]
+
+
+def scan_images(data: bytes) -> Optional[WinOlsFile]:
+    """A project's header, version list, embedded images and declared map
+    count, without reading the maps (fast, for a summary). None when the
+    images cannot be found that way (:func:`parse` then)."""
+    d = bytes(data)
+    h = read_header(d)
+    p = d.find(RECORDS_MAGIC, h.end)
+    if p < 0:
+        return None
+    start = p + 4 + (1 if h.version >= 200 else 0)
+    count = struct.unpack_from("<I", d, start)[0]
+    if d[start + 4:start + 8] == b"PK\x03\x04":
+        return None
+    size, names = read_versions(d, h.end, p, h.version)
+    if not (size and names):
+        return None
+    at = len(d) - size * len(names) - 4
+    if at <= p or d[at:at + 4] != IMAGE_SIG:
+        return None
+    vs = _versions(d, h, p)
+    image = vs[0].data
+    prof = _profile_for(h.version)
+    return WinOlsFile("ols", h, [], {}, image, _segments(d, p, len(image), prof.nul),
+                      declared=count, versions=vs, areas=_areas(d, p, len(image)))
 
 
 # --------------------------------------------------------------- definition
@@ -570,17 +796,114 @@ def _axis_def(a: Axis, count: int) -> Optional[AxisDef]:
     return None
 
 
+def codeblocks(records: List[Record]) -> List[int]:
+    """The code block of each record (all 0 when the project has one).
+
+    A project WinOLS made for an ECU that keeps its data more than once
+    (an EDC15's three code blocks) lists every map once per block, the
+    copies a fixed distance apart, the blocks one after the other. The
+    number of blocks and that distance are the ones most names repeat with;
+    a block ends half-way between the last record of one copy and the first
+    of the next."""
+    by: Dict[str, List[int]] = {}
+    for i, r in enumerate(records):
+        if r.type != 1 and r.addr and r.name:
+            by.setdefault(r.name, []).append(i)
+
+    def addrs(idx):
+        out = []
+        for i in idx:
+            a = records[i].addr
+            if a not in out:
+                out.append(a)
+        return out
+    cands: Dict[Tuple[int, int], int] = {}
+    for idx in by.values():
+        a = addrs(idx)
+        if len(a) < 2:
+            continue
+        deltas = {b - c for b, c in zip(a[1:], a)}
+        if len(deltas) == 1:
+            dl = deltas.pop()
+            if dl > 0:
+                cands[(len(a), dl)] = cands.get((len(a), dl), 0) + 1
+    zero = [0] * len(records)
+    if not cands:
+        return zero
+    (n, delta), votes = max(cands.items(), key=lambda kv: kv[1])
+    if votes < max(2, len(by) * 0.2):
+        return zero
+    bounds = []
+    refs = []
+    for idx in by.values():
+        a = addrs(idx)
+        if len(a) == n and {b - c for b, c in zip(a[1:], a)} == {delta}:
+            refs.append((idx, a))
+    for b in range(n - 1):
+        ends = [max(i for i in idx if records[i].addr == a[b]) for idx, a in refs]
+        starts = [min(i for i in idx if records[i].addr == a[b + 1]) for idx, a in refs]
+        bounds.append((max(ends) + min(starts)) / 2.0)
+    out = []
+    for i in range(len(records)):
+        k = 0
+        while k < len(bounds) and i > bounds[k]:
+            k += 1
+        out.append(k)
+    return out
+
+
+def folder_path(wf: WinOlsFile, fid: int) -> List[str]:
+    """The names from the top folder down to folder ``fid``."""
+    path, seen = [], set()
+    while fid in wf.folders and fid not in seen:
+        seen.add(fid)
+        if wf.folders[fid]:
+            path.append(wf.folders[fid])
+        fid = wf.parents.get(fid, -1)
+    return path[::-1]
+
+
+#: the category of a map's code block (a project with several)
+CODEBLOCK = "Codeblock "
+
+
+def category_order(names) -> List[str]:
+    """Categories in the order an XDF numbers them: the code
+    blocks first, then the folders by name (case-blind)."""
+    names = list(dict.fromkeys(names))
+
+    def block(n):
+        rest = n[len(CODEBLOCK):]
+        return n.startswith(CODEBLOCK) and rest.isdigit()
+    blocks = sorted((n for n in names if block(n)), key=lambda n: int(n[len(CODEBLOCK):]))
+    rest = sorted((n for n in names if not block(n)), key=lambda n: n.lower())
+    return blocks + rest
+
+
 def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
-    """The maps of a parsed WinOLS file as a :class:`Definition`."""
+    """The maps of a parsed WinOLS file as a :class:`Definition`.
+
+    Categories: in a project that lists every map once per code block, the
+    map's block first (``Codeblock 0`` ...), then its folder (after the
+    folders it is inside, top first). A map listed twice in the same block,
+    folder and place is taken once. ``info["category_order"]`` holds the
+    categories in the order an XDF numbers them."""
     kind = wf.kind
     defn = Definition(type=kind, title=title or wf.header.filename or
                       "WinOLS %s" % kind.upper(),
                       info=project_info(wf.header))
     defn.warnings.extend(wf.problems)
     skipped = 0
-    for rec in wf.records:
+    blocks = codeblocks(wf.records)
+    multi = max(blocks, default=0) > 0
+    seen = set()
+    for rec, cb in zip(wf.records, blocks):
         if rec.type == 1 or not rec.addr:
             continue                            # hexdump view / no data
+        key = (rec.name, cb, rec.addr, rec.folder)
+        if rec.name and key in seen:
+            continue
+        seen.add(key)
         z = _storage(rec.org, rec.signed, rec.addr, rec.factor, rec.offset,
                      rec.units if rec.units not in ("-", "?") else "", rec.size)
         if z is None:
@@ -600,10 +923,11 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
         if rec.label and rec.label not in ("-", "?") and rec.label != desc:
             # the value's own label, as the "Z:" part the panel shows
             desc = (desc + " | " if desc else "") + "Z: " + rec.label
-        folder = wf.folders.get(rec.folder, "")
+        cats = (["%s%d" % (CODEBLOCK, cb)] if multi else []) + \
+            folder_path(wf, rec.folder)
         t = TableDef(name=name, kind=k, z=z, rows=rows, cols=cols,
                      description=desc,
-                     categories=[folder] if folder else [],
+                     categories=cats,
                      x=_axis_def(rec.x, cols) if k != "constant" else None,
                      y=_axis_def(rec.y, rows) if k == "map" else None,
                      decimals=max(0, rec.precision - 1)
@@ -612,6 +936,9 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
     if skipped:
         defn.warnings.append("%d maps use a data organisation this version "
                              "does not read" % skipped)
+    order = category_order(c for t in defn.tables for c in t.categories)
+    if order:
+        defn.info["category_order"] = "\n".join(order)
     return defn
 
 
@@ -619,10 +946,13 @@ def load(data: bytes, title: str = "") -> Definition:
     wf = parse(data)
     defn = to_definition(wf, title)
     if wf.image:
-        # an .ols carries the image its maps were made on (file offsets)
+        # an .ols carries the image its maps were made on (file offsets),
+        # and every other version of it
         defn.reference = (bytes(wf.image), 0)
+        defn.images = [(v.name or "Original", bytes(v.data), 0) for v in wf.versions]
     return defn
 
 
 __all__ = ["is_winols", "parse", "load", "to_definition", "read_header",
-           "project_info", "WinOlsFile", "Record", "Axis", "Header", "ORG"]
+           "project_info", "scan_images", "codeblocks", "category_order",
+           "WinOlsFile", "Version", "Record", "Axis", "Header", "ORG"]

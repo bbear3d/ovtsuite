@@ -187,9 +187,10 @@ def test_port_onto_another_software_version(app, tmp_path, monkeypatch):
                         lambda *a, **k: asked.append(a[2]))
     d = ConverterDialog(None)
     d.add_sources([FK + ".a2l"])
-    assert d.port.isVisibleTo(d) and not d.port_box.isVisibleTo(d)
+    # greyed out until wanted, never hidden (the window keeps its shape)
+    assert d.port.isEnabled() and not d.port_box.isEnabled()
     d.port.setChecked(True)
-    assert d.port_box.isVisibleTo(d)
+    assert d.port_box.isEnabled()
     assert "other software version" in d.binary.placeholderText()
     d.target.setCurrentIndex(d.target.findData("json"))
     d.binary.setText("")
@@ -349,3 +350,71 @@ def test_files_from_a_second_start_join_the_open_window(app, tmp_path):
         time.sleep(0.02)
     assert proc.returncode == 0
     assert sorted(d.source_paths()) == sorted(files)
+
+
+# ------------------------------------------- embedded binaries, window shape
+M235 = os.path.join(ROOT, "Reference", "WinOLS-formats", "f440_M235i_translated_axis_texts.ols")
+
+
+def test_ols_binaries_listed_and_extracted(app, tmp_path):
+    if not os.path.isfile(M235):
+        pytest.skip("reference file missing")
+    from ovtsuite import convert as C
+    from ovtsuite.gui_convert import ConverterDialog
+    d = ConverterDialog(None)
+    d.add_sources([M235])
+    assert "embeds a 4 MB binary + 2 versions" in d.sources.item(0).text()
+    assert "embedded in" in d.binary.placeholderText()
+    d.target.setCurrentIndex(d.target.findData(C.EXTRACT))
+    assert d.ex_list.topLevelItemCount() == 3
+    assert len(d.extract_picks()) == 3                       # all ticked at first
+    d._tick_extract("none")
+    assert d.extract_picks() == []
+    d._tick_extract("all")
+    d.ex_list.topLevelItem(1).setCheckState(0, d.ex_list.topLevelItem(0).checkState(0).Unchecked)
+    d.ex_list.topLevelItem(2).setText(2, "aee.bin")
+    d.out.setText(str(tmp_path))
+    j = d.job()
+    assert j.target == C.EXTRACT and [p["key"] for p in j.options["extract"]] == \
+        ["original", "version2"]
+    d.preview()
+    assert d.table.rowCount() == 2
+    d.convert()
+    _wait(app, d)
+    assert sorted(n for n in os.listdir(str(tmp_path)) if n != "cfg") == \
+        ["aee.bin", "f440_M235i_translated_axis_texts_original.ori"]
+    assert os.path.getsize(str(tmp_path / "aee.bin")) == 0x400000
+
+
+def test_the_window_keeps_its_shape(app):
+    """Every target format, the optional groups ticked and unticked, port,
+    a long status and summary: the window, its splitter and each section
+    keep their size."""
+    from ovtsuite.gui_convert import ConverterDialog
+    from PySide6 import QtWidgets as W
+    d = ConverterDialog(None)
+    if os.path.isfile(M235):
+        d.add_sources([M235])
+    d.resize(900, 700)
+    d.show()
+    app.processEvents()
+    groups = [w for w in d._top.findChildren(W.QGroupBox) if w.parent() is d._top]
+
+    def shape():
+        app.processEvents()
+        return ((d.width(), d.height()), tuple(d.split.sizes()), d.minimumSizeHint().width(),
+                tuple(g.height() for g in groups), d.opts.height())
+    first = shape()
+    for i in range(d.target.count()):
+        d.target.setCurrentIndex(i)
+        assert shape() == first, d.target.itemData(i)
+    for box in (d.filter_box, d.tr_box, d.port):
+        box.setChecked(True)
+        assert shape() == first
+        box.setChecked(False)
+        assert shape() == first
+    d.status.setText("Preset saved. On the command line: ovtsuite convert <files> "
+                     "--preset \"C:/Users/someone/AppData/Roaming/OVT/presets/x.json\"" * 2)
+    d._set_summary("; ".join(["7290 tables will be written"] * 12))
+    assert shape() == first
+    d.close()

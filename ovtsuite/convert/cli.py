@@ -24,6 +24,9 @@
     ovtsuite convert --watch inbox/ --to xdf -o out/        (a watch folder)
     ovtsuite convert BPW.a2l --watch bins/ --to dcm    (each binary's values)
     ovtsuite convert --shell-menu install     ("Convert with OVT Converter")
+    ovtsuite convert project.ols --list-images  (the binaries it embeds)
+    ovtsuite convert project.ols --extract-images -o out/ [--only original]
+                       (write them out as stored; --to hex / srec converts)
 
 Exit status: 0 done, 1 an error, 2 written but something was not expressed
 fully (see the report beside the output) -- unless ``--allow-loss``.
@@ -132,6 +135,16 @@ def add_parser(sub, parents=()):
     s.add_argument("--shell-menu", choices=("install", "remove", "remove-all", "status"),
                    help="add or remove \"Convert with OVT Converter\" in the file "
                    "manager's right-click menu (opt-in; no file associations)")
+    s.add_argument("--extract-images", action="store_true",
+                   help="WinOLS projects (.ols): write the binaries they embed (the "
+                   "original, each version, with --only each memory area) into the "
+                   "folder -o (default: beside the project), exactly as stored -- "
+                   "or as --to hex / srec")
+    s.add_argument("--only", nargs="+", metavar="NAME",
+                   help="with --extract-images: only these (original, version1, "
+                   "a version's name, original-area1 ..., or all; see --list-images)")
+    s.add_argument("--list-images", action="store_true",
+                   help="list the binaries each WinOLS project embeds and exit")
     s.add_argument("--preset", help="a saved job (JSON) to start from")
     s.add_argument("--save-preset", help="save this job as a preset and exit")
     s.set_defaults(fn=cmd_convert)
@@ -324,6 +337,61 @@ def _shell_menu(action: str) -> int:
     return 0
 
 
+def _ols_files(paths):
+    out = []
+    for s in paths:
+        if os.path.isdir(s):
+            out += [os.path.join(s, n) for n in sorted(os.listdir(s))
+                    if os.path.isfile(os.path.join(s, n))]
+        else:
+            out.append(s)
+    return out
+
+
+def _list_images(a) -> int:
+    from . import embedded
+    found = False
+    for src in _ols_files(a.sources):
+        try:
+            with open(src, "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+        items = embedded.images(data, os.path.splitext(os.path.basename(src))[0])
+        if not items:
+            continue
+        found = True
+        print("%s: %s" % (src, embedded.summary(src, data)))
+        for e in items:
+            print("  %s %-18s %-44s 0x%-8X %s" % ("*" if e.default else " ", e.key,
+                                                e.label, e.size, e.name))
+    if not found:
+        print("no WinOLS project with an embedded binary among the files", file=sys.stderr)
+    return 0 if found else 1
+
+
+def _extract(a) -> int:
+    from . import EXTRACT
+    job = Job(sources=_ols_files(a.sources), target=EXTRACT, out=a.out or "")
+    job.options["extract"] = list(a.only) if a.only else None
+    job.options["extract_format"] = a.target if a.target in ("bin", "hex", "srec") else "raw"
+    if a.record:
+        job.options["record"] = a.record
+    if a.no_check:
+        job.self_check = False
+    try:
+        res = run(job)
+    except (ConvertError, ValueError, OSError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    for v in res.values:
+        print(v if v is res.values[0] else "  " + v)
+    for c in res.check:
+        print("  read-back check: %s" % c)
+    return 2 if res.check else 0
+
+
 def cmd_convert(a):
     if a.list_checksums:
         from .checksums import descriptors, installed_plugins
@@ -337,6 +405,13 @@ def cmd_convert(a):
         return _list_roms(a)
     if getattr(a, "shell_menu", None):
         return _shell_menu(a.shell_menu)
+    if getattr(a, "list_images", False):
+        return _list_images(a)
+    if getattr(a, "extract_images", False):
+        if not a.sources:
+            print("error: give the WinOLS projects to extract from", file=sys.stderr)
+            return 1
+        return _extract(a)
     if getattr(a, "watch", None):
         return _watch(a)
     if not a.sources:
