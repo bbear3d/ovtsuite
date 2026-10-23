@@ -235,8 +235,9 @@ accented letters stay as they are (*Überwachung*, *Groß*, *°C*).
 Compared with the OLS-to-XDF tool, an XDF from here can hold more maps: that
 tool finds maps by scanning for plain-ASCII text and misses those whose
 description has an umlaut (hundreds in some gearbox projects), and it writes
-some maps twice. The converter reads WinOLS's own map list; a map the
-project lists twice identically is written once.
+some maps twice that the project lists once. The converter reads WinOLS's
+own map list and writes every map it lists, a map listed twice (in two
+folders, or twice in one) included.
 
 ## Checksum plugin (XDF)
 

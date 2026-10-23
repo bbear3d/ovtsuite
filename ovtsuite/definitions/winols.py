@@ -888,7 +888,8 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
     Categories: in a project that lists every map once per code block, the
     map's block first (``Codeblock 0`` ...), then its folder (after the
     folders it is inside, top first). A map listed twice in the same block,
-    folder and place is taken once. ``info["category_order"]`` holds the
+    folder and place stays listed twice: every map the project lists is
+    exported, as WinOLS shows it. ``info["category_order"]`` holds the
     categories in the order an XDF numbers them."""
     kind = wf.kind
     defn = Definition(type=kind, title=title or wf.header.filename or
@@ -898,14 +899,9 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
     skipped = 0
     blocks = codeblocks(wf.records)
     multi = max(blocks, default=0) > 0
-    seen = set()
     for rec, cb in zip(wf.records, blocks):
         if rec.type == 1 or not rec.addr:
             continue                            # hexdump view / no data
-        key = (rec.name, cb, rec.addr, rec.folder)
-        if rec.name and key in seen:
-            continue
-        seen.add(key)
         z = _storage(rec.org, rec.signed, rec.addr, rec.factor, rec.offset,
                      rec.units if rec.units not in ("-", "?") else "", rec.size)
         if z is None:
