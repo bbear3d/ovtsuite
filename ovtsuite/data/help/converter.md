@@ -221,8 +221,18 @@ pack is put in the category of its folder (and of the folders that folder
 is in). A project that lists every map once per code block -- an EDC15's
 three copies of its data -- also gets a category per block, *Codeblock 0*,
 *Codeblock 1* ..., which each map is in first. In an XDF the code blocks
-are numbered first and the folders after them by name. An XDF holds plain ASCII only, so German letters are
-spelled out (*Ueberwachung*, *Gross*) rather than lost.
+are numbered first and the folders after them by name. A map in no folder is in *My maps*, as WinOLS shows it.
+
+**A WinOLS map in an XDF** is titled by its description (its name when it
+has none), and its description reads *OLS: name | description | Z: value
+label | X: axis | Y: axis*, so TunerPro's
+tree reads in words and the identifier is still there. Every table and value
+carries its decimal places (WinOLS's own), its range (*min* / *max*, what
+the stored width can hold) and whether it is signed. Umlauts and other
+accented letters stay as they are (*Überwachung*, *Groß*, *°C*).
+
+The converter reads WinOLS's own map list; a map the
+project lists twice identically is written once.
 
 ## Checksum plugin (XDF)
 

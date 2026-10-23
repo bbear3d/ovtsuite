@@ -18,61 +18,15 @@ from __future__ import annotations
 
 import re
 from typing import List
-from xml.sax.saxutils import escape
 
 _CAT = re.compile(r'(<CATEGORY index=")0x([0-9A-Fa-f]+)(" name=")([^"]*)(" />)')
 _MEM = re.compile(r'(<CATEGORYMEM index="\d+" category=")(\d+)(" />)')
 
 
-_SPELL = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe",
-                        "Ü": "Ue", "ß": "ss"})
-
-
-def spell_ascii(s: str) -> str:
-    """``s`` with the letters an ASCII file cannot hold spelled out: German
-    umlauts as ``ae`` / ``oe`` / ``ue`` / ``ss`` (as DAMOS names spell
-    them), other accented letters without their accent. The XDF writer
-    keeps ASCII only, and would put ``?`` in their place."""
-    if not s or s.isascii():
-        return s
-    import unicodedata
-    s = s.translate(_SPELL)
-    return "".join(c for c in unicodedata.normalize("NFKD", s)
-                   if not unicodedata.combining(c))
-
-
-def spelled(defn):
-    """A copy of ``defn`` whose table texts are :func:`spell_ascii`-ed
-    (tables copied, nothing else changed)."""
-    import copy
-    from . import copy_table
-    out = copy.copy(defn)
-    out.info = dict(defn.info)
-    if out.info.get("category_order"):
-        out.info["category_order"] = spell_ascii(out.info["category_order"])
-    out.title = spell_ascii(defn.title)
-    tables = []
-    for t in defn.tables:
-        t = copy_table(t)
-        t.name = spell_ascii(t.name)
-        t.description = spell_ascii(t.description)
-        t.categories = [spell_ascii(c) for c in t.categories]
-        t.z.units = spell_ascii(t.z.units)
-        for ad in (t.x, t.y):
-            if ad is None:
-                continue
-            ad.name = spell_ascii(ad.name)
-            if ad.labels:
-                ad.labels = [spell_ascii(x) for x in ad.labels]
-            if ad.values is not None:
-                ad.values.units = spell_ascii(ad.values.units)
-        tables.append(t)
-    out.tables = tables
-    return out
-
-
 def _esc(s: str) -> str:
-    return escape(s, {'"': "&quot;"})
+    """A name as the XDF writer writes it (character references and all)."""
+    from ..xdf_export import _esc as _xdf_esc
+    return _xdf_esc(s)
 
 
 def reorder(text: str, order: List[str]) -> str:
