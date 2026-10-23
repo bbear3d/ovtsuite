@@ -129,7 +129,7 @@ def add_parser(sub, parents=()):
                    help="with --watch: also convert the files already there")
     s.add_argument("--watch-subfolders", action="store_true",
                    help="with --watch: watch the folders inside it too")
-    s.add_argument("--shell-menu", choices=("install", "remove", "status"),
+    s.add_argument("--shell-menu", choices=("install", "remove", "remove-all", "status"),
                    help="add or remove \"Convert with OVT Converter\" in the file "
                    "manager's right-click menu (opt-in; no file associations)")
     s.add_argument("--preset", help="a saved job (JSON) to start from")
@@ -310,8 +310,10 @@ def _shell_menu(action: str) -> int:
         if action == "install":
             done = shellmenu.install()
             print("Added \"%s\" to: %s" % (shellmenu.LABEL, ", ".join(done)))
-        elif action == "remove":
-            done = shellmenu.remove()
+        elif action in ("remove", "remove-all"):
+            # remove: this install's entry (what an uninstaller runs);
+            # remove-all: every install's
+            done = shellmenu.remove(everywhere=action == "remove-all")
             print("Removed from: %s" % (", ".join(done) or "nothing (it was not there)"))
         else:
             where = shellmenu.installed()

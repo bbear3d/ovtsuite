@@ -84,6 +84,27 @@ def code_forms(pcode: str) -> List[str]:
     return out
 
 
+def pcode_of_vag5(n: Optional[int]) -> str:
+    """The P-code a 5-digit VAG number stands for (19456 -> 'P3000'), ''
+    when it is not one (below 16384, or past P3999)."""
+    if not n or not 0x4000 <= n < 0x5000:
+        return ""
+    d, xyz = divmod(n - 0x4000, 1024)
+    return "P%d%03d" % (d, xyz) if xyz < 1000 else ""
+
+
+def number_forms(n: Optional[int]) -> List[str]:
+    """Every number a scan tool may show for the stored word ``n``, in both
+    VAG numberings (:func:`code_forms`), whichever one ``n`` is in."""
+    if not n:
+        return []
+    out = [vag_text(n), str(n)]
+    pc = pcode_of_vag5(n)
+    if pc:
+        out += code_forms(pc)
+    return out
+
+
 # The value a fault path's class is set to in order to disable the code.
 DISABLED_CLASS = 0
 
@@ -284,6 +305,10 @@ class FaultPath:
                 bits += [vag_text(t.vag), str(t.vag), "0x%04x" % t.vag,
                          t.vag_pcode]
                 bits += code_forms(t.vag_pcode)
+            elif t.cdk_raw:
+                # no customer code: the ECU reports the path's own number
+                # (33000 + n, or n) -- what a scan tool then shows
+                bits += [vag_text(t.cdk_raw), str(t.cdk_raw)]
             if t.used:
                 bits.append(t.text)
         return " ".join(b for b in bits if b).lower()

@@ -282,7 +282,11 @@ It adds a menu entry and nothing else: double-clicking a file still opens
 whatever opened it before.
 
 - **Windows**: in Explorer's menu; on Windows 11 under **Show more options**.
-- **Linux**: GNOME Files (under *Scripts*), Nemo and Dolphin.
+  With both the app and the standalone OVT Converter installed, the entry
+  shows once; uninstalling one leaves the other's entry working.
+- **Linux**: Dolphin and Nemo, in the right-click menu; GNOME Files, under
+  **Open With**. Only on the files the converter reads -- never on every
+  file, and never made the program that opens them.
 - **macOS**: not available -- drop files on OVT Converter instead.
 
 ## Presets and the command line

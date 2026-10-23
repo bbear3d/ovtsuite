@@ -1403,7 +1403,7 @@ class ConverterDialog(QtWidgets.QDialog):
                         "\n\nOn Windows 11 it is under \"Show more options\"."
                         if os.name == "nt" else ""))
             else:
-                _sm.remove()
+                _sm.remove(everywhere=True)
                 self.status.setText("Removed from the right-click menu.")
         except _sm.ShellMenuError as exc:
             QtWidgets.QMessageBox.warning(self, "Right-click menu", str(exc))
