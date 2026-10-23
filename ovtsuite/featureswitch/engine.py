@@ -126,71 +126,102 @@ def read_values(session, bundle: M.Bundle, group: str) -> Dict[str, Optional[int
 
 
 def current_state(session, bundle: M.Bundle, group: str) -> Optional[str]:
-    """Which state the copy matches on the parameters that discriminate it,
-    or None when it matches none (a custom / tuned mix)."""
-    # a table-only feature (no discriminating parameters) gets its state from
-    # the hook module -- the parameters never move, the table does
-    discriminating = [p for p in present_params(session, bundle)
-                      if not p.readonly
-                      and any(p.target(s) is not None for s in bundle.states)]
-    if not discriminating:
-        h = _hook_module(session, bundle.table_hook)
-        if h is not None and hasattr(h, "state"):
-            try:
-                return h.state(session, group)
-            except Exception:
-                return None
+    """Which state the copy is in, or None when it matches none (a custom /
+    tuned mix). A bundle's table hook, when it reads a state, knows the whole
+    picture (tables, fault paths) and decides; otherwise every parameter that
+    a state sets must hold that state's value."""
+    h = _hook_module(session, bundle.table_hook)
+    if h is not None and hasattr(h, "state"):
+        try:
+            return h.state(session, group)
+        except Exception:
+            return None
+    info = match_info(session, bundle, group)
+    return info[0] if info[1] == info[2] and info[2] else None
+
+
+def match_info(session, bundle: M.Bundle, group: str) -> Tuple[Optional[str], int, int]:
+    """``(state, matched, total)``: the state whose values this copy holds
+    most of, how many of that state's values it holds, and how many the
+    state sets. A file holding all of them is in that state; a file holding
+    some (a tune that changed one switch of a bundle) only partly."""
     vals = read_values(session, bundle, group)
+    best: Tuple[Optional[str], int, int] = (None, 0, 0)
     for state in bundle.states:
-        ok = True
-        any_test = False
+        n = ok = 0
         for p in present_params(session, bundle):
             tgt = p.target(state)
             if tgt is None or p.readonly:
                 continue
-            any_test = True
-            if vals.get(p.name) != int(tgt):
-                ok = False
-                break
-        if any_test and ok:
-            return state
-    return None
+            n += 1
+            ok += vals.get(p.name) == int(tgt)
+        if n and (ok * best[2] > best[1] * n or best[0] is None
+                  or (ok == n and best[1] != best[2])):
+            best = (state, ok, n)
+    return best
+
+
+def preset_values(session, bundle: M.Bundle, state: str) -> Dict[str, int]:
+    """The values ``state`` gives the present, writable parameters (a
+    parameter the state leaves alone is not listed)."""
+    out = {}
+    for p in present_params(session, bundle):
+        if p.readonly:
+            continue
+        t = p.target(state)
+        if t is not None:
+            out[p.name] = int(t)
+    return out
+
+
+def value_range(p: M.Param) -> Tuple[int, int]:
+    """The values a parameter's stored width can hold."""
+    return 0, (1 << p.bits) - 1
 
 
 # -- planning a change -----------------------------------------------------
 
-def plan(session, bundle: M.Bundle, target_state: str,
-         sel_groups: List[str]) -> Tuple[List[Change], List[str]]:
-    """Byte writes to take ``sel_groups`` to ``target_state``, plus warnings.
+def plan(session, bundle: M.Bundle, target_state: Optional[str],
+         sel_groups: List[str],
+         values: Optional[Dict[str, int]] = None) -> Tuple[List[Change], List[str]]:
+    """Byte writes to take ``sel_groups`` to ``target_state`` -- or to the
+    parameter ``values`` given (a preset the user edited, or values typed
+    in), which take precedence -- plus warnings.
 
-    A parameter whose target value is None in this state is left untouched; a
-    USER / DERIVED parameter with no concrete value becomes a warning (the
-    caller must collect the value or run the table hook), never a blind write.
+    A parameter with no value given and none in the state is left untouched;
+    a USER / DERIVED parameter with no concrete value becomes a warning,
+    never a blind write.
     """
     changes: List[Change] = []
     warnings: List[str] = []
     if bundle.readonly:
-        return changes, ["This feature is informational and is not written."]
+        return changes, ["This feature is shown for information and is not written."]
     params = present_params(session, bundle)
     for g in sel_groups:
         for p in params:
             if p.readonly:
                 continue
-            tgt = p.target(target_state)
+            if values is not None and p.name in values:
+                tgt = values[p.name]
+            else:
+                tgt = p.target(target_state) if target_state else None
+                if tgt is not None and p.prov in (M.USER, M.DERIVED):
+                    warnings.append("%s needs a value for '%s': enter it before "
+                                    "applying" % (p.name, bundle.label(target_state)))
+                    continue
             if tgt is None:
                 continue
-            if p.prov in (M.USER, M.DERIVED):
-                warnings.append(
-                    "%s needs a %s value for '%s' -- supply it before applying"
-                    % (p.name, p.prov, target_state))
+            lo, hi = value_range(p)
+            if not lo <= int(tgt) <= hi:
+                warnings.append("%s: %d is outside %d to %d; not written"
+                                % (p.name, int(tgt), lo, hi))
                 continue
-            e = next((x for x in _entities(session, p.name)
-                      if (getattr(x, "group", "") or "") == g), None)
+            e = _E.one(session, p.name, g)
             if e is None:
                 continue
             old = _raw(session, e, p.bits)
             if old is None:
-                warnings.append("could not read %s (%s)" % (p.name, g or "only copy"))
+                warnings.append("Could not read %s (%s)" % (p.name, g or "the only copy"))
                 continue
             changes.append(Change(p.name, g, e.addr, p.bits, old, int(tgt), p.prov))
             # force the switch to its flash value: Type 1 reads the EEPROM
@@ -202,15 +233,12 @@ def plan(session, bundle: M.Bundle, target_state: str,
                 if told == 1:
                     changes.append(Change(tc.name, g, tc.addr, 8, told, 2,
                                           M.CODE))
-    if bundle.table_hook:
-        warnings.append(
-            "This feature also resizes/populates a table (%s); run that step "
-            "in the dialog." % bundle.table_hook)
     return changes, warnings
 
 
 def apply(session, changes: List[Change], label: str):
-    """Write the changed bytes as one undo step. Returns the number written."""
+    """Write the changed bytes (one command; inside the caller's transaction
+    it joins that undo step). Returns the number written."""
     live = [c for c in changes if c.changed]
     if not live:
         return 0
@@ -222,5 +250,220 @@ def apply(session, changes: List[Change], label: str):
     return len(writes)
 
 
+# -- what a table hook changes, in words --------------------------------------
+
+def _spans(session):
+    """``[(start, end, entity, axis_tag)]`` of every table and axis, for
+    naming a raw write; kept per entity list."""
+    ents = getattr(session, "entities", None) or []
+    hit = getattr(session, "_fsw_spans", None)
+    if hit is not None and hit[0] is ents:
+        return hit[1]
+    out = []
+    for e in ents:
+        try:
+            out.append((e.addr, e.addr + e.rows * e.cols * max(1, e.bits // 8), e, ""))
+        except Exception:
+            continue
+        for tag in ("x", "y"):
+            ax = getattr(e, tag, None)
+            a = getattr(ax, "addr", None)
+            if ax is not None and a is not None:
+                try:
+                    n = len(list(e.x_values() if tag == "x" else e.y_values()))
+                    out.append((a, a + n * max(1, ax.bits // 8), e, tag))
+                except Exception:
+                    continue
+    out.sort(key=lambda s: s[0])
+    try:
+        session._fsw_spans = (ents, out)
+    except Exception:
+        pass
+    return out
+
+
+def _decode(obj, bits, raw):
+    signed = bool(getattr(obj, "signed", False))
+    if signed and raw >= 1 << (bits - 1):
+        raw -= 1 << bits
+    try:
+        return float(obj.eq.decode(raw))
+    except Exception:
+        return float(raw)
+
+
+def _span_text(vals) -> str:
+    if not vals:
+        return ""
+    lo, hi = min(vals), max(vals)
+    f = (lambda v: ("%g" % round(v, 3)))
+    return f(lo) if abs(hi - lo) < 1e-9 else "%s to %s" % (f(lo), f(hi))
+
+
+def write_rows(session, writes, meaning: str = "") -> List[Dict[str, str]]:
+    """Preview rows for raw writes ``[(addr, bits, old, new)]``: one row per
+    table (or axis) they fall in, with the old and new values' range in the
+    table's own units. ``meaning`` overrides the table's description."""
+    spans = _spans(session)
+    groups: Dict[tuple, list] = {}
+    order = []
+    for w in writes:
+        addr = w[0]
+        hit = None
+        for s, e_, ent, tag in spans:
+            if s > addr:
+                break
+            if addr < e_:
+                hit = (ent, tag)
+                if not tag:
+                    break
+        key = (id(hit[0]), hit[1]) if hit else ("raw", addr)
+        if key not in groups:
+            groups[key] = [hit, []]
+            order.append(key)
+        groups[key][1].append(w)
+    rows = []
+    for key in order:
+        hit, ws = groups[key]
+        if hit is None:
+            a = ws[0][0]
+            rows.append({"name": "0x%X" % a, "meaning": meaning or "bytes outside any table",
+                         "current": " ".join("%X" % w[2] for w in ws),
+                         "new": " ".join("%X" % w[3] for w in ws), "kind": "raw"})
+            continue
+        ent, tag = hit
+        obj = getattr(ent, tag) if tag else ent
+        old = [_decode(obj, w[1], w[2]) for w in ws]
+        new = [_decode(obj, w[1], w[3]) for w in ws]
+        units = (getattr(obj, "units", "") or "").strip()
+        what = ("%s axis" % tag.upper()) if tag else (
+            "%d cell%s" % (len(ws), "" if len(ws) == 1 else "s"))
+        desc = (getattr(ent, "description", "") or "").split("|")
+        desc = desc[1].strip() if len(desc) > 1 else ""
+        rows.append({"name": ent.name + (" (%s axis)" % tag.upper() if tag else ""),
+                     "meaning": (meaning or desc or "")[:80] + (" — %s" % what),
+                     "current": _span_text(old) + (" " + units if units else ""),
+                     "new": _span_text(new) + (" " + units if units else ""),
+                     "kind": "axis" if tag else "table"})
+    return rows
+
+
+# -- fault paths and "as the file was opened" ---------------------------------
+
+def opened_raw(session, addr: int, bits: int) -> Optional[int]:
+    """The raw value at ``addr`` in the bytes the session was opened with."""
+    orig = getattr(session, "original", None)
+    n = max(1, bits // 8)
+    if orig is None or addr < 0 or addr + n > len(orig):
+        return None
+    endian = getattr(getattr(session, "binfile", None), "endian", ">")
+    return int.from_bytes(bytes(orig[addr:addr + n]), "big" if endian == ">" else "little")
+
+
+def _disabled_marker(table):
+    import sys
+    mod = sys.modules.get(type(table).__module__)
+    for name in ("DISABLED_CLASS", "DISABLED_TIME"):
+        if hasattr(mod, name):
+            return getattr(mod, name)
+    return 0
+
+
+def _class_of(table, fp):
+    """``(raw class, on)`` of a path now."""
+    return getattr(fp, "current_class", None), table.is_enabled(fp)
+
+
+def fault_targets(session, table, fps, enable: bool, ref=None, fallback=None):
+    """``[(fault path, class)]`` to switch ``fps`` on (``enable``) or off --
+    only those that change; class None means off. Switched on, a path gets
+    the class it had when the file was opened; one that was off then too
+    gets the class it has in ``ref`` (the comparison: the project's stock
+    file), else ``fallback`` (a class to use for every path with none to go
+    back to), and otherwise stays off."""
+    dis = _disabled_marker(table)
+    ref_cls = {}
+    if enable and ref is not None:
+        try:
+            rt = type(table)(ref)
+            for fp in rt.paths.values():
+                if rt.is_enabled(fp):
+                    ref_cls.setdefault((fp.name, getattr(fp, "group", "")), fp.current_class)
+                    ref_cls.setdefault((fp.name, None), fp.current_class)
+        except Exception:
+            ref_cls = {}
+    out = []
+    for fp in fps:
+        on = table.is_enabled(fp)
+        if not enable:
+            if on:
+                out.append((fp, None))
+            continue
+        if on:
+            continue
+        e = getattr(fp, "cla", None)
+        c = opened_raw(session, e.addr, e.bits) if e is not None else None
+        if c is None or c == dis:
+            c = ref_cls.get((fp.name, getattr(fp, "group", "")),
+                            ref_cls.get((fp.name, None)))
+        if (c is None or c == dis) and fallback is not None:
+            c = fallback
+        if c is not None and c != dis:
+            out.append((fp, int(c)))
+    return out
+
+
+def fault_rows(table, targets) -> List[Dict[str, str]]:
+    """Preview rows for :func:`fault_targets`."""
+    rows = []
+    for fp, cls in targets:
+        cur = getattr(fp, "current_class", None)
+        on = table.is_enabled(fp)
+        codes = ", ".join(x for x in (getattr(fp, "vag_str", ""),
+                                      getattr(fp, "pcode_str", "")) if x and x != "-")
+        where = getattr(fp, "dfp", "") or fp.name
+        rows.append({"name": where,
+                     "meaning": "Fault path: %s%s" % (fp.code_desc(),
+                                                       " (%s)" % codes if codes else ""),
+                     "current": ("On (class %s)" % cur) if on and cur is not None
+                     else ("On" if on else "Off"),
+                     "new": "Off" if cls is None else "On (class %d)" % cls,
+                     "kind": "fault"})
+    return rows
+
+
+def apply_faults(session, table, targets, label: str) -> int:
+    """Write :func:`fault_targets` (inside the caller's transaction)."""
+    with session.transaction(label):
+        for fp, cls in targets:
+            if cls is None:
+                table.set_enabled(fp, False)
+            else:
+                table.set_enabled(fp, True, enable_class=cls)
+    return len(targets)
+
+
+def restore_writes(session, entities, fallback=None) -> List[tuple]:
+    """``[(addr, bits, old, new)]`` putting ``entities``' cells back as the
+    file was opened; where ``fallback`` (``{addr: raw}``) names a value, that
+    is used instead (the file was opened with the feature off)."""
+    out = []
+    for e in entities:
+        if e is None or getattr(e, "is_float", False):
+            continue
+        for r in range(e.rows):
+            for c in range(e.cols):
+                addr = e.addr + e.index(r, c) * e.step
+                old = int(session.binfile.read(addr, e.bits, False))
+                new = (fallback or {}).get(addr)
+                if new is None:
+                    new = opened_raw(session, addr, e.bits)
+                if new is not None and new != old:
+                    out.append((addr, e.bits, old, int(new)))
+    return out
+
+
 __all__ = ["Change", "present_params", "is_present", "groups", "read_values",
-           "current_state", "plan", "apply"]
+           "current_state", "match_info", "preset_values", "value_range", "plan",
+           "apply", "write_rows", "fault_rows", "fault_targets", "apply_faults",
+           "opened_raw", "restore_writes"]

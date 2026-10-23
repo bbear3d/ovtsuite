@@ -44,11 +44,21 @@ class Param:
     eeprom: Optional[str] = None    # EEPROM field id when the value can live
                                     # in the EEPROM switch record (EDC16, §7.2)
     optional: bool = False          # absent on some files of the family -> skip
-    readonly: bool = False          # shown, never written (e.g. gearbox type)
+    readonly: bool = False          # shown, never written
+    #: what each stored value means, for the value picker ({0: "Off", ...});
+    #: empty: any number in the parameter's range
+    choices: Dict[int, str] = field(default_factory=dict)
 
     def target(self, state: str) -> Optional[float]:
         """The value this parameter takes in ``state`` (None = leave as is)."""
         return self.values.get(state)
+
+    def value_text(self, v: Optional[int]) -> str:
+        """``v`` as the window shows it: "1 (On)", or the number."""
+        if v is None:
+            return ""
+        lab = self.choices.get(int(v))
+        return "%d (%s)" % (v, lab) if lab else str(v)
 
 
 @dataclass(frozen=True)
@@ -63,9 +73,21 @@ class Bundle:
     notes: Tuple[str, ...] = ()     # cautions shown in the UI
     table_hook: Optional[str] = None  # engine hook for a table precondition
     readonly: bool = False          # the whole bundle is informational
+    #: how each state is named in the window ({"can": "CAN"}); a state not
+    #: listed is shown with its first letter capitalised
+    state_labels: Dict[str, str] = field(default_factory=dict)
 
     def param(self, name: str) -> Optional[Param]:
         return next((p for p in self.params if p.name == name), None)
+
+    def label(self, state: Optional[str]) -> str:
+        if not state:
+            return ""
+        lab = self.state_labels.get(state)
+        if lab:
+            return lab
+        t = state.replace("_", " ")
+        return t[:1].upper() + t[1:]
 
 
 @dataclass
@@ -84,7 +106,11 @@ class FeatureSet:
 #: ``first`` is True for the first copy written, for the file-wide part such
 #: as fault paths). An optional ``FS_OPTION`` dict adds one number to the
 #: window: ``key`` (the keyword passed in ``opts``), ``label``, ``min``,
-#: ``max``, ``default``, ``step``, ``suffix``, ``tip``.
+#: ``max``, ``default``, ``step``, ``suffix``, ``tip``, and ``states`` (the
+#: settings it applies to; all when absent). ``fs_preview(session, group,
+#: target, first, **opts)`` lists what a setting changes (rows of
+#: ``engine.write_rows`` / ``engine.fault_rows``) and ``state_text(session,
+#: group)`` says in words what the file holds when no setting matches.
 HOOK_PROTOCOL = ("present", "groups", "state", "fs_describe", "fs_apply")
 
 _EMPTY = FeatureSet()

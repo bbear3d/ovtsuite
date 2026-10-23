@@ -56,6 +56,14 @@ def register(reg) -> None:
             out.update(tables=len(d.tables), title=d.title,
                        embeds_image=bool(d.images), checksum_blocks=len(d.checksums),
                        warnings=d.warnings[:10])
+            if t == "ols":
+                from . import embedded
+                stem = os.path.splitext(os.path.basename(path))[0]
+                out["summary"] = embedded.summary(path, data)
+                out["embedded_images"] = [
+                    {"key": e.key, "what": e.label, "bytes": e.size,
+                     "default_name": e.name, "extracted_by_default": e.default,
+                     "note": e.note} for e in embedded.images(data, stem)]
         elif kind == "values":
             from . import calvalues
             try:
@@ -68,6 +76,35 @@ def register(reg) -> None:
             out.update(values=len(vs.params), by_kind=kinds, title=vs.title,
                        made_from=vs.origin, warnings=vs.warnings[:10])
         return out
+
+    @reg.tool("extract_embedded_images",
+              "Write out the binaries a WinOLS project (.ols) embeds: the original WinOLS "
+              "imported, every version made from it, and (by key) each memory area of a "
+              "binary put together from several (e.g. an EDC16's flash and MPC). The bytes "
+              "are written exactly as stored (format raw), or as Intel HEX / S-record. "
+              "inspect_file_format lists what a project holds and each one's key.",
+              {"type": "object", "required": ["sources"], "properties": {
+                  "sources": {"type": "array", "items": {"type": "string"},
+                              "description": "Absolute paths of the .ols projects."},
+                  "out_dir": {"type": "string", "description": "Folder to write into "
+                              "(default: beside the first project)."},
+                  "only": {"type": "array", "items": {"type": "string"},
+                           "description": "Keys (original, version1, original-area2 ...), "
+                           "version names or file names; ['all'] for every one. Default: "
+                           "the original and every version."},
+                  "format": {"type": "string", "enum": ["raw", "bin", "hex", "srec"]}}},
+              read_only=False, title="Extract a WinOLS project's binaries")
+    def extract_embedded_images(ctx, sources, out_dir=None, only=None, format="raw"):
+        from . import EXTRACT
+        job = Job(sources=list(sources), target=EXTRACT, out=out_dir or "")
+        job.options = {"extract": list(only) if only else None,
+                       "extract_format": format or "raw"}
+        try:
+            res = run(job)
+        except (ConvertError, ValueError, OSError) as exc:
+            raise ToolError(str(exc))
+        return {"written": res.out, "what": res.values[1:], "out_dir": job.out,
+                "read_back_differences": res.check}
 
     @reg.tool("convert_files",
               "Convert definitions (XDF, A2L, DAM, OLS, KP, JSON, CSV) to another definition "

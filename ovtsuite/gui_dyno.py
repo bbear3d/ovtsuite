@@ -1044,6 +1044,11 @@ def _cap_combo(cb: QtWidgets.QComboBox, chars: int = 22) -> None:
     long version or file name shows in full in the list and the tooltip)."""
     cb.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
     cb.setMinimumContentsLength(chars)
+    # Qt keeps the minimum size it measured from the items already in the
+    # box (a project's long version names: thousands of pixels, the whole
+    # settings column widened) until the style changes: make it measure again
+    QtWidgets.QApplication.sendEvent(cb, QtCore.QEvent(QtCore.QEvent.Type.StyleChange))
+    cb.updateGeometry()
     view = cb.view()
     view.setTextElideMode(QtCore.Qt.ElideMiddle)
 
@@ -1579,8 +1584,11 @@ class DynoDialog(QtWidgets.QDialog):
             btns.addWidget(b)
         sv.addLayout(btns)
         split.addWidget(side)
-        for cb in (self.ref_box, self.group_box, self.wish_box, self.diff_box):
+        for cb in (self.ref_box, self.group_box, self.wish_box, self.diff_box,
+                   self.gear_box):
             _cap_combo(cb)
+        for cb in (self.x_box, self.speed_unit):
+            _cap_combo(cb, 12)
         _cap_combo(self.preset_box, 14)
         # fields keep their own width (a wide combo no longer stretches every
         # spin box to match), and a label goes above its field rather than

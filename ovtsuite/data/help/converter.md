@@ -21,12 +21,19 @@ the shortcut open as the files to convert.
 
 1. **Files to convert:** drop the file on the list, or press **Add files...**.
    Each file shows what it is. The type comes from the file's contents, not
-   its name, so a renamed file is still recognised.
+   its name, so a renamed file is still recognised. A WinOLS project also
+   says what it holds, e.g. *WinOLS project: 9477 maps; embeds a 4 MB
+   binary + 2 versions (Stage 1, Stage 1_AEE)*.
 2. **Binary (optional):** give the binary the definition is for when you have
    it. It settles three things a definition may leave to the image: where the
    image starts in the ECU's address space, the size of tables whose point
    counts are stored in the image, and (for an XDF) which checksum plugin
    applies. Without it the converter uses what the definition itself says.
+   A WinOLS project carries its binary: with no binary given, that one is
+   used (the original WinOLS imported), as if you had given it here -- to
+   place and check the tables, export values (DCM, CDFX), pick the checksum
+   plugin (**Automatic**), write values into a copy of it, or save it as
+   BIN, HEX or S-record. The report says when it was used.
 3. **Convert to:** pick the format. Only that format's options are shown
    below it.
 4. Press **Preview**. The list shows every table that will be written. A
@@ -39,6 +46,42 @@ the shortcut open as the files to convert.
 After writing, the converter reads the result back with OVT-Suite's own
 reader and compares every table's address, size and width with what it
 meant to write. The summary line says whether that check passed.
+
+The window keeps its size while you work: changing the format, ticking an
+option or pressing a button greys out what does not apply rather than
+adding or removing rows. When the window is short the upper part scrolls;
+drag the bar above **4. Preview** to give either part more room.
+
+## Extract the binaries of a WinOLS project
+
+A WinOLS project (.ols) holds the binary WinOLS imported (the *original*)
+and every version made from it (*Stage 1* ...), each stored whole. A binary
+WinOLS put together from several memories -- an EDC16's flash and its
+processor's internal flash (MPC), or a gearbox controller's two areas --
+lists them as areas #1, #2 ...
+
+1. Add the project to **Files to convert**.
+2. **Convert to:** pick **Embedded binaries (extract from the OLS)**.
+3. The list shows every binary in the project, ticked: the original and each
+   version. Each area is listed under its binary, not ticked (it is part of
+   the binary above it); tick it to save that memory on its own.
+   **Tick all**, **Tick none** and **Defaults** set every tick at once.
+4. **Save as** shows each file's name: `<project>_original.bin`,
+   `<project>_<version>.bin`, `<project>_original_area1.bin`. The original
+   keeps the extension of the file WinOLS imported when the project records
+   it (`.ori`, `.mod` ...). Double-click a name to change it.
+5. **Write as:** **As stored** writes the bytes exactly as the project holds
+   them (no padding, nothing changed); **Intel HEX** or **Motorola
+   S-record** writes them in that format instead (an area at its own
+   offset).
+6. **Save in folder:** where they go (the project's folder at first).
+   **Preview** lists the files; **Convert** writes them and reads each one
+   back to check it.
+
+On the command line: `ovtsuite convert project.ols --list-images` lists
+them, `ovtsuite convert project.ols --extract-images -o folder` writes the
+original and every version, `--only original version1 original-area2` (or
+`--only all`) picks, and `--to hex` / `--to srec` writes that format.
 
 ## Port a definition to another software version
 
@@ -163,7 +206,7 @@ display name), and values apply back by either form.
 | TunerPro XDF | Yes | Yes | Optional checksum plugin block and patches (below) |
 | ASAP2 A2L | Yes | Yes | Addresses as file offsets (WinOLS, TunerPro) or ECU addresses (INCA, CANape) |
 | Bosch DAMOS | Yes | Yes | Written back into a DAMOS, its own records are kept as they are |
-| WinOLS project (.ols) | Yes | No | Its embedded image can be saved as BIN, HEX or S-record |
+| WinOLS project (.ols) | Yes | No | Its binary is used when none is given; it and its versions can be [extracted](#extract-the-binaries-of-a-winols-project) |
 | WinOLS map pack (.kp) | Yes | Experimental | Reads back in OVT-Suite; an A2L imports into WinOLS reliably |
 | EcuFlash XML | Yes | Yes | Finds the base a ROM includes beside it; writes one self-contained file |
 | RomRaider XML | Yes | Yes | Many ROMs per file: found from the binary or picked |
@@ -172,6 +215,15 @@ display name), and values apply back by either form.
 | DCM (DAMOS exchange) | Yes | Yes | Calibration values (above) |
 | CDFX (ASAM CDF 2.x) | Yes | Yes | Calibration values (above) |
 | BIN, Intel HEX, S-record | Yes | Yes | Crop, pad, fill, byte-swap and checksum correction |
+
+**WinOLS folders become categories.** Each map of a WinOLS project or map
+pack is put in the category of its folder (and of the folders that folder
+is in). A project that lists every map once per code block -- an EDC15's
+three copies of its data -- also gets a category per block, *Codeblock 0*,
+*Codeblock 1* ..., which each map is in first. In an XDF the code blocks
+are numbered first and the folders after them by name, as the OLS-to-XDF
+tool numbers them. An XDF holds plain ASCII only, so German letters are
+spelled out (*Ueberwachung*, *Gross*) rather than lost.
 
 ## Checksum plugin (XDF)
 

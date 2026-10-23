@@ -43,17 +43,21 @@ IMG = _image.FORMATS
 VAL = _values.FORMATS
 #: two definitions compared (a CSV of the differences)
 DIFF = "diff"
+#: the binaries a WinOLS project embeds, extracted (:mod:`.embedded`); the
+#: output is a folder
+EXTRACT = "extract"
 EXT = {"xdf": ".xdf", "a2l": ".a2l", "kp": ".kp", "dam": ".dam",
        "json": ".ovtdef.json", "csv": ".csv", "bin": ".bin", "hex": ".hex",
        "srec": ".s19", "dcm": ".dcm", "cdfx": ".cdfx", "diff": ".diff.csv",
-       "ecuflash": ".xml", "romraider": ".romraider.xml"}
+       "ecuflash": ".xml", "romraider": ".romraider.xml", "extract": ""}
 NAMES = {"xdf": "TunerPro XDF", "a2l": "ASAP2 (A2L)", "kp": "WinOLS map pack (KP)",
          "dam": "Bosch DAMOS", "json": "OVT definition (JSON)",
          "csv": "Map list (CSV)", "ols": "WinOLS project (OLS)",
          "bin": "Binary (BIN)", "hex": "Intel HEX", "srec": "Motorola S-record",
          "dcm": "DCM values (DAMOS exchange)", "cdfx": "CDFX values (ASAM CDF)",
          "diff": "Differences between the two (CSV)",
-         "ecuflash": "EcuFlash XML", "romraider": "RomRaider XML"}
+         "ecuflash": "EcuFlash XML", "romraider": "RomRaider XML",
+         "extract": "Embedded binaries (extract from the OLS)"}
 #: writers still marked experimental
 EXPERIMENTAL = ("kp",)
 
@@ -241,6 +245,13 @@ def place(defn: Definition, data: Optional[bytes], base: Optional[int],
         data, ref_base = defn.reference
         if base is None:
             base = ref_base
+        if defn.type == "ols":
+            names = [n for n, _d, _b in defn.images] or ["Original"]
+            warnings.append("No binary given: the binary embedded in the WinOLS project "
+                            "is used (%s, 0x%X bytes%s)." % (
+                                names[0], len(data),
+                                "; its other versions: %s" % ", ".join(names[1:])
+                                if len(names) > 1 else ""))
     if data is not None:
         size = size or len(data)
         if base is None:
@@ -495,6 +506,10 @@ def run(job: Job, progress=None) -> Result:
     res = Result()
     say = progress or (lambda *_: None)
     tgt = (job.target or "").lower()
+    if tgt == EXTRACT:
+        _run_extract(job, res, say)
+        res.report = report(job, res)
+        return res
     if tgt not in DEF_OUT + IMG + VAL + (DIFF,):
         raise ConvertError("Unknown target format %r." % job.target)
     if not job.out:
@@ -620,6 +635,48 @@ def _patches_from(job: Job, defn: Definition, image: Optional[bytes], size: int,
             xdfpatch.apply(patches, image[:size]) != bytes(new[:size]):
         res.check.append("The patch does not turn the binary into the changed one.")
     return patches
+
+
+def _run_extract(job: Job, res: Result, say) -> None:
+    """The binaries WinOLS projects among the sources embed, written into
+    the folder ``job.out`` (default: beside the first project). Options:
+    ``extract`` (None: the default ones; ``"all"``; names / keys; or the
+    window's ``[{"source", "key", "name"}]``), ``extract_format`` (``raw``,
+    ``bin``, ``hex``, ``srec``), ``extract_names`` ({key: file name})."""
+    from . import embedded
+    o = job.options or {}
+    projects = [p for p in job.sources if embedded.images(_read(p), "x")]
+    if not projects:
+        raise ConvertError("None of the files is a WinOLS project with a binary in it "
+                           "(.ols): nothing to extract.")
+    out = job.out or os.path.dirname(os.path.abspath(projects[0]))
+    if os.path.isfile(out):
+        raise ConvertError("Extracting writes into a folder: %s is a file." % out)
+    job.out = out
+    say("Extracting")
+    fmt = o.get("extract_format") or "raw"
+    if fmt not in ("raw", "bin", "hex", "srec"):
+        raise ConvertError("Unknown format for the extracted binaries: %r." % fmt)
+    done = embedded.extract(projects, out, o.get("extract"), fmt,
+                            o.get("extract_names"), int(o.get("record") or 32),
+                            inputs=job_inputs(job))
+    if not done:
+        raise ConvertError("Nothing chosen to extract.")
+    for path, e in done:
+        res.out.append(path)
+        res.values.append("%s (0x%X bytes) -> %s" % (e.label, e.size, os.path.basename(path)))
+        res.size = max(res.size, e.size)
+        if job.self_check:
+            back = _read(path)
+            if fmt in ("hex", "srec"):
+                img = _image.read(back)
+                back = img.flat() if img.start == e.start else b""
+            if back != e.data:
+                res.check.append("%s does not read back as the stored bytes"
+                                 % os.path.basename(path))
+    res.values.insert(0, "%d binar%s extracted to %s." % (
+        len(done), "y" if len(done) == 1 else "ies", out))
+    res.tables_out = 0
 
 
 def _finish(job: Job, res: Result) -> Result:
@@ -799,12 +856,16 @@ def _run_apply(job: Job, tgt: str, kinds, res: Result, say) -> None:
     """Values from DCM / CDFX files written into a binary, through the
     definition that says where each one is."""
     dj = _binary_for(job, kinds, "apply values to")
-    if not dj.binary:
+    say("Reading")
+    defn, base, size, image, loss, n_in = prepare(dj, res.warnings, say, res.placement)
+    if dj.binary:
+        src_img = _image.read(_read(dj.binary))
+    elif image is not None and defn.type == "ols":
+        # a WinOLS project's own binary: the values go into a copy of it
+        src_img = _image.Image([(0, bytes(image[:size]))], source="bin")
+    else:
         raise ConvertError("Applying values needs the binary to write them into: "
                            "give it as the binary.")
-    say("Reading")
-    src_img = _image.read(_read(dj.binary))
-    defn, base, size, image, loss, n_in = prepare(dj, res.warnings, say, res.placement)
     res.base, res.size, res.tables_in = base, size, n_in
     for k, v in loss.items():
         res.loss.setdefault(k, []).extend(v)
@@ -876,6 +937,11 @@ def write(defn: Definition, tgt: str, size: int, image: Optional[bytes],
         text, n = fmt_dam.dumps(defn, size, image, warn, res.loss)
         res.warnings.extend(warn)
         return text.encode("latin-1", "replace"), n
+    if tgt == "xdf":
+        # the XDF writer keeps ASCII only: spell umlauts out rather than
+        # lose them as "?"
+        from .xdfcats import spelled
+        defn = spelled(defn)
     ents = _entities(defn, 0, size, image, None, job.dynamic, res.loss)
     le = defn.byte_order() == "<"
     warn = []
@@ -891,6 +957,10 @@ def write(defn: Definition, tgt: str, size: int, image: Optional[bytes],
                 NAMES.get(src, src or "a definition"),
                 defn.info.get("checksum_note", ""))).strip(),
             checksums=defn.checksums, patches=defn.patches)
+        if defn.info.get("category_order"):
+            # a WinOLS project's categories: code blocks, then folders by name
+            from .xdfcats import reorder
+            text = reorder(text, defn.info["category_order"].split("\n"))
         _xdf_losses(ents, res.loss)
         return text.encode("utf-8"), len(ents)
     if tgt == "a2l":
@@ -1066,8 +1136,9 @@ def report(job: Job, res: Result) -> str:
              "Target:  %s (%s)" % (job.out, NAMES.get(job.target, job.target))]
     if job.binary:
         lines.append("Binary:  %s" % job.binary)
-    lines.append("Image:   0x%X bytes, offset 0 = definition address 0x%X"
-                 % (res.size, res.base))
+    if job.target != EXTRACT:
+        lines.append("Image:   0x%X bytes, offset 0 = definition address 0x%X"
+                     % (res.size, res.base))
     if res.tables_in or res.tables_out:
         lines.append("Tables:  %d read, %d written" % (res.tables_in, res.tables_out))
     if res.placement:

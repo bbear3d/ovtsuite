@@ -744,6 +744,10 @@ def register(reg: Registry) -> None:
     from . import gearbox_tools
     gearbox_tools.register(reg)
 
+    # ------------------------------------------------------------ feature switches
+    from . import feature_tools
+    feature_tools.register(reg)
+
 
 _ENGINE = {}
 _ENGINE_LOCK = threading.Lock()
