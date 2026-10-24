@@ -264,6 +264,19 @@ def match_info(session, bundle: M.Bundle, group: str) -> Tuple[Optional[str], in
     return best
 
 
+def full_matches(session, bundle: M.Bundle, group: str) -> List[str]:
+    """Every state whose values this copy holds in full: more than one when
+    two settings write the same values (a torque-converter automatic and a
+    DSG are both gearbox type 1)."""
+    vals = read_values(session, bundle, group)
+    out = []
+    for state in bundle.states:
+        want = preset_values(session, bundle, state)
+        if want and all(vals.get(k) == v for k, v in want.items()):
+            out.append(state)
+    return out
+
+
 def preset_values(session, bundle: M.Bundle, state: str) -> Dict[str, int]:
     """The values ``state`` gives the present, writable parameters (a
     parameter the state leaves alone is not listed)."""
@@ -515,6 +528,59 @@ def fault_now_rows(table, fps) -> List[Dict[str, str]]:
 
 # -- fault paths and "as the file was opened" ---------------------------------
 
+def _revision(session):
+    """What a cached read of ``session`` is good for: its entity list and
+    undo-stack revision (every recorded edit, undo and redo bumps it); None
+    while a transaction is writing (its edits are not on the stack yet)."""
+    if getattr(session, "_txn", None) is not None:
+        return None
+    stack = getattr(session, "undo_stack", None)
+    return (id(getattr(session, "entities", None)), getattr(stack, "revision", None))
+
+
+def dtc_table(session):
+    """The file's fault paths (``dtc.DtcTable``), built once per revision of
+    the file: building one reads every fault path (a fifth of a second on an
+    EDC16 image), and the window asks for it on every edit. Inside a
+    transaction a fresh table is built (and not kept)."""
+    from .. import dtc
+    rev = _revision(session)
+    hit = getattr(session, "_fsw_dtc", None)
+    if rev is not None and hit is not None and hit[0] == rev:
+        return hit[1]
+    t = dtc.DtcTable(session)
+    if rev is not None:
+        try:
+            session._fsw_dtc = (rev, t)
+        except Exception:
+            pass
+    return t
+
+
+def _ref_classes(table, ref):
+    """``{(name, group): class}`` of the paths switched on in ``ref`` (the
+    comparison), kept per revision of ``ref``."""
+    rev = _revision(ref)
+    hit = getattr(ref, "_fsw_refcls", None)
+    if rev is not None and hit is not None and hit[0] == rev and hit[1] is type(table):
+        return hit[2]
+    out = {}
+    try:
+        rt = type(table)(ref)
+        for fp in rt.paths.values():
+            if rt.is_enabled(fp):
+                out.setdefault((fp.name, getattr(fp, "group", "")), fp.current_class)
+                out.setdefault((fp.name, None), fp.current_class)
+    except Exception:
+        out = {}
+    if rev is not None:
+        try:
+            ref._fsw_refcls = (rev, type(table), out)
+        except Exception:
+            pass
+    return out
+
+
 def opened_raw(session, addr: int, bits: int) -> Optional[int]:
     """The raw value at ``addr`` in the bytes the session was opened with."""
     orig = getattr(session, "original", None)
@@ -547,16 +613,7 @@ def fault_targets(session, table, fps, enable: bool, ref=None, fallback=None):
     file), else ``fallback`` (a class to use for every path with none to go
     back to), and otherwise stays off."""
     dis = _disabled_marker(table)
-    ref_cls = {}
-    if enable and ref is not None:
-        try:
-            rt = type(table)(ref)
-            for fp in rt.paths.values():
-                if rt.is_enabled(fp):
-                    ref_cls.setdefault((fp.name, getattr(fp, "group", "")), fp.current_class)
-                    ref_cls.setdefault((fp.name, None), fp.current_class)
-        except Exception:
-            ref_cls = {}
+    ref_cls = _ref_classes(table, ref) if enable and ref is not None else {}
     out = []
     for fp in fps:
         on = table.is_enabled(fp)
@@ -678,8 +735,8 @@ def restore_writes(session, entities, fallback=None) -> List[tuple]:
 
 
 __all__ = ["Change", "present_params", "is_present", "groups", "copies", "copy_for",
-           "copy_label", "fault_text", "fault_on_class", "apply_fault_edits",
+           "copy_label", "dtc_table", "fault_text", "fault_on_class", "apply_fault_edits",
            "read_values",
-           "current_state", "match_info", "preset_values", "value_range", "plan",
+           "current_state", "match_info", "full_matches", "preset_values", "value_range", "plan",
            "apply", "write_rows", "table_now_rows", "fault_now_rows", "fault_rows", "fault_targets", "apply_faults",
            "opened_raw", "restore_writes"]

@@ -215,6 +215,10 @@ ignored. Values pasted over axis cells change the breakpoints.
 
 The same **Copy** and **Paste** are on the grid's right-click menu.
 
+With a comparison open, **Copy selected cells from comparison** (Ctrl+R,
+also on the right-click menu and under **Edit > Cells**) overwrites the
+selected cells with the comparison's values, in one step you can undo.
+
 ### Copying a table from another tab
 
 To copy a table from another open tab — for example to carry a map from one

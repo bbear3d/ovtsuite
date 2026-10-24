@@ -21,11 +21,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
 # binutils: objdump for PyInstaller's dependency scan and the glibc-floor check.
+# gcc + libc6-dev: the closed modules' packages are compiled to extension modules
+# (Cython; the uv Python carries its own headers) -- built here, they too need only
+# glibc 2.31.
 # dpkg (dpkg-deb) is in the base image; rpm provides rpmbuild for --rpm.
 # The rest are Qt's X11 runtime libraries: PyInstaller imports PySide6 at build time to find
 # its plugins, which fails without them (the libEGL.so.1 error).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates binutils rpm \
+        ca-certificates binutils gcc libc6-dev rpm \
         libusb-1.0-0 libglib2.0-0 libdbus-1-3 libfontconfig1 libegl1 libgl1 \
         libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
         libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \

@@ -272,6 +272,16 @@ if [ "$SKIP_BUILD" = 0 ]; then
         have_lib "${pair%%:*}" || { missing+=("${pair%%:*}"); pkgs+=("${pair##*:}"); }
     done
     command -v objdump >/dev/null 2>&1 || { missing+=(objdump); pkgs+=(binutils); }
+    # the closed modules' packages are compiled (Cython -> C -> .so): a C compiler and
+    # the interpreter's own headers (a uv / python-build-standalone Python has them; a
+    # distro Python needs its -dev package)
+    if [ "$BASE_ONLY" = 0 ]; then
+        command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 \
+            || { missing+=(gcc); pkgs+=(gcc libc6-dev); }
+        "$PY" -c 'import os, sys, sysconfig
+sys.exit(not os.path.isfile(os.path.join(sysconfig.get_paths()["include"], "Python.h")))' \
+            || { missing+=("Python.h ($PY)"); pkgs+=("python$PYVER-dev"); }
+    fi
     if [ ${#missing[@]} -gt 0 ]; then
         hint="install the packages providing them"
         [ -f /etc/debian_version ] && hint="sudo apt install ${pkgs[*]}"
@@ -286,8 +296,10 @@ VPY="$VENV/bin/python"
 # Keep in step with $deps in build.ps1. Pillow is build-time only (icon conversion); the
 # .spec excludes it from the bundle.
 # cryptography: module signatures (Ed25519) and the ZF 8HP Gen2 AES codec
+# cython + setuptools: the closed modules' packages ship compiled code
+# (ovtsuite/modules/native.py), built with the C compiler checked above
 DEPS=('PySide6>=6.6' 'numpy>=1.24' 'pyserial>=3.5' 'pyusb>=1.2' 'pyftdi>=0.55'
-      'cryptography>=41' 'pyinstaller>=6.6' 'pillow>=9')
+      'cryptography>=41' 'pyinstaller>=6.6' 'pillow>=9' 'cython>=3.0' 'setuptools>=64')
 [ "$RUN_TESTS" = 1 ] && DEPS+=('pytest')
 
 step "build venv $VENV"
@@ -690,15 +702,19 @@ OUTPUTS+=("$DEB_OUT")
 
 # ------------------------------------------------------------------ module .debs
 # One per module installed in the build ($APP/modules/<id>, laid out installed by
-# tools/build_modules.py): <pkg>-module-<id>, into /opt/<pkg>/modules/<id>. Pure Python
-# and data, so Architecture: all. The app re-verifies a module's signature and files at
-# every start; dpkg only places them.
+# tools/build_modules.py): <pkg>-module-<id>, into /opt/<pkg>/modules/<id>. An open-source
+# module is Python source and data (Architecture: all); a closed one is compiled for this
+# machine and this Python (its manifest's "platform"), so it is this build's architecture.
+# The app re-verifies a module's signature, files and platform at every start; dpkg only
+# places them.
 if [ "$BASE_ONLY" = 0 ] && [ -d "$APP/modules" ]; then
     for MDIR in "$APP"/modules/*/; do
         MID="$(basename "$MDIR")"
         [ -f "$MDIR/manifest.json" ] || continue
         M_NAME="$("$VPY" -c 'import json, sys; print(json.load(open(sys.argv[1]))["name"])' "$MDIR/manifest.json")"
         M_VER="$("$VPY" -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$MDIR/manifest.json")"
+        M_ARCH="$("$VPY" -c 'import json, sys; print(json.load(open(sys.argv[1])).get("platform", ""))' "$MDIR/manifest.json")"
+        if [ -n "$M_ARCH" ]; then M_ARCH="$DEB_ARCH"; else M_ARCH=all; fi
         step "deb: $B_PKG-module-$MID ($M_NAME $M_VER)"
         MROOT="$STAGE/mod-$MID"
         install -d "$MROOT/DEBIAN" "$MROOT/opt/$B_PKG/modules"
@@ -711,7 +727,7 @@ if [ "$BASE_ONLY" = 0 ] && [ -d "$APP/modules" ]; then
             echo "Version: $M_VER-$RELEASE"
             echo "Section: electronics"
             echo "Priority: optional"
-            echo "Architecture: all"
+            echo "Architecture: $M_ARCH"
             echo "Depends: $B_PKG"
             echo "Installed-Size: $MKB"
             echo "Maintainer: Blair Campbell <bbear3dca@gmail.com>"
@@ -720,12 +736,30 @@ if [ "$BASE_ONLY" = 0 ] && [ -d "$APP/modules" ]; then
             echo " to $B_APP_NAME. The base app identifies, hex-edits and flashes every"
             echo " supported control module without it."
         } > "$MROOT/DEBIAN/control"
+        if [ "$M_ARCH" != all ]; then
+            # Upgrading from a source build of this module: dpkg removes the old package's
+            # own .py files; this removes what it never owned (byte-code a root run wrote).
+            # The new package ships no .py at all, so any left in its folder is stale. The
+            # per-user modules folders are cleaned by the app at its next start.
+            cat > "$MROOT/DEBIAN/postinst" <<EOF
+#!/bin/sh
+set -e
+D="/opt/$B_PKG/modules/$MID/$MID"
+if [ -d "\$D" ]; then
+    find "\$D" -name '*.py' -type f -delete
+    find "\$D" -depth -name __pycache__ -type d -exec rm -rf {} +
+fi
+exit 0
+EOF
+            chmod 0755 "$MROOT/DEBIAN/postinst"
+        fi
         chmod 0755 "$MROOT"
         # the module packages get a folder of their own; an older version of this
         # module's package goes
         install -d "$ROOT/dist/module-installers"
-        MOUT="$ROOT/dist/module-installers/${B_PKG}-module-${MID}_${M_VER}-${RELEASE}_all.deb"
-        for OLD in "$ROOT/dist/module-installers/${B_PKG}-module-${MID}_"*_all.deb; do
+        MOUT="$ROOT/dist/module-installers/${B_PKG}-module-${MID}_${M_VER}-${RELEASE}_${M_ARCH}.deb"
+        for OLD in "$ROOT/dist/module-installers/${B_PKG}-module-${MID}_"*_"$M_ARCH".deb \
+                   "$ROOT/dist/module-installers/${B_PKG}-module-${MID}_"*_all.deb; do
             if [ -e "$OLD" ] && [ "$OLD" != "$MOUT" ]; then rm -f "$OLD"; fi
         done
         build_deb "$MROOT" "$MOUT"

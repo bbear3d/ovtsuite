@@ -72,8 +72,11 @@ which family they came from. When the table differs, no names are borrowed.
 
 ## EDC15: datasets and descriptors
 
-An EDC15 file holds a set of blocks per dataset (Manual, Automatic...). Pick
-one in the dataset box, or leave **All datasets**. Tick **Apply edits to every
+An EDC15 file holds a set of blocks per dataset (Manual, Automatic...); the
+car's coding picks which one the ECU uses. The **Dataset** box beside the
+filter shows one dataset at a time — each entry names the coding value that
+selects it — and opens on the first; choose **All datasets** to list every
+one together. Tick **Apply edits to every
 dataset** to make a change in all of them at once (one undo step) — otherwise
 change the dataset your car runs (see [EDC15 datasets](../modules/edc15/datasets.md)).
 

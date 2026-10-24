@@ -161,8 +161,35 @@ A package is a zip containing:
 - `signature`: Ed25519 over the manifest.
 - `<id>/...` and `data/...`: laid out like the app's package directory.
 
-Byte-code is included, hash-checked (PEP 552), so a module in a read-only folder never
-recompiles.
+What `<id>/` holds depends on the module's licence:
+
+- **Open-source modules** (VDO, ZF 5HP) ship their Python source. Byte-code is included,
+  hash-checked (PEP 552), so a module in a read-only folder never recompiles. The package runs
+  anywhere and is untagged: `vdo-0.1.8.ovtmod`.
+- **Closed-source modules** (under the module EULA) ship **no Python source**. The build compiles
+  every file with Cython into a native extension module (`checksum16.cp313-win_amd64.pyd`, or a
+  `.so` on Linux) beside where the source would be, so the normal import machinery loads it from
+  the mounted folder unchanged (`ovtsuite/modules/native.py`). A package's `__init__.py` goes as
+  byte-code only (`__init__.pyc`, read by CPython's sourceless loader): it holds only the
+  package docstring and re-exports. Any file Cython or the C compiler rejects falls back to
+  byte-code too, and the build names it (`... as byte-code only: <reason>`). Help pages, data
+  files and the EULA ship as before.
+
+  Compiled code keeps Python semantics: annotations are not used as C types
+  (`annotation_typing=False`), docstrings stay, and tracebacks name the module's `.py` file,
+  line and function.
+
+  Compiled code runs on one CPython version, OS and machine only. The manifest says which
+  (`"python": "cp313"`, `"platform": "win_amd64"`) and so does the file name:
+  `edc16-1.0.15-cp313-win_amd64.ovtmod`, `edc16-1.0.15-checksum-cp311-linux_x86_64.ovtmod`. The
+  installer refuses a package built for another ("built for Python 3.11 on Linux (x86-64), but
+  this app runs Python 3.13 on Windows (64-bit)"), and an installed copy for another platform
+  is reported in the Module Manager, not loaded. The updater and Install from GitHub only offer
+  the package built for the running app, so the Windows and the Linux build of one version can
+  sit among one release's assets.
+
+  The tags come from the interpreter that runs `tools/build_modules.py`, which is the build venv
+  the app is frozen with, so they always match the app built beside them.
 
 The **checksum variant** is the import closure of the module's checksum hook, computed from
 the source, plus `ModuleSpec.checksum_data` (VDO needs its ROM definitions).
@@ -190,6 +217,57 @@ At every start each installed module is re-verified (signature and hashes, about
 seven). It is then mounted by appending its folder to the package `__path__`. That needs no
 custom importer, and its code finds its data beside it. An in-tree package (a source checkout)
 always wins.
+
+### Replacing source installs
+
+Once a compiled copy of a closed module is installed, no copy of its old Python source may stay on
+disk (`installer.scrub_source`). A copy "carries source" when its manifest has no `platform` tag,
+the module is under the EULA, and `.py` files are listed. Scrubbing happens in three places:
+
+- **Installing a compiled package** into the real locations (the app's `modules` folder or the
+  per-user one; this covers the Module Manager, Install from GitHub, the in-app module update and
+  `install-module`). The folder it replaces is swapped whole, as always. Then every other
+  source-carrying copy of the module, in every modules folder, is deleted. An install into an
+  explicit folder (`install-into`, tests) never reaches into the user's own.
+- **At every start**, when the mounted copy of a module is compiled. Any source copy left behind
+  goes: an older all-users install, or a copy in a folder the install could not write. So does
+  any stray `.py`, `.pyc` or `__pycache__` beside the compiled copy that its manifest does not
+  list, such as files an installer laid over an old folder. Help, data, the EULA and a module
+  setup's own files are not code, so they stay.
+- **The Windows installers** (full, base-only, tools) run `OVTSuite.exe scrub-module-sources`
+  after installing, with setup's own rights. An all-users install can therefore clean
+  `{app}\modules`, which the app cannot write. The full installer's `[InstallDelete]` already
+  wipes each module folder it reinstalls. A module's own setup wipes its folder too.
+
+Some cases are handled differently:
+
+- **A copy put there by a module's setup.exe** (it has `unins000.exe`) loses its code but keeps
+  its uninstaller, so its Apps & features entry still works. The copy then reads "damaged" and
+  never loads.
+- **No compiled copy yet:** nothing is touched. The source copy is still the module.
+- **At the same version,** a compiled copy is always chosen over a source one.
+- **On Linux,** a compiled module `.deb` replaces the source one. dpkg removes the files the old
+  package owned, and its `postinst` removes any `.py` or `__pycache__` it never owned.
+
+### Withdrawing source downloads
+
+The releases published before compiled packages (0.4.5 to 0.4.9) still offer the EDC15 and
+EDC16 modules with their source. Once the release with compiled packages is published, run:
+
+    python tools/build_modules.py scrub-releases              # lists, deletes nothing
+    python tools/build_modules.py scrub-releases --confirm    # deletes (gh, signed in)
+
+- **What it deletes:** each untagged `edc15-*` / `edc16-*` `.ovtmod` (full and checksum), plus the
+  module's `OVTSuite-BoschEDC1x-*-setup.exe` and `ovtsuite-module-edc1x_*_all.deb` from releases
+  without a compiled package of it.
+- **`--modules`** names others (`zf6hp,zf8hp,aisin,hvac`).
+- **`--bundles`** adds the full and tools installers of those releases (none were published).
+- **It refuses `--confirm`** while no published release has a compiled package of every module
+  named.
+- **What it leaves:**
+  - the base installers, deltas and `SHA256SUMS.txt`, whose entries for the deleted files are
+    then simply unused;
+  - the local `Reference\ModuleReleases`, which the compatibility test needs.
 
 ### User interface
 
@@ -229,6 +307,15 @@ always wins.
   compression and the module list. Otherwise the existing setup.exe or .deb is kept. The key it
   was built from is kept in `build\installer\stamps\` (Windows) or `build/linux/stamps/`.
   `-RebuildInstallers` or `--rebuild-packages` forces a rebuild.
+- **Compiled packages are per interpreter and platform.** Their fingerprints include the tags,
+  and the stamps are kept per platform (`build/.cache/modules-cp313-win_amd64.json`), so a Linux
+  build in the same checkout neither reuses nor overwrites the Windows packages. Compiled files
+  are cached by source hash in `build/.cache/native/`: the checksum variant reuses the full
+  variant's, and an unchanged file is not recompiled. A full EDC16 compile takes about 85 s.
+- **Compiling needs** Cython and setuptools (in both build venvs' dependencies) and a C compiler:
+  MSVC on Windows (Visual Studio or its Build Tools, "Desktop development with C++"), gcc and the
+  interpreter's headers on Linux. The Docker image has them, and `build_linux.sh` checks for
+  them.
 - **A module whose files changed without a version bump** is still packaged, but the build ends
   with a warning naming it. Bump the version in its `module.py` before releasing; otherwise two
   different packages carry the same version.
@@ -268,7 +355,9 @@ Outputs:
 
 - Flags: `--modules`, `--base-only`, `--unsigned` and `--rebuild-packages`.
 - The base `.deb` no longer carries `/opt/<pkg>/modules`. Each module is
-  `dist/module-installers/<pkg>-module-<id>_<module ver>_all.deb`, with `Depends: <pkg>`.
+  `dist/module-installers/<pkg>-module-<id>_<module ver>_<arch>.deb`, with `Depends: <pkg>`.
+  `<arch>` is `all` for an open-source module and the build's architecture (`amd64`) for a
+  compiled one.
 - Built and test-installed in a container: the module `.deb` files mount, and uninstall
   cleanly.
 

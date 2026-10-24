@@ -9,7 +9,8 @@ A zip holding::
 
     manifest.json   what the module is, and the SHA-256 of every file below
     signature       Ed25519 over manifest.json's exact bytes (see .signing)
-    <id>/...        the module's package (Python source)
+    <id>/...        the module's package: Python source (an open-source
+                    module), or compiled code (a closed one, see below)
     data/...        the data files it owns
 
 laid out exactly like the app's own package directory, so an installed module
@@ -22,6 +23,17 @@ and its code finds its data next to itself. Two variants per module:
   who flash but do not edit.
 
 Both share one id: installing one replaces the other.
+
+A closed-source module (under the module EULA) ships no Python source: its
+code is compiled to native extension modules (:mod:`.native`, Cython), and
+what cannot be compiled goes as byte-code only (``<name>.pyc`` where the
+source would be). Both are tied to one CPython version and the extension
+modules to one OS and machine, so such a package is tagged -- the manifest's
+``python`` (``cp313``) and ``platform`` (``win_amd64``), and its file name
+``<id>-<ver>[-checksum]-cp313-win_amd64.ovtmod`` -- and an app that runs
+another refuses it (:func:`incompatible`). An open-source module's package
+carries its source (plus byte-code for this interpreter) and no tags: it
+runs anywhere.
 """
 
 import ast
@@ -31,6 +43,9 @@ import hashlib
 import io
 import json
 import os
+import re
+import sys
+import sysconfig
 import zipfile
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
@@ -61,6 +76,11 @@ class Manifest:
     app: str = ""                             # product it was built for
     built: str = ""
     format: int = FORMAT
+    #: the interpreter and the OS/machine the package's code is compiled for
+    #: (``cp313``, ``win_amd64``); "" = any (source: an open-source module).
+    #: Not ``platforms``, which are the ECU platforms the module serves.
+    python: str = ""
+    platform: str = ""
 
     def to_bytes(self) -> bytes:
         return json.dumps(asdict(self), indent=1, sort_keys=True).encode("utf-8")
@@ -78,6 +98,83 @@ class Manifest:
     @property
     def size(self) -> int:
         return len(self.files)
+
+
+# ------------------------------------------------------------------ tags
+def python_tag() -> str:
+    """``cp313``: the interpreter (implementation, major and minor version)
+    compiled module code is tied to."""
+    impl = {"cpython": "cp"}.get(sys.implementation.name, sys.implementation.name)
+    return "%s%d%d" % (impl, sys.version_info[0], sys.version_info[1])
+
+
+def platform_tag() -> str:
+    """``win_amd64``, ``linux_x86_64``, ``macosx_arm64``: the OS and machine
+    an extension module runs on (wheel-style, without the macOS version)."""
+    plat = sysconfig.get_platform()
+    if plat.startswith("macosx-"):
+        plat = "macosx-" + plat.rsplit("-", 1)[-1]
+    return plat.replace("-", "_").replace(".", "_")
+
+
+_OS_WORDS = {"win_amd64": "Windows (64-bit)", "win32": "Windows (32-bit)",
+             "win_arm64": "Windows (ARM)", "linux_x86_64": "Linux (x86-64)",
+             "linux_aarch64": "Linux (ARM64)", "macosx_arm64": "macOS (Apple silicon)",
+             "macosx_x86_64": "macOS (Intel)"}
+
+
+def tag_words(py: str, plat: str) -> str:
+    """``cp313``, ``win_amd64`` -> "Python 3.13 on Windows (64-bit)"."""
+    m = re.match(r"cp(\d)(\d+)$", py or "")
+    pyw = "Python %s.%s" % m.groups() if m else (py or "any Python")
+    return "%s on %s" % (pyw, _OS_WORDS.get(plat, plat)) if plat else pyw
+
+
+def incompatible(man: "Manifest") -> str:
+    """"" when this interpreter can run ``man``'s code, else why not, in
+    words for the user."""
+    if (man.python and man.python != python_tag()) \
+            or (man.platform and man.platform != platform_tag()):
+        return ("this %s module package is built for %s, but this app runs %s "
+                "-- install the package built for it (its file name ends "
+                "-%s-%s%s)" % (man.name, tag_words(man.python, man.platform),
+                               tag_words(python_tag(), platform_tag()),
+                               python_tag(), platform_tag(), EXT))
+    return ""
+
+
+def is_native(spec: "_api.ModuleSpec") -> bool:
+    """Whether ``spec``'s packages ship compiled code instead of source: a
+    closed-source module (under the module EULA)."""
+    return _api.terms(spec.license) == _api.EULA_TERMS
+
+
+#: ``<id>-<version>[-checksum][-<python>-<platform>].ovtmod``
+NAME_RX = re.compile(r"^([a-z0-9_]+)-(\d+(?:\.\d+)*)(-checksum)?"
+                     r"(?:-([a-z]+\d+)-([a-z0-9_]+))?\.ovtmod$")
+
+
+def file_name(mid: str, version: str, variant: str, py: str = "", plat: str = "") -> str:
+    return "%s-%s%s%s%s" % (mid, version,
+                            "-checksum" if variant == _api.CHECKSUM_ONLY else "",
+                            "-%s-%s" % (py, plat) if py and plat else "", EXT)
+
+
+def parse_name(name: str):
+    """``(id, version, variant, python, platform)`` of a package's file name
+    (the tags "" when untagged), or None when it is not one."""
+    m = NAME_RX.match(name)
+    if not m:
+        return None
+    return (m.group(1), m.group(2), _api.CHECKSUM_ONLY if m.group(3) else _api.FULL,
+            m.group(4) or "", m.group(5) or "")
+
+
+def name_fits(name: str) -> bool:
+    """Whether a package called ``name`` can run here: untagged, or tagged
+    for this interpreter and platform."""
+    p = parse_name(name)
+    return p is not None and (not p[3] or (p[3], p[4]) == (python_tag(), platform_tag()))
 
 
 def sha256(data: bytes) -> str:
@@ -227,11 +324,58 @@ def _compiled(rel: str, source: bytes) -> Tuple[str, bytes]:
     return pyc, data
 
 
+def _sourceless(rel: str, source: bytes) -> Tuple[str, bytes]:
+    """``(relpath, bytes)`` of ``rel`` as byte-code that replaces its source:
+    ``<dir>/<name>.pyc`` (what CPython's sourceless loader reads), naming
+    the source file in tracebacks. Unchecked-hash based, so the bytes depend
+    on the source alone."""
+    import py_compile
+    import tempfile
+    from .. import branding
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, os.path.basename(rel))
+        with open(src, "wb") as fh:
+            fh.write(source)
+        cfile = os.path.join(tmp, "out.pyc")
+        py_compile.compile(src, cfile=cfile, dfile="%s/%s" % (branding.PKG, rel),
+                           doraise=True,
+                           invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        with open(cfile, "rb") as fh:
+            return rel[:-3] + ".pyc", fh.read()
+
+
+def _native(blobs: Dict[str, bytes], cache_dir: Optional[str],
+            report: Optional[dict]) -> None:
+    """Replace every ``.py`` in ``blobs`` with its compiled form, in place."""
+    from .. import branding
+    from . import native
+    srcs = {rel: b for rel, b in blobs.items() if rel.endswith(".py")}
+    compiled, fallback = native.compile_sources(srcs, branding.PKG, cache_dir=cache_dir)
+    for rel in srcs:
+        del blobs[rel]
+    blobs.update(compiled)
+    for rel in fallback:
+        pyc, data = _sourceless(rel, srcs[rel])
+        blobs[pyc] = data
+    if report is not None:
+        report.update(fallback)
+
+
 def build(spec: "_api.ModuleSpec", src_root: str, out_path: str,
           variant: str = _api.FULL, key_path: Optional[str] = None,
-          app: str = "", compile_pyc: bool = True) -> Manifest:
+          app: str = "", compile_pyc: bool = True,
+          native: Optional[bool] = None, cache_dir: Optional[str] = None,
+          report: Optional[dict] = None) -> Manifest:
     """Write ``out_path`` (a .ovtmod). ``src_root`` is the app's package
-    directory in the source tree. Unsigned when ``key_path`` is None."""
+    directory in the source tree. Unsigned when ``key_path`` is None.
+
+    ``native`` (default: :func:`is_native`) compiles the code and ships no
+    source; ``report`` (a dict) then receives ``{relpath: reason}`` for each
+    file that went as byte-code instead, and ``cache_dir`` keeps compiled
+    files for the next build (:func:`.native.compile_sources`). Otherwise
+    the source ships, with its byte-code too when ``compile_pyc``."""
+    if native is None:
+        native = is_native(spec)
     files = payload(src_root, spec, variant)
     blobs = {}
     for rel in files:
@@ -240,7 +384,9 @@ def build(spec: "_api.ModuleSpec", src_root: str, out_path: str,
     if _api.terms(spec.license) == _api.EULA_TERMS:
         with open(EULA_FILE, "rb") as fh:
             blobs[_api.eula_path(spec.id)] = fh.read()
-    if compile_pyc:
+    if native:
+        _native(blobs, cache_dir, report)
+    elif compile_pyc:
         for rel in [f for f in files if f.endswith(".py")]:
             pyc, data = _compiled(rel, blobs[rel])
             blobs[pyc] = data
@@ -251,7 +397,9 @@ def build(spec: "_api.ModuleSpec", src_root: str, out_path: str,
                    capabilities=caps, platforms=list(spec.platforms),
                    files={rel: sha256(b) for rel, b in blobs.items()},
                    license=dict(spec.license), app=app,
-                   built=datetime.datetime.now().isoformat(timespec="seconds"))
+                   built=datetime.datetime.now().isoformat(timespec="seconds"),
+                   python=python_tag() if native else "",
+                   platform=platform_tag() if native else "")
     raw = man.to_bytes()
     sig = None
     if key_path:

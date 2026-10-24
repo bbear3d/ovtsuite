@@ -108,7 +108,11 @@ class FeatureSet:
 #: as fault paths). An optional ``FS_OPTION`` dict adds one number to the
 #: window: ``key`` (the keyword passed in ``opts``), ``label``, ``min``,
 #: ``max``, ``default``, ``step``, ``suffix``, ``tip``, and ``states`` (the
-#: settings it applies to; all when absent). ``fs_preview(session, group,
+#: settings it applies to; all when absent). An optional ``FS_CHECK`` dict
+#: adds a tick box: ``key`` (passed in ``opts`` as True / False), ``label``,
+#: ``default``, ``tip`` and ``states``; ``fs_check_why(session, group,
+#: target, **opts)`` says why it can't apply to a copy ("" when it can), and
+#: the window greys it with that reason. ``fs_preview(session, group,
 #: target, first, **opts)`` lists what a setting changes (rows of
 #: ``engine.write_rows`` / ``engine.fault_rows``) and ``state_text(session,
 #: group)`` says in words what the file holds when no setting matches.

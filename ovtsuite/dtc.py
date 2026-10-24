@@ -325,6 +325,34 @@ class FaultPath:
         return int(round(self.cla.cell(0, 0)))
 
 
+@dataclass
+class DsmCopy:
+    """One set of fault-path arrays the ECU can read. The main block's is
+    the one every definition places; on some images a coding selects a
+    relocated copy of some of them instead (found by the platform module)."""
+    label: str
+    fmk: int
+    cdc: int
+    cdk: int
+    cla: int
+    codings: List[int] = field(default_factory=list)
+    states: List[int] = field(default_factory=list)   # active-array states using it
+    paths: Dict[str, "FaultPath"] = field(default_factory=dict)
+    is_main: bool = False
+    #: the class definitions this copy's states read (None: the main
+    #: block's)
+    classes: Optional[Dict[int, "ClassDef"]] = None
+    class_block: Optional[int] = None
+
+    def text(self) -> str:
+        """'Main block (coding N)' / '<what moved> at 0x... (coding N/M)'
+        -- what the editor's selector shows."""
+        if not self.codings:
+            return self.label
+        return "%s (coding %s)" % (self.label,
+                                   "/".join("%d" % c for c in self.codings))
+
+
 def _class_entity(session, name: str, addr: int):
     """The fault-class byte as an editable entity, for a path the matched
     definition does not place."""
@@ -355,6 +383,8 @@ class DtcTable:
         self.paths: Dict[str, FaultPath] = {}
         self.layout = None
         self.note = ""
+        self.copies: List["DsmCopy"] = []
+        self.copy: Optional["DsmCopy"] = None
         self._build()
 
     def _build(self):
@@ -416,6 +446,14 @@ class DtcTable:
                     fp.parts[kind] = pe
             fp.parts["Cla"] = fp.cla
             self.paths[name] = fp
+        self.copies = [DsmCopy("Main block", lay.fmk, lay.cdc, lay.cdk,
+                               lay.cla, paths=self.paths, is_main=True,
+                               classes=self.classes)]
+        try:
+            self._coding_copies(data, lay, raw)
+        except Exception:                 # never cost the main table
+            del self.copies[1:]
+        self.copy = self.copies[0]
         if lay.definition_wrong and not any(
                 fp.name_source == "definition" for fp in self.paths.values()):
             self.note = ("The matched definition's fault-path names do not "
@@ -661,7 +699,53 @@ class DtcTable:
                 return n
         return 4
 
-    def summary(self) -> Dict[str, int]:
+    def has_lamp_data(self) -> bool:
+        """Whether the lamps a path lights can be told: the definition
+        places the class definitions (``DSM_Class<N>Mil/SysLamp_C``)."""
+        return bool(self.classes)
+
+    # -- coding-selected copies of the arrays --------------------------
+    def _coding_copies(self, data: bytes, lay, raw) -> None:
+        """Add a :class:`DsmCopy` for every other set of arrays a coding
+        state reads; the platform module finds them."""
+        from .edc16 import dsm16
+        finder = getattr(dsm16, "coding_copies", None)
+        if finder is not None:
+            finder(self, data, lay, raw)
+
+    def datasets(self) -> List[tuple]:
+        """The coding-selected sets of fault-path arrays, as
+        ``[(label, None)]`` -- empty when the image has only the main
+        block's (nearly every one: see :class:`DsmCopy`)."""
+        if len(self.copies) < 2:
+            return []
+        return [(c.text(), None) for c in self.copies]
+
+    def use_copy(self, label: str) -> bool:
+        """Show and edit the copy ``label`` (a :meth:`datasets` label);
+        ``paths`` becomes its paths. False when there is no such copy."""
+        for c in self.copies:
+            if label in (c.text(), c.label):
+                self.copy = c
+                self.paths = c.paths
+                self.classes = (c.classes if c.classes is not None
+                                else self.copies[0].classes)
+                return True
+        return False
+
+    def siblings(self, fp: "FaultPath") -> List["FaultPath"]:
+        """``fp`` and the same path in the other copies -- each class byte
+        once (a copy that kept the main block's classes shares its byte)."""
+        out, addrs = [fp], {getattr(fp.cla, "addr", None)}
+        for c in self.copies:
+            o = c.paths.get(fp.name)
+            if o is None or o.cla is None or o.cla.addr in addrs:
+                continue
+            addrs.add(o.cla.addr)
+            out.append(o)
+        return out
+
+    def summary(self, group=None) -> Dict[str, int]:
         en = sum(1 for fp in self.paths.values() if self.is_enabled(fp))
         return {"total": len(self.paths), "enabled": en,
                 "disabled": len(self.paths) - en}

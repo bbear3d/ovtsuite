@@ -125,6 +125,8 @@ class Result:
     placement: Dict[str, int] = field(default_factory=dict)
     #: a definition diff: its rows ({"name", "change", "old", "new"})
     diff: List[dict] = field(default_factory=list)
+    #: output files that were already there and were left alone
+    skipped: List[str] = field(default_factory=list)
 
     @property
     def lossy(self) -> bool:
@@ -586,25 +588,56 @@ def free_output(path: str, inputs) -> str:
     return cand
 
 
-def run(job: Job, progress=None, fraction=None) -> Result:
+#: what a run does with an output file that is already there
+#: (``job.options["existing"]``): ask ``run``'s ``ask`` (none given: skip
+#: it), replace it, or leave it alone
+EXISTING = ("ask", "overwrite", "skip")
+
+
+def existing_policy(job: Job) -> str:
+    """``job``'s choice for an output that is already there (see
+    :data:`EXISTING`; anything else, or nothing, is ``"ask"``)."""
+    v = (job.options or {}).get("existing")
+    return v if v in EXISTING else "ask"
+
+
+def may_write(job: Job, path: str, ask=None) -> bool:
+    """True when ``path`` may be written: it is not there yet, or the job
+    says to overwrite, or ``ask(path)`` (asked only with ``"ask"``) says
+    yes. With ``"ask"`` and no ``ask`` -- nothing to ask, e.g. the command
+    line, a watch folder -- an existing file is left alone."""
+    if not os.path.exists(path):
+        return True
+    p = existing_policy(job)
+    if p == "overwrite":
+        return True
+    if p == "skip" or ask is None:
+        return False
+    return bool(ask(path))
+
+
+def run(job: Job, progress=None, fraction=None, ask=None) -> Result:
     """Run ``job``: write ``job.out`` and return what happened. A default
     output name never overwrites an input; a given one that would is
     refused. ``progress`` is called with each step's name (``"Reading"``,
     ``"Writing"`` ...), ``fraction`` with the share of the job done (0.0
-    to 1.0, rising; 1.0 once it is done) -- see :class:`Steps`."""
+    to 1.0, rising; 1.0 once it is done) -- see :class:`Steps`. An output
+    file already there is replaced or left alone as :func:`may_write`
+    says (``ask(path) -> bool`` is asked before any work is done); one
+    left alone is in ``Result.skipped``, not ``Result.out``."""
     say = Steps.of(progress, fraction)
     say.at(0.0)
-    res = _run(job, say)
+    res = _run(job, say, ask)
     say.at(1.0)
     return res
 
 
-def _run(job: Job, say: Steps) -> Result:
+def _run(job: Job, say: Steps, ask=None) -> Result:
     from . import transforms
     res = Result()
     tgt = (job.target or "").lower()
     if tgt == EXTRACT:
-        _run_extract(job, res, say)
+        _run_extract(job, res, say, ask)
         res.report = report(job, res)
         return res
     if tgt not in DEF_OUT + IMG + VAL + (DIFF,):
@@ -617,6 +650,11 @@ def _run(job: Job, say: Steps) -> Result:
         raise ConvertError("The output %s would overwrite %s, which the conversion "
                            "reads. Choose another output name."
                            % (os.path.basename(job.out), os.path.basename(hit)))
+    if not may_write(job, job.out, ask):
+        # asked before reading anything: a file left alone costs no work
+        res.skipped.append(job.out)
+        res.report = report(job, res)
+        return res
     kinds = classify(job.sources)
 
     if tgt == DIFF:
@@ -738,7 +776,7 @@ def _patches_from(job: Job, defn: Definition, image: Optional[bytes], size: int,
     return patches
 
 
-def _run_extract(job: Job, res: Result, say) -> None:
+def _run_extract(job: Job, res: Result, say, ask=None) -> None:
     """The binaries WinOLS projects among the sources embed, written into
     the folder ``job.out`` (default: beside the first project). Options:
     ``extract`` (None: the default ones; ``"all"``; names / keys; or the
@@ -760,8 +798,9 @@ def _run_extract(job: Job, res: Result, say) -> None:
         raise ConvertError("Unknown format for the extracted binaries: %r." % fmt)
     done = embedded.extract(projects, out, o.get("extract"), fmt,
                             o.get("extract_names"), int(o.get("record") or 32),
-                            inputs=job_inputs(job))
-    if not done:
+                            inputs=job_inputs(job),
+                            may=lambda p: may_write(job, p, ask), skipped=res.skipped)
+    if not done and not res.skipped:
         raise ConvertError("Nothing chosen to extract.")
     say.at(0.7)
     for k, (path, e) in enumerate(done):
@@ -777,8 +816,9 @@ def _run_extract(job: Job, res: Result, say) -> None:
             if back != e.data:
                 res.check.append("%s does not read back as the stored bytes"
                                  % os.path.basename(path))
-    res.values.insert(0, "%d binar%s extracted to %s." % (
-        len(done), "y" if len(done) == 1 else "ies", out))
+    res.values.insert(0, "%d binar%s extracted to %s%s." % (
+        len(done), "y" if len(done) == 1 else "ies", out,
+        "; %d already there, left alone" % len(res.skipped) if res.skipped else ""))
     res.tables_out = 0
 
 
@@ -1238,6 +1278,10 @@ def report(job: Job, res: Result) -> str:
     lines = ["%s converter report" % branding.APP_NAME, "",
              "Sources: %s" % ", ".join(job.sources),
              "Target:  %s (%s)" % (job.out, NAMES.get(job.target, job.target))]
+    if res.skipped and job.target != EXTRACT:
+        lines += ["", "Skipped: %s was already there and was left alone (not "
+                  "overwritten)." % job.out]
+        return "\n".join(lines) + "\n"
     if job.binary:
         lines.append("Binary:  %s" % job.binary)
     if job.target != EXTRACT:
@@ -1257,6 +1301,9 @@ def report(job: Job, res: Result) -> str:
         for name in sorted(res.loss):
             for what in res.loss[name]:
                 lines.append("  - %s: %s" % (name, what))
+    if res.skipped:
+        lines += ["", "Already there, left alone (not overwritten):"] + \
+            ["  - " + p for p in res.skipped]
     if job.self_check:
         lines += ["", "Read-back check: " + ("passed" if not res.check else
                                             "%d differences" % len(res.check))]

@@ -58,8 +58,9 @@ project for this binary.
 ## Map pack for WinOLS (experimental)
 
 **Map pack for WinOLS (.kp, experimental)...** writes a WinOLS map pack.
-The format is only partly known: the app reads every pack it writes, but
-WinOLS may not open it -- use **Definition as A2L...** when it does not. A
+It is laid out as WinOLS 5.0 writes its map packs, and WinOLS 5.87 opens
+it. The format is only partly known, so if a version of WinOLS refuses a
+pack, use **Definition as A2L...** instead. A
 map that the binary stores column by column (as EDC16 does) appears turned
 in the pack, with its axes swapped, because a map pack stores tables row by
 row. Only parameters with a linear scaling fit a map pack; the others, and

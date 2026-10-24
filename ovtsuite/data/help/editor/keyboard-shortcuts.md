@@ -48,7 +48,7 @@ undo step.
 | Alt+PgUp / Alt+PgDn | **Increase 1%** / **Decrease 1%** |
 | Ctrl+Shift+L | **Interpolate selection** -- along a row, down a column, or a block from its four corners, by the selection's shape |
 | Ctrl+Shift+M | **Smooth selection** (one 3x3 pass) |
-| Ctrl+R | **Copy from comparison** |
+| Ctrl+R | **Copy selected cells from comparison** |
 | Ctrl+Shift+R | **Revert to as-read values** -- the project's original read (the file as opened, outside a project) |
 | F11 | **Revert to last saved values** -- the values the selected cells had when the file or project was last saved (the file as opened, before the first save). Also on the toolbar and the table's right-click menu. |
 | | **Set step for this map...** -- the step Alt+Up / Alt+Down use for this map, remembered per map. Unset, it is one raw step: the smallest change the map can hold. |

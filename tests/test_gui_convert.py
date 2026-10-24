@@ -36,6 +36,11 @@ def _own_config(tmp_path, monkeypatch):
     ini = str(tmp_path / "settings.ini")
     monkeypatch.setattr(appsettings, "settings",
                         lambda: QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat))
+    # an output already there (the binary and MPC written beside a reference
+    # project by an earlier run): answered "yes", never a modal question
+    # left open offscreen (tests/test_gui_convert_overwrite.py asks it)
+    from ovtsuite import gui_convert
+    monkeypatch.setattr(gui_convert, "ask_overwrite", lambda parent, path: ("yes", False))
 
 
 def _wait(app, dlg, limit=120):

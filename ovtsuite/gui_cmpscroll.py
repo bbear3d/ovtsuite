@@ -382,6 +382,9 @@ class CompareGrid(QtCore.QObject):
             finally:
                 t.setUpdatesEnabled(True)
         self._shown = on
+        spans = getattr(self.ws, "_apply_spans", None)
+        if spans is not None and on != was:
+            spans()             # the banner row's span goes with its row
         self.link.enabled = on
         if was and not on:
             v.clearSelection()      # nothing stale for the next time

@@ -8255,6 +8255,11 @@ if HAVE_QT:
             """Span the comparison banner row across the grid."""
             self.table.clearSpans()
             sep = self.model.sep_row()
+            # in its own grid the banner row is hidden here, and Qt paints a
+            # span in a hidden row anyway (over the last row shown)
+            g = getattr(self, "cmp_grid", None)
+            if g is not None and g.active():
+                return
             if sep is not None and self.model.columnCount() > 1:
                 self.table.setSpan(sep, 0, 1, self.model.columnCount())
 

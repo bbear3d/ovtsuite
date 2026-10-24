@@ -209,6 +209,14 @@ Root: HKA; Subkey: "Software\Classes\.bin\OpenWithProgids"; \
     Flags: uninsdeletevalue; Tasks: associate
 
 [Run]
+; Closed modules ship compiled now (docs/MODULES_PLAN.md, "Packages"): once a
+; compiled copy of one is installed, any copy still carrying its Python source
+; -- {app}\modules of an older release whose component was not reinstalled,
+; the per-user modules folder -- is deleted. Runs with setup's own rights, so
+; an all-users install can clean {app}\modules; the app repeats it at start
+; for what it may write. Harmless when there is nothing to do.
+Filename: "{app}\{#AppExeName}"; Parameters: "scrub-module-sources"; \
+    Flags: runhidden waituntilterminated
 ; The right-click menu (task above): the same code as the converter's own
 ; More menu and "ovtsuite convert --shell-menu", for the user who ran setup.
 ; No file association -- a menu entry only.

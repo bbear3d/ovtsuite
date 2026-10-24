@@ -61,14 +61,21 @@ def base_group(group: str) -> str:
     return "" if group == VARIANT else group[:-len(" / " + VARIANT)]
 
 
+_NO_VARIANTS: Dict[str, List] = {}       # shared: never written to
+
+
 def _variant_index(session) -> Dict[str, List]:
     fn = getattr(session, "variant_entities", None)
     if fn is None:
-        return {}
+        return _NO_VARIANTS
     try:
-        vs = fn() or []
+        vs = fn()
     except Exception:
-        return {}
+        return _NO_VARIANTS
+    if not vs:
+        # one empty index for every file without variant copies: a new one
+        # per call would miss every cache keyed on it (engine._spans)
+        return _NO_VARIANTS
     cached = getattr(session, "_fsw_vindex", None)
     if cached is not None and cached[0] is vs and cached[1] == len(vs):
         return cached[2]

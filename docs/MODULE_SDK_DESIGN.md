@@ -14,10 +14,10 @@ before work starts.
   3. a trust model for publishers other than Bear.
 - **A module is trusted code.** It runs in-process with the user's full rights. A signature proves
   who made it, not that it is safe. No design here changes that.
-- **Encryption: none today.** A package is signed, but anyone can unzip it and read it. The
-  proposal is a licence-keyed encrypted payload, which deters copying and casual reading, plus
-  optional native compilation for the algorithms worth protecting. Both are deterrents. Code that
-  runs on the user's machine can be recovered by someone determined.
+- **Encryption: none today; native compilation: done.** A package is signed, and a closed
+  module's package carries compiled code, not source (Part 2, "Native compilation"). Anyone can
+  still unzip it and copy it. The proposal for that is a licence-keyed encrypted payload. Both
+  are deterrents. Code that runs on the user's machine can be recovered by someone determined.
 
 ## Where things stand
 
@@ -164,11 +164,12 @@ The "Allow unsigned modules" developer switch stays in both models.
 
 This is the only true ABI question.
 
-- **Byte-code.** The frozen app pins one CPython minor version. Packages ship hash-checked
-  byte-code built for it, plus the source.
-- **Native code.** A module that ships compiled code (`.pyd` or `.so`) is tied to one OS and one
-  Python version. The manifest gains `python` and `platform` tags, and the installer refuses a
-  mismatch.
+- **Byte-code.** The frozen app pins one CPython minor version. An open-source module's package
+  ships hash-checked byte-code built for it, plus the source.
+- **Native code (done for the closed modules).** A package that ships compiled code (`.pyd` or
+  `.so`) is tied to one OS and one Python version. Its manifest has `python` and `platform` tags
+  (`cp313`, `win_amd64`), so does its file name, and the installer refuses a mismatch. See
+  `docs/MODULES_PLAN.md`, "Packages".
 - **Dependencies.** Pure-Python dependencies are bundled in the module's own `_vendor` folder.
   Native dependencies need one package per platform.
 
@@ -187,7 +188,7 @@ This is the only true ABI question.
 |---|---|---|
 | Ship byte-code only, no source | Casual reading; decompilers recover most of it | Trivial |
 | **Encrypted payload, key delivered with a licence** | Copying to unlicensed machines; nothing readable on disk | Moderate |
-| **Native compilation** (Cython or Nuitka) of chosen files | The algorithms themselves; as hard to reverse as any native binary | One build per OS and Python version; needs a C toolchain (MSVC on Windows) |
+| **Native compilation** (Cython or Nuitka) of chosen files (**done**, Cython, every file) | The algorithms themselves; as hard to reverse as any native binary | One build per OS and Python version; needs a C toolchain (MSVC on Windows) |
 | Keep the secret on a server | Everything | Not viable: flashing must work offline |
 
 ### Proposed encrypted format (manifest version 2)
@@ -214,12 +215,41 @@ This is the only true ABI question.
 
 ### Native compilation
 
-Compile only the files worth protecting, for example the seed/key, checksum and decryption code.
-- The build scripts gain a compile step.
-- Packages get tagged per platform (see Part 1, section 6).
-- Everything else stays as byte-code.
+**Done (2026-10-24).** A closed-source module's package (every module under the module EULA:
+EDC15, EDC16, ZF 6HP, ZF 8HP, Aisin, HVAC) ships no Python source. The open-source modules (VDO,
+ZF 5HP) are unchanged.
 
-This combines with encryption: the encrypted payload stops copying, and native code stops reading.
+- **Every file is compiled**, not only the ones worth protecting: checksum, seed/key, map
+  finders, feature switches and knowledge-base code alike. That costs only build time, and it
+  leaves no choice to get wrong. `ovtsuite/modules/native.py` runs Cython (pure-Python mode,
+  `annotation_typing=False`, so the semantics are the source's) and then the C compiler through
+  setuptools. Each file becomes an extension module beside where its source would be.
+  `module.py` is one too: the registry imports it like any other module.
+- **Byte-code only, no source**, for what is not compiled:
+  - each package `__init__.py`, which holds only a docstring and re-exports;
+  - any file Cython or the C compiler rejects, with the reason printed by the build.
+
+  Cython is stricter than CPython about provably unbound locals. It caught one real bug, in
+  `edc16/fsw_dpf.py` `describe()`, and that is now fixed. All of EDC16 compiles today.
+- **Loading is unchanged.** A mounted install folder is on the app package's `__path__`, and
+  CPython's own finders load `.pyd`/`.so` and sourceless `.pyc` from it. `__file__` points at the
+  extension module, so `dirname(dirname(__file__))/data` still finds the module's data. Help
+  pages, data files and the EULA ship as before. The manifest hashes and the signature cover the
+  compiled files exactly as they covered the source.
+- **Tagged per platform** (Part 1, section 6): `edc16-1.0.15-cp313-win_amd64.ovtmod`. The
+  installer and the start-up check refuse a mismatch, and the updater only offers this app's
+  build.
+- **The build** (`tools/build_modules.py packages`) compiles and then runs `check_package` in a
+  clean interpreter against the base-only app. For a compiled package, that check also asserts
+  that no `.py` was installed and that every module file it imported was an extension module or
+  byte-code. `build.ps1` builds the Windows packages (MSVC). `build_linux.sh` builds the Linux
+  ones in its Docker image (gcc, glibc 2.31), and its module `.deb`s are then
+  architecture-specific.
+- **A source checkout is unaffected.** In-tree modules are plain `.py` and always win over an
+  installed copy, so tests and development never see compiled code.
+
+This combines with encryption: the encrypted payload would stop copying, and native code
+already stops reading.
 
 ## Phased plan
 
@@ -228,7 +258,7 @@ This combines with encryption: the encrypted payload stops copying, and native c
 | 1 | `ovtsuite.sdk` facade; move Aisin onto it; the import check; pin the SDK's names in tests | 1 to 2 sessions |
 | 2 | Open catalogue: `ovtsuite_ext` namespace, `detect` hook, identification order, ambiguity handling; `sdk.tools` registration; move the GUI's 18 hard-coded module imports onto it | 2 sessions |
 | 3 | Developer kit (`module new`, `check`, `pack`); docs; container and logger hooks | 1 to 2 sessions |
-| 4 | Encrypted payload, licence files, real `licensing.check`, decrypting importer; optional native compilation in the build | 2 sessions, plus the Windows toolchain for native builds |
+| 4 | Encrypted payload, licence files, real `licensing.check`, decrypting importer (native compilation in the build: done) | 2 sessions |
 | 5 | Optional: publisher keys and revocation; the flash protocol hook | 1 to 2 sessions |
 
 First-party modules keep working at every phase. Each phase ships on its own.
@@ -241,5 +271,5 @@ First-party modules keep working at every phase. Each phase ships on its own.
    encrypted? Leaving them clear keeps OVT Tools simple.
 4. **Licence binding:** per machine, per account, or per user with a number of activations? Does
    it expire?
-5. **Native compilation:** which algorithms, if any?
+5. **Native compilation:** decided and done. Every file of a closed module is compiled.
 6. **Publisher ids:** the naming scheme, and who assigns them.

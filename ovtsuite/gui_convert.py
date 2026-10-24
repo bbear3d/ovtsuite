@@ -72,10 +72,23 @@ class _Worker(QtCore.QThread):
     progress = QtCore.Signal(str)
     fraction = QtCore.Signal(float)               # share of all the jobs done, 0..1
     done = QtCore.Signal(object, object)          # result, error
+    #: an output file is already there: may it be replaced? Connected
+    #: blocking-queued -- the window asks on the GUI thread and sets
+    #: ``answer`` while this thread waits
+    ask = QtCore.Signal(str)
 
     def __init__(self, jobs, parent=None):
         super().__init__(parent)
         self.jobs = list(jobs) if isinstance(jobs, (list, tuple)) else [jobs]
+        self.answer = False
+        self.asking = False                       # set once ``ask`` is connected
+
+    def _ask(self, path: str) -> bool:
+        self.answer = False
+        if not self.asking:
+            return False                          # no one to ask: left alone
+        self.ask.emit(path)                       # returns once it is answered
+        return bool(self.answer)
 
     def _shares(self):
         """Each job's slice of the bar: a conversion weighs four times an
@@ -92,12 +105,16 @@ class _Worker(QtCore.QThread):
             res = None
             for job, (lo, hi) in zip(self.jobs, self._shares()):
                 r = C.run(job, progress=self.progress.emit,
-                          fraction=lambda f, lo=lo, hi=hi: self.fraction.emit(lo + (hi - lo) * f))
+                          fraction=lambda f, lo=lo, hi=hi: self.fraction.emit(lo + (hi - lo) * f),
+                          ask=self._ask)
                 if res is None:
                     res = r
-                    res._main = job.target != C.EXTRACT
+                    # a conversion whose output was left alone shows the
+                    # binaries extracted with it, if any
+                    res._main = job.target != C.EXTRACT and not (r.skipped and len(self.jobs) > 1)
                     continue
                 res.out += r.out
+                res.skipped += r.skipped
                 res.values += r.values
                 res.check += r.check
                 res.warnings += r.warnings
@@ -256,6 +273,36 @@ class _DropList(QtWidgets.QListWidget):
             p.drawText(self.viewport().rect(), QtCore.Qt.AlignmentFlag.AlignCenter,
                        "Drop definitions, value files or binaries here\n"
                        "(XDF, A2L, DAM, OLS, KP, JSON, CSV, DCM, CDFX, BIN, HEX, S-record)")
+
+
+#: ask_overwrite's answers
+OVERWRITE_CHOICES = ("yes", "no", "yes_all", "no_all")
+
+
+def ask_overwrite(parent, path: str):
+    """Ask whether ``path``, already there, may be replaced: ``(choice,
+    make_default)`` -- choice one of :data:`OVERWRITE_CHOICES` (Esc or
+    closing the box: ``"no"``), make_default whether "Make this the
+    default" was ticked."""
+    SB = QtWidgets.QMessageBox.StandardButton
+    box = QtWidgets.QMessageBox(parent)
+    box.setObjectName("overwriteQuestion")
+    box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+    box.setWindowTitle("Converter")
+    box.setText("%s is already there. Replace it?" % os.path.basename(path))
+    box.setInformativeText("In %s" % os.path.dirname(os.path.abspath(path)))
+    box.setStandardButtons(SB.Yes | SB.No | SB.YesToAll | SB.NoToAll)
+    box.setDefaultButton(SB.No)
+    box.setEscapeButton(SB.No)
+    cb = QtWidgets.QCheckBox("Make this the default")
+    cb.setToolTip("Yes: always overwrite from now on. No: always skip a file "
+                  "that is there. Changed back in the Options tab.")
+    box.setCheckBox(cb)
+    box.exec()
+    clicked = box.clickedButton()
+    b = box.standardButton(clicked) if clicked is not None else SB.No
+    choice = {SB.Yes: "yes", SB.YesToAll: "yes_all", SB.NoToAll: "no_all"}.get(b, "no")
+    return choice, cb.isChecked()
 
 
 class TranslatorSettings(QtWidgets.QDialog):
@@ -563,7 +610,22 @@ class ConverterDialog(QtWidgets.QDialog):
         self.dynamic.addItem("Leave them out", "skip")
         self.dynamic.setToolTip("Tables whose size the image stores (an EDC16 map's "
                                 "count words), when no binary is given")
-        pf.addRow("Tables sized by the image:", self.dynamic)
+        # a file Convert would write is already there -- on this row, so the
+        # Options tab stays no taller than the Files tab (the preview starts
+        # under the Files tab's Output group)
+        self.existing = QtWidgets.QComboBox()
+        self.existing.addItem("Ask each time", "ask")
+        self.existing.addItem("Overwrite it", "overwrite")
+        self.existing.addItem("Skip it (keep the file there)", "skip")
+        self.existing.setToolTip(
+            "What Convert does when a file it would write is already there. A watch "
+            "folder never asks: there it is skipped unless this says Overwrite.")
+        self.existing.currentIndexChanged.connect(lambda *_: self._save_state())
+        drow = QtWidgets.QHBoxLayout()
+        drow.addWidget(self.dynamic, 1)
+        drow.addWidget(QtWidgets.QLabel("When an output file exists:"))
+        drow.addWidget(self.existing, 1)
+        pf.addRow("Tables sized by the image:", drow)
         # porting onto another software version
         self.port = QtWidgets.QCheckBox(
             "The binary is another software version: find each table in it (port)")
@@ -1257,6 +1319,7 @@ class ConverterDialog(QtWidgets.QDialog):
             j.options["extract"] = picks
             j.options["extract_format"] = self.ex_format.currentData()
             j.options["record"] = self.record.value()
+            j.options["existing"] = self.existing.currentData() or "ask"
             jobs.append(j)
         return jobs
 
@@ -1713,6 +1776,7 @@ class ConverterDialog(QtWidgets.QDialog):
                 j.options["reference"] = self.reference.text().strip()
         if self._rom_src is not None and self.rom.currentData():
             j.options["rom"] = self.rom.currentData()
+        j.options["existing"] = self.existing.currentData() or "ask"
         return j
 
     def _check_ready(self) -> bool:
@@ -1943,6 +2007,10 @@ class ConverterDialog(QtWidgets.QDialog):
         if not self._check_ready() or self._worker is not None:
             return
         jobs = []
+        # this run's answers: "to all" (True / False) and a file the Save
+        # as dialog has just confirmed replacing
+        self._ask_all = None
+        self._confirmed_out = None
         if self.out_on.isChecked():
             job = self.job()
             if not job.out:
@@ -1950,6 +2018,8 @@ class ConverterDialog(QtWidgets.QDialog):
                 job.out = self.out.text().strip()
                 if not job.out:
                     return
+                if os.path.exists(job.out):
+                    self._confirmed_out = C._key(job.out)
             hit = C.replaces_input(job, job.out)
             if hit:
                 QtWidgets.QMessageBox.warning(
@@ -1964,8 +2034,43 @@ class ConverterDialog(QtWidgets.QDialog):
         w.progress.connect(lambda m: self.status.setText(m + "..."))
         w.fraction.connect(self._set_fraction)
         w.done.connect(self._convert_done)
+        w.ask.connect(self._ask_existing, QtCore.Qt.ConnectionType.BlockingQueuedConnection)
+        w.asking = True
         self._worker = w
         w.start()
+
+    def _ask_existing(self, path: str) -> None:
+        """On the GUI thread, while the worker waits: may ``path``, already
+        there, be replaced? (The answer goes to the worker.)"""
+        w = self._worker
+        yes = self._overwrite_answer(path)
+        if w is not None:
+            w.answer = yes
+
+    def _overwrite_answer(self, path: str) -> bool:
+        """Yes / No, or the same for the rest of this run; "Make this the
+        default" sets the Options tab's choice (and so answers the rest of
+        the run too)."""
+        if getattr(self, "_ask_all", None) is not None:
+            return self._ask_all
+        confirmed = getattr(self, "_confirmed_out", None)
+        if confirmed is not None and C._key(path) == confirmed:
+            return True                     # confirmed in the Save as dialog
+        busy = QtWidgets.QApplication.overrideCursor() is not None
+        if busy:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        try:
+            choice, make_default = ask_overwrite(self, path)
+        finally:
+            if busy:
+                QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.BusyCursor)
+        yes = choice in ("yes", "yes_all")
+        if make_default:
+            self.existing.setCurrentIndex(self.existing.findData(
+                "overwrite" if yes else "skip"))     # saved by its own signal
+        if make_default or choice in ("yes_all", "no_all"):
+            self._ask_all = yes
+        return yes
 
     def _convert_done(self, res, err):
         self._worker = None
@@ -1984,10 +2089,24 @@ class ConverterDialog(QtWidgets.QDialog):
                 defn = _values_shown(self.job(), res, C.classify(self.source_paths()))
         except Exception:
             defn = None
+        skipped = list(res.skipped)
+        if not res.out:
+            self._last = res
+            self.b_report.setEnabled(True)
+            one = os.path.basename(skipped[0]) if len(skipped) == 1 else ""
+            self._set_summary("Nothing written: %s already there, left alone (see the "
+                              "Options tab: When an output file exists)." % (
+                                  ("%s was" % one) if one else "%d files were" % len(skipped)))
+            self.status.setText("Skipped %s (already there)" % (one or "%d files" % len(skipped)))
+            self._save_state()
+            return
         self._show_result(res, defn, preview=False)
-        self.status.setText("Saved %s" % os.path.basename(res.out[0]) if len(res.out) == 1
-                            else "Saved %d files in %s" % (len(res.out), os.path.dirname(
-                                os.path.abspath(res.out[0]))))
+        text = ("Saved %s" % os.path.basename(res.out[0]) if len(res.out) == 1
+                else "Saved %d files in %s" % (len(res.out), os.path.dirname(
+                    os.path.abspath(res.out[0]))))
+        if skipped:
+            text += "; skipped %d already there" % len(skipped)
+        self.status.setText(text)
         self.b_folder.setEnabled(True)
         self._save_state()
 
@@ -2104,6 +2223,9 @@ class ConverterDialog(QtWidgets.QDialog):
             d.pop(k, None)
         if isinstance(d.get("options", {}).get("extract"), list):
             d["options"].pop("extract")          # these files' picks: the defaults
+        # a file already there: the window's choice (the Options tab), and
+        # on the command line --overwrite's -- not a preset's
+        d.get("options", {}).pop("existing", None)
         if d.get("translate"):
             d["translate"].pop("rows", None)
         os.makedirs(self._preset_dir(), exist_ok=True)
@@ -2172,6 +2294,10 @@ class ConverterDialog(QtWidgets.QDialog):
             o.get("patch_outside", "keep"))))
         self.unverified.setCurrentIndex(max(0, self.unverified.findData(
             o.get("unverified", "category"))))
+        if o.get("existing") in C.EXISTING:     # the window's, not a preset's
+            self.existing.blockSignals(True)
+            self.existing.setCurrentIndex(self.existing.findData(o["existing"]))
+            self.existing.blockSignals(False)
         self._want_rom = o.get("rom") or None
         if self._want_rom and self._rom_src is not None:
             i = self.rom.findData(self._want_rom)
@@ -2411,6 +2537,9 @@ class WatchDialog(QtWidgets.QDialog):
         for k, word in (("definition", "A definition"), ("values", "A value file"),
                         ("image", "A binary")):
             lines.append("  %s that arrives: %s" % (word, r[k]))
+        lines.append("A result already in the output folder: %s" % (
+            "overwritten" if C.existing_policy(j) == "overwrite" else
+            "left alone (the file is skipped; Options tab: Overwrite to replace it)"))
         self.what.setText("\n".join(lines))
 
     def running(self) -> bool:

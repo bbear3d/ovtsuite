@@ -52,6 +52,92 @@ SPEED_KEYS = ["Low", "Medium", "High"]
 ECUS = ("EDC16", "EDC15", "ZF6HP", "ZF6HP-UDS", "Aisin TRx")
 
 
+def _check_col_width(table) -> int:
+    """Width for a column that holds only a check box: the box, its margins
+    and the heading ("Log"), no wider."""
+    st = table.style()
+    box = st.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, None, table)
+    head = table.horizontalHeader()
+    text = head.fontMetrics().horizontalAdvance(
+        str(table.horizontalHeaderItem(0).text()
+            if table.horizontalHeaderItem(0) is not None else ""))
+    return max(box + 14, text + 16)
+
+
+def _resizable_columns(table, widths, fill=None, last_min=80) -> None:
+    """Every column of ``table`` resizable by dragging its heading, starting
+    at ``widths`` (None: Qt's default), the last one taking the room left.
+
+    ``fill``: a column sized to the room the table has, so every column is
+    in view at any pane width (``last_min`` is kept for the last one) --
+    until a heading is dragged, after which the widths are the user's."""
+    hdr = table.horizontalHeader()
+    hdr.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+    hdr.setStretchLastSection(True)
+    hdr.setMinimumSectionSize(min(24, min((w for w in widths if w), default=24)))
+    for i, w in enumerate(widths):
+        if w:
+            hdr.resizeSection(i, w)
+    if fill is not None:
+        table._fit_columns = _FitColumn(table, fill, widths[fill] or 120,
+                                        last_min)
+
+
+class _FitColumn(QtCore.QObject):
+    """Keeps one column of a table as wide as the room left beside the
+    others (see ``_resizable_columns``) until the user drags a heading."""
+
+    def __init__(self, table, col, least, last_min):
+        super().__init__(table)
+        self.table, self.col = table, col
+        self.least, self.last_min = least, last_min
+        self.user = False
+        self._setting = False
+        # the stretched last column never goes below the size it had when
+        # stretching was switched on: start it at last_min
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setDefaultSectionSize(min(hdr.defaultSectionSize(), last_min))
+        hdr.resizeSection(table.columnCount() - 1, last_min)
+        hdr.setStretchLastSection(True)
+        table.viewport().installEventFilter(self)
+        table.horizontalHeader().sectionResized.connect(self._dragged)
+
+    def _dragged(self, i, _old, _new):
+        last = self.table.columnCount() - 1
+        if not self._setting and i != last:     # the last one only follows
+            self.user = True
+
+    def fit(self):
+        t = self.table
+        if self.user:
+            return
+        hdr = t.horizontalHeader()
+        last = t.columnCount() - 1
+        others = sum(hdr.sectionSize(i) for i in range(last)
+                     if i != self.col)
+        w = max(self.least // 3, t.viewport().width() - others - self.last_min)
+        self._setting = True
+        try:
+            hdr.resizeSection(self.col, min(w, self.least * 2))
+        finally:
+            self._setting = False
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QtCore.QEvent.Resize:
+            self.fit()
+        return False
+
+
+def _name_tip(ch) -> str:
+    """A channel's tooltip: its full name (a long one is cut short in the
+    cell), with the signal and unit when the name does not already say."""
+    title = ch.title
+    extra = [x for x in (getattr(ch, "signal", ""), getattr(ch, "unit", ""))
+             if x and x not in title]
+    return title + ("\n" + "  ".join(extra) if extra else "")
+
+
 def _binary_platform(session):
     """"EDC15" / "EDC16" for a session whose measuring blocks the engine
     namers read, else None."""
@@ -1355,7 +1441,11 @@ class ConnPane(QtWidgets.QWidget):
         self.browse = QtWidgets.QTableWidget(0, 3)
         self.browse.setHorizontalHeaderLabels(["Log", "Cell", "Value"])
         self.browse.verticalHeader().setVisible(False)
-        self.browse.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        # the Log column holds only a check box; the others are dragged
+        # wider or narrower by their headings, the last takes the rest
+        _resizable_columns(self.browse, [_check_col_width(self.browse), 280, None],
+                           fill=1)
+        self.browse.horizontalHeaderItem(0).setToolTip("Tick a cell to log it")
         self.browse.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         lv.addWidget(self.browse, 1)
         self.src_hint = QtWidgets.QLabel("")
@@ -1396,7 +1486,9 @@ class ConnPane(QtWidgets.QWidget):
         self.sel = QtWidgets.QTableWidget(0, 3)
         self.sel.setHorizontalHeaderLabels(["Cell", "Signal", "Value"])
         self.sel.verticalHeader().setVisible(False)
-        self.sel.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        _resizable_columns(self.sel, [
+            self.sel.fontMetrics().horizontalAdvance("G255/8") + 20, 280, None],
+            fill=1)
         self.sel.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.sel.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         rv.addWidget(self.sel, 1)
@@ -1744,8 +1836,11 @@ class ConnPane(QtWidgets.QWidget):
             chk.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
             chk.setCheckState(QtCore.Qt.Checked if ch.key in selected else QtCore.Qt.Unchecked)
             chk.setData(QtCore.Qt.UserRole, (group, f))
+            chk.setToolTip("Log this cell")
             self.browse.setItem(row, 0, chk)
-            self.browse.setItem(row, 1, QtWidgets.QTableWidgetItem(ch.title))
+            name = QtWidgets.QTableWidgetItem(ch.title)
+            name.setToolTip(_name_tip(ch))
+            self.browse.setItem(row, 1, name)
             val = ""
             if cells:
                 for ff, text, _v in cells:
@@ -1849,10 +1944,11 @@ class ConnPane(QtWidgets.QWidget):
         for r, c in enumerate(self._channels):
             self.sel.setItem(r, 0, QtWidgets.QTableWidgetItem(
                 "calc" if c.is_derived else "G%d/%d" % (c.group, c.field + 1)))
-            self.sel.setItem(r, 1, QtWidgets.QTableWidgetItem(c.title))
+            name = QtWidgets.QTableWidgetItem(c.title)
+            name.setToolTip(_name_tip(c))
+            self.sel.setItem(r, 1, name)
             self.sel.setItem(r, 2, QtWidgets.QTableWidgetItem(""))
-        self.sel.resizeColumnsToContents()
-        self.sel.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        # the widths stay as set (or as the user dragged them)
 
     def _remove_selected(self):
         rows = sorted({i.row() for i in self.sel.selectedItems()}, reverse=True)

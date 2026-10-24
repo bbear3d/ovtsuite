@@ -27,7 +27,9 @@ The window is laid out in tabs:
 - **Options** -- the chosen format's own options (an XDF's checksum plugin
   and patch, an A2L's addresses, an image's record size ...), the image size
   and base address -- filled in from the files once they are read; type over
-  them to give your own -- and porting onto another software version.
+  them to give your own -- porting onto another software version, and what
+  to do when an output file is already there (see
+  [Output files already there](#output-files-already-there)).
 - **Translation** -- translating titles and descriptions.
 - **Tables** -- converting only some tables, with the list of the tables
   that will be written.
@@ -72,6 +74,29 @@ removing rows.
 After writing, the converter reads the result back with OVT-Suite's own
 reader and compares every table's address, size and width with what it
 meant to write. The summary line says whether that check passed.
+
+## Output files already there
+
+The converter does not silently replace a file. **Options** tab, **Image and
+placement**, **When an output file exists:**
+
+- **Ask each time** (the default) -- for every file that is already there,
+  Convert stops and asks before doing the work: **Yes** replaces it, **No**
+  leaves it alone, **Yes to All** / **No to All** give the same answer for
+  every other file of this conversion (the converted file and the binaries a
+  WinOLS project writes out with it). Tick **Make this the default** to stop
+  being asked: after **Yes** (or Yes to All) the setting becomes
+  **Overwrite it**, after **No** (or No to All) **Skip it**; change it back
+  here at any time. A file you have just chosen in the **Save as** dialog,
+  which already asked about replacing it, is not asked about again.
+- **Overwrite it** -- replace it without asking.
+- **Skip it** -- leave it as it is, without asking.
+
+A file left alone is not written; the status line and the report (under
+*Already there, left alone*) list it. The window remembers the choice; a
+preset does not carry it. A watch folder and the command line never ask: see
+[Watch a folder](#watch-a-folder) and
+[Presets and the command line](#presets-and-the-command-line).
 
 ## The binary and MPC of a WinOLS project
 
@@ -230,7 +255,7 @@ display name), and values apply back by either form.
 | ASAP2 A2L | Yes | Yes | Addresses as file offsets (WinOLS, TunerPro) or ECU addresses (INCA, CANape) |
 | Bosch DAMOS | Yes | Yes | Written back into a DAMOS, its own records are kept as they are |
 | WinOLS project (.ols) | Yes | No | Its binary is used when none is given; it and its versions can be [extracted](#extract-the-binaries-of-a-winols-project) |
-| WinOLS map pack (.kp) | Yes | Experimental | Laid out section by section as the map packs WinOLS 5.0 writes, and reads back in OVT-Suite; not yet opened in WinOLS itself -- an A2L imports into WinOLS reliably |
+| WinOLS map pack (.kp) | Yes | Experimental | Laid out section by section as the map packs WinOLS 5.0 writes, and reads back in OVT-Suite; opens in WinOLS 5.87; if a WinOLS version refuses it, an A2L imports reliably |
 | EcuFlash XML | Yes | Yes | Finds the base a ROM includes beside it; writes one self-contained file |
 | RomRaider XML | Yes | Yes | Many ROMs per file: found from the binary or picked |
 | OVT definition (JSON) | Yes | Yes | Every field of the definition, for scripts and comparisons |
@@ -362,6 +387,12 @@ progress is never read; a file changed later is converted again. The log
 lists every file (double-click one to open its folder). Watching stops when
 you press **Stop watching** or close the converter.
 
+A watch folder has no one to ask, so a result already in the output folder
+is replaced only when **When an output file exists:** (Options tab) says
+**Overwrite it**; with **Ask each time** or **Skip it** the arriving file is
+listed as skipped and the result left alone. A result the watch wrote itself
+is always brought up to date when the same file arrives again changed.
+
 ## Right-click menu
 
 **More ▸ Add "Convert with OVT Converter" to the right-click menu** adds that
@@ -406,5 +437,10 @@ ovtsuite convert --watch inbox --to xdf -o converted
 ovtsuite convert BPW.a2l --watch bins --to dcm --watch-after move
 ovtsuite convert --shell-menu install
 ```
+
+On the command line an output file that is already there is left alone and
+said so (`skipped: ... is already there`), and the exit status is 3; give
+`--overwrite` to replace it. A preset never decides this. The same goes for
+`--watch` and `--extract-images`.
 
 `ovtsuite convert --help` lists every option.

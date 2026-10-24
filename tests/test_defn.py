@@ -293,7 +293,7 @@ def test_a_6hp_version_pairs_every_schedule_with_the_loaded_file(tmp_path):
 
 #: ``MODEL_VERSION`` and the hash of ``defn.MODEL_FILES`` it was recorded with.
 #: See test_the_model_files_are_unchanged_or_model_version_was_considered.
-RECORDED_MODEL = (3, "50b6532c2a3a7f8e091ffabacc4c2bf31c4cbda9")
+RECORDED_MODEL = (3, "a80e91a5531eae8b6240e91be4c0dd5dd634825e")
 
 
 def test_the_model_files_are_unchanged_or_model_version_was_considered():
@@ -501,3 +501,21 @@ def test_rebase_lists_a_resized_table_and_ignores_bytes_before_a_value():
     assert got == [("M", "", "curve")]
     new[0x101] = old[0x101]                 # only the byte before the value
     assert D.rebase(snap, "edc16", old, bytes(new)) is not None
+
+
+def test_an_installed_module_s_identity_follows_its_files(monkeypatch):
+    """A build between releases changes a module's files, not its version:
+    a definition its old data built must not be kept, so the identity
+    carries the manifest's file hashes (the same on every computer)."""
+    from types import SimpleNamespace
+    from ovtsuite.modules import loader
+    man = SimpleNamespace(id="edc15", version="1.0.13", variant="full",
+                          files={"data/a.json.gz": "11", "edc15/x.pyd": "22"})
+    monkeypatch.setattr(loader, "manifest", lambda mid: man)
+    m = SimpleNamespace(id="edc15")
+    one = D.installed_identity(m)
+    assert one.startswith("edc15 1.0.13 full ")
+    assert D.installed_identity(m) == one              # stable
+    man.files = dict(man.files, **{"data/a.json.gz": "33"})
+    assert D.installed_identity(m) != one              # data re-baked
+    assert D._short_mod("installed " + one) == "edc15 1.0.13"

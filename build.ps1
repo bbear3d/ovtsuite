@@ -23,8 +23,12 @@
     MODULES (docs\MODULES_PLAN.md). The executable is the BASE app; every
     control-module module is a signed package of its own:
 
-        dist\modules\<id>-<version>.ovtmod            full module
-        dist\modules\<id>-<version>-checksum.ovtmod   checksum-only variant
+        dist\modules\<id>-<version>[-<tags>].ovtmod            full module
+        dist\modules\<id>-<version>-checksum[-<tags>].ovtmod   checksum-only variant
+
+    A closed module's package is compiled (Cython + MSVC, no Python source in
+    it) for this Python and Windows, tagged e.g. -cp313-win_amd64; an
+    open-source module's is untagged source.
 
     and dist\OVTSuite\modules\ holds every module installed, so
     dist\OVTSuite\OVTSuite.exe runs as the full app. Only what changed is
@@ -806,8 +810,11 @@ if (-not (Test-Path $EnvPy)) { throw "build environment is missing $EnvPy" }
 
 Write-Step 'Checking dependencies'
 # cryptography: module signatures (Ed25519) and the ZF 8HP Gen2 AES codec
+# cython + setuptools: the closed modules' packages ship compiled code
+#   (ovtsuite\modules\native.py); compiling needs MSVC (Visual Studio or its
+#   Build Tools, "Desktop development with C++")
 $deps = @('PySide6>=6.6', 'numpy>=1.24', 'pyserial>=3.5', 'pyusb>=1.2', 'pyftdi>=0.55',
-          'cryptography>=41', 'pyinstaller>=6.6')
+          'cryptography>=41', 'pyinstaller>=6.6', 'cython>=3.0', 'setuptools>=64')
 if ($Test -and -not $SkipTests) { $deps += 'pytest' }
 $DepsStamp = Join-Path $EnvDir '.ovtsuite-deps'
 if (Test-DepsCurrent $DepsStamp $deps) {

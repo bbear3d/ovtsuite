@@ -92,18 +92,24 @@ def register(reg) -> None:
                            "description": "Keys (original, version1, original-area2 ...), "
                            "version names or file names; ['all'] for every one. Default: "
                            "the original and every version."},
-                  "format": {"type": "string", "enum": ["raw", "bin", "hex", "srec"]}}},
+                  "format": {"type": "string", "enum": ["raw", "bin", "hex", "srec"]},
+                  "overwrite": {"type": "boolean", "description": "Replace files already "
+                                "there (default false: they are left alone and listed "
+                                "as skipped -- ask the user before passing true)."}}},
               read_only=False, title="Extract a WinOLS project's binaries")
-    def extract_embedded_images(ctx, sources, out_dir=None, only=None, format="raw"):
+    def extract_embedded_images(ctx, sources, out_dir=None, only=None, format="raw",
+                                overwrite=False):
         from . import EXTRACT
         job = Job(sources=list(sources), target=EXTRACT, out=out_dir or "")
         job.options = {"extract": list(only) if only else None,
-                       "extract_format": format or "raw"}
+                       "extract_format": format or "raw",
+                       "existing": "overwrite" if overwrite else "skip"}
         try:
             res = run(job)
         except (ConvertError, ValueError, OSError) as exc:
             raise ToolError(str(exc))
         return {"written": res.out, "what": res.values[1:], "out_dir": job.out,
+                "skipped_existing": res.skipped,
                 "read_back_differences": res.check}
 
     @reg.tool("convert_files",
@@ -151,14 +157,19 @@ def register(reg) -> None:
                                  "the patch turns the binary into it."},
                   "patch_split": {"type": "string", "enum": ["one", "table"]},
                   "rom": {"type": "string", "description": "RomRaider XML: the ROM to use, "
-                          "by xmlid (default: found from the binary)."}}},
+                          "by xmlid (default: found from the binary)."},
+                  "overwrite": {"type": "boolean", "description": "Replace the output file "
+                                "if it is already there (default false: it is left alone "
+                                "and reported as skipped -- ask the user before passing "
+                                "true)."}}},
               read_only=False, title="Convert files")
     def convert_files(ctx, sources, target, out=None, binary=None, base=None, size=None,
                       pattern=None, translate=None, to_lang="en", checksum="none",
                       correct_checksums=False, port=False, reference=None,
-                      patch_with=None, patch_split="one", rom=None):
+                      patch_with=None, patch_split="one", rom=None, overwrite=False):
         job = Job(sources=list(sources), target=target, out=out or "", binary=binary,
                   base=base, size=size, checksum=checksum or "none")
+        job.options["existing"] = "overwrite" if overwrite else "skip"
         if correct_checksums:
             job.options["checksum"] = True
         if patch_with:
@@ -183,6 +194,10 @@ def register(reg) -> None:
             res = run(job)
         except (ConvertError, ValueError, OSError) as exc:
             raise ToolError(str(exc))
+        if res.skipped:
+            return {"written": [], "skipped_existing": res.skipped,
+                    "note": "the output is already there and was left alone; pass "
+                            "overwrite=true (after asking the user) to replace it"}
         loss = dict(list(res.loss.items())[:40])
         return {"written": res.out, "tables_in": res.tables_in, "tables_out": res.tables_out,
                 "image_size": res.size, "base": res.base, "notes": res.warnings[:20],

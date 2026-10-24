@@ -333,7 +333,9 @@ def module_updates(rel: Release, installed: List[InstalledModule]) -> List[Modul
     out = []
     for m in installed:
         cks = m.variant == "checksum"
-        pk = re.compile(r"^%s-(\d+(?:\.\d+)*)%s\.ovtmod$"
+        # a compiled package's name ends with the interpreter and platform it
+        # is for (-cp313-win_amd64); only one built for this app counts
+        pk = re.compile(r"^%s-(\d+(?:\.\d+)*)%s(?:-[a-z]+\d+-[a-z0-9_]+)?\.ovtmod$"
                         % (re.escape(m.id), "-checksum" if cks else ""))
         st = re.compile(r"^%s-%s%s-(\d+(?:\.\d+)*)-setup\.exe$"
                         % (re.escape(branding.EXE_NAME), re.escape(module_setup_stem(m.name)),
@@ -342,6 +344,8 @@ def module_updates(rel: Release, installed: List[InstalledModule]) -> List[Modul
         for a in rel.assets:
             for rx, attr in ((pk, "package"), (st, "setup")):
                 mm = rx.match(a.name)
+                if mm and attr == "package" and not _package_fits(a.name):
+                    continue
                 if mm and is_newer(mm.group(1), m.version):
                     u = best.setdefault(mm.group(1), ModuleUpdate(m, mm.group(1)))
                     setattr(u, attr, a)
@@ -352,8 +356,19 @@ def module_updates(rel: Release, installed: List[InstalledModule]) -> List[Modul
 
 
 # ------------------------------------------------------- modules on GitHub
-#: A module package among a release's assets: ``<id>-<ver>[-checksum].ovtmod``.
-_PACKAGE_RX = re.compile(r"^([a-z0-9_]+)-(\d+(?:\.\d+)*)(-checksum)?\.ovtmod$")
+#: A module package among a release's assets:
+#: ``<id>-<ver>[-checksum][-<python>-<platform>].ovtmod`` (the tags on a
+#: compiled one, see ovtsuite.modules.package).
+_PACKAGE_RX = re.compile(r"^([a-z0-9_]+)-(\d+(?:\.\d+)*)(-checksum)?"
+                         r"(?:-[a-z]+\d+-[a-z0-9_]+)?\.ovtmod$")
+
+
+def _package_fits(name: str) -> bool:
+    """A module package this app can run: untagged (source), or compiled for
+    this interpreter and platform -- the other OS's build of the same
+    version sits among the same release's assets."""
+    from .modules import package as _package
+    return _package.name_fits(name)
 
 
 @dataclass
@@ -392,7 +407,7 @@ def available_modules(releases: List[Release], installed: List[InstalledModule],
             continue
         for a in rel.assets:
             mm = _PACKAGE_RX.match(a.name)
-            if not mm or mm.group(1) not in known:
+            if not mm or mm.group(1) not in known or not _package_fits(a.name):
                 continue
             mid, ver = mm.group(1), mm.group(2)
             key = (mid, "checksum" if mm.group(3) else "full")

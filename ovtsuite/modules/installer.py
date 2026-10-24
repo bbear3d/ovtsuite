@@ -164,6 +164,10 @@ def check(path_or_bytes, allow_unsigned: Optional[bool] = None) -> Checked:
                ", ".join(map(str, _api.SUPPORTED_API))))
     if man.variant not in (_api.FULL, _api.CHECKSUM_ONLY):
         raise InstallError("unknown module variant %r" % man.variant)
+    # compiled code runs on one interpreter and platform only (package.py)
+    why = _pkg.incompatible(man)
+    if why:
+        raise InstallError(why[0].upper() + why[1:])
     ok, who = _sig.verify(op.manifest_bytes, op.signature)
     if not ok:
         allow = _sig.allow_unsigned() if allow_unsigned is None else allow_unsigned
@@ -215,6 +219,15 @@ def install(path_or_bytes, scope: str = USER,
     finally:
         if tmp and os.path.isdir(tmp):
             shutil.rmtree(tmp, ignore_errors=True)
+    if c.manifest.platform and scope in (SYSTEM, USER):
+        # a compiled module replaces its source: no copy of the old one,
+        # here or in another modules folder, may stay readable on disk.
+        # Only for the real locations -- an explicit folder (a build's
+        # install-into, a test) never reaches into the user's own.
+        try:
+            scrub_source(c.manifest.id)
+        except Exception:                # noqa: BLE001 - installed is installed
+            pass
     return c.manifest
 
 
@@ -273,6 +286,11 @@ def read_installed(root: str, scope: str, verify_files: bool = True) -> Optional
         inst.problem = ("built for module API %d; this %s supports %s"
                         % (man.module_api, branding.APP_NAME,
                            ", ".join(map(str, _api.SUPPORTED_API))))
+    elif _pkg.incompatible(man):
+        # a modules folder copied from another OS, or kept across an app
+        # update to another Python
+        inst.problem = "built for %s -- reinstall it for this app" % _pkg.tag_words(
+            man.python, man.platform)
     else:
         ok, who = _sig.verify(raw, sig)
         if ok:
@@ -311,6 +329,107 @@ def discover(verify_files: bool = True) -> Dict[str, List[Installed]]:
             if inst is not None:
                 found.setdefault(inst.manifest.id, []).append(inst)
     for mid, lst in found.items():
-        lst.sort(key=lambda i: (i.problem == "", _version_key(i.manifest.version)),
+        # at one version a compiled copy beats a source one (left in a folder
+        # the user cannot write, until scrub_source can remove it)
+        lst.sort(key=lambda i: (i.problem == "", _version_key(i.manifest.version),
+                                bool(i.manifest.platform)),
                  reverse=True)
     return found
+
+
+# ------------------------------------------------------------------ scrubbing
+#: What is code in an installed module's package folder.
+_CODE_SUFFIX = (".py", ".pyc", ".pyo")
+
+
+def carries_source(man: "_pkg.Manifest") -> bool:
+    """A closed-source module's copy from before its packages were compiled:
+    readable Python source in a folder."""
+    return (not man.platform and _api.terms(man.license) == _api.EULA_TERMS
+            and any(f.endswith(".py") for f in man.files))
+
+
+def _strip_stray(root: str, man: "_pkg.Manifest") -> List[str]:
+    """Delete the code files under ``root/<id>/`` that ``man`` does not list
+    (``.py``, ``.pyc``, ``__pycache__``) -- what an installer laying a compiled
+    package over an old folder, or Python itself, left beside it. Data,
+    help, the EULA and a module setup's own files are not code: kept."""
+    gone = []
+    keep = set(man.files)
+    top = os.path.join(root, man.id)
+    for d, dirs, names in os.walk(top, topdown=False):
+        for n in names:
+            p = os.path.join(d, n)
+            rel = os.path.relpath(p, root).replace(os.sep, "/")
+            if (n.endswith(_CODE_SUFFIX) or os.path.basename(d) == "__pycache__") \
+                    and rel not in keep:
+                os.remove(p)
+                gone.append(p)
+        if os.path.basename(d) == "__pycache__" and not os.listdir(d):
+            os.rmdir(d)
+    return gone
+
+
+def _remove_copy(inst: Installed) -> str:
+    """Remove a superseded source copy; how it went."""
+    root = inst.root
+    if os.path.isfile(os.path.join(root, "unins000.exe")):
+        # put there by the module's own setup.exe: its uninstaller (and the
+        # Apps & features entry it serves) stays, its code goes -- the copy
+        # is then "damaged" and never loads
+        n = 0
+        top = os.path.join(root, inst.manifest.id)
+        for d, dirs, names in os.walk(top, topdown=False):
+            for f in names:
+                if f.endswith(_CODE_SUFFIX):
+                    os.remove(os.path.join(d, f))
+                    n += 1
+            if os.path.basename(d) == "__pycache__" and not os.listdir(d):
+                os.rmdir(d)
+        return "source removed (%d files; its uninstaller stays)" % n
+    gone = root + ".removing"
+    os.replace(root, gone)
+    shutil.rmtree(gone, ignore_errors=True)
+    if os.path.exists(gone):
+        return "moved aside, not fully deleted: %s" % gone
+    return "removed"
+
+
+def scrub_source(module_id: str, found: Optional[Dict[str, List[Installed]]] = None,
+                 dry_run: bool = False) -> List[tuple]:
+    """Once a compiled copy of ``module_id`` is installed, delete every copy
+    of it that still carries Python source, in every modules folder
+    (:func:`search_dirs`), and any stray code beside the compiled copy.
+
+    ``found`` is :func:`discover`'s result when the caller has it. Returns
+    ``[(path, what happened)]``; a folder this user cannot write is reported
+    (``"no write access: ..."``), never raised -- the installer runs this
+    again elevated (``scrub-module-sources``). Nothing happens while no
+    compiled, loadable copy exists: the source copy is then the module."""
+    found = discover() if found is None else found
+    cands = found.get(module_id, [])
+    compiled = [c for c in cands if c.manifest.platform and not c.problem]
+    if not compiled:
+        return []
+    out = []
+    for c in cands:
+        try:
+            if carries_source(c.manifest):
+                out.append((c.root, "would remove" if dry_run else _remove_copy(c)))
+            elif c in compiled:
+                if dry_run:
+                    continue
+                for p in _strip_stray(c.root, c.manifest):
+                    out.append((p, "stray code removed"))
+        except OSError as ex:
+            out.append((c.root, "no write access: %s" % ex))
+    return out
+
+
+def scrub_all(dry_run: bool = False) -> List[tuple]:
+    """:func:`scrub_source` for every module installed."""
+    found = discover()
+    out = []
+    for mid in sorted(found):
+        out += scrub_source(mid, found, dry_run)
+    return out

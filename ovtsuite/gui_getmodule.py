@@ -5,9 +5,10 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Installing a module straight from the app's GitHub releases.
 
-The releases carry every module as a ``.ovtmod`` package (the same file on
-Windows, Linux and macOS), so a module can be fetched and installed without
-its setup program:
+The releases carry every module as a ``.ovtmod`` package (an open-source
+module's runs anywhere; a closed one's is compiled, one per interpreter and
+platform, and only the one built for this app is offered), so a module can
+be fetched and installed without its setup program:
 
 * **Tools > Modules...** shows, for each module, the newest version published
   on GitHub, and **Install from GitHub** downloads and installs it;

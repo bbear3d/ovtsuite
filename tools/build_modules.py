@@ -53,6 +53,14 @@ split through this one tool, so Windows and Linux make the same decisions:
         its Ed25519 signature SHA256SUMS.txt.sig with the module signing key,
         which the app's updater checks (ovtsuite/updates.py)
 
+    python tools/build_modules.py scrub-releases [--modules edc15,edc16]
+            [--bundles] [--confirm]
+        the downloads on GitHub that still carry a closed module's Python
+        source (packages from before modules were compiled, their setup.exe
+        and .deb; with --bundles the full / tools installers of those
+        releases too): listed, and deleted only with --confirm (gh, signed
+        in). Run once a release with compiled packages is published
+
     python tools/build_modules.py ensure-key
         create the signing key on first use (OVT_SIGNING_KEY, default
         ~/.ovt-signing/module-key.pem) and make the base app trust it (adds
@@ -74,10 +82,15 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from ovtsuite import branding                                   # noqa: E402
-from ovtsuite.modules import api, build, package, signing       # noqa: E402
+from ovtsuite.modules import api, build, native, package, signing  # noqa: E402
 
 SRC = os.path.join(ROOT, branding.PKG)
-CACHE = os.path.join(ROOT, "build", ".cache", "modules.json")
+# one per interpreter and platform: a closed module's package is compiled for
+# them, so a Linux build in the same checkout keeps its own stamps
+CACHE = os.path.join(ROOT, "build", ".cache", "modules-%s-%s.json" % (
+    package.python_tag(), package.platform_tag()))
+#: compiled module files by source hash (ovtsuite.modules.native)
+NATIVE_CACHE = os.path.join(ROOT, "build", ".cache", "native")
 DEFAULT_BASE = os.path.join(ROOT, "build", "base")
 DEFAULT_OUT = os.path.join(ROOT, "dist", "modules")
 
@@ -244,13 +257,22 @@ def cmd_packages(args):
             warn = build.version_warning(stamps, key, fps[key], spec.version)
             if warn and not any(w.startswith(mid + ":") for w in warnings):
                 warnings.append(warn.replace(key + ":", mid + ":", 1))
-            # an older version of the same package goes
+            if build.native_tag(spec):
+                why = native.available()
+                if why:
+                    sys.exit("%s: %s" % (name, why))
+            # an older version of the same package goes -- the same variant
+            # for the same platform only (another OS's build of it stays)
+            mine = package.parse_name(name)
             for old in os.listdir(args.out):
-                if (old.startswith(mid + "-") and old.endswith(package.EXT) and old != name
-                        and old.endswith("-checksum" + package.EXT) == (v == api.CHECKSUM_ONLY)):
+                p = package.parse_name(old)
+                if (p and old != name and p[0] == mid and p[2] == v
+                        and (p[3] == mine[3] or not p[3])):
                     os.remove(os.path.join(args.out, old))
             t = time.time()
-            build.pack(SRC, args.out, mid, v, key_path, branding.APP_NAME, specs)
+            fallback = {}
+            build.pack(SRC, args.out, mid, v, key_path, branding.APP_NAME, specs,
+                       cache_dir=NATIVE_CACHE, report=fallback)
             if not args.no_check:
                 ok, why = build.check_package(base_parent, branding.PKG, out, mid, v)
                 if not ok:
@@ -262,6 +284,11 @@ def cmd_packages(args):
             print("  %-34s built %s (%.0f KB, %.1f s)%s" % (
                 name, "" if key_path else "UNSIGNED ", os.path.getsize(out) / 1024.0,
                 time.time() - t, "" if args.no_check else ", checked"))
+            # what a compiled package carries as byte-code instead (a
+            # package __init__ always; anything else is worth a look)
+            for rel, why in sorted(fallback.items()):
+                if why != native.INIT_REASON:
+                    print("  %-34s %s as byte-code only: %s" % ("", rel, why))
             if args.archive:
                 _archive(out, args.archive)
     print("module packages: %d built, %d up to date -> %s"
@@ -488,6 +515,108 @@ def cmd_release_sums(args):
     return 0
 
 
+#: The modules whose source-carrying downloads are withdrawn by default.
+SCRUB_MODULES = ("edc15", "edc16")
+
+
+def source_assets(releases, modules=SCRUB_MODULES, bundles=False):
+    """The assets of GitHub ``releases`` (the API's release JSON) that carry
+    the Python source of a closed module in ``modules`` -- what predates
+    compiled packages. ``[(release tag, asset name, asset id, why)]``:
+
+    * an untagged ``<id>-<ver>[-checksum].ovtmod`` (a compiled one names its
+      platform: ``-cp313-win_amd64``), in any release;
+    * the module's own setup.exe (``OVTSuite-<Name>[-Checksum]-<ver>-setup.exe``)
+      in a release that has no compiled package of it;
+    * the module's Linux package ``<pkg>-module-<id>_..._all.deb`` (a compiled
+      one is architecture-specific);
+    * with ``bundles``: every other installer of a release with no compiled
+      package at all (the full app installer, the tools' installers), which
+      carry the modules inside; the base-only installer never does."""
+    import re
+    from ovtsuite import platforms, updates
+    out = []
+    for rel in releases:
+        tag = str(rel.get("tag_name") or "")
+        assets = rel.get("assets") or []
+        parsed = {a.get("name"): package.parse_name(str(a.get("name") or ""))
+                  for a in assets}
+        compiled = {p[0] for p in parsed.values() if p and p[3]}
+        stems = {mid: updates.module_setup_stem(platforms.MODULES[mid].name)
+                 for mid in modules if mid in platforms.MODULES}
+        every_stem = [updates.module_setup_stem(m.name) for m in platforms.MODULES.values()]
+        for a in assets:
+            name = str(a.get("name") or "")
+            p = parsed.get(name)
+            why = ""
+            if p and p[0] in modules and not p[3]:
+                why = "%s module package with Python source" % p[0]
+            for mid, stem in stems.items():
+                if why:
+                    break
+                if (mid not in compiled and re.match(
+                        r"^%s-%s(-Checksum)?-\d+(\.\d+)*-setup\.exe$"
+                        % (re.escape(branding.EXE_NAME), re.escape(stem)), name)):
+                    why = "%s module installer with Python source" % mid
+                elif re.match(r"^%s-module-%s_.*_all\.deb$" % (re.escape(branding.PKG),
+                                                              re.escape(mid)), name):
+                    why = "%s module .deb with Python source" % mid
+            if (not why and bundles and not compiled and name.endswith("-setup.exe")
+                    and "-Base-" not in name and not any(
+                        name.startswith("%s-%s-" % (branding.EXE_NAME, s))
+                        for s in every_stem)):
+                why = "installer bundling modules with Python source"
+            if why:
+                out.append((tag, name, a.get("id"), why))
+    return out
+
+
+def cmd_scrub_releases(args):
+    """List (default) or delete (--confirm) the source-carrying downloads of
+    the closed modules from every published release on GitHub."""
+    import subprocess
+    from ovtsuite import updates
+    owner, repo = updates.repo_slug()
+    releases = []
+    for page in range(1, 11):
+        rows = updates._get_json(updates.releases_url(page), 30.0)
+        releases += rows
+        if len(rows) < updates.PER_PAGE:
+            break
+    mods = tuple(_ids(args.modules, build._specs(SRC)))
+    rows = source_assets(releases, mods, args.bundles)
+    if not rows:
+        print("nothing to remove from %s/%s (%d releases)" % (owner, repo, len(releases)))
+        return 0
+    for tag, name, _aid, why in rows:
+        print("  %-10s %-52s %s" % (tag, name, why))
+    # never leave a module with nothing to download: a compiled package of
+    # each must be published first
+    have = {p[0] for rel in releases if not rel.get("draft")
+            for a in rel.get("assets") or []
+            for p in [package.parse_name(str(a.get("name") or ""))] if p and p[3]}
+    missing = [m for m in mods if m not in have]
+    if missing:
+        print("NOT YET: no published release has a compiled package of %s -- "
+              "publish the release with compiled modules first"
+              % ", ".join(missing))
+    if not args.confirm or (missing and not args.force):
+        print("%d assets in %s/%s would be DELETED; nothing was changed.%s"
+              % (len(rows), owner, repo,
+                 "" if missing else " Run again with --confirm to delete them "
+                 "(needs 'gh' signed in with write access)."))
+        return 0 if not args.confirm else 2
+    failed = 0
+    for tag, name, aid, _why in rows:
+        r = subprocess.run(["gh", "api", "-X", "DELETE",
+                            "repos/%s/%s/releases/assets/%s" % (owner, repo, aid)],
+                           capture_output=True, text=True)
+        print("  %s %s/%s%s" % ("deleted" if r.returncode == 0 else "FAILED ", tag, name,
+                                "" if r.returncode == 0 else ": " + r.stderr.strip()))
+        failed += r.returncode != 0
+    return 1 if failed else 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -534,6 +663,18 @@ def main(argv=None):
     s.add_argument("--out", required=True)
     s.add_argument("--unsigned", action="store_true")
     s.set_defaults(fn=cmd_release_sums)
+    s = sub.add_parser("scrub-releases")
+    s.add_argument("--modules", default=",".join(SCRUB_MODULES),
+                   help="closed modules whose source downloads go (default edc15,edc16)")
+    s.add_argument("--bundles", action="store_true",
+                   help="also the full app / tools installers of releases that "
+                        "predate compiled packages (they carry the modules)")
+    s.add_argument("--confirm", action="store_true",
+                   help="really delete them (default: only list)")
+    s.add_argument("--force", action="store_true",
+                   help="delete even though no compiled package of a module is "
+                        "published yet (its downloads are then gone)")
+    s.set_defaults(fn=cmd_scrub_releases)
     s = sub.add_parser("install-into")
     s.add_argument("dest")
     s.add_argument("--packages", default=DEFAULT_OUT)

@@ -127,7 +127,7 @@ def _select(ws, cells):
 def test_the_menu_holds_them_with_their_keys(win):
     keys = {a.text(): a.shortcut().toString() for a in win._cell_actions}
     assert keys["Step up"] == "Alt+Up" and keys["Step down x10"] == "Alt+Shift+Down"
-    assert keys["Copy from comparison"] == "Ctrl+R"
+    assert keys["Copy selected cells from comparison"] == "Ctrl+R"
     assert keys["Revert to as-read values"] == "Ctrl+Shift+R"
     assert keys["Increase 1%"] == "Alt+PgUp"
     for a in win._cell_actions:      # bound to the tables, not the window
@@ -174,7 +174,7 @@ def test_copy_from_comparison_and_back_to_as_read(win):
     assert cells, "LQ and KN should differ in %s" % MAP
     _select(ws, cells[:3])
     stock = [e.cell(r, c) for r, c in cells[:3]]
-    _act(win, "Copy from comparison").trigger()                      # Ctrl+R
+    _act(win, "Copy selected cells from comparison").trigger()                      # Ctrl+R
     assert [e.cell(r, c) for r, c in cells[:3]] == \
         pytest.approx([m._cmp[r][c] for r, c in cells[:3]])
     _act(win, "Revert to as-read values").trigger()                  # Ctrl+Shift+R

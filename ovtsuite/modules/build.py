@@ -196,10 +196,13 @@ def fingerprint(src_pkg: str, specs=None) -> Dict[str, str]:
         # a closed module's package also carries the module EULA, which lives
         # outside its files: a changed agreement must repackage it too (it did
         # not, and EDC16 1.0.8 shipped the agreement's draft text)
-        eula = ""
+        # a compiled package is per interpreter and platform: building on
+        # another must not count as up to date (nor as "files changed")
+        tag = native_tag(spec)
+        eula = "|native=" + tag if tag else ""
         if _api.terms(spec.license) == _api.EULA_TERMS:
             with open(_package.EULA_FILE, "rb") as fh:
-                eula = "|eula=" + hashlib.sha256(fh.read()).hexdigest()
+                eula += "|eula=" + hashlib.sha256(fh.read()).hexdigest()
         out[mid] = _hash(src_pkg, _package.payload(src_pkg, spec, _api.FULL),
                          "api=%d|full%s" % (spec.module_api, eula))
         if spec.checksum:
@@ -230,19 +233,36 @@ def version_warning(stamps: Dict, key: str, fp: str, version: str) -> str:
     return ""
 
 
+def native_tag(spec) -> str:
+    """``cp313-win_amd64`` for a module whose packages ship compiled code
+    (see :mod:`.package`), "" for one that ships source."""
+    if not _package.is_native(spec):
+        return ""
+    return "%s-%s" % (_package.python_tag(), _package.platform_tag())
+
+
 def package_name(spec, variant: str) -> str:
-    return "%s-%s%s%s" % (spec.id, spec.version,
-                          "-checksum" if variant == _api.CHECKSUM_ONLY else "",
-                          _package.EXT)
+    """``<id>-<version>[-checksum][-cp313-win_amd64].ovtmod`` -- a compiled
+    package names the interpreter and platform it is for, so the Windows and
+    the Linux build of one version can sit side by side (in dist/modules,
+    among a release's assets)."""
+    py, _, plat = native_tag(spec).partition("-")
+    return _package.file_name(spec.id, spec.version, variant, py, plat)
 
 
 def pack(src_pkg: str, out_dir: str, mid: str, variant: str,
-         key_path: Optional[str], app: str, specs=None) -> str:
+         key_path: Optional[str], app: str, specs=None,
+         cache_dir: Optional[str] = None, report: Optional[dict] = None,
+         native: Optional[bool] = None) -> str:
+    """Build one package; ``report`` receives the files a compiled package
+    carries as byte-code instead, ``native`` overrides whether it is
+    compiled (see :func:`.package.build`)."""
     specs = specs if specs is not None else _specs(src_pkg)
     spec = specs[mid]
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, package_name(spec, variant))
-    _package.build(spec, src_pkg, out, variant, key_path, app=app)
+    _package.build(spec, src_pkg, out, variant, key_path, app=app,
+                   native=native, cache_dir=cache_dir, report=report)
     return out
 
 
@@ -260,6 +280,26 @@ hook = spec.resolve("checksum")             # imports the checksum code
 cs = hook(None)                              # None: needs a session (HVAC)
 if cs is not None:
     cs.is_supported(b"\xff" * 0x100)        # reach the checksum code itself
+man = loader.manifest(sys.argv[3])
+if man.platform:
+    # a compiled package: no source in it, and its code is what really ran
+    root = os.path.join(sys.argv[2], sys.argv[3], sys.argv[3])
+    src = [os.path.join(d, n) for d, _, ns in os.walk(root) for n in ns
+           if n.endswith(".py")]
+    assert not src, "source in a compiled package: %s" % src
+    from importlib.machinery import EXTENSION_SUFFIXES as EXT
+    # what was loaded from the install folder (a module may alias itself to
+    # base-app code: sys.modules[__name__] = <the base module>)
+    top = os.path.normcase(os.path.realpath(root)) + os.sep
+    ran = dict((k, getattr(v, "__file__", "") or "") for k, v in list(sys.modules.items())
+               if k.startswith("{pkg}.%s." % sys.argv[3]))
+    ran = dict((k, f) for k, f in ran.items()
+               if os.path.normcase(os.path.realpath(f)).startswith(top))
+    assert ran, "no module code was imported"
+    bad = [k for k, f in ran.items() if not f.endswith(tuple(EXT) + (".pyc",))]
+    assert not bad, "not compiled: %s" % bad
+    print("compiled: %d of %d imported modules native"
+          % (sum(f.endswith(tuple(EXT)) for f in ran.values()), len(ran)))
 print("ok")
 '''
 

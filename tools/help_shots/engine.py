@@ -222,24 +222,32 @@ def edc15_eeprom(ctx):
 
 
 # -- Tools menu ---------------------------------------------------------------
-@shot("tools-dtc", BASE, size=(960, 600),
-      what="DTC / Fault-Path editor on an EDC16 file")
+@shot("tools-dtc", BASE, size=(960, 680),
+      what="DTC / Fault-Path editor on an EDC16 file, one code switched off "
+           "against the comparison")
 def tools_dtc(ctx):
-    w = ctx.main_window(ctx.ref("edc16_lq"))
+    f = ctx.ref("edc16_lq")
+    w = ctx.main_window(f, f)         # compared with itself until the edit
     dlg = _tool(ctx, w, "open_dtc", "dtc")
     dlg.filter.setText("EGR")
+    ctx.settle(100)
     dlg.table.selectRow(0)            # the panel: every code of every type
+    dlg._set_selected(False)          # differs from the original: shaded
     ctx.settle(100)
     return dlg
 
 
-@shot("tools-dtc-edc15", BASE, size=(960, 420),
-      what="DTC / Fault-Path editor on an EDC15 file (one row per dataset)")
+@shot("tools-dtc-edc15", BASE, size=(960, 520),
+      what="DTC / Fault-Path editor on an EDC15 file: one dataset, its "
+           "comparison below")
 def tools_dtc_edc15(ctx):
-    w = ctx.main_window(ctx.ref("edc15_bd"))
+    f = ctx.ref("edc15_bd")
+    w = ctx.main_window(f, f)         # compared with itself until the edit
     dlg = _tool(ctx, w, "open_dtc", "dtc")
     dlg.filter.setText("P0380")
-    dlg.table.selectRow(2)            # Manual: its path, bit and MIL
+    ctx.settle(100)
+    dlg.table.selectRow(0)            # its path, bit and MIL
+    dlg._set_selected(False)          # in every dataset: shaded
     ctx.settle(100)
     return dlg
 

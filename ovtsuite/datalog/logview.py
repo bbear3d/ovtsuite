@@ -66,6 +66,9 @@ class LogTableModel(QtCore.QAbstractTableModel):
         return None
 
     def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
+        if role == QtCore.Qt.ToolTipRole and orientation == QtCore.Qt.Horizontal:
+            # the channel's whole name: a heading is cut to its column's width
+            return self._heads[section] if 0 <= section < len(self._heads) else None
         if role != QtCore.Qt.DisplayRole:
             return None
         if orientation == QtCore.Qt.Horizontal:

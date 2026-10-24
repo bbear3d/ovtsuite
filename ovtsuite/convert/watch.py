@@ -17,7 +17,12 @@ files stay fixed; each arriving file takes the role its kind has there:
 A file is taken once it has stopped changing (size and time the same for
 ``settle`` seconds), so a copy still in progress is never read. Results go
 to the output folder (never the watched folder itself); the arriving file is
-left where it is or moved to a ``Done`` folder. Polling, not file-system
+left where it is or moved to a ``Done`` folder. A result already in the
+output folder is replaced only when the job says so (``options["existing"]``
+``"overwrite"``); with ``"ask"`` -- there is no one to ask -- or ``"skip"``
+it is left alone and the arriving file reported as skipped. A result this
+watch itself wrote, from the same arriving file, is its own and is always
+replaced when that file changes and arrives again. Polling, not file-system
 events: it works the same on every system and on network folders, where
 change notifications are unreliable.
 """
@@ -200,12 +205,17 @@ class Watcher:
         if j is None:
             return Event(path, None, "skipped: " + why, when=now)
         os.makedirs(self.out_dir, exist_ok=True)
+        if self._made.get(os.path.normcase(j.out)) == path:
+            j.options["existing"] = "overwrite"       # this watch's own result
         try:
             res = run(j)
         except (ConvertError, ValueError, OSError) as exc:
             return Event(path, False, str(exc), when=now)
         except Exception as exc:                                # noqa: BLE001
             return Event(path, False, "%s: %s" % (type(exc).__name__, exc), when=now)
+        if res.skipped:
+            return Event(path, None, "skipped: %s is already there (not overwritten)"
+                         % os.path.basename(j.out), when=now)
         self._made[os.path.normcase(j.out)] = path
         for o in res.out:
             self._ours.add(os.path.normcase(os.path.abspath(o)))

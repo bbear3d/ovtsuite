@@ -285,3 +285,21 @@ def test_off_marks_nothing_and_has_no_jump(win):
     g.jump()
     _pump()
     assert _cur(t) == (3, 2)
+
+
+@pytest.mark.parametrize("m", ["below", "beside"])
+def test_no_banner_painted_under_the_table_in_its_own_grid(win, m):
+    """Qt paints a span in a hidden row: in its own grid the banner row is
+    hidden in the table, so it carries no span there (else its text shows
+    over the table's last row); back in one grid it spans again."""
+    _mode(m)
+    ws = _show(win, TALL)
+    sep = ws.model.sep_row()
+    assert sep is not None and ws.table.isRowHidden(sep)
+    assert ws.table.columnSpan(sep, 0) == 1
+    ws.show_entity(ws.model.entity)         # a model reset keeps it so
+    _pump()
+    assert ws.table.columnSpan(ws.model.sep_row(), 0) == 1
+    _mode("off")
+    sep = ws.model.sep_row()
+    assert ws.table.columnSpan(sep, 0) == ws.model.columnCount()

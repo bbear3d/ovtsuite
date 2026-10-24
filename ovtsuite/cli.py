@@ -770,6 +770,19 @@ def cmd_remove_module(args):
     print("removed %s" % args.module)
 
 
+def cmd_scrub_module_sources(args):
+    """Every closed module with a compiled copy installed: its source copies
+    go, from every modules folder this process may write (see
+    modules.installer.scrub_source). Exit 1 when one could not be removed."""
+    from .modules import installer
+    rows = installer.scrub_all(dry_run=args.dry_run)
+    for path, what in rows:
+        print("%s: %s" % (path, what))
+    if not rows:
+        print("no module source to remove")
+    return 1 if any(w.startswith("no write access") for _p, w in rows) else 0
+
+
 def cmd_gui(args):
     from .gui import run, HAVE_QT
     if not HAVE_QT:
@@ -1929,6 +1942,13 @@ def main(argv=None):
     s.add_argument("module")
     s.add_argument("--system", action="store_true")
     s.set_defaults(fn=cmd_remove_module)
+
+    s = sub.add_parser("scrub-module-sources",
+                       help="delete the Python source of closed modules an update "
+                            "replaced with compiled ones (the installers run this)",
+                       parents=[_common])
+    s.add_argument("--dry-run", action="store_true", help="only list what would go")
+    s.set_defaults(fn=cmd_scrub_module_sources)
 
     s = sub.add_parser("gui", help="launch the graphical editor", parents=[_common])
     s.add_argument("binary", nargs="?",

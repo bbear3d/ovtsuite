@@ -161,7 +161,13 @@ def installed_identity(m) -> Optional[str]:
         return None
     if man is None:
         return None
-    return "%s %s %s" % (man.id, man.version, man.variant)
+    # with the files' hashes the manifest lists (the same on every computer
+    # with this package): a build between releases changes its files but
+    # not its version, and must not keep definitions its old data built
+    files = getattr(man, "files", None) or {}
+    h = hashlib.sha1("|".join("%s=%s" % kv for kv in sorted(files.items()))
+                     .encode()).hexdigest()[:12]
+    return "%s %s %s %s" % (man.id, man.version, man.variant, h)
 
 
 #: Bump when the way the BASE app builds or restores a model changes in a way

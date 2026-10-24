@@ -10,9 +10,14 @@ come from the platform's module (its ``features`` hook); a function that is
 more than a switch names a *table hook*, which this window asks what it will
 change (``fs_preview`` / ``fs_describe``) and has write it (``fs_apply``).
 
-One selector at the top picks the *copy* to view and change -- an EDC15
-dataset, the main or coding-variant copy on EDC16 -- or *All copies* (each
-copy's value shown, an edit going to every copy). The left list is the
+One selector at the top (**Apply to coding / dataset**) picks the *copy* to
+view and change -- an EDC15 dataset, the main or coding-variant copy on
+EDC16 --, *All* (each copy's value shown, an edit going to every copy), or
+with three or more copies some of them (*Choose ...*, a list to tick).
+Every row Apply changes is blue (bold when changed by hand), a table or
+fault path left as it is grey. An edit repaints its own row; the hooks'
+answers and the fault-path table are kept per revision of the file, so
+picking and switching features does not re-read the whole image. The left list is the
 features this file carries. For the one selected the right side shows what
 the file holds now (whether it fully, partly or does not match a preset), a
 **Set to** choice -- *Keep as is* until the user picks a preset -- and a
@@ -97,6 +102,8 @@ _COLS = ["Parameter or table", "Meaning", "Source", "Now", "New"]
 
 
 ALL = "__all__"                               # the copy selector: every copy
+CHOOSE = "__choose__"                         # the copy selector: pick some
+SOME = "__some__"                             # the copy selector: those picked
 DIFFERS = "__differs__"                       # Set to: the copies differ
 
 
@@ -306,23 +313,42 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         # the copies (EDC15 datasets, EDC16 main / coding-variant copies):
         # one selector for the whole window
         self.copies: List[str] = E.copies(self.session, self.bundles)
+        #: ALL, one copy key, or a tuple of keys (some copies, not all)
         self.view = ALL if len(self.copies) > 1 else self.copies[0]
+        self._hook_cache: Dict[tuple, object] = {}
+        self._hook_rev = None
+        self._companions: Dict[str, tuple] = {}
+        self._some: List[str] = []
 
         root = QtWidgets.QVBoxLayout(self)
         top = QtWidgets.QHBoxLayout()
-        self.copy_lbl = QtWidgets.QLabel("Copy to view and change:")
+        codings = _E.has_variants(self.session)
+        self._noun = ("coding", "codings") if codings else ("dataset", "datasets")
+        self.copy_lbl = QtWidgets.QLabel("Apply to %s:" % self._noun[0])
         top.addWidget(self.copy_lbl)
         self.copy_sel = QtWidgets.QComboBox()
         self.copy_sel.setSizeAdjustPolicy(
             QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
         if len(self.copies) > 1:
-            self.copy_sel.addItem("All copies (edits go to every copy)", ALL)
+            self.copy_sel.addItem("All %s (%d)" % (self._noun[1], len(self.copies)), ALL)
         for c in self.copies:
-            self.copy_sel.addItem(E.copy_label(self.session, c), c)
+            self.copy_sel.addItem(self._long(c), c)
+        if len(self.copies) > 2:
+            self.copy_sel.addItem("Choose %s..." % self._noun[1], CHOOSE)
+        why = ("Codings are the car variants (gearbox, A/C ...) the ECU is "
+               "coded for: some values have a separate copy that only some "
+               "codings read." if codings else
+               "Datasets are the ECU's separate calibrations (Manual, "
+               "Automatic ...): each holds its own copy of the values.")
         self.copy_sel.setToolTip(
-            "Some values exist more than once: per dataset on EDC15, per coding "
-            "(a coding-variant copy) on EDC16. Pick the copy to see and change, "
-            "or All copies to see every copy's value and change them all.")
+            "<p>%s</p><p>Pick which %s the whole window shows and changes. "
+            "<b>All %s</b> shows every copy's value and changes them all; one "
+            "changes only that one%s.</p>"
+            % (why, self._noun[1], self._noun[1],
+               "; <b>Choose %s...</b> picks several" % self._noun[1]
+               if len(self.copies) > 2 else ""))
+        self.copy_lbl.setToolTip(self.copy_sel.toolTip())
+        self._view_index = 0
         self.copy_sel.currentIndexChanged.connect(self._view_changed)
         top.addWidget(self.copy_sel)
         top.addStretch(1)
@@ -383,6 +409,12 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self._opt_spec = None
         row.addWidget(self.opt_lbl)
         row.addWidget(self.opt)
+        # and its tick box (Cut when warm: grow the map, keep the OEM
+        # breakpoints) -- disabled, with why, when the file cannot
+        self.chk = QtWidgets.QCheckBox()
+        self.chk.toggled.connect(self._opt_changed)
+        self._chk_spec = None
+        row.addWidget(self.chk)
         right.addLayout(row)
 
         self.preview = QtWidgets.QTableWidget(0, len(_COLS))
@@ -408,6 +440,13 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         right.addWidget(self.preview, 1)
 
         col = _colors()
+        self.legend = QtWidgets.QLabel(
+            "<span style='color:%s'><b>Blue</b></span>: changes on Apply"
+            " &nbsp;·&nbsp; <span style='color:%s'>grey</span>: a table or "
+            "fault path the feature uses, staying as it is &nbsp;·&nbsp; "
+            "<b>bold</b>: changed by you" % (col["changed"], col["same"]))
+        self.legend.setWordWrap(True)
+        right.addWidget(self.legend)
         self.hook_info = QtWidgets.QLabel()
         self.hook_info.setWordWrap(True)
         self.hook_info.setStyleSheet("color:%s" % col["changed"])
@@ -416,6 +455,13 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.notes.setWordWrap(True)
         self.notes.setStyleSheet("color:%s" % col["note"])
         right.addWidget(self.notes)
+        # the descriptions (part numbers, values) can be selected and copied
+        sel = (QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+               | QtCore.Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        for lab in (self.title, self.summary, self.cur_lbl, self.hook_info,
+                    self.notes):
+            lab.setTextInteractionFlags(sel)
+            lab.setCursor(QtCore.Qt.CursorShape.IBeamCursor)
         body.addLayout(right, 1)
 
         # -- buttons ------------------------------------------------------------
@@ -475,18 +521,126 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                 out.append(g)
         return out or [""]
 
+    def _view_keys(self) -> List[str]:
+        """The window's copies in view, in order."""
+        if self.view == ALL:
+            return list(self.copies)
+        if isinstance(self.view, tuple):
+            return [c for c in self.copies if c in self.view]
+        return [self.view]
+
     def _view_copies(self, b) -> List[str]:
         """The copies of ``b`` the copy selector shows and edits."""
         if self.view == ALL:
             return self._bcopies(b)
-        return [E.copy_for(self.session, b, self.view)]
+        out: List[str] = []
+        for c in self._view_keys():
+            g = E.copy_for(self.session, b, c)
+            if g not in out:
+                out.append(g)
+        return out or self._bcopies(b)[:1]
 
     def _short(self, c) -> str:
         return E.copy_label(self.session, c, short=True)
 
+    def _long(self, c) -> str:
+        """A copy as the selector lists it."""
+        t = E.copy_label(self.session, c)
+        if not _E.has_variants(self.session):
+            return t or "The only %s" % self._noun[0]
+        return t
+
     def _view_changed(self, *_a):
-        self.view = self.copy_sel.currentData()
+        data = self.copy_sel.currentData()
+        if data == CHOOSE:
+            keys = self._ask_copies(self._view_keys())
+            if keys is None:                       # cancelled: as it was
+                self.copy_sel.blockSignals(True)
+                self.copy_sel.setCurrentIndex(self._view_index)
+                self.copy_sel.blockSignals(False)
+                return
+            self.set_view(keys)
+            return
+        self.view = tuple(self._some) if data == SOME else data
+        self._view_index = self.copy_sel.currentIndex()
         self._select()
+
+    def set_view(self, keys):
+        """Show and change the copies ``keys`` (window copy keys): every
+        copy is All, one is that copy, several an entry of their own."""
+        keys = [c for c in self.copies if c in set(keys)]
+        if not keys:
+            return
+        # signals held throughout: the entry for several copies goes in
+        # ahead of Choose..., the current one, which moves the current index
+        # -- unheld, that ran _view_changed on Choose... again and asked twice
+        self.copy_sel.blockSignals(True)
+        try:
+            i = self._view_entry(keys)
+            self.copy_sel.setCurrentIndex(i)
+        finally:
+            self.copy_sel.blockSignals(False)
+        self._view_index = i
+        self.view = (ALL if len(keys) == len(self.copies) else
+                     keys[0] if len(keys) == 1 else tuple(keys))
+        self._select()
+
+    def _view_entry(self, keys) -> int:
+        """The selector's index for ``keys``, adding (or renaming) the entry
+        for several copies."""
+        if len(keys) == len(self.copies):
+            return self.copy_sel.findData(ALL)
+        if len(keys) == 1:
+            return self.copy_sel.findData(keys[0])
+        self._some = keys
+        text = "%s: %s" % (self._noun[1].capitalize(),
+                           ", ".join(self._short(c) for c in keys))
+        i = self.copy_sel.findData(SOME)
+        if i < 0:
+            i = self.copy_sel.findData(CHOOSE)
+            self.copy_sel.insertItem(i, text, SOME)
+        else:
+            self.copy_sel.setItemText(i, text)
+        self.copy_sel.setItemData(
+            i, "\n".join(self._long(c) for c in keys),
+            QtCore.Qt.ItemDataRole.ToolTipRole)
+        return i
+
+    def _ask_copies(self, current) -> Optional[List[str]]:
+        """The copies ticked in a list of them (None: cancelled)."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Choose %s" % self._noun[1])
+        v = QtWidgets.QVBoxLayout(dlg)
+        lab = QtWidgets.QLabel("Tick the %s to show and change. Edits go to "
+                               "the ticked ones only." % self._noun[1])
+        lab.setWordWrap(True)
+        v.addWidget(lab)
+        lst = QtWidgets.QListWidget()
+        for c in self.copies:
+            it = QtWidgets.QListWidgetItem(self._long(c))
+            it.setData(QtCore.Qt.ItemDataRole.UserRole, c)
+            it.setFlags(it.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(QtCore.Qt.CheckState.Checked if c in current
+                             else QtCore.Qt.CheckState.Unchecked)
+            lst.addItem(it)
+        v.addWidget(lst)
+        bb = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        ok = bb.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+
+        def ticked():
+            return [lst.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
+                    for i in range(lst.count())
+                    if lst.item(i).checkState() == QtCore.Qt.CheckState.Checked]
+        lst.itemChanged.connect(lambda *_a: ok.setEnabled(bool(ticked())))
+        ok.setEnabled(bool(ticked()))
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        return ticked() or None
 
     def _now_label(self, b) -> str:
         cps = self._view_copies(b)
@@ -494,8 +648,8 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         if len(cps) == 1 or len(set(states)) == 1:
             t = self._now_text(b, cps[0])
             if len(cps) > 1:
-                t += " in every copy"
-            elif self.view not in (ALL, cps[0]):
+                t += " in every copy" if self.view == ALL else " in each %s picked" % self._noun[0]
+            elif self.view != ALL and self._view_keys() != cps:
                 t += (" <span style='color:%s'>(this feature has one copy, read "
                       "by every coding)</span>" % _colors()["same"])
             return t
@@ -507,7 +661,10 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         hook = self._hook(b)
         st = E.current_state(self.session, b, g)
         if st is not None:
-            return "Now: <b>%s</b>" % b.label(st)
+            same = [st]
+            if hook is None or not hasattr(hook, "state"):
+                same += [x for x in E.full_matches(self.session, b, g) if x != st]
+            return "Now: <b>%s</b>" % " or ".join(b.label(x) for x in same)
         words = getattr(hook, "state_text", None)
         if words is not None:
             t = words(self.session, g)
@@ -556,13 +713,27 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             self.opt.blockSignals(False)
         self.opt_lbl.setVisible(bool(spec))
         self.opt.setVisible(bool(spec))
+        chk = getattr(self._hook(b), "FS_CHECK", None)
+        self._chk_spec = chk
+        if chk:
+            self.chk.blockSignals(True)
+            self.chk.setText(chk.get("label", ""))
+            self.chk.setChecked(bool(
+                p.opts.get(chk["key"], chk.get("default", False))
+                if p is not None else chk.get("default", False)))
+            self.chk.blockSignals(False)
+        self.chk.setVisible(bool(chk))
         self._loading = False
         self._sync_buttons()
         self._refresh_preview()
 
     def _opts(self) -> Dict[str, float]:
-        spec = self._opt_spec
-        return {spec["key"]: self.opt.value()} if spec and spec.get("key") else {}
+        spec, chk = self._opt_spec, self._chk_spec
+        out = {spec["key"]: self.opt.value()} if spec and spec.get("key") else {}
+        if chk and chk.get("key"):
+            # what was asked for: the hook falls back where it cannot
+            out[chk["key"]] = self.chk.isChecked()
+        return out
 
     def _ref(self):
         """The comparison (in a project tab, the file as first read): where a
@@ -658,7 +829,75 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                 cp.values.pop(p.name, None)
         self._settle(b, pend)
         self._show_choice(b)
-        self._changed(b, rebuild=False)
+        self._mark(b)
+        self._sync_buttons()
+        # only this row changes -- unless a switch's EEPROM Type byte now
+        # comes or goes with it: then the list, once the picker has returned
+        if self._companion_rows(b) != self._companions.get(b.id, ()):
+            QtCore.QTimer.singleShot(0, self._refresh_preview)
+        else:
+            self._restyle_param(b, p)
+
+    def _restyle_param(self, b, p):
+        """A parameter's row coloured for what its New value now does."""
+        r = self._param_row.get(p.name)
+        if r is None:
+            return
+        cps = self._view_copies(b)
+        pend = self.pending.get(b.id)
+        vals = [E.read_values(self.session, b, c).get(p.name) for c in cps]
+        news = [pend.copies[c].values.get(p.name)
+                if pend is not None and c in pend.copies else None for c in cps]
+        self._paint_param(r, self._param_changes(vals, news))
+
+    @staticmethod
+    def _param_changes(curs, news) -> bool:
+        return any(n is not None and n != c for c, n in zip(curs, news))
+
+    def _paint_param(self, r, changed: bool):
+        """A parameter row: blue and bold when Apply changes it, the theme's
+        own text otherwise (a table or fault path it leaves is grey)."""
+        col = _colors()
+        for c in range(self.preview.columnCount()):
+            it = self.preview.item(r, c)
+            if it is None:
+                continue
+            if changed:
+                it.setForeground(QtGui.QColor(col["changed"]))
+            else:
+                it.setData(QtCore.Qt.ItemDataRole.ForegroundRole, None)
+            f = it.font()
+            f.setBold(changed)
+            it.setFont(f)
+        w = self.preview.cellWidget(r, 4)
+        if w is not None:
+            w.setStyleSheet(self._widget_style(changed))
+
+    @staticmethod
+    def _widget_style(changed: bool, bold: Optional[bool] = None) -> str:
+        if not changed and not bold:
+            return ""
+        out = ["font-weight: bold"] if (changed if bold is None else bold) else []
+        if changed:
+            out.append("color: %s" % _colors()["changed"])
+        return "; ".join(out)
+
+    def _companion_rows(self, b) -> tuple:
+        """The EEPROM Type bytes the held values would switch (their
+        addresses), for knowing when the list needs those rows."""
+        pend = self.pending.get(b.id)
+        if pend is None:
+            return ()
+        names = {p.name for p in b.params}
+        out = []
+        for g in self._view_copies(b):
+            cp = pend.copies.get(g)
+            if cp is None:
+                continue
+            changes, _w = E.plan(self.session, b, cp.state, [g], cp.values)
+            out += [c.addr for c in changes
+                    if c.param not in names and c.changed and c.addr not in out]
+        return tuple(out)
 
     def _fault_edited(self, b, key, target, preset):
         """A fault path's New choice: ``target`` (a class, -1 for the table's
@@ -674,8 +913,31 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self._settle(b, pend)
         self._mark(b)
         self._sync_buttons()
-        # the row's own picker sends this: rebuild once it has returned
-        QtCore.QTimer.singleShot(0, self._refresh_hook_rows)
+        self._restyle_fault(key, target, edited=target != preset)
+
+    def _restyle_fault(self, key, choice, edited):
+        """The fault path's row (every copy's, when listed per copy) after
+        its own choice: no other row changes, so none is rebuilt."""
+        col = _colors()
+        for r in range(self._param_rows, self.preview.rowCount()):
+            it = self.preview.item(r, 0)
+            row = it.data(QtCore.Qt.ItemDataRole.UserRole + 1) if it is not None else None
+            if not row or row.get("kind") != "fault" or row.get("key") != key:
+                continue
+            row = dict(row, choice=choice, edited=edited, new=E.fault_text(choice))
+            it.setData(QtCore.Qt.ItemDataRole.UserRole + 1, row)
+            changed = choice != row.get("now")
+            for c in range(self.preview.columnCount()):
+                cell = self.preview.item(r, c)
+                if cell is None:
+                    continue
+                cell.setForeground(QtGui.QColor(col["changed"] if changed else col["same"]))
+                f = cell.font()
+                f.setBold(edited)
+                cell.setFont(f)
+            w = self.preview.cellWidget(r, 4)
+            if w is not None:
+                w.setStyleSheet(self._widget_style(changed, edited or changed))
 
     def _opt_changed(self, *_a):
         b = self._bundle()
@@ -718,8 +980,16 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
 
     # -- the preview table -------------------------------------------------
     def _refresh_preview(self, *_a):
+        self.preview.setUpdatesEnabled(False)
+        try:
+            self._fill_preview()
+        finally:
+            self.preview.setUpdatesEnabled(True)
+
+    def _fill_preview(self):
         b = self._bundle()
         self.preview.setRowCount(0)
+        self._param_row = {}
         if b is None:
             return
         self._loading = True
@@ -728,9 +998,10 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         pend = self.pending.get(b.id)
         vals = {c: E.read_values(self.session, b, c) for c in every}
         multi = len(every) > 1
-        for p in E.present_params(self.session, b):
-            r = self.preview.rowCount()
-            self.preview.insertRow(r)
+        params = E.present_params(self.session, b)
+        self.preview.setRowCount(len(params))
+        for r, p in enumerate(params):
+            self._param_row[p.name] = r
             curs = [vals[c].get(p.name) for c in cps]
             same = len(set(curs)) == 1
             cur = curs[0] if same else None
@@ -764,12 +1035,10 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             new = None if mixed else news[0]
             self.preview.setCellWidget(r, 4, self._value_widget(
                 b, p, cur, new, differs=not same, mixed=mixed))
-            if mixed or (new is not None and new != cur):
-                f = self.preview.item(r, 0).font()
-                f.setBold(True)
-                self.preview.item(r, 0).setFont(f)
+            self._paint_param(r, self._param_changes(curs, news))
         # a switch that follows the EEPROM coding (its Type byte 1) is set to
         # read the flash value written here: that byte changes too
+        self._companions[b.id] = self._companion_rows(b)
         if pend is not None:
             names = {p.name for p in b.params}
             seen = set()
@@ -791,6 +1060,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                             "ECU code", "%d (EEPROM coding)" % c.old,
                             "%d (this file's value)" % c.new]):
                         self.preview.setItem(r, col, QtWidgets.QTableWidgetItem(text))
+                    self._paint_param(r, True)
         self._param_rows = self.preview.rowCount()
         self._loading = False
         self._refresh_hook_rows()
@@ -840,8 +1110,6 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                          "the file's value" % (lo, hi, lo))
             w.valueChanged.connect(
                 lambda v, lo=lo: self._value_edited(b, p, None if v < lo else v))
-        if mixed or (new is not None and new != cur):
-            w.setStyleSheet("font-weight: bold")
         return w
 
     def _sync_opt(self, b):
@@ -856,6 +1124,40 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             if c in pend.copies))
         self.opt.setEnabled(on and not _view_only(self.ws))
         self.opt_lbl.setEnabled(on)
+        self._sync_check(b, pend)
+
+    def _sync_check(self, b, pend):
+        """The tick box is live for the settings it applies to, where the
+        file allows it (the hook's ``fs_check_why``); its tooltip says why
+        not otherwise."""
+        chk = self._chk_spec
+        if not chk:
+            return
+        only = chk.get("states")
+        picked = [c for c in self._view_copies(b) if pend is not None
+                  and c in pend.copies and (not only or pend.copies[c].state in only)]
+        tip = "<p>%s</p>" % chk.get("tip", "")
+        why = {}
+        if picked and hasattr(self._hook(b), "fs_check_why"):
+            for c in picked:
+                try:
+                    w = self._hooked(b, "fs_check_why", c,
+                                     pend.copies[c].state, **self._opts()) or ""
+                except Exception as ex:                   # noqa: BLE001
+                    w = str(ex)
+                if w:
+                    why[c] = w
+        ok = bool(picked) and len(why) < len(picked)
+        self.chk.setEnabled(ok and not _view_only(self.ws))
+        if why:
+            multi = len(self._view_copies(b)) > 1
+            lines = ["%s%s" % ("%s: " % self._short(c) if multi else "", w)
+                     for c, w in why.items()]
+            tip += "<p>%s: %s.</p>" % (
+                "Not possible for some copies (their top breakpoints are "
+                "raised instead)" if ok else "Not possible here, so the top "
+                "breakpoints are raised instead", "; ".join(lines))
+        self.chk.setToolTip(tip)
 
     #: widest each column but Meaning grows to its contents (pixels)
     _COL_CAPS = {0: 240, 2: 110, 3: 180, 4: 230}
@@ -905,8 +1207,8 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         w.setEnabled(not b.readonly and not _view_only(self.ws))
         w.setToolTip("Switch this fault path on or off with the rest of the "
                      "changes (written on Apply, in the same undo step)")
-        if row.get("edited") or row.get("choice") != row.get("now"):
-            w.setStyleSheet("font-weight: bold")
+        changed = row.get("choice") != row.get("now")
+        w.setStyleSheet(self._widget_style(changed, bool(row.get("edited")) or changed))
         preset = row.get("preset")
         key = row.get("key")
 
@@ -972,7 +1274,34 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         v.setEnabled(bool(row) and row.get("entity") is not None)
         menu.exec(self.preview.viewport().mapToGlobal(pos))
 
+    def _hooked(self, b, what, *args, **kw):
+        """A table hook's answer (``fs_preview`` / ``fs_describe`` /
+        ``fs_involved``), kept until the file changes: the hooks read every
+        table and fault path they work through, and the window asks again
+        on every pick."""
+        rev = E._revision(self.session)
+        if rev != self._hook_rev:
+            self._hook_cache.clear()
+            self._hook_rev = rev
+        ref = self._ref()
+        key = (b.id, what, args, tuple(sorted(kw.items())), id(ref),
+               E._revision(ref) if ref is not None else None)
+        if rev is not None and key in self._hook_cache:
+            return self._hook_cache[key]
+        fn = getattr(self._hook(b), what, None)
+        res = fn(self.session, *args, ref=ref, **kw) if fn is not None else None
+        if rev is not None:
+            self._hook_cache[key] = res
+        return res
+
     def _refresh_hook_rows(self):
+        self.preview.setUpdatesEnabled(False)
+        try:
+            self._fill_hook_rows()
+        finally:
+            self.preview.setUpdatesEnabled(True)
+
+    def _fill_hook_rows(self):
         """The tables and fault paths the feature's hook will change, under
         the parameters; and its one-line note."""
         b = self._bundle()
@@ -994,12 +1323,9 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         rows, infos = [], []
         for i, (c, st) in enumerate(picked):
             try:
-                rows += [self._tag(x, multi) for x in (getattr(
-                    hook, "fs_preview", lambda *a, **k: [])(
-                    self.session, c, st, first=i == 0, ref=self._ref(),
-                    **self._opts()) or [])]
-                info = getattr(hook, "fs_describe", lambda *a, **k: "")(
-                    self.session, c, st, ref=self._ref(), **self._opts()) or ""
+                rows += [self._tag(x, multi) for x in (self._hooked(
+                    b, "fs_preview", c, st, first=i == 0, **self._opts()) or [])]
+                info = self._hooked(b, "fs_describe", c, st, **self._opts()) or ""
             except Exception as ex:                       # noqa: BLE001
                 info = "(Could not work out the table changes: %s)" % ex
             if info and info not in infos:
@@ -1011,8 +1337,8 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         if hasattr(hook, "fs_involved"):
             for c in cps:
                 try:
-                    inv += [self._tag(x, multi) for x in (hook.fs_involved(
-                        self.session, c, ref=self._ref(), **self._opts()) or [])]
+                    inv += [self._tag(x, multi) for x in (self._hooked(
+                        b, "fs_involved", c, **self._opts()) or [])]
                 except Exception:                         # noqa: BLE001
                     pass
         changed: Dict[tuple, dict] = {}
@@ -1089,9 +1415,9 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
     def _dtc(self):
         """The file's fault paths now (for the per-path choices), or None."""
         try:
-            from . import dtc
-            t = dtc.DtcTable(self.session)
-            t.paths_by_name = {fp.name: fp for fp in t.paths.values()}
+            t = E.dtc_table(self.session)        # one per revision of the file
+            if getattr(t, "paths_by_name", None) is None:
+                t.paths_by_name = {fp.name: fp for fp in t.paths.values()}
             return t
         except Exception:                                 # noqa: BLE001
             return None
@@ -1178,6 +1504,8 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             return False
         label = "Feature switches: " + ", ".join(w_[0].title for w_ in work)
         n = 0
+        from . import resize as _rz
+        mods_before = list(_rz.mods(self.session))
         try:
             with self.session.transaction(label):
                 for b, live, _w, hook, pend, hooked in work:
@@ -1197,6 +1525,14 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.pending.clear()
         for b in self.bundles:
             self._mark(b)
+        if _rz.mods(self.session) != mods_before:
+            # a table was resized (Cut when warm, the smoke limiter's map):
+            # its modifier goes with the project, the tree follows
+            try:
+                from .gui_resize import after_resize
+                after_resize(self.ws)
+            except Exception:                             # noqa: BLE001
+                pass
         self._after_apply(label)
         self._select()
         try:

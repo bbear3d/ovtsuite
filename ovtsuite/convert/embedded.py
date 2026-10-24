@@ -189,13 +189,16 @@ def select(items: List[Embedded], only: Optional[Iterable] = None) -> List[Embed
 
 def extract(sources: List[str], out_dir: str, only=None, fmt: str = "raw",
             names: Optional[Dict[str, str]] = None, record: int = 32,
-            inputs: Iterable[str] = ()) -> List[tuple]:
+            inputs: Iterable[str] = (), may=None,
+            skipped: Optional[List[str]] = None) -> List[tuple]:
     """Write the chosen images of every project in ``sources`` into
     ``out_dir``: ``[(path, Embedded)]``. ``only``: see :func:`select`, or a
     list of ``{"source", "key", "name"}`` picks (the window's). ``fmt``:
     ``raw`` (the bytes as stored, default), ``bin`` (the same, named .bin),
     ``hex`` or ``srec``. ``names``: ``{key: file name}`` overrides. A file
-    being read is never overwritten."""
+    being read is never overwritten; one already there is written only
+    when ``may(path)`` says so (no ``may``: always), else its path goes
+    into ``skipped``."""
     from . import ConvertError, _key
     from . import image as _image
     os.makedirs(out_dir or ".", exist_ok=True)
@@ -231,6 +234,10 @@ def extract(sources: List[str], out_dir: str, only=None, fmt: str = "raw",
                 raise ConvertError("Extracting %s would overwrite %s, which is being read. "
                                    "Choose another name or folder."
                                    % (e.label, os.path.basename(path)))
+            if may is not None and not may(path):
+                if skipped is not None:
+                    skipped.append(path)
+                continue
             if fmt in ("hex", "srec"):
                 payload = _image.write(_image.Image([(e.start, e.data)], 0xFF, "bin"),
                                        fmt, record)

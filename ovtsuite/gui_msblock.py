@@ -14,12 +14,32 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .msblock import MeasuringBlocks
 from .session import TunerSession
+from .signal_names import sentence_case
 from .signals import EMPTY_IDS, SignalCatalog, observed_ids
 
 #: a cell edited but not applied yet
 PENDING_BG = QtGui.QColor(255, 236, 170)
 #: the comparison's cells
 CMP_FG = QtGui.QColor(90, 90, 90)
+
+
+def _tidy(text: str) -> str:
+    """A signal name or label as the window shows it: sentence case, the
+    first word capitalised ("engine speed" and "Engine Speed" both read
+    "Engine speed"), acronyms, units and A2L / xcwGrp names as written."""
+    return sentence_case(text) if text else text
+
+
+def _ds_text(ds) -> str:
+    """A dataset's entry in the picker: its label, the coding value that
+    selects it and its ident ("Manual - coding 2 - 038906012BD ... SG")."""
+    txt = ds.label
+    if getattr(ds, "dsv", None) is not None:
+        txt += " - coding %d" % ds.dsv
+    ident = " ".join((getattr(ds, "ident", "") or "").split())
+    if ident:
+        txt += " - " + ident
+    return txt
 
 
 def _colors():
@@ -106,11 +126,25 @@ class MsBlockDialog(QtWidgets.QDialog):
         row.addWidget(self.filter, 1)
         self.ds_box = None
         self.all_ds = None
-        if self._edc15:
+        if self._edc15 and len(self.mb.datasets()) > 1:
+            # which dataset (coding variant) to show: the car's coding picks
+            # one, so one is shown at a time -- the first, as the other
+            # windows treat it -- or all of them together
+            by_label = {d.label: d for d in getattr(session, "datasets", []) or []}
+            row.addWidget(QtWidgets.QLabel("Dataset:"))
             self.ds_box = QtWidgets.QComboBox()
+            self.ds_box.setToolTip(
+                "The calibration dataset (coding variant) whose blocks and "
+                "descriptors are shown. The car's coding selects which one "
+                "the ECU uses; \"All datasets\" lists every one together.")
             self.ds_box.addItem("All datasets", None)
             for ds in self.mb.datasets():
-                self.ds_box.addItem(ds, ds)
+                d = by_label.get(ds)
+                self.ds_box.addItem(_ds_text(d) if d is not None else ds, ds)
+            self.ds_box.setCurrentIndex(1)
+            self.ds_box.setSizeAdjustPolicy(
+                QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            self.ds_box.setMinimumContentsLength(18)
             self.ds_box.currentIndexChanged.connect(self._populate)
             self.ds_box.currentIndexChanged.connect(
                 lambda *_: self._populate_descriptors())
@@ -141,7 +175,8 @@ class MsBlockDialog(QtWidgets.QDialog):
 
         self.catalog = SignalCatalog(session.family, session)
         self.observed = observed_ids(session)
-        self._choices = self.catalog.choices(list(self.observed))
+        self._choices = [(sid, _tidy(lbl)) for sid, lbl
+                         in self.catalog.choices(list(self.observed))]
         if self._has_cmp:
             try:
                 self.cmp_catalog = SignalCatalog(
@@ -288,7 +323,8 @@ class MsBlockDialog(QtWidgets.QDialog):
         self.apply_btn.setDefault(True)
         btns.addWidget(self.apply_btn)
         close = QtWidgets.QPushButton("Close")
-        close.clicked.connect(self.close)
+        close.setAutoDefault(False)
+        close.clicked.connect(self.reject)
         btns.addWidget(close)
         v.addLayout(btns)
         from .gui_fit import fit_to_screen
@@ -392,30 +428,44 @@ class MsBlockDialog(QtWidgets.QDialog):
         self._populate()
         self._sync_pending()
 
+    def _may_close(self) -> bool:
+        """Whether the window may go: with changes not applied, asks to
+        apply or discard them (False when the user cancels)."""
+        if getattr(self, "mb", None) is None or not self.mb.available \
+                or not self.has_pending():
+            return True
+        SB = QtWidgets.QMessageBox.StandardButton
+        r = QtWidgets.QMessageBox.question(
+            self, "Measuring blocks",
+            "Apply the %d change(s) not applied yet?"
+            % (len(self._pending) + len(self._pending_desc)),
+            SB.Apply | SB.Discard | SB.Cancel, SB.Apply)
+        if r == SB.Cancel:
+            return False
+        if r == SB.Apply:
+            self.apply()
+        else:
+            self._pending.clear()
+            self._pending_desc.clear()
+        return True
+
+    # Close, Esc and the title bar's X all end in done(). QDialog's own
+    # closeEvent calls reject(), so reject() must not call close() back:
+    # Qt ignores a close() made while one is in progress, and the window
+    # stayed open (the Close button did nothing).
     def closeEvent(self, ev):
-        if getattr(self, "mb", None) is not None and self.mb.available \
-                and self.has_pending():
-            SB = QtWidgets.QMessageBox.StandardButton
-            r = QtWidgets.QMessageBox.question(
-                self, "Measuring blocks",
-                "Apply the %d change(s) not applied yet?"
-                % (len(self._pending) + len(self._pending_desc)),
-                SB.Apply | SB.Discard | SB.Cancel, SB.Apply)
-            if r == SB.Cancel:
-                ev.ignore()
-                return
-            if r == SB.Apply:
-                self.apply()
-            else:
-                self._pending.clear()
-                self._pending_desc.clear()
-        super().closeEvent(ev)
+        if not self._may_close():
+            ev.ignore()
+            return
+        super().closeEvent(ev)           # -> reject(): nothing pending now
 
     def reject(self):
-        self.close()                     # Esc asks, as Close does
+        if self._may_close():
+            super().reject()
 
     def accept(self):
-        self.close()
+        if self._may_close():
+            super().accept()
 
     def _ds_for(self, g):
         return getattr(g, "group", None) if self._edc15 else None
@@ -440,8 +490,8 @@ class MsBlockDialog(QtWidgets.QDialog):
             return "%d - (empty)" % sid
         info = self._info(sid, g)
         if info.known:
-            return "%d - %s" % (sid, info.human or info.name)
-        return info.label()
+            return "%d - %s" % (sid, _tidy(info.human or info.name))
+        return _tidy(info.label())
 
     def _cmp_cell_text(self, sid: int, cg=None) -> str:
         if sid in EMPTY_IDS:
@@ -449,14 +499,14 @@ class MsBlockDialog(QtWidgets.QDialog):
         if self._edc15 and cg is not None:
             d = self.cmp_mb.descriptor(cg.group, sid)
             if d is not None and d.name:
-                return "%d - %s" % (sid, d.name)
+                return "%d - %s" % (sid, _tidy(d.name))
             return str(sid)
         if self.cmp_catalog is None:
             return str(sid)
         info = self.cmp_catalog.info(sid)
         if info.known:
-            return "%d - %s" % (sid, info.human or info.name)
-        return info.label()
+            return "%d - %s" % (sid, _tidy(info.human or info.name))
+        return _tidy(info.label())
 
     def _translated(self, g, cid):
         """The comparison's id ``cid`` expressed in the primary's terms."""
@@ -537,7 +587,7 @@ class MsBlockDialog(QtWidgets.QDialog):
                 it.setData(QtCore.Qt.UserRole, cur)
                 if cur not in EMPTY_IDS:
                     info = self._info(cur, g)
-                    tip = info.label()
+                    tip = _tidy(info.label())
                     if info.note and "intnum=" not in info.note:
                         tip += "\n" + info.note
                     it.setToolTip(tip)
@@ -622,7 +672,7 @@ class MsBlockDialog(QtWidgets.QDialog):
             info = (self._info(ch, g) if not cmp_col
                     else (self.cmp_catalog.info(ch) if self.cmp_catalog is not None
                           and not self._edc15 else self._info(ch, g)))
-            txt = "<b>%s</b>: %s" % (where, info.label())
+            txt = "<b>%s</b>: %s" % (where, _tidy(info.label()))
             if self._edc15:
                 if info.note:
                     txt += "<br><span style='color:gray'>%s</span>" % info.note
@@ -836,7 +886,7 @@ class MsBlockDialog(QtWidgets.QDialog):
         held = self._pending_desc
         for r, (ds, i, d) in enumerate(rows):
             msg = held.get((ds, i, "M"), (d.message or 0,))[0]
-            vals = [ds, "%d" % i, d.name or "", "0x%04X" % msg,
+            vals = [ds, "%d" % i, _tidy(d.name or ""), "0x%04X" % msg,
                     "%s" % held.get((ds, i, "A"), (d.display,))[0],
                     "%s" % held.get((ds, i, "N"), (d.norm,))[0]]
             for c, t in enumerate(vals):

@@ -17,7 +17,7 @@ the gearbox fault-code window instead, which works differently — see
 [ZF 6HP fault codes](../modules/zf6hp/fault-codes.md) and
 [ZF 8HP fault codes](../modules/zf8hp/fault-codes.md).
 
-![The DTC / Fault-Path editor on an EDC16 file, filtered to EGR](../images/tools-dtc.png)
+![The DTC / Fault-Path editor on an EDC16 file, filtered to EGR, with one code switched off and the comparison below](../images/tools-dtc.png)
 
 > Switching a code off stops the ECU storing it and reacting to it. It does
 > not fix whatever made the code appear. Only switch off a code when you know
@@ -49,6 +49,32 @@ comparison open, **Differs from comparison**. After **Read codes from ECU...** i
 ECU**.
 
 Click a column heading to sort by it.
+
+## One dataset (or coding copy) at a time
+
+On an **EDC15** file every dataset — Manual, Automatic 1, Automatic 2 … —
+holds its own copy of every sub-fault, and the ECU runs the one its coding
+selects (see [EDC15 datasets](../modules/edc15/datasets.md)). The
+**Dataset** box at the top shows one of them at a time, named with the coding
+that selects it (**Manual (coding 2)**); it starts on the first. Choose
+**All datasets** to list every copy, the dataset in brackets after each name.
+
+**Apply edits to the same fault in every dataset** (ticked to start with)
+makes switching a code, or its lamp, do the same in every other dataset that
+has that fault with the same code, as one undo step — so the change holds
+whichever dataset the car's coding picks. Untick it to change only the
+dataset shown.
+
+Most **EDC16** files keep one set of fault-path tables. A few let a coding
+read its own copy of some of them from the secondary calibration block — on
+03G906021MP (P447) two of the codings read their own fault classes and
+class definitions, which light the MIL for faults the other codings keep
+quiet; on 070906016DP (R50) the coding state reads its own codes and
+classes. There the box is **Coding copy**: **Main block** (what the
+definition places) and each copy, named with the codings that read it. The
+same **Apply edits to every coding copy** box switches a code in every copy at
+once; warning lamps are switched per copy, because a copy can define its
+classes differently.
 
 ## Switch a code off or on
 
@@ -134,8 +160,8 @@ different value on each.
 
 | | EDC16 | EDC15 |
 |---|---|---|
-| A row is | one fault path (`Dfp_...`) | one sub-fault of a fault path, once per dataset — the dataset is shown in brackets, e.g. **GZS_I (Manual)** |
-| **Class** shows | the path's fault class: which lamp the fault lights and how it is stored | the time until the fault is finally set, in the ECU's raw units (10 ms steps) |
+| A row is | one fault path (`Dfp_...`) | one sub-fault of a fault path in the dataset shown; with **All datasets**, once per dataset, the dataset in brackets, e.g. **GZS_I (Manual)** |
+| **Class** / **Defect time** shows | the path's fault class: which lamp the fault lights and how it is stored | the time until the fault is finally set, in the ECU's raw units (10 ms steps) |
 | Switching off | sets the class to 0 (no class: the path does nothing — the factory calibration itself uses it for paths that are not used) | sets that time to "never" (the value the factory calibration itself uses for faults that are not fitted) |
 | Switching back on | restores the class it had before; if none is known, a class that lights the MIL | restores the time it had before; if none is known, 1.0 s |
 
@@ -149,7 +175,8 @@ is open. For a file that was already modified before you opened it, use
 **Restore all from stock...** (below) to get the factory values back.
 
 On an EDC15 file, each dataset has its own copy of every fault path. Change
-the dataset your car uses — or all of them if you are not sure. See
+the dataset your car uses — or all of them if you are not sure (the
+**Apply edits to the same fault in every dataset** box, above). See
 [EDC15 datasets](../modules/edc15/datasets.md).
 
 ## The columns
@@ -160,11 +187,29 @@ the dataset your car uses — or all of them if you are not sure. See
 | **Fault path** | The calibration's own name for the fault. A path no definition names shows as **fault path _n_**; it can still be switched. |
 | **VAG code** | Every VW fault number the row can set, as a scan tool shows it (at least five digits). On EDC15, **(path: ...)** lists the path's numbers when which one the sub-fault sets is not known. **-** means none. |
 | **OBD-II** | Every standard P-code the row can set. |
-| **Class** | See the table above. |
-| **Cmp on**, **Cmp class** | Only with a comparison file open: the same fault in the comparison. Highlighted where it differs from the primary. |
+| **Class** (EDC16) / **Defect time** (EDC15) | See the table above. |
 | **MIL** | Ticked (**MIL**) when the code lights the engine warning lamp. Untick it to keep the fault without the lamp (above). |
 | **Glow** | Ticked (**Glow**) when the code lights (or flashes) the glow-plug lamp. Untick it to keep the fault without the lamp (above). |
-| **Description** | A plain description of the fault path, else the standard OBD-II text for its code. |
+| **Description** | A plain description of the fault path, else the standard OBD-II text for its code; empty when there is neither. |
+
+The **MIL** and **Glow** columns are left out when the file's definition does
+not say which lamps a fault lights — an EDC15 definition that places no
+fault-path class bytes (`fbwS<PATH>PRI`), or an EDC16 one without the class
+definitions.
+
+## Comparing with another file
+
+With a comparison file open (the tab's comparison — in a project, the
+original as read once the tab is saved) its fault codes are shown in a
+read-only table of their own under the primary's, row for row: the same
+fault on the same row, sorted, scrolled and selected with the primary's.
+Every cell that differs is shaded in both tables, and a shaded primary cell's
+tooltip gives the comparison's value; the panel under the table says what the
+comparison has for the selected row. **Show comparison** hides or shows the
+lower table (the shading stays), and **Show > Differs from comparison** lists
+just the rows whose state — on/off, class or time, lamps — differs. A fault
+the comparison does not have shows **—**.
+
 
 The line under the title says where the fault tables were found and how many
 paths have names.
@@ -194,7 +239,7 @@ Nothing in this window is guessed from another file.
 | **Warning lamps** | For the selected rows: MIL off / on, glow-plug lamp off / on, keeping the faults. One undoable step. |
 | **Read codes from ECU...** | Opens the **Fault codes from ECU** window, which reads the codes stored in the car's ECU (see [Reading fault codes](../logging/fault-codes.md)). Every row that can set one of the codes read is then highlighted (one code can belong to several rows) and **Show** switches to **Stored on the ECU** — pick **All fault paths** to see them highlighted among the rest; codes the ECU has stored that are not in this file are listed under the table. |
 | **Restore all from stock...** | Copies every fault path's class (EDC16) or time (EDC15) from a stock binary of the same software, as one undoable step — a quick way to undo all fault-code changes in a tune. In a project you are offered the set's original (as read): **Use the original**, or **Another file...** to pick a stock file. |
-| **Copy differences from comparison** | Only with a comparison open. Sets every row whose state differs to the comparison's value, as one undoable step. |
+| **Copy differences from comparison** | Only with a comparison open. Sets every row of the dataset shown (or every dataset) whose state differs to the comparison's value, as one undoable step. |
 | **Close** | Closes the window. Your changes stay in the tab until you save or undo them. |
 
 Right-click selected rows for **Disable**, **Enable**, the lamp switches,
@@ -211,4 +256,4 @@ comparison open, **Copy comparison state to primary**.
   **Fault codes (DTCs)**, grouped by system, if you need to see the other
   values a fault path carries.
 
-![The same editor on an EDC15 file: one row per dataset](../images/tools-dtc-edc15.png)
+![The same editor on an EDC15 file](../images/tools-dtc-edc15.png)

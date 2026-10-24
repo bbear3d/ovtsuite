@@ -5,19 +5,29 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Write a WinOLS map pack (``.kp``) -- EXPERIMENTAL.
 
-The layout is the one :mod:`ovtsuite.definitions.winols` reads (format 292,
-see docs/WINOLS_FORMAT.md), so this app reads every pack it writes back
-exactly. The file is laid out as the three format-292 map packs WinOLS 5.0
-wrote that are in the reference set (golf5_bxe, 4B0927156FB_RS6_5HP24, the
-Audi A4 map pack): the same header with its 555-byte settings block (the map
-count in it), the two-entry version list, the record archive as WinOLS zips
-it, the folder list opening with *Hexdump* and *My maps*, and the fixed
-8298-byte block that closes the file. Where those three files differ from
-one another (window and font settings, memory left over in buffers WinOLS
-saves uninitialised) zeros are written. The blocks the reader skips inside
-a record carry the values the samples' records hold by default. Whether
-WinOLS opens the result has not been tried; exporting an A2L and importing
-that into WinOLS is the reliable way.
+Two layouts, both as WinOLS itself writes them (see docs/WINOLS_FORMAT.md):
+
+* **format 292** (the default): the layout of the three map packs WinOLS 5.0
+  wrote that are in the reference set (golf5_bxe, 4B0927156FB_RS6_5HP24, the
+  Audi A4 map pack). Every section is plain: the header with its 555-byte
+  settings block, the two-entry version list, the record archive, the folder
+  list and the fixed 8298-byte block that closes the file. Where those files
+  differ from one another (window settings, memory left over in buffers
+  WinOLS saves uninitialised) zeros are written.
+* **format 503**: the layout WinOLS 4.x writes (045906019K, a 038906012FD
+  pack): multilingual strings, 117-byte value blocks, the folder list with
+  *Potential maps*, and the values of every map stored after the image
+  marker, checked by a CRC-32 and a byte sum in the header. Its closing block
+  holds a block WinOLS encrypts, which cannot be made here; it is copied from
+  a genuine format-503 pack given as ``template`` (one the user's WinOLS
+  wrote), so only that pack's own bytes go in. A placeholder for future
+  work: WinOLS 5.87 refuses it, and nothing in the app offers it (keep it
+  out of the GUI, CLI and converter until a pack it writes is imported).
+
+WinOLS 5.87 (Demo) imports a format-292 pack written here (2026-10-24: a
+038906012FD export, and golf5_bxe passed through the writer). It refuses a
+format-503 one made with a genuine pack's closing block, so 292 stays the
+default; exporting an A2L remains the fallback.
 
 What goes in: values (type 2), curves and curves without an axis (type 3)
 and maps (type 4); a stored axis as an axis in the image (source 1), an
@@ -38,8 +48,11 @@ from typing import Dict, List, Optional
 from .winols import (FILE_MAGIC, FOLDERS_MAGIC, RECORDS_MAGIC, VERSION_SIG,
                      VERSIONS_MAGIC)
 
-#: The format written (the layout the reader names "292").
+#: The format written by default (the layout the reader names "292").
 VERSION = 292
+
+#: The formats :func:`write_kp` writes.
+VERSIONS = (292, 503)
 
 #: The program the samples of format 292 name as their writer.
 WRITER = "OLS 5.0 (Windows)"
@@ -118,6 +131,7 @@ _TAIL_BLOCK = _sparse(8298, {
 _PRE = _sparse(61, {17: "ff", 33: "ffff", 49: "ffffffff"})
 _SIGNED_AT = -3
 
+
 #: An axis the record does not have, as the samples write it.
 _NO_AXIS = ("-", "-", 1, 1)                     # label, units, org, size
 
@@ -130,10 +144,68 @@ _TAIL = bytes.fromhex(
     "0000000000")
 assert len(_TAIL) == 77
 
+#: Two f64 display settings at 41 and 49 of the tail: 300 and 1 in the
+#: records of maps and values, 0 and 0.01 in those of curves -- in every
+#: record of the 038906012FD pack (WinOLS 4.x), and in most of the 292 ones.
+_TAIL_VIEW_AT = 41
+_CURVE_VIEW = (0.0, 0.01)
+
+# ----------------------------------------------------------------- format 503
+#: The header after the current-version string, up to the version list, as
+#: WinOLS 4.x writes it in English (626 bytes; the 045906019K pack holds the
+#: same block with the German texts): ``u32 2``, the CRC-32 of the map data
+#: after the image marker (inverted: -1 for none) at 0x14, their byte sum
+#: (16 bit) at 0x1C, the map count at 0xB8, then the vehicle type
+#: "Passenger car", the component "Engine", the import format "Complete
+#: binary file", the memory "Eprom", the two column orders and the language.
+_HEAD503_CRC_AT, _HEAD503_SUM_AT, _HEAD503_COUNT_AT = 0x14, 0x1C, 0xB8
+_HEAD503 = _sparse(626, {
+    0x10: "02",
+    0x20: "01",
+    0xC3: "ffffffff0005",
+    0xE0: "0d00000050617373656e6765722063617206000000456e67696e65",
+    0x123: "ffffffff",
+    0x158: "14000000436f6d706c6574652062696e6172792066696c65",
+    0x17C: "01",
+    0x184: "ffff0700050000004570726f6d9affffff",
+    0x19E: "".join(struct.pack("<H", i).hex() for i in range(20))
+           + "".join(struct.pack("<H", i).hex() for i in range(16)),
+    0x22E: "ffffffff01",
+    0x246: "0107000000456e676c697368",
+    0x262: "73cc3983",
+    0x26E: "01",
+})
+
+#: One version-list entry's bytes after the name, the comment and the
+#: signature: the times and the checksum state, all 0 (as 045906019K).
+_VERSION503_REST = 77
+
+#: Before the counts (117 bytes): the largest values of 8, 16 and 32 bit
+#: as f64 (256 at 25, 65536 at 41, 2^32 at 57) and the signed flag 3 bytes
+#: from the end -- every record of the 038906012FD pack.
+_PRE503 = _sparse(117, {
+    4: "10",
+    25: struct.pack("<d", 256.0).hex(),
+    41: struct.pack("<d", 65536.0).hex(),
+    57: struct.pack("<d", 4294967296.0).hex(),
+})
+
+#: After the 01 01 01 that ends a record's tail: ``i32 -1`` and 60 zeros.
+_TAIL503 = b"\xff\xff\xff\xff" + b"\0" * 60
+
+#: An absent axis' 14 bytes after the number base (the first set).
+_NO_AXIS_PRE503 = b"\x01" + b"\0" * 13
+
+#: The folder-entry tail of format 503 (25 bytes): the parent at 17 (-1:
+#: at the top).
+_FOLDER_TAIL503 = b"\0" * 17 + b"\xff\xff\xff\xff" + b"\0" * 4
+
 
 class _W:
-    def __init__(self):
+    def __init__(self, nul: bool = True, ml: bool = False):
         self.out = bytearray()
+        self.nul = nul                          # format 292: NUL after text
+        self.ml = ml                            # format 503: mlstr
 
     def raw(self, b):
         self.out += b
@@ -148,11 +220,22 @@ class _W:
         self.out += struct.pack("<d", float(v))
 
     def str(self, t):
-        b = str(t or "").encode("latin-1", "replace")
+        """A string; None is "no string" (length -1)."""
+        if t is None:
+            self.u32(-1)
+            return
+        b = str(t).encode("latin-1", "replace")
         self.u32(len(b))
         self.out += b
-        if b:
-            self.out += b"\0"                  # format 292: a NUL after text
+        if b and self.nul:
+            self.out += b"\0"
+
+    def mlstr(self, t):
+        """A text with its translations (none): in format 503 the string,
+        8 zero bytes and a count of 0; before, the string alone."""
+        self.str(t)
+        if self.ml:
+            self.out += b"\0" * 12
 
 
 def _org(bits: int, little: bool, flt: bool) -> Optional[int]:
@@ -179,8 +262,19 @@ def _precision(lin) -> int:
     return 0 if float(lin[0]).is_integer() and float(lin[1]).is_integer() else 2
 
 
-def _axis(w: _W, e, ax, count: int, little: bool, warnings: List[str]):
+def _axis_end(w: _W, fmt: int):
+    w.u32(0)
+    w.u32(-1)
+    if fmt >= 503:
+        w.str("")                               # axis id
+        w.u32(0)                                # point texts
+        w.raw(b"\0" * 4)
+
+
+def _axis(w: _W, e, ax, count: int, little: bool, warnings: List[str],
+          fmt: int, image: Optional[bytes], blob: bytearray):
     from ..xdf_export import _axis_signed
+    new = fmt >= 503
     if ax is not None and ax.addr is not None:
         lin = _linear(ax.equation) or (1.0, 0.0)
         if _linear(ax.equation) is None:
@@ -188,26 +282,38 @@ def _axis(w: _W, e, ax, count: int, little: bool, warnings: List[str]):
                             % (e.name, ax.equation))
         signed = ax.signed if ax.signed is not None else _axis_signed(e, ax)
         org = _org(ax.bits, little, ax.is_float) or 2
-        w.str("")                               # label
-        w.str(ax.units)
+        size = max(1, ax.bits // 8)
+        w.mlstr("")                             # label
+        w.str(ax.units or (None if new else ""))
         w.f64(lin[0])
         w.f64(lin[1])
-        for v in (1, ax.addr, org, max(1, ax.bits // 8), 10):
+        for v in (1, ax.addr, org, size, 10):
             w.u32(v)
         w.raw(b"\0" * 14)
         w.u32(_precision(lin))
         w.u8(1 if signed else 0)
         w.u32(0)
-        w.u32(0)
-        w.u32(-1)
+        _axis_end(w, fmt)
+        if image is not None:
+            blob += _span(image, ax.addr, count * size)
         return
     vals = list(getattr(ax, "values", None) or [])[:count] if ax is not None else []
     if len(vals) == count and count:
-        w.str("")
-        w.str(getattr(ax, "units", ""))
+        w.mlstr("")
+        w.str(getattr(ax, "units", "") or (None if new else ""))
         data = b"".join(struct.pack(">f", float(v)) for v in vals)
         prec = 2
         fields = (4, 0, 6, 4, 10)               # in the record, float BE
+        pre = b"\0" * 14
+    elif new:
+        # no axis: as WinOLS 4.x writes one (no texts, 8 bit, hexadecimal,
+        # no precision)
+        w.mlstr(None)
+        w.str(None)
+        data = b""
+        prec = -1
+        fields = (0, 0, 1, 1, 16)
+        pre = _NO_AXIS_PRE503
     else:
         # no axis: as the samples write one ("-", "-", 8 bit, precision 0)
         label, units, org, size = _NO_AXIS
@@ -216,21 +322,29 @@ def _axis(w: _W, e, ax, count: int, little: bool, warnings: List[str]):
         data = b""
         prec = 0
         fields = (0, 0, org, size, 10)
+        pre = b"\0" * 14
     w.f64(1.0)
     w.f64(0.0)
     for v in fields:
         w.u32(v)
-    w.raw(b"\0" * 14)
+    w.raw(pre)
     w.u32(prec)
     w.u8(0)
     w.u32(len(data))
     w.raw(data)
-    w.u32(0)
-    w.u32(-1)
+    _axis_end(w, fmt)
+
+
+def _span(image: bytes, addr: int, n: int) -> bytes:
+    """``n`` bytes of the image at ``addr`` (zeros past its end)."""
+    got = bytes(image[addr:addr + n]) if 0 <= addr else b""
+    return got + b"\0" * (n - len(got))
 
 
 def _record(w: _W, e, folder: int, image_size: int, little: bool,
-            warnings: List[str]) -> bool:
+            warnings: List[str], fmt: int = VERSION,
+            image: Optional[bytes] = None,
+            blob: Optional[bytearray] = None) -> bool:
     lin = _linear(e.equation)
     org = _org(e.bits, little, bool(getattr(e, "is_float", False)))
     if lin is None or org is None or getattr(e, "text_kind", ""):
@@ -239,6 +353,8 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
             "conversion %s is not linear" % e.equation if lin is None
             else "%d-bit data" % e.bits))
         return False
+    new = fmt >= 503
+    blob = blob if blob is not None else bytearray()
     size = max(1, e.bits // 8)
     x, y = e.x, e.y
     cols, rows = e.cols, e.rows
@@ -253,52 +369,87 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
         if getattr(e, "order", "col") == "col":
             # Y varies fastest in the image; WinOLS reads X fastest
             cols, rows, x, y = e.rows, e.cols, e.y, e.x
+    n = cols * rows * size
     w.u8(0)
     w.u32(-1)
-    w.str("")                                   # bit texts
+    w.mlstr("")                                 # bit texts
     w.u8(0)
     # the description WinOLS lists the map by: never empty in the samples
-    w.str(e.title if e.title != e.name else (e.description or e.name))
+    w.mlstr(e.title if e.title != e.name else (e.description or e.name))
     for v in (typ, 2, org, size, 10, folder):
         w.u32(v)
     w.str(e.name)
-    pre = bytearray(_PRE)
+    pre = bytearray(_PRE503 if new else _PRE)
     pre[_SIGNED_AT] = 1 if e.signed else 0
     w.raw(bytes(pre))
     for v in (cols, rows, 0, 0, _precision(lin)):
         w.u32(v)
     w.str("")                                   # label
-    w.str(e.units)
+    w.str(e.units or (None if new else ""))
     w.f64(lin[0])
     w.f64(lin[1])
     w.u32(e.addr)
-    w.u32(e.addr + cols * rows * size)
-    w.raw(struct.pack("<8I", image_size, 0, 0, e.addr, 0, 0, image_size, 0))
-    _axis(w, e, x, cols, little, warnings)
-    _axis(w, e, y, rows, little, warnings)
+    w.u32(e.addr + n)
+    if new:
+        # the 038906012FD pack: the image size and the data's size
+        w.raw(struct.pack("<8I", image_size, 0, 0, 0, 0, 0, n, 0))
+    else:
+        w.raw(struct.pack("<8I", image_size, 0, 0, e.addr, 0, 0, image_size, 0))
+    if image is not None:
+        blob += _span(image, e.addr, n)         # the values, then the axes
+    _axis(w, e, x, cols, little, warnings, fmt, image, blob)
+    _axis(w, e, y, rows, little, warnings, fmt, image, blob)
     tail = bytearray(_TAIL)
     struct.pack_into("<II", tail, 6, cols, rows)
+    if typ == 3:
+        struct.pack_into("<dd", tail, _TAIL_VIEW_AT, *_CURVE_VIEW)
     w.raw(bytes(tail))
     w.raw(b"\x01\x01\x01")
+    if new:
+        w.raw(_TAIL503)
     return True
 
 
 def write_kp(entities, image_size: int, title: str = "",
              little_endian: Optional[bool] = None,
              warnings: Optional[List[str]] = None,
-             tiers: bool = True) -> bytes:
-    """The map pack for ``entities`` (addresses: offsets in the image)."""
+             tiers: bool = True, version: int = VERSION,
+             template: Optional[bytes] = None,
+             image: Optional[bytes] = None) -> bytes:
+    """The map pack for ``entities`` (addresses: offsets in the image).
+
+    ``version`` 292 (default) or 503. Format 503 needs ``template``, a map
+    pack of format 503 WinOLS wrote (its closing block is copied), and
+    stores the maps' values: from ``image``, else from the entities' binary
+    (none when they have no binary)."""
     from ..tiers import tier_name
+    if version not in VERSIONS:
+        raise ValueError("format %r: map packs are written as %s"
+                         % (version, " or ".join(map(str, VERSIONS))))
+    closing = None
+    if version >= 503:
+        if template is None:
+            raise ValueError("a format-503 map pack copies its closing block "
+                             "from a genuine one: give a WinOLS map pack of "
+                             "format 503 as the template")
+        closing = template_closing(template)
     warnings = warnings if warnings is not None else []
+    entities = list(entities)
     if little_endian is None:
         little_endian = any(getattr(e.binfile, "endian", ">") == "<"
-                            for e in list(entities)[:1])
-    # folder ids 0 and 1 are WinOLS' own My maps and Hexdump; a map without
-    # a category goes in My maps
+                            for e in entities[:1])
+    if version >= 503 and image is None:
+        for e in entities[:1]:
+            image = getattr(getattr(e, "binfile", None), "data", None)
+    new = version >= 503
+    # folder ids 0 and 1 are WinOLS' own My maps and Hexdump (2 Potential
+    # maps in format 503); a map without a category goes in My maps
+    first = 3 if new else 2
     folders: Dict[str, int] = {}
-    rec = _W()
+    rec = _W(nul=not new, ml=new)
     rec.u8(0)
     rec.u32(0)
+    blob = bytearray()
     n = 0
     for e in entities:
         if e.kind not in ("map", "curve", "constant", "indexed"):
@@ -309,14 +460,15 @@ def write_kp(entities, image_size: int, title: str = "",
         if not label or label.lower() == "my maps":
             fid = 0
         else:
-            fid = folders.setdefault(label, len(folders) + 2)
-        if _record(rec, e, fid, image_size, little_endian, warnings):
+            fid = folders.setdefault(label, len(folders) + first)
+        if _record(rec, e, fid, image_size, little_endian, warnings, version,
+                   image if new else None, blob):
             n += 1
     struct.pack_into("<I", rec.out, 1, n)
     z = _zip_intern(bytes(rec.out))
-    w = _W()
+    w = _W(nul=not new, ml=new)
     w.raw(FILE_MAGIC)
-    w.u32(VERSION)
+    w.u32(version)
     w.u32(0)                                    # file size, set below
     for _ in range(16):                         # vehicle, control unit
         w.str("")
@@ -325,38 +477,104 @@ def write_kp(entities, image_size: int, title: str = "",
     w.str(WRITER)
     w.str("")
     w.str("1")
-    head = bytearray(_HEAD)
-    struct.pack_into("<I", head, _HEAD_COUNT_AT, n)
+    if new:
+        head = bytearray(_HEAD503)
+        struct.pack_into("<I", head, _HEAD503_CRC_AT,
+                         zlib.crc32(bytes(blob)) ^ 0xFFFFFFFF)
+        struct.pack_into("<I", head, _HEAD503_SUM_AT, sum(blob) & 0xFFFF)
+        struct.pack_into("<I", head, _HEAD503_COUNT_AT, n)
+    else:
+        head = bytearray(_HEAD)
+        struct.pack_into("<I", head, _HEAD_COUNT_AT, n)
     w.raw(bytes(head))
     images_at = len(w.out)
     w.u32(0)                                    # where the images start, below
-    w.u32(0)                                    # one version's image: none
+    w.u32(len(blob))                            # the map data after it
     w.raw(VERSIONS_MAGIC)
     w.u32(2)
     for name in ("Original", "Version 1"):
         w.str(name)
         w.str("")                               # comment
-        w.raw(VERSION_SIG + b"\0" * 12)         # two times, u32
+        w.raw(VERSION_SIG + b"\0" * (_VERSION503_REST if new else 12))
     w.raw(RECORDS_MAGIC + b"\x01")
     w.u32(len(z))
     w.raw(z)
     w.raw(FOLDERS_MAGIC + b"\0\0\0\0" + FOLDERS_MAGIC)
-    w.u32(len(folders) + 2)
-    listed = [(1, 9001, "Hexdump"), (0, 9000, "My maps")] + sorted(
-        ((fid, 0, label) for label, fid in folders.items()),
-        key=lambda f: f[2].lower())
+    builtin = [(1, 9001, "Hexdump"), (0, 9000, "My maps")]
+    rest = [(fid, 0, label) for label, fid in folders.items()]
+    if new:
+        rest.append((2, 9002, "Potential maps"))
+    listed = builtin + sorted(rest, key=lambda f: f[2].lower())
+    w.u32(len(listed))
     for fid, res, label in listed:              # as WinOLS: by name
         w.u32(fid)
         w.u32(res)
-        w.str(label)
-        w.u8(1)
-        w.u32(1)                                # one version byte
-        w.u8(1)
-        w.raw(b"\0" * 15)
-    w.raw(bytes(_TAIL_BLOCK))
+        w.mlstr(label)
+        if new:
+            # 038906012FD: open in the list (01) Hexdump and My maps
+            w.u8(0)
+            w.u32(1)
+            w.u8(1 if res in (9000, 9001) else 0)
+            w.raw(_FOLDER_TAIL503)
+        else:
+            w.u8(1)
+            w.u32(1)                            # one version byte
+            w.u8(1)
+            w.raw(b"\0" * 15)
+    if new:
+        w.raw(closing)
+        marker = len(w.out)
+        w.raw(IMAGES_MAGIC)
+        w.raw(bytes(blob))
+    else:
+        w.raw(bytes(_TAIL_BLOCK))
+        marker = len(w.out) - len(IMAGES_MAGIC)
     struct.pack_into("<I", w.out, 20, len(w.out))
-    struct.pack_into("<I", w.out, images_at, len(w.out) - len(IMAGES_MAGIC))
+    struct.pack_into("<I", w.out, images_at, marker)
     return bytes(w.out)
+
+
+def template_closing(data: bytes) -> bytes:
+    """The closing block of a genuine format-503 map pack: the bytes from
+    the end of its folder list to its image marker (settings, the WinOLS
+    version that wrote it and a block WinOLS encrypts). ValueError when
+    ``data`` is not such a pack."""
+    import io
+    import zipfile
+    from .winols import DefinitionError, _folder_entry, format_version, \
+        read_header
+    d = bytes(data)
+    try:
+        ver = format_version(d)
+        h = read_header(d)
+    except (DefinitionError, struct.error) as ex:
+        raise ValueError("the template is not a WinOLS file (%s)" % ex)
+    if ver != 503:
+        raise ValueError("the template is of format %d, not 503" % ver)
+    v = d.find(VERSIONS_MAGIC, h.end)
+    m = d.find(RECORDS_MAGIC, h.end)
+    if v < 8 or m < 0:
+        raise ValueError("the template has no version or map list")
+    marker = struct.unpack_from("<I", d, v - 8)[0]
+    zlen = struct.unpack_from("<I", d, m + 5)[0]
+    try:
+        zipfile.ZipFile(io.BytesIO(d[m + 9:m + 9 + zlen])).read("intern")
+    except (zipfile.BadZipFile, KeyError) as ex:
+        raise ValueError("the template is not a map pack (%s)" % ex)
+    p = m + 9 + zlen
+    if d[p:p + 4] != FOLDERS_MAGIC or d[p + 8:p + 12] != FOLDERS_MAGIC:
+        raise ValueError("the template's folder list is not where expected")
+    count = struct.unpack_from("<I", d, p + 12)[0]
+    p += 16
+    try:
+        for _ in range(count):
+            p = _folder_entry(d, p, False, True)[3] + len(_FOLDER_TAIL503)
+    except (ValueError, struct.error) as ex:
+        raise ValueError("the template's folder list does not read (%s)" % ex)
+    if d[marker:marker + 4] != IMAGES_MAGIC or not p < marker:
+        raise ValueError("the template's image marker is not where its "
+                         "header says")
+    return d[p:marker]
 
 
 def _zip_intern(data: bytes) -> bytes:

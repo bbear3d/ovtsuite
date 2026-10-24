@@ -204,6 +204,12 @@ Name: "{autodesktop}\{#ConverterName}"; Filename: "{app}\{#ConverterExe}"; \
     AppUserModelID: "{#ConverterAppId}"; Tasks: desktopicon
 #endif
 
+[Run]
+; A compiled checksum module replaces its source copy everywhere (see
+; installer.iss, the same entry).
+Filename: "{app}\{#MainExe}"; Parameters: "scrub-module-sources"; \
+    Flags: runhidden waituntilterminated
+
 #if WithConverter
 [Run]
 ; The right-click menu (task above): the same code as the converter's own

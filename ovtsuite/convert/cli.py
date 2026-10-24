@@ -28,8 +28,12 @@
     ovtsuite convert project.ols --extract-images -o out/ [--only original]
                        (write them out as stored; --to hex / srec converts)
 
+An output file that is already there is left alone (reported, exit status
+3) unless ``--overwrite`` is given -- a preset never decides this.
+
 Exit status: 0 done, 1 an error, 2 written but something was not expressed
-fully (see the report beside the output) -- unless ``--allow-loss``.
+fully (see the report beside the output) -- unless ``--allow-loss`` --, 3 an
+output was already there and was left alone (give ``--overwrite``).
 """
 
 from __future__ import annotations
@@ -120,6 +124,9 @@ def add_parser(sub, parents=()):
     s.add_argument("--fill", type=_int)
     s.add_argument("--no-check", action="store_true",
                    help="skip reading the result back")
+    s.add_argument("--overwrite", action="store_true",
+                   help="replace output files that are already there (default: "
+                   "leave them alone, say so and exit with status 3)")
     s.add_argument("--allow-loss", action="store_true",
                    help="exit 0 even when something was not expressed fully")
     s.add_argument("--watch", metavar="FOLDER",
@@ -204,6 +211,9 @@ def job_from_args(a) -> Job:
         o["crop"] = list(a.crop)
     if a.fill is not None:
         o["fill"] = a.fill
+    # only the flag replaces a file already there (a preset saved from the
+    # window may carry the window's choice; it does not count here)
+    o["existing"] = "overwrite" if getattr(a, "overwrite", False) else "skip"
     job.options = o
     if a.no_check:
         job.self_check = False
@@ -378,6 +388,7 @@ def _extract(a) -> int:
     job.options["extract_format"] = a.target if a.target in ("bin", "hex", "srec") else "raw"
     if a.record:
         job.options["record"] = a.record
+    job.options["existing"] = "overwrite" if getattr(a, "overwrite", False) else "skip"
     if a.no_check:
         job.self_check = False
     try:
@@ -387,9 +398,11 @@ def _extract(a) -> int:
         return 1
     for v in res.values:
         print(v if v is res.values[0] else "  " + v)
+    for p in res.skipped:
+        print("  skipped: %s is already there (give --overwrite to replace it)" % p)
     for c in res.check:
         print("  read-back check: %s" % c)
-    return 2 if res.check else 0
+    return 2 if res.check else 3 if res.skipped else 0
 
 
 def cmd_convert(a):
@@ -427,6 +440,7 @@ def cmd_convert(a):
         d = job.to_dict()
         d.pop("sources", None)
         d.pop("out", None)
+        d.get("options", {}).pop("existing", None)    # the flag's, not the job's
         with open(a.save_preset, "w", encoding="utf-8") as fh:
             json.dump(d, fh, indent=1)
         print("preset saved: %s" % a.save_preset)
@@ -438,6 +452,11 @@ def cmd_convert(a):
         except (ConvertError, ValueError, OSError) as exc:
             print("error: %s: %s" % (", ".join(j.sources), exc), file=sys.stderr)
             status = 1
+            continue
+        if res.skipped:
+            print("skipped: %s is already there (give --overwrite to replace it)" % j.out)
+            if status == 0:
+                status = 3
             continue
         print("%s -> %s: %d tables" % (", ".join(j.sources), j.out, res.tables_out)
               if res.tables_out or res.tables_in else

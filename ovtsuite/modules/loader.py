@@ -130,12 +130,19 @@ def mount(rec) -> bool:
 def mount_installed(verify_files: bool = True) -> None:
     """Find every installed module and mount the best copy of each."""
     from . import installer
-    for mid, cands in installer.discover(verify_files).items():
+    found = installer.discover(verify_files)
+    for mid, cands in found.items():
         if mid in _roots:
             continue                 # already mounted (a restart replaces it)
         good = [c for c in cands if not c.problem]
         if good:
-            mount(good[0])
+            if mount(good[0]) and good[0].manifest.platform:
+                # the compiled copy is in use: a source copy an update left
+                # behind (another modules folder, an older install) goes
+                try:
+                    installer.scrub_source(mid, found)
+                except Exception:    # noqa: BLE001 - never stops the start
+                    pass
         else:
             _installed[mid] = cands[0]
             _problems[mid] = cands[0].problem

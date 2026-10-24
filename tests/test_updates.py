@@ -108,6 +108,32 @@ def test_base_installer_prefers_base_only_then_full():
     assert up.base_asset(up.Release.from_json(j)) is None
 
 
+def test_compiled_module_packages_for_another_platform_are_skipped():
+    """A closed module's package is compiled per interpreter and platform
+    (-cp313-win_amd64): the Windows and the Linux build of one version sit
+    among the same assets, and only the one this app runs is offered."""
+    from ovtsuite.modules import package as P
+    here = "%s-%s" % (P.python_tag(), P.platform_tag())
+    other = "cp313-linux_aarch64" if P.platform_tag() != "linux_aarch64" else "cp313-win_amd64"
+    rel = up.Release.from_json(_release(tag="v0.6.0", assets=[
+        _asset("edc16-1.0.20-%s.ovtmod" % other),
+        _asset("edc16-1.0.20-%s.ovtmod" % here),
+        _asset("edc16-1.0.20-checksum-%s.ovtmod" % other),
+        _asset("edc15-1.0.20-%s.ovtmod" % other),
+        _asset("vdo-0.2.0.ovtmod"),
+    ]))
+    ups = {u.mod.id: u for u in up.module_updates(
+        rel, [_mod("edc16", "Bosch EDC16", "1.0.15"), _mod("edc15", "Bosch EDC15", "1.0.13"),
+              _mod("vdo", "VDO", "0.1.8")])}
+    assert set(ups) == {"edc16", "vdo"}
+    assert ups["edc16"].package.name == "edc16-1.0.20-%s.ovtmod" % here
+    assert not up.module_updates(rel, [_mod("edc16", "Bosch EDC16", "1.0.15", "checksum")])
+    avail = up.available_modules([rel], [])
+    assert {k: [m.package.name for m in v] for k, v in avail.items()} == {
+        ("edc16", "full"): ["edc16-1.0.20-%s.ovtmod" % here],
+        ("vdo", "full"): ["vdo-0.2.0.ovtmod"]}
+
+
 def test_module_updates_match_installed_modules_and_variants():
     rel = up.Release.from_json(RELEASE)
     inst = [_mod("edc16", "Bosch EDC16", "1.0.10"),

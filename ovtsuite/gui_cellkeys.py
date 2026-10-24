@@ -631,7 +631,7 @@ ACTIONS = [
     ("Interpolate selection", "Ctrl+Shift+L", interpolate),
     ("Smooth selection", "Ctrl+Shift+M", smooth),
     (None, None, None),
-    ("Copy from comparison", "Ctrl+R", from_comparison),
+    ("Copy selected cells from comparison", "Ctrl+R", from_comparison),
     ("Revert to as-read values", "Ctrl+Shift+R", revert),
     ("Revert to last saved values", "F11", revert_saved),
     (None, None, None),
@@ -663,7 +663,8 @@ def add_menu(win, edit_menu) -> QtWidgets.QMenu:
 
 
 #: The cell actions the table's right-click menu repeats.
-MENU_ACTIONS = ("Revert to last saved values", "Revert to as-read values")
+MENU_ACTIONS = ("Copy selected cells from comparison",
+                "Revert to last saved values", "Revert to as-read values")
 
 
 def add_to_menu(win, menu):
