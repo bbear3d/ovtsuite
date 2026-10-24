@@ -76,6 +76,16 @@ RELATED_TABLES = [
 ]
 
 
+def _cat_name(cat, idx: int) -> str:
+    """The A2L symbol a signal catalog gives cell id ``idx`` ("" unnamed)."""
+    if cat is None:
+        return ""
+    try:
+        return cat.info(idx).name or ""
+    except Exception:
+        return ""
+
+
 def has_measuring_blocks(session) -> bool:
     """Cheap check (no table walk) for menus: does this session carry
     measuring-block definitions OVT-Suite can show?"""
@@ -300,22 +310,76 @@ class MeasuringBlocks:
         return [e.index for e in self.esb()
                 if e.signal != 0 and e.index != EMPTY_ID]
 
-    def translate_from(self, other: "MeasuringBlocks", idx: int) -> Optional[int]:
+    def shares_esb(self, other: "MeasuringBlocks") -> bool:
+        """Do both binaries carry the same ESB tables (every entry's signal,
+        formula and norm)? Then a cell id means the same in both, named or
+        not, and two cells compare by their raw ids."""
+        a, b = self.esb(), other.esb()
+        return bool(a) and len(a) == len(b) and all(
+            (x.signal, x.formula, x.norm) == (y.signal, y.formula, y.norm)
+            for x, y in zip(a, b))
+
+    def same_entry(self, other: "MeasuringBlocks", idx: int) -> bool:
+        """Is ESB entry ``idx`` the same (signal, formula, norm) in both --
+        including an entry with no signal number, which no name can match."""
+        if idx == EMPTY_ID:
+            return True
+        if not self.esb() or not other.esb():
+            return True                # no ESB tables: nothing tells them apart
+        mine, theirs = self.esb_entry(idx), other.esb_entry(idx)
+        return mine is not None and theirs is not None and (
+            mine.signal, mine.formula, mine.norm) == (
+            theirs.signal, theirs.formula, theirs.norm)
+
+    def _ids_named(self, cat) -> Dict[str, List[int]]:
+        """A2L symbol -> the ESB indices ``cat`` names with it (cached per
+        catalog and ESB read)."""
+        key = (id(cat), id(self.esb()))
+        if getattr(self, "_named_key", None) != key:
+            out: Dict[str, List[int]] = {}
+            for e in self.esb():
+                n = _cat_name(cat, e.index) if e.index != EMPTY_ID else ""
+                if n:
+                    out.setdefault(n, []).append(e.index)
+            self._named, self._named_key = out, key
+        return self._named
+
+    def translate_from(self, other: "MeasuringBlocks", idx: int,
+                       mine_cat=None, theirs_cat=None) -> Optional[int]:
         """The index in THIS binary that shows what ``idx`` shows in
-        ``other`` -- same internal signal number, preferring the same formula
-        and norm. ``idx`` itself when both ESB tables agree on it; None when
-        this binary has no definition for that signal."""
+        ``other``. ``idx`` itself when both ESB tables agree on it (an entry
+        with no signal number included). With both binaries' signal catalogs
+        (``signals.SignalCatalog``), a named id is matched by its A2L symbol:
+        the internal signal numbers are the program's own, so two families
+        can number the same signal differently (P475 223 is P350 222).
+        Otherwise the same internal signal number, preferring the same
+        formula and norm. None when this binary has no definition for it."""
         if idx == EMPTY_ID:
             return EMPTY_ID
         if not self.esb() or not other.esb():
             return idx                 # a definition without ESB tables: no meaning to match
         theirs = other.esb_entry(idx)
-        if theirs is None or not theirs.signal:
-            return None
         mine = self.esb_entry(idx)
+        name = _cat_name(theirs_cat, idx)
+        if name and mine_cat is not None and getattr(mine_cat, "named_count", 0):
+            same = self._ids_named(mine_cat).get(name, [])
+            exact = [] if theirs is None else [
+                i for i in same
+                if (self.esb_entry(i).formula, self.esb_entry(i).norm)
+                == (theirs.formula, theirs.norm)]
+            for pool in (exact, same):
+                if idx in pool:
+                    return idx
+                if pool:
+                    return pool[0]
+            return None
+        if theirs is None:
+            return None
         if mine is not None and (mine.signal, mine.formula, mine.norm) == (
                 theirs.signal, theirs.formula, theirs.norm):
             return idx
+        if not theirs.signal:
+            return None
         same = [e for e in self.esb() if e.signal == theirs.signal and e.signal]
         exact = [e for e in same if (e.formula, e.norm) == (theirs.formula, theirs.norm)]
         pick = exact or same

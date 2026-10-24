@@ -99,7 +99,13 @@ the primary's -- the same blocks on the same rows, so nothing is off to the
 side to scroll to. The two scroll together, keep the same column widths and
 the same selected cell; drag the bar between them to share the room. A cell
 that shows a different signal from the primary is highlighted in both, and
-the primary's tooltip names the comparison's signal. Untick **Show
+the primary's tooltip names the comparison's signal. Cells are compared by
+what they show, not by their names: the same id with the same definition in
+both files is the same signal even when it has no name (a bare number, or a
+"CAN bus signal" entry), so comparing a file with itself or with its own
+original highlights nothing. Between different software versions a named
+signal is matched by its name, so the same signal under another id is not
+highlighted either. Untick **Show
 comparison** to hide the lower table: the shading and tooltips stay.
 
 ## Tips

@@ -79,21 +79,125 @@ def present_params(session, bundle: M.Bundle) -> List[M.Param]:
 
 
 def groups(session, bundle: M.Bundle) -> List[str]:
-    """The copy/dataset labels the bundle's parameters live in, in file order."""
+    """The copy/dataset labels the bundle's parameters live in, in file order
+    -- with, on a file carrying coding-variant copies (EDC16), the variant
+    copy key (:func:`ents.variant_key`) after each dataset where any of the
+    bundle's parameters or hook tables has one."""
     seen: List[str] = []
     for p in bundle.params:
         for e in _entities(session, p.name):
             g = getattr(e, "group", "") or ""
             if g not in seen:
                 seen.append(g)
+    h = _hook_module(session, bundle.table_hook)
     if not seen:
-        h = _hook_module(session, bundle.table_hook)
         if h is not None and hasattr(h, "groups"):
             try:
                 seen = list(h.groups(session))
             except Exception:
                 seen = []
+    if seen and _E.has_variants(session):
+        out: List[str] = []
+        for g in seen:
+            out.append(g)
+            if _has_variant_copy(session, bundle, h, g):
+                out.append(_E.variant_key(g))
+        seen = out
     return seen
+
+
+def _has_variant_copy(session, bundle, h, g) -> bool:
+    if any(_E.variant_of(session, p.name, g) is not None for p in bundle.params):
+        return True
+    if h is None or not hasattr(h, "fs_involved"):
+        return False
+    ents = getattr(session, "entities", None)
+    cache = getattr(session, "_fsw_hookvar", None)
+    if cache is None or cache[0] is not ents:
+        cache = (ents, {})
+        try:
+            session._fsw_hookvar = cache
+        except Exception:
+            pass
+    key = (bundle.id, g)
+    if key not in cache[1]:
+        try:
+            rows = h.fs_involved(session, g) or []
+        except Exception:
+            rows = []
+        cache[1][key] = any(
+            r.get("entity") is not None and _E.variant_of(
+                session, r["entity"].name.split(" (variant @", 1)[0], g) is not None
+            for r in rows)
+    return cache[1][key]
+
+
+def copies(session, bundles) -> List[str]:
+    """Every copy key the ``bundles`` live in, in order: the window's one
+    copy selector (datasets on EDC15, the main and coding-variant copies on
+    EDC16)."""
+    out: List[str] = []
+    for b in bundles:
+        for g in groups(session, b) or [""]:
+            if g not in out:
+                out.append(g)
+    return out or [""]
+
+
+def copy_for(session, bundle: M.Bundle, key: str) -> str:
+    """The bundle's own copy that copy ``key`` stands for: ``key`` itself, or
+    -- a coding-variant key for a bundle without variant copies -- the main
+    copy that every coding reads."""
+    gs = groups(session, bundle) or [""]
+    if key in gs:
+        return key
+    b = _E.base_group(key)
+    return b if b in gs else gs[0]
+
+
+def _coding_texts(session):
+    """``(main, variant)``: the coding text the main copies and the variant
+    copies are read by (the commonest, from the definition's pointer
+    array); ("", "") without variant copies."""
+    hit = getattr(session, "_fsw_codings", None)
+    vidx = _E._variant_index(session)
+    if hit is not None and hit[0] is vidx:
+        return hit[1]
+    from collections import Counter
+    vc, mc = Counter(), Counter()
+    for name, vs in vidx.items():
+        for v in vs:
+            if getattr(v, "coding", ""):
+                vc[v.coding] += 1
+            m = _E.one(session, name, _E.group_of(v))
+            if m is not None and getattr(m, "coding", ""):
+                mc[m.coding] += 1
+    res = (mc.most_common(1)[0][0] if mc else "", vc.most_common(1)[0][0] if vc else "")
+    try:
+        session._fsw_codings = (vidx, res)
+    except Exception:
+        pass
+    return res
+
+
+def copy_label(session, key: str, short: bool = False) -> str:
+    """A copy key as the window names it: the dataset ("Manual"), or on
+    EDC16 the main / coding-variant copy with the codings that read it."""
+    if not _E.has_variants(session):
+        return key or "The only copy"
+    main, var = _coding_texts(session)
+    base = _E.base_group(key)
+    if _E.is_variant(key):
+        what, coding = "Coding-variant copy", var
+    else:
+        what, coding = "Main copy", main
+    if short:
+        import re
+        m = re.search(r"\(([^)]*)\)\s*$", coding or "")
+        what = m.group(1) if m else ("variant" if _E.is_variant(key) else "main")
+        return "%s %s" % (base, what) if base else what
+    return "%s%s%s" % (base + ": " if base else "", what,
+                       " (%s)" % coding if coding else "")
 
 
 def _raw(session, e, bits: int) -> Optional[int]:
@@ -119,8 +223,7 @@ def read_values(session, bundle: M.Bundle, group: str) -> Dict[str, Optional[int
     """Current raw value of each present parameter in one copy."""
     out: Dict[str, Optional[int]] = {}
     for p in present_params(session, bundle):
-        e = next((x for x in _entities(session, p.name)
-                  if (getattr(x, "group", "") or "") == group), None)
+        e = _E.one(session, p.name, group)
         out[p.name] = _raw(session, e, p.bits) if e is not None else None
     return out
 
@@ -197,6 +300,7 @@ def plan(session, bundle: M.Bundle, target_state: Optional[str],
     if bundle.readonly:
         return changes, ["This feature is shown for information and is not written."]
     params = present_params(session, bundle)
+    done = set()            # a value shared by two copies is written once
     for g in sel_groups:
         for p in params:
             if p.readonly:
@@ -217,8 +321,9 @@ def plan(session, bundle: M.Bundle, target_state: Optional[str],
                                 % (p.name, int(tgt), lo, hi))
                 continue
             e = _E.one(session, p.name, g)
-            if e is None:
+            if e is None or e.addr in done:
                 continue
+            done.add(e.addr)
             old = _raw(session, e, p.bits)
             if old is None:
                 warnings.append("Could not read %s (%s)" % (p.name, g or "the only copy"))
@@ -228,7 +333,8 @@ def plan(session, bundle: M.Bundle, target_state: Optional[str],
             # table, so a flash Val is only authoritative with Type = 2 (0
             # reads the flash too: left as it is)
             tc = _type_companion(session, p.name, g)
-            if tc is not None:
+            if tc is not None and tc.addr not in done:
+                done.add(tc.addr)
                 told = _raw(session, tc, 8)
                 if told == 1:
                     changes.append(Change(tc.name, g, tc.addr, 8, told, 2,
@@ -256,11 +362,12 @@ def _spans(session):
     """``[(start, end, entity, axis_tag)]`` of every table and axis, for
     naming a raw write; kept per entity list."""
     ents = getattr(session, "entities", None) or []
+    vidx = _E._variant_index(session)          # the coding-variant copies too
     hit = getattr(session, "_fsw_spans", None)
-    if hit is not None and hit[0] is ents:
+    if hit is not None and hit[0] is ents and hit[2] is vidx:
         return hit[1]
     out = []
-    for e in ents:
+    for e in list(ents) + [v for vs in vidx.values() for v in vs]:
         try:
             out.append((e.addr, e.addr + e.rows * e.cols * max(1, e.bits // 8), e, ""))
         except Exception:
@@ -276,7 +383,7 @@ def _spans(session):
                     continue
     out.sort(key=lambda s: s[0])
     try:
-        session._fsw_spans = (ents, out)
+        session._fsw_spans = (ents, out, vidx)
     except Exception:
         pass
     return out
@@ -399,9 +506,11 @@ def table_now_rows(session, entities, meaning: str = "") -> List[Dict[str, str]]
 
 
 def fault_now_rows(table, fps) -> List[Dict[str, str]]:
-    """Rows naming fault paths ``fps`` with their state now."""
+    """Rows naming fault paths ``fps`` with their state now (``target``: the
+    class it has now, None when off)."""
     return [dict(r, new="") for r in fault_rows(
-        table, [(fp, getattr(fp, "current_class", None)) for fp in fps])]
+        table, [(fp, getattr(fp, "current_class", None) if table.is_enabled(fp)
+                 else None) for fp in fps])]
 
 
 # -- fault paths and "as the file was opened" ---------------------------------
@@ -484,8 +593,57 @@ def fault_rows(table, targets) -> List[Dict[str, str]]:
                      "current": ("On (class %s)" % cur) if on and cur is not None
                      else ("On" if on else "Off"),
                      "new": "Off" if cls is None else "On (class %d)" % cls,
-                     "kind": "fault"})
+                     "kind": "fault",
+                     # for the window's per-path choice (fault_edit_*)
+                     "key": fp.name, "target": cls})
     return rows
+
+
+def fault_text(cls) -> str:
+    """A fault path's target as the window shows it."""
+    return "Off" if cls is None else ("On" if cls < 0 else "On (class %d)" % cls)
+
+
+def fault_on_class(session, table, fp, ref=None) -> int:
+    """The class switching ``fp`` on gives it: the one it has, else as the
+    file was opened, as the comparison ``ref`` has it, or the table's usual
+    active class; -1 when none is known (the table picks its default)."""
+    cur = getattr(fp, "current_class", None)
+    if table.is_enabled(fp) and cur is not None:
+        return int(cur)
+    fb = None
+    try:
+        fb = table._default_active_class()
+    except Exception:
+        fb = None
+    tg = fault_targets(session, table, [fp], True, ref, fb)
+    return int(tg[0][1]) if tg and tg[0][1] is not None else -1
+
+
+def apply_fault_edits(session, edits: Dict[str, Optional[int]], label: str) -> int:
+    """Write per-path choices ``{fault path name: class}`` (None: off; -1:
+    on with the table's own choice of class) inside the caller's
+    transaction, on top of whatever a setting wrote. Returns the count."""
+    if not edits:
+        return 0
+    from .. import dtc
+    t = dtc.DtcTable(session)
+    by = {fp.name: fp for fp in t.paths.values()}
+    n = 0
+    with session.transaction(label):
+        for name, cls in edits.items():
+            fp = by.get(name)
+            if fp is None:
+                continue
+            on = t.is_enabled(fp)
+            if cls is None:
+                if on:
+                    t.set_enabled(fp, False)
+                    n += 1
+            elif not on or (cls >= 0 and fp.current_class != cls):
+                t.set_enabled(fp, True, enable_class=cls if cls >= 0 else None)
+                n += 1
+    return n
 
 
 def apply_faults(session, table, targets, label: str) -> int:
@@ -519,7 +677,9 @@ def restore_writes(session, entities, fallback=None) -> List[tuple]:
     return out
 
 
-__all__ = ["Change", "present_params", "is_present", "groups", "read_values",
+__all__ = ["Change", "present_params", "is_present", "groups", "copies", "copy_for",
+           "copy_label", "fault_text", "fault_on_class", "apply_fault_edits",
+           "read_values",
            "current_state", "match_info", "preset_values", "value_range", "plan",
            "apply", "write_rows", "table_now_rows", "fault_now_rows", "fault_rows", "fault_targets", "apply_faults",
            "opened_raw", "restore_writes"]

@@ -179,9 +179,43 @@ EDC15_ROLE_SIGNALS: Dict[str, Tuple[str, ...]] = {
     "iat": ("Edc15_tAir",), "tfuel": ("Edc15_tFuel",),
     "egr": ("Edc15_rEgr",),
     "soi": ("Edc15_phiSoiDes", "zmmFBsoll"), "dur": ("zmmFDsoll",),
+    "n75": ("Edc15_rBoostDuty",), "fuel_lph": ("Edc15_dvolFuel",),
 }
 for _role, _sigs in EDC15_ROLE_SIGNALS.items():
     ROLES[_role] = tuple(ROLES[_role]) + _sigs
+
+#: Roles only an EDC15 carries. Its limiters work in injected quantity
+#: (mg/stroke), not torque, so they are roles of their own rather than the
+#: EDC16 torque-limit roles; the rest have no EDC16 counterpart in a preset.
+EDC15_ROLES: Dict[str, Tuple[str, ...]] = {
+    "soi_act": ("Edc15_phiSoi",), "soi_duty": ("Edc15_rSoiDuty",),
+    "q_drv": ("Edc15_qDrvDem",), "q_trqlim": ("Edc15_qTrqLim",),
+    "q_smk": ("Edc15_qSmkLim",), "q_cruise": ("Edc15_qCruise",),
+    "q_start": ("Edc15_qStart",), "q_gbx": ("Edc15_qGbx",),
+    "ubatt": ("Edc15_uBatt",), "glow": ("Edc15_stGlow",),
+    "glow_time": ("Edc15_tiPreGlow",), "sw_idle": ("Edc15_stSwIdle",),
+    "sw_brake": ("Edc15_stSwBrake",), "cc_keys": ("Edc15_stCcKeys",),
+    "cc_status": ("Edc15_stCc",), "alt_load": ("Edc15_rAltLoad",),
+    "src1": ("Edc15_qSrc1",), "src2": ("Edc15_qSrc2",),
+    "src3": ("Edc15_qSrc3",), "src4": ("Edc15_qSrc4",),
+}
+EDC15_ROLE_LABELS: Dict[str, str] = {
+    "soi_act": "Start of injection (actual)",
+    "soi_duty": "Start of injection valve duty",
+    "q_drv": "Driver-demand quantity", "q_trqlim": "Torque-limit quantity",
+    "q_smk": "Smoke-limit quantity", "q_cruise": "Cruise-control quantity",
+    "q_start": "Starting quantity", "q_gbx": "Gearbox-limit quantity",
+    "ubatt": "Battery voltage", "glow": "Glow status",
+    "glow_time": "Pre-glow time", "sw_idle": "Switches (A/C, closed throttle, raised idle)",
+    "sw_brake": "Switches (brake, clutch)", "cc_keys": "Cruise-control switches",
+    "cc_status": "Cruise-control status", "alt_load": "Alternator load",
+    "src1": "Smooth-running quantity, cylinder 1",
+    "src2": "Smooth-running quantity, cylinder 2",
+    "src3": "Smooth-running quantity, cylinder 3",
+    "src4": "Smooth-running quantity, cylinder 4",
+}
+ROLES.update(EDC15_ROLES)
+ROLE_LABELS.update(EDC15_ROLE_LABELS)
 
 ROLES.update(TCU_ROLES)
 ROLE_LABELS.update(TCU_ROLE_LABELS)
@@ -300,6 +334,56 @@ RECIPES: Tuple[Recipe, ...] = (
            "Coolant at 70 deg C or more, flat road, no wind if possible. Hold 60, 80, 100 "
            "and 120 km/h for at least 30 s each, same route and direction for "
            "the before and after logs."),
+)
+
+
+#: EDC15 presets, offered after whichever engine presets above an EDC15's
+#: blocks can carry (boost, fuelling, cruise; timing on a PD image). Built on
+#: the message numbers every EDC15 image means the same by
+#: (``edc15.msblock15.MESSAGE_KEYS``), so each resolves onto the blocks of the
+#: file in front -- a preset whose needs no block carries is not offered
+#: (smooth running and the injection-timing ones are distributor-pump only).
+EDC15_RECIPES: Tuple[Recipe, ...] = (
+    Recipe("e15limits", "Fuel limiters (driver demand, torque and smoke limits)",
+           ("rpm", "iq", "q_drv", "q_trqlim", "q_smk"),
+           ("maf", "boost", "pedal", "clt"),
+           "Coolant at 70 deg C or more. Full-throttle pulls in 3rd and 4th from "
+           "1300 rpm to the limiter. The injected quantity follows the lowest of "
+           "driver demand, the torque limit and the smoke limit, so the log shows "
+           "which one holds it at each speed."),
+    Recipe("e15soi", "Injection timing (start of injection, specified and actual)",
+           ("rpm", "iq", "soi", "soi_act"), ("soi_duty", "clt", "tfuel"),
+           "Coolant at 70 deg C or more. A few seconds at idle, steady part throttle "
+           "at 2000, 2500 and 3000 rpm, then two full-throttle pulls. Actual should "
+           "track the setpoint; a large valve duty with a lag means the pump's "
+           "timing control is at its limit."),
+    Recipe("e15egr", "EGR and air mass (specified and actual)",
+           ("rpm", "maf", "maf_spec", "egr"), ("iq", "atm", "iat", "clt", "boost"),
+           "Coolant at 70 deg C or more. Idle for a minute, then steady part throttle "
+           "at 1500-2500 rpm in 4th and 5th, where EGR is active, and a few gentle "
+           "accelerations. Air mass actual should settle on the specified value."),
+    Recipe("e15cold", "Cold start and glow plugs",
+           ("rpm", "clt", "glow", "glow_time"), ("ubatt", "q_start", "soi_act", "iq"),
+           "Start logging with the ignition on and the engine cold (coolant under "
+           "20 deg C if you can), before cranking. Keep logging through the start "
+           "and the first few minutes of idle while the post-glow runs."),
+    Recipe("e15idle", "Idle smoothness (per-cylinder corrections)",
+           ("rpm", "src1", "src2", "src3", "src4"), ("clt", "iq", "sw_idle"),
+           "Warm engine, idling in neutral: a minute with everything off, then a "
+           "minute with the A/C and lights on. The four corrections should stay "
+           "small and close together; one cylinder far out points at its injector.",
+           max_groups=3),
+    Recipe("e15temps", "Temperatures (coolant, fuel, intake air)",
+           ("clt", "tfuel", "iat"), ("rpm", "iq", "atm"),
+           "Log from a cold start through normal driving until coolant has been at "
+           "90 deg C for a few minutes, with a full-throttle pull or two once warm.",
+           max_groups=3),
+    Recipe("e15cc", "Cruise control and road speed",
+           ("vss", "cc_keys", "cc_status"), ("rpm", "q_cruise", "sw_brake", "pedal"),
+           "Set cruise at 80 km/h, step it up and down with the switch, cancel it "
+           "with the brake and the clutch, and resume. The log shows each switch "
+           "state, whether cruise held, and what cancelled it.",
+           max_groups=3),
 )
 
 

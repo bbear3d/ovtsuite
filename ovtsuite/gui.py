@@ -5485,6 +5485,8 @@ if HAVE_QT:
             _gck.attach(self)
             from . import gui_tablesel as _gts      # one half selected at once
             _gts.attach(self)
+            from . import gui_cmpscroll as _gcs     # comparison in its own grid
+            _gcs.attach(self)                       # (an option): table_area
 
             self.title = QtWidgets.QLabel("Select a parameter")
             self.title.setStyleSheet("font-weight: bold;")

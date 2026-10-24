@@ -18,6 +18,9 @@ EDC15 = os.path.join(REPO, "Reference", "Binaries", "EDC15")
 
 RPM = ("Engine Speed (Eng_nAvrg)", "Eng_nAvrg", "rpm")
 CLT = ("Coolant Temperature (CTSCD_tClnt)", "CTSCD_tClnt", "deg C")
+#: ...as the namer lists them: sentence case, whatever the catalogue holds
+RPM_SHOWN = ("Engine speed (Eng_nAvrg)", "Eng_nAvrg", "rpm")
+CLT_SHOWN = ("Coolant temperature (CTSCD_tClnt)", "CTSCD_tClnt", "deg C")
 
 
 def _record(part, sw, text="R4 2,0L EDC G000SG"):
@@ -70,7 +73,7 @@ def test_written_catalogue_reads_back(tmp_path):
     with gzip.open(p, "rt", encoding="utf-8") as fh:
         cat = M.Catalogue(json.load(fh))
     n = cat.namer("03G906016LQ 0971")
-    assert n.resolve(1, 0) == RPM and n.resolve(1, 3) == CLT
+    assert n.resolve(1, 0) == RPM_SHOWN and n.resolve(1, 3) == CLT_SHOWN
 
 
 def test_an_unknown_format_is_refused():
@@ -96,7 +99,7 @@ def test_edc16_another_part_number_gets_the_generic_layout():
     assert cat.find(format_identity(_record("03G906016KN", "0971"))) == (None, "generic")
     assert cat.find("not a 9B record") == (None, "generic")
     n = cat.namer(None, "generic", "x")
-    assert n.match == "generic" and n.resolve(1, 0) == RPM
+    assert n.match == "generic" and n.resolve(1, 0) == RPM_SHOWN
 
 
 def test_of_a_parts_software_versions_the_shared_map_wins():
@@ -106,7 +109,7 @@ def test_of_a_parts_software_versions_the_shared_map_wins():
     b.add("P 0003", "f", {1: [RPM]}, "c")
     cat = M.Catalogue(b.document())
     key, how = cat.find(format_identity(_record("P", "0009")))
-    assert how == "part" and cat.namer(key).resolve(1, 0) == RPM
+    assert how == "part" and cat.namer(key).resolve(1, 0) == RPM_SHOWN
 
 
 # ------------------------------------------------------------ EDC15 lookup
@@ -158,9 +161,10 @@ def test_catalogue_namer_behaves_like_channel_namer():
     assert n.resolve(1, 1) == ("Group 1 / Cell 2", "", "")
     assert n.resolve(5, 0) == ("Group 5 / Cell 1", "", "")
     assert n.find_signal("CTSCD_tClnt") == (1, 3)
-    assert n.group_summary(1) == "Engine Speed, Coolant Temperature"
+    assert n.group_summary(1) == "Engine speed, Coolant temperature"
+    assert n.cell_fields(1) == [0, 3]               # cells 2 and 3 are empty
     ch = n.channel(1, 0)
-    assert (ch.label, ch.signal, ch.unit) == RPM
+    assert (ch.label, ch.signal, ch.unit) == RPM_SHOWN
 
 
 def test_an_old_catalogue_row_above_127_becomes_cells_5_to_8_of_its_group():

@@ -68,7 +68,8 @@ def apply(ws, new: str) -> None:
     holder = getattr(ws, "_panel_holder", None)
     if holder is None or new == getattr(ws, "panel_layout", "stack"):
         return
-    surf, dyno, table = ws.surface, ws.dyno_panel, ws.table
+    surf, dyno = ws.surface, ws.dyno_panel
+    table = getattr(ws, "table_area", ws.table)     # gui_cmpscroll
     hidden = {p: p.isHidden() for p in (surf, dyno)}
     focus = QtWidgets.QApplication.focusWidget()
     old = ws._panel_root

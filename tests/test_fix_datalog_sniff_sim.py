@@ -164,7 +164,12 @@ def test_cell_table_is_filled_on_open(app):
 # --------------------------------------- bug 23: presets per controller
 @pytest.mark.slow
 @pytest.mark.parametrize("ecu", ["EDC15", "Aisin TRx", "ZF6HP-UDS"])
-def test_controllers_without_presets_say_so(app, ecu):
+def test_controllers_without_presets_say_so(app, ecu, monkeypatch):
+    # EDC15 has presets only when something names its cells: no file here,
+    # and the module's catalogue (whose generic layout would name them) is
+    # taken away, so nothing does
+    from ovtsuite.datalog import gui_log as GL
+    monkeypatch.setattr(GL._msbcat, "namer_for", lambda *a, **k: None)
     d = _logger(_Sess("edc16", "lq.edc16"))
     try:
         p = d.panes[0]
@@ -367,5 +372,64 @@ def test_simulator_greys_out_what_has_no_effect(app):
         assert not d.timing_box.isEnabled()
         d._set_running(False)
         assert d.timing_box.isEnabled()
+    finally:
+        d.close()
+
+
+# ------------------- presets and cell lists resolved from a real binary
+def _real(name):
+    from ovtsuite.session import TunerSession
+    p = os.path.join(HERE, os.pardir, "Reference", "Binaries", *name.split("/"))
+    if not os.path.exists(p):
+        pytest.skip("needs " + name)
+    return TunerSession(p)
+
+
+@pytest.mark.slow
+def test_edc16_cell_list_and_presets_leave_out_empty_cells(app):
+    """KN group 2 fills four of its eight cells: the list shows four, and a
+    preset logs no pad cell (255) of any block it ticks."""
+    s = _real("03G906016KN.bin")
+    d = _logger(s)
+    try:
+        p = d.panes[0]
+        p.conn.ecu_box.setCurrentText("EDC16")
+        p._sync_namer()
+        p.group_spin.setValue(2)
+        assert p.browse.rowCount() == 4
+        assert p.browse.item(0, 1).text() == "Engine speed (Eng_nAvrg)"
+        p.group_spin.setValue(7)                       # cells 1, 3, 4, 5, 6
+        assert [p.browse.item(r, 0).data(QtCore().Qt.UserRole)[1]
+                for r in range(p.browse.rowCount())] == [0, 2, 3, 4, 5]
+        p.preset_box.setCurrentIndex(p.preset_box.findData("boost"))
+        p._apply_preset()
+        assert p._channels
+        for ch in p._channels:
+            if ch.is_derived:
+                continue
+            assert p._namer._groups[ch.group].channels()[ch.field] != 255
+    finally:
+        d.close()
+
+
+def QtCore():
+    return _qt()[0]
+
+
+@pytest.mark.slow
+def test_edc15_fd_offers_the_edc15_presets(app):
+    s = _real("EDC15/038906012FD.bin")
+    d = _logger(s)
+    try:
+        p = d.panes[0]
+        p.conn.ecu_box.setCurrentText("EDC15")
+        p._sync_namer()
+        keys = [p.preset_box.itemData(i) for i in range(1, p.preset_box.count())]
+        assert len(keys) >= 10 and "e15limits" in keys and "boost" in keys
+        assert p.preset_box.isEnabled() and p.preset_hint.text() == ""
+        p.preset_box.setCurrentIndex(p.preset_box.findData("e15limits"))
+        p._apply_preset()
+        assert p.preset_hint.text().startswith("Blocks ")
+        assert any(ch.label.startswith("Torque limitation") for ch in p._channels)
     finally:
         d.close()

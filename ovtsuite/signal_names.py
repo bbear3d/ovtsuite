@@ -1370,3 +1370,37 @@ def english_units(units: str) -> str:
         out = rx.sub(en, out)
     return _UNIT_WORD_RE.sub(
         lambda m: _UNIT_WORDS.get(m.group(1).lower(), m.group(1)), out)
+
+
+_SC_WORD = _re.compile(r"[A-Za-z]+")
+_SC_TITLE = _re.compile(r"[A-Z][a-z]+$")
+
+
+@_lru_cache(maxsize=8192)
+def sentence_case(text: str) -> str:
+    """A signal's display name in sentence case: first letter upper, the rest
+    of the words lower -- ``engine speed`` and ``Engine Speed`` both become
+    ``Engine speed``. Acronyms and identifiers are left as they are (EGR,
+    CAN, A/C, MAF, xcwGrp03, InjCtl_qSet): only an all-lowercase first word
+    is capitalised, and only a plain Capitalised word after it is lowered."""
+    if not text:
+        return text
+    out, first = [], True
+    pos = 0
+    for m in _SC_WORD.finditer(text):
+        a, b = m.span()
+        w = m.group(0)
+        # part of an identifier (Eng_nAvrg, xcwGrp03): not a word to case
+        ident = ((a > 0 and (text[a - 1] == "_" or text[a - 1].isdigit()))
+                 or (b < len(text) and (text[b] == "_" or text[b].isdigit())))
+        if first:
+            first = False
+            if not ident and w.islower():
+                w = w[0].upper() + w[1:]
+        elif not ident and _SC_TITLE.match(w):
+            w = w.lower()
+        out.append(text[pos:a])
+        out.append(w)
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)

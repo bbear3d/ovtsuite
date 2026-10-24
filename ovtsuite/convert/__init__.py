@@ -396,15 +396,67 @@ def rebased(tables, base: int):
     return out
 
 
+# ------------------------------------------------------------------ progress
+class Steps:
+    """How far a run is, for whoever watches it. Called with a step's name,
+    as the plain ``progress`` callback always was (``say("Writing")``);
+    ``say("Writing", 0.7)`` also says that 70% of this part of the work is
+    done when the step starts. ``progress`` gets the name only (a one-
+    argument callback, as before); ``fraction`` gets the share of the whole
+    job done, 0.0 to 1.0, never going back. :meth:`part` is the same
+    reporter for a slice of the work (``say.part(0, 0.6)`` for the reading),
+    so a helper reports 0..1 of its own part without knowing the rest."""
+
+    def __init__(self, progress=None, fraction=None, lo: float = 0.0, hi: float = 1.0,
+                 _top=None):
+        self.progress = progress
+        self.fraction = fraction
+        self.lo, self.hi = lo, hi
+        self._top = _top if _top is not None else self
+        self._done = 0.0                      # (the top reporter's) furthest share
+
+    @classmethod
+    def of(cls, progress=None, fraction=None) -> "Steps":
+        """``progress`` itself when it is a :class:`Steps` already."""
+        if isinstance(progress, Steps):
+            return progress
+        return cls(progress, fraction)
+
+    def __call__(self, label: str = "", at: Optional[float] = None) -> None:
+        if label and self.progress is not None:
+            self.progress(label)
+        if at is not None:
+            self.at(at)
+
+    def at(self, share: float) -> None:
+        """``share`` (0..1) of this part done."""
+        if self.fraction is None:
+            return
+        f = self.lo + (self.hi - self.lo) * min(1.0, max(0.0, share))
+        top = self._top
+        if f > top._done:
+            top._done = f
+            self.fraction(f)
+
+    def part(self, a: float, b: float) -> "Steps":
+        """The reporter for ``a``..``b`` of this part."""
+        w = self.hi - self.lo
+        return Steps(self.progress, self.fraction, self.lo + w * a, self.lo + w * b,
+                     self._top)
+
+
 # ------------------------------------------------------------------ the run
 def prepare(job: Job, warnings: Optional[List[str]] = None, progress=None,
-            placement: Optional[Dict[str, int]] = None):
+            placement: Optional[Dict[str, int]] = None, fraction=None):
     """Read and place every source: ``(definition in image offsets, base,
     size, image bytes or None, {table: [loss]}, tables read)``. Several
     sources are merged (first source wins a conflict). With the ``port``
     option every table is placed in the binary by its own evidence
-    (:func:`port`); ``placement`` gets the count per grade."""
+    (:func:`port`); ``placement`` gets the count per grade. ``progress``
+    gets each step's name, ``fraction`` the share done (see :class:`Steps`;
+    ``progress`` may be one)."""
     from . import transforms
+    say = Steps.of(progress, fraction)
     warnings = warnings if warnings is not None else []
     if not job.sources:
         raise ConvertError("No source file.")
@@ -422,10 +474,17 @@ def prepare(job: Job, warnings: Optional[List[str]] = None, progress=None,
     base = size = 0
     image = data
     n_in = 0
-    for src in job.sources:
+    say.at(0.05)
+    porting = bool(job.options.get("port"))
+    for i, src in enumerate(job.sources):
+        # each source an equal share: reading it, then (porting) finding
+        # its tables in the binary -- the long part -- then placing them
+        one = say.part(0.05 + 0.95 * i / len(job.sources),
+                       0.05 + 0.95 * (i + 1) / len(job.sources))
         raw = _read(src)
         defn = load_definition(raw, job.title or os.path.splitext(os.path.basename(src))[0],
                                path=src, rom=job.options.get("rom"), image=data)
+        one.at(0.2 if porting else 0.6)
         n_in += len(defn.tables)
         warnings.extend("%s: %s" % (os.path.basename(src), w) for w in defn.warnings)
         given = job.base
@@ -442,7 +501,8 @@ def prepare(job: Job, warnings: Optional[List[str]] = None, progress=None,
                                 % (os.path.basename(src), len(defn.patches)))
                 defn = copy.copy(defn)
                 defn.patches = []
-            defn, counts = port(defn, data, job, loss, warnings, given, progress)
+            defn, counts = port(defn, data, job, loss, warnings, given, say)
+            one.at(0.8)
             if placement is not None:
                 for k, v in counts.items():
                     placement[k] = placement.get(k, 0) + v
@@ -459,6 +519,7 @@ def prepare(job: Job, warnings: Optional[List[str]] = None, progress=None,
         out.segments = [(0, size)]
         out.info = dict(defn.info, image_size=str(size))
         placed.append(out)
+        one.at(1.0)
     defn = transforms.merge(placed, warnings) if len(placed) > 1 else placed[0]
     if job.title:
         defn.title = job.title
@@ -525,13 +586,22 @@ def free_output(path: str, inputs) -> str:
     return cand
 
 
-def run(job: Job, progress=None) -> Result:
+def run(job: Job, progress=None, fraction=None) -> Result:
     """Run ``job``: write ``job.out`` and return what happened. A default
     output name never overwrites an input; a given one that would is
-    refused."""
+    refused. ``progress`` is called with each step's name (``"Reading"``,
+    ``"Writing"`` ...), ``fraction`` with the share of the job done (0.0
+    to 1.0, rising; 1.0 once it is done) -- see :class:`Steps`."""
+    say = Steps.of(progress, fraction)
+    say.at(0.0)
+    res = _run(job, say)
+    say.at(1.0)
+    return res
+
+
+def _run(job: Job, say: Steps) -> Result:
     from . import transforms
     res = Result()
-    say = progress or (lambda *_: None)
     tgt = (job.target or "").lower()
     if tgt == EXTRACT:
         _run_extract(job, res, say)
@@ -559,7 +629,7 @@ def run(job: Job, progress=None) -> Result:
         _run_apply(job, tgt, kinds, res, say)
         return _finish(job, res)
     if tgt in IMG:
-        say("Converting the image")
+        say("Converting the image", 0.1)
         _run_image(job, res)
         res.report = report(job, res)
         return res
@@ -575,35 +645,39 @@ def run(job: Job, progress=None) -> Result:
     elif kinds["values"]:
         job = Job.from_dict(dict(job.to_dict(), sources=kinds["definition"]))
 
-    say("Reading")
-    defn, base, size, image, loss, n_in = prepare(job, res.warnings, say, res.placement)
+    # the shares: reading (and porting) most of it, then writing and the
+    # read-back check; translating online can take a while too
+    say("Reading", 0.0)
+    defn, base, size, image, loss, n_in = prepare(job, res.warnings, say.part(0.0, 0.55),
+                                                  res.placement)
     res.tables_in, res.base, res.size = n_in, base, size
     res.loss.update(loss)
-    say("Applying transforms")
+    say("Applying transforms", 0.55)
     if job.filters:
         defn.tables = transforms.filter_tables(defn.tables, job.filters)
     if job.translate:
         from . import translate
         translate.apply(defn, job.translate, res.warnings)
+    say.at(0.65)
     if tgt == "xdf":
         from . import checksums
         defn.checksums = checksums.for_export(job, defn, image, res.warnings)
         if job.options.get("patch_with"):
-            say("Making the patch")
+            say("Making the patch", 0.67)
             defn.patches = list(defn.patches) + _patches_from(job, defn, image, size, res)
     elif job.options.get("patch_with"):
         raise ConvertError("A patch is written into an XDF only: choose TunerPro XDF.")
     elif defn.patches:
         res.warnings.append("%d XDF patches have no form in %s -- not carried."
                             % (len(defn.patches), NAMES.get(tgt, tgt)))
-    say("Writing")
+    say("Writing", 0.7)
     payload, written = write(defn, tgt, size, image, job, res)
     with open(job.out, "wb") as fh:
         fh.write(payload)
     res.out.append(job.out)
     res.tables_out = written
     if job.self_check:
-        say("Checking the result")
+        say("Checking the result", 0.85)
         # a DAMOS written back into its own file reads at the source's base
         hint = res.base if (tgt == "dam" and isinstance(defn.passthrough, tuple)) else None
         res.check = res.check + self_check(defn, tgt, payload, size, image, job,
@@ -680,7 +754,7 @@ def _run_extract(job: Job, res: Result, say) -> None:
     if os.path.isfile(out):
         raise ConvertError("Extracting writes into a folder: %s is a file." % out)
     job.out = out
-    say("Extracting")
+    say("Extracting", 0.1)
     fmt = o.get("extract_format") or "raw"
     if fmt not in ("raw", "bin", "hex", "srec"):
         raise ConvertError("Unknown format for the extracted binaries: %r." % fmt)
@@ -689,7 +763,9 @@ def _run_extract(job: Job, res: Result, say) -> None:
                             inputs=job_inputs(job))
     if not done:
         raise ConvertError("Nothing chosen to extract.")
-    for path, e in done:
+    say.at(0.7)
+    for k, (path, e) in enumerate(done):
+        say.at(0.7 + 0.3 * k / len(done))
         res.out.append(path)
         res.values.append("%s (0x%X bytes) -> %s" % (e.label, e.size, os.path.basename(path)))
         res.size = max(res.size, e.size)
@@ -784,16 +860,17 @@ def _run_diff(job: Job, kinds, res: Result, say) -> None:
         raise ConvertError("A comparison takes two definitions (and optionally the "
                            "binary to place them on); %d given." % len(defs))
     sides = []
-    for src in defs:
-        say("Reading %s" % os.path.basename(src))
+    for i, src in enumerate(defs):
+        say("Reading %s" % os.path.basename(src), 0.45 * i)
         j = Job.from_dict(dict(job.to_dict(), sources=[src]))
-        d, base, size, _img, loss, n = prepare(j, res.warnings, say, res.placement)
+        d, base, size, _img, loss, n = prepare(j, res.warnings, say.part(0.45 * i, 0.45 * (i + 1)),
+                                               res.placement)
         if job.filters:
             d.tables = transforms.filter_tables(d.tables, job.filters)
         res.tables_in += len(d.tables)
         res.base, res.size = base, size
         sides.append(d)
-    say("Comparing")
+    say("Comparing", 0.9)
     rows = transforms.diff(sides[0], sides[1])
     res.diff = rows
     names = [os.path.basename(p) for p in defs]
@@ -830,8 +907,9 @@ def _run_values(job: Job, tgt: str, kinds, res: Result, say) -> None:
             raise ConvertError("Give either a definition and a binary (to export "
                                "values) or value files (to convert them), not both.")
         dj = _binary_for(job, kinds, "export values from")
-        say("Reading")
-        defn, base, size, image, loss, n_in = prepare(dj, res.warnings, say, res.placement)
+        say("Reading", 0.0)
+        defn, base, size, image, loss, n_in = prepare(dj, res.warnings, say.part(0.0, 0.5),
+                                                      res.placement)
         if image is None:
             raise ConvertError("Exporting values needs the binary they are read "
                                "from: give it as the binary.")
@@ -843,14 +921,14 @@ def _run_values(job: Job, tgt: str, kinds, res: Result, say) -> None:
         if job.translate:
             from . import translate
             translate.apply(defn, job.translate, res.warnings)
-        say("Reading the values")
+        say("Reading the values", 0.5)
         vs = _values.export(defn, size, image, res.loss)
         vs.origin["a2l"] = os.path.basename(dj.sources[0])
         if dj.binary:
             vs.origin["image"] = os.path.basename(dj.binary)
         res.values.append("%d values read from the binary." % len(vs.params))
     elif kinds["values"]:
-        say("Reading")
+        say("Reading", 0.0)
         vs = _value_sets(kinds["values"], res)
         res.tables_in = len(vs.params)
         _filter_values(vs, job.filters)
@@ -859,7 +937,7 @@ def _run_values(job: Job, tgt: str, kinds, res: Result, say) -> None:
                            "CDFX), or a definition and its binary.")
     if job.title:
         vs.title = job.title
-    say("Writing")
+    say("Writing", 0.7)
     payload = _values.dumps(vs, tgt, source=", ".join(os.path.basename(p) for p in job.sources))
     with open(job.out, "wb") as fh:
         fh.write(payload)
@@ -869,7 +947,7 @@ def _run_values(job: Job, tgt: str, kinds, res: Result, say) -> None:
         if w not in res.warnings:
             res.warnings.append(w)
     if job.self_check:
-        say("Checking the result")
+        say("Checking the result", 0.85)
         try:
             back = _values.load(payload)
             want = _values.ValueSet(params=[p for p in vs.params
@@ -883,8 +961,9 @@ def _run_apply(job: Job, tgt: str, kinds, res: Result, say) -> None:
     """Values from DCM / CDFX files written into a binary, through the
     definition that says where each one is."""
     dj = _binary_for(job, kinds, "apply values to")
-    say("Reading")
-    defn, base, size, image, loss, n_in = prepare(dj, res.warnings, say, res.placement)
+    say("Reading", 0.0)
+    defn, base, size, image, loss, n_in = prepare(dj, res.warnings, say.part(0.0, 0.5),
+                                                  res.placement)
     if dj.binary:
         src_img = _image.read(_read(dj.binary))
     elif image is not None and defn.type == "ols":
@@ -902,7 +981,7 @@ def _run_apply(job: Job, tgt: str, kinds, res: Result, say) -> None:
         vs.params = [p for p in vs.params
                      if _values._index(p.name)[0].lower() not in aside]
     _filter_values(vs, job.filters)
-    say("Applying the values")
+    say("Applying the values", 0.5)
     data, rep = _values.apply(vs, defn, size, image)
     res.values.extend(rep.lines())
     for name in rep.not_found:
@@ -927,12 +1006,13 @@ def _run_apply(job: Job, tgt: str, kinds, res: Result, say) -> None:
                                 "segments; the gaps are written out filled.")
     if job.options.get("checksum"):
         img = _correct_checksums(img, res.warnings)
+    say("Writing", 0.7)
     payload = _image.write(img, tgt, job.options.get("record"))
     with open(job.out, "wb") as fh:
         fh.write(payload)
     res.out.append(job.out)
     if job.self_check:
-        say("Checking the result")
+        say("Checking the result", 0.85)
         back = _image.read(payload, img.start).flat(img.start, img.end)
         again, rep2 = _values.apply(vs, defn, size, back)
         if rep2.cells_changed:

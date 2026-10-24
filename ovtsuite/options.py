@@ -105,6 +105,16 @@ OPTIONS: Tuple[Option, ...] = (
            choices=(("stack", "Stacked above the table"),
                     ("side", "Side by side above the table"),
                     ("right", "Beside the table, on the right"))),
+    Option("ui/compare_layout", "off", "Comparison table", EDITOR, "choice",
+           "Where a loaded comparison's values go. In a grid of their own "
+           "(below or beside), the two grids scroll, size their columns and "
+           "select together, as in the Measuring blocks dialog. Matching "
+           "cells marked: one grid, with the cells matching the selection "
+           "framed in the other copy. Ctrl+J jumps to the matching cells.",
+           choices=(("off", "In the same grid, under the table"),
+                    ("below", "Below the table, scrolled with it"),
+                    ("beside", "Beside the table, scrolled with it"),
+                    ("mark", "In the same grid, matching cells marked"))),
     # -- Appearance ----------------------------------------------------------
     Option("ui/theme", "system", "Theme", APPEARANCE, "choice",
            "System follows Windows' light or dark app mode.",

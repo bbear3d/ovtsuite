@@ -139,7 +139,8 @@ def test_a_read_from_a_module_opens_in_a_new_tab(win):
     assert win.tabs.count() == 2
     # a read is a new, untitled project: nothing on disk until it is saved
     assert win.current.project_ref is not None
-    assert win.current.primary.binfile.name == "ECU-read-test - ECU"
+    # the project and its set both take the read's name: said once
+    assert win.current.primary.binfile.name == "ECU-read-test"
     assert win.current.source_path() is None
 
 

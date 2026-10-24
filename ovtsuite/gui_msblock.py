@@ -462,7 +462,25 @@ class MsBlockDialog(QtWidgets.QDialog):
         """The comparison's id ``cid`` expressed in the primary's terms."""
         if self._edc15:
             return self.mb.translate_from(self.cmp_mb, g.group, cid)
-        return self.mb.translate_from(self.cmp_mb, cid)
+        return self.mb.translate_from(self.cmp_mb, cid,
+                                      self.catalog, self.cmp_catalog)
+
+    def _cmp_differs(self, g, cid, mine) -> bool:
+        """Does the comparison's cell ``cid`` show something other than the
+        primary's ``mine``? Equal ids over the same definition are equal
+        whether or not the signal has a name (a bare number, a CAN bus
+        signal, an ESB entry with no signal number): only a different id, or
+        the same id meaning something else in the other binary, differs."""
+        if mine is None:
+            return True
+        if cid == mine:
+            if cid in EMPTY_IDS:
+                return False
+            if self._edc15:
+                return self._translated(g, cid) != mine
+            if self._cmp_shares_esb or self.mb.same_entry(self.cmp_mb, cid):
+                return False
+        return self._translated(g, cid) != mine
 
     def _matches(self, g, needle: str) -> bool:
         if needle.isdigit():
@@ -489,6 +507,8 @@ class MsBlockDialog(QtWidgets.QDialog):
         if needle:
             groups = [g for g in groups if self._matches(g, needle)]
         n = self._nslots
+        self._cmp_shares_esb = bool(self._has_cmp and not self._edc15
+                                    and self.mb.shares_esb(self.cmp_mb))
         self.table.setRowCount(len(groups))
         if self.cmp_table is not None:
             self.cmp_table.setRowCount(len(groups))
@@ -548,7 +568,7 @@ class MsBlockDialog(QtWidgets.QDialog):
                 if cid is not None:
                     it.setData(QtCore.Qt.UserRole, cid)
                     mine = shown[c] if c < len(shown) else None
-                    if self._translated(g, cid) != mine:
+                    if self._cmp_differs(g, cid, mine):
                         it.setBackground(edit_bg)
                         it.setForeground(dark_fg)
                         own = self.table.item(r, c + 1)

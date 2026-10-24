@@ -45,6 +45,7 @@ and sniffer use them too (the theme, for example).
 |---|---|
 | **Versions listed in Compare with saved version** | How many saves the menu lists before **Version history...**. |
 | **3D surface and dyno chart** | Where the two panels go around the table: stacked above it, side by side above it, or beside it on the right. Also in **View > Table panels**. See [3D surface](editor/3d-surface.md). |
+| **Comparison table** | Where a loaded comparison's copy of the table goes. **In the same grid, under the table** (the default): below a banner, in the table's own grid. **Below the table** or **Beside the table**: in a read-only grid of its own, which scrolls, sizes its columns and selects together with the table, from either grid. **In the same grid, matching cells marked**: the default layout, with the cells matching the selection framed in the other copy. **Ctrl+J** jumps to the matching cells and back (not in the default). Takes effect at once. See [Comparing files](editor/comparison.md#scrolled-together). |
 
 ## Appearance
 

@@ -32,9 +32,14 @@ The window is laid out in tabs:
 - **Tables** -- converting only some tables, with the list of the tables
   that will be written.
 
-The preview sits under the tabs; drag the bar between them to give either
-more room. Under it, **Convert** and a bar that moves while a conversion
-runs, the step it is on beside it. The window remembers its settings, the
+The preview sits under the tabs, starting just below the Files tab's
+Output group, so it has the rest of the window; drag the bar between them
+to give either more room (the window remembers where you left it). Under
+it, **Convert** and a progress bar that fills as the preview or the
+conversion runs -- reading the files, placing the tables, writing, the
+read-back check, then each binary written out -- with the step it is on
+beside it. It is full when everything is done and empties again if the
+conversion fails. The window remembers its settings, the
 tab it was left on and which outputs were ticked for next time; it keeps its
 size while you work, greying out what does not apply rather than adding or
 removing rows.
@@ -225,7 +230,7 @@ display name), and values apply back by either form.
 | ASAP2 A2L | Yes | Yes | Addresses as file offsets (WinOLS, TunerPro) or ECU addresses (INCA, CANape) |
 | Bosch DAMOS | Yes | Yes | Written back into a DAMOS, its own records are kept as they are |
 | WinOLS project (.ols) | Yes | No | Its binary is used when none is given; it and its versions can be [extracted](#extract-the-binaries-of-a-winols-project) |
-| WinOLS map pack (.kp) | Yes | Experimental | Reads back in OVT-Suite; an A2L imports into WinOLS reliably |
+| WinOLS map pack (.kp) | Yes | Experimental | Laid out section by section as the map packs WinOLS 5.0 writes, and reads back in OVT-Suite; not yet opened in WinOLS itself -- an A2L imports into WinOLS reliably |
 | EcuFlash XML | Yes | Yes | Finds the base a ROM includes beside it; writes one self-contained file |
 | RomRaider XML | Yes | Yes | Many ROMs per file: found from the binary or picked |
 | OVT definition (JSON) | Yes | Yes | Every field of the definition, for scripts and comparisons |

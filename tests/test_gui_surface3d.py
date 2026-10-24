@@ -107,8 +107,10 @@ def test_toggled_in_the_tab_above_the_table(ws, app):
     from ovtsuite import gui_surface3d as S
     panel, split = ws.surface, ws.surface_split
     assert split.orientation() == QtCore.Qt.Vertical
-    assert split.widget(0) is panel and split.widget(1) is ws.table, \
+    # the table's area: the table, and the comparison grid (gui_cmpscroll)
+    assert split.widget(0) is panel and split.widget(1) is ws.table_area, \
         "the surface sits above the table, in one splitter"
+    assert ws.table_area.isAncestorOf(ws.table)
     assert panel.isHidden() and not ws.surf_btn.isChecked(), "off at first"
     assert ws.surf_btn.isCheckable()
     ws.surf_btn.click()                                  # on

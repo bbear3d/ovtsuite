@@ -319,6 +319,15 @@ def open_branch(win, doc, sid, bid, ws=None):
     return ws
 
 
+def _work_name(doc, s) -> str:
+    """A set's working-file name: "<project> - <set>", or just the project's
+    name when the set is called the same (a project made from one file,
+    whose set takes the file's name)."""
+    if (s.name or "").strip().lower() == (doc.title or "").strip().lower():
+        return doc.title
+    return "%s - %s" % (doc.title, s.name)
+
+
 def load_into(ws, doc, sid, bid) -> bool:
     """Load branch ``bid`` of set ``sid`` into tab ``ws``."""
     proj = doc.project
@@ -338,7 +347,7 @@ def load_into(ws, doc, sid, bid) -> bool:
         if located is not None:
             defn = located
     ext, data = _sb.working_file(proj, sid, state, defn=defn, log=log)
-    work = _sb.write_working_file(doc.tmpdir, "%s - %s" % (doc.title, s.name),
+    work = _sb.write_working_file(doc.tmpdir, _work_name(doc, s),
                                   ext, data, log=log)
     try:
         loaded = ws._load_session(work, title="Opening %s" % s.name)
@@ -434,7 +443,7 @@ def _locate_on_original(ws, doc, sid, branch, state, reshaped=None):
             return None
         ext, blob = _sb.working_file(proj, sid, rstate)
         path = _sb.write_working_file(
-            doc.tmpdir, "%s - %s (original)" % (doc.title, s.name), ext, blob)
+            doc.tmpdir, _work_name(doc, s) + " (original)", ext, blob)
         sess = ws._load_session(path, title="Locating parameters on the "
                                             "original version")
         if getattr(sess, "support", "") != "full":
@@ -700,7 +709,7 @@ def _name(ws):
     ref = ws.project_ref
     if ref is not None and ws.primary is not None:
         try:
-            ws.primary.binfile.name = "%s - %s" % (ref.doc.title, ref.set.name)
+            ws.primary.binfile.name = _work_name(ref.doc, ref.set)
         except KeyError:
             pass
 

@@ -16,7 +16,7 @@ The list in **Preset:** depends on the **ECU**:
 | ECU | Presets offered |
 |---|---|
 | **EDC16** | the engine presets below |
-| **EDC15** | the engine presets whose values its blocks carry — typically **Full-load fuelling**, **Cruise efficiency** and, on unit-injector (PD) engines, **Injection timing** and **Warm-up running**. EDC15 values are recognised by the ECU's own message numbers (engine speed, injected quantity, air mass, boost, pedal, temperatures...), which are the same on every EDC15. Presets that need a value no EDC15 block carries (boost actuator duty, exhaust temperature) are not listed. |
+| **EDC15** | the engine presets whose values its blocks carry — typically **Boost control**, **Full-load fuelling**, **Cruise efficiency** and, on unit-injector (PD) engines, **Injection timing** and **Warm-up running** — then the [EDC15 presets](#edc15-presets) below. EDC15 values are recognised by the ECU's own message numbers (engine speed, injected quantity, air mass, boost, pedal, temperatures...), which are the same on every EDC15. A preset that needs a value none of the file's blocks carries (exhaust temperature, say) is not listed. |
 | **ZF6HP** | the transmission presets below |
 | **ZF6HP-UDS**, **Aisin TRx** | none — the **Preset:** box is greyed out and the hint says why; tick the cells by hand. |
 
@@ -69,6 +69,24 @@ it out; unticking either cell drops it). On an **EDC15** unit-injector (PD)
 ECU those are the start-of-delivery and delivery-duration setpoints, block 4
 cells 2 and 3 on most software. The start comes in as degrees with *BTDC* or
 *ATDC* after it; a start after TDC counts as negative.
+
+## EDC15 presets
+
+Offered after the engine presets above, each only when the open file's
+blocks carry what it needs: the smooth-running and start-of-injection
+presets need a distributor-pump (VE) engine, and a unit-injector (PD)
+engine gets **Injection timing** and **Warm-up running** from the list above
+instead. On a 038906012FD, for example, the list holds ten presets.
+
+| Preset | Needs | Drive like this |
+|---|---|---|
+| **Fuel limiters (driver demand, torque and smoke limits)** | engine speed, injected quantity, driver-demand, torque-limit and smoke-limit quantities | Coolant at 70 °C or more. Full-throttle pulls in 3rd and 4th from 1300 rpm to the limiter. The injected quantity follows the lowest of the three, so the log shows which one holds it. |
+| **Injection timing (start of injection, specified and actual)** | engine speed, injected quantity, start of injection specified and actual | Coolant at 70 °C or more. Idle a few seconds, steady part throttle at 2000, 2500 and 3000 rpm, then two full-throttle pulls. Also logs the timing valve duty when it fits. |
+| **EGR and air mass (specified and actual)** | engine speed, air mass specified and actual, EGR duty | Coolant at 70 °C or more. A minute at idle, then steady part throttle at 1500–2500 rpm in 4th and 5th, and a few gentle accelerations. |
+| **Cold start and glow plugs** | engine speed, coolant, glow status, pre-glow time | Start logging cold with the ignition on, before cranking, and keep going through the start and the first minutes of idle. |
+| **Idle smoothness (per-cylinder corrections)** | engine speed, the four smooth-running quantities | Warm engine idling in neutral: a minute with everything off, then a minute with the A/C and lights on. |
+| **Temperatures (coolant, fuel, intake air)** | coolant, fuel and intake-air temperature | From a cold start through normal driving until coolant has been at 90 °C for a few minutes. |
+| **Cruise control and road speed** | vehicle speed, cruise-control switches and status | Set cruise at 80 km/h, step it up and down, cancel it with the brake and the clutch, and resume. |
 
 ## Transmission presets (ZF6HP — 6HP19)
 

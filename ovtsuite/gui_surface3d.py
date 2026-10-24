@@ -898,7 +898,7 @@ def attach(ws) -> QtWidgets.QSplitter:
     panel = SurfacePanel(ws)
     panel.hide()
     split.addWidget(panel)
-    split.addWidget(ws.table)
+    split.addWidget(getattr(ws, "table_area", ws.table))   # gui_cmpscroll
     split.setStretchFactor(0, 0)
     split.setStretchFactor(1, 1)
     ws.surface = panel

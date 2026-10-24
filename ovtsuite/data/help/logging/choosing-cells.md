@@ -12,11 +12,15 @@ from, so the fewer groups you use, the more rows per second you get.
 ## Browse and tick cells
 
 1. Pick a group in **Group:**. Each entry shows the group number and what its
-   cells carry, for example "11 - Engine Speed, Boost Pressure Setpoint, ...".
+   cells carry, for example "11 - Engine speed, Boost pressure setpoint, ...".
    The number box beside it takes any group number from 1 to 255, including
    ones the file does not list.
 2. The table below lists the group's cells (the first group's as soon as the
    logger opens). Tick **Log** on a cell to add it; untick it to remove it.
+   Only the cells that carry a signal are listed: an EDC16 group has room
+   for eight, but a cell the file leaves empty is not shown (and a preset
+   does not log it). Once connected, the list shows the cells the ECU
+   actually sends for that group.
 3. When connected, the **Value** column shows the live reading of the group
    you are browsing, so you can check a cell is alive before you log it.
 
@@ -30,8 +34,8 @@ The line under the cell table says which source is naming the cells.
 
 | ECU | Names |
 |---|---|
-| **EDC16** | From the car's own file: the calibration's group map points each cell at a signal, shown as its description and its name, for example "Boost Pressure (filtered) (BPSCD_pFltVal)". With no file open, from the factory catalogue (see below). |
-| **EDC15** | From the car's own file: the measuring-block descriptors of the dataset the ECU says it is coded to (Manual, Automatic...), for example "engine speed (G1/1)". With no file open, from the factory catalogue (see below). |
+| **EDC16** | From the car's own file: the calibration's group map points each cell at a signal, shown as its description and its name, for example "Boost pressure (filtered) (BPSCD_pFltVal)". With no file open, from the factory catalogue (see below). |
+| **EDC15** | From the car's own file: the measuring-block descriptors of the dataset the ECU says it is coded to (Manual, Automatic...), for example "Engine speed (G1/1)". With no file open, from the factory catalogue (see below). |
 | **ZF6HP** | From a built-in list of the 6HP19's blocks 1–17 ("Transmission cells are named from the 6HP block catalogue"). No file is needed. A few cells (group 15, cells 1 and 3) are not identified and log as "unlabelled". |
 | **ZF6HP-UDS** | The 6HP28's UDS data identifiers (DIDs), one per group, listed by DID in hex ("F40C - Engine speed", "1024 - RAM u16, rolling history, slot 1 of 7"). The known signals come first: engine speed, transmission input and output speed, road speed, ATF temperature, coolant, both supply voltages, ignition status and the brake-signal flags. Those marked "(raw)" are identified but not yet scaled. The F4xx DIDs (engine speed, road speed, coolant, load, pedal, voltage) are scaled to physical units. The rest are raw counts at the width the transmission's own table gives them, labelled like "6HP28 DID 1024 (u16)"; "computed" DIDs are one cell holding the whole answer in hex. Log a few F4xx DIDs alongside the raw ones: they are what names the raw columns later. |
 | **Aisin TRx** | Not named yet: cells are "Group N / Cell M". |

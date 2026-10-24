@@ -1230,8 +1230,10 @@ class ConnPane(QtWidgets.QWidget):
         if ecu == "EDC15":
             # the engine recipes, where this ECU's blocks carry their needs
             # (message-number keys -- see edc15.msblock15.MESSAGE_KEYS)
-            from ..logtune.roles import recipes_for
-            return recipes_for(getattr(self, "_namer", None), RECIPES)
+            # plus the EDC15 presets (limiters, timing, EGR, glow, ...)
+            from ..logtune.roles import recipes_for, EDC15_RECIPES
+            return recipes_for(getattr(self, "_namer", None),
+                               tuple(RECIPES) + tuple(EDC15_RECIPES))
         return []                        # see _no_presets_why
 
     def _no_presets_why(self) -> str:
@@ -1711,26 +1713,45 @@ class ConnPane(QtWidgets.QWidget):
         if self._worker is not None:
             self._worker.set_browse_group(g)
 
+    def _cell_fields(self, group):
+        """The cells of ``group`` the binary says carry a signal (0-based):
+        an EDC16 group's empty cells (id 255, or a half with no map row) are
+        left out of the list and out of a preset. Namers without the notion
+        list every position."""
+        if not self._namer.available:
+            return list(range(4))
+        fields = getattr(self._namer, "cell_fields", None)
+        if fields is not None:
+            try:
+                return list(fields(group))
+            except Exception:
+                pass
+        return list(range(self._namer.slots(group)))
+
     def _fill_browse(self, group, cells):
-        """cells: [(field, text, value)] from the ECU, or None (binary only)."""
+        """cells: [(field, text, value)] from the ECU, or None (binary only).
+        From the binary, only the cells that carry a signal are listed; once
+        the ECU answers, the cells it actually sent."""
         self.browse.blockSignals(True)
-        n = len(cells) if cells else (self._namer.slots(group) if self._namer.available else 4)
-        self.browse.setRowCount(n)
+        fields = (sorted({ff for ff, _t, _v in cells}) if cells
+                  else self._cell_fields(group))
+        self._browse_fields = fields
+        self.browse.setRowCount(len(fields))
         selected = {c.key for c in self._channels}
-        for f in range(n):
+        for row, f in enumerate(fields):
             ch = self._namer.channel(group, f)
             chk = QtWidgets.QTableWidgetItem()
             chk.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
             chk.setCheckState(QtCore.Qt.Checked if ch.key in selected else QtCore.Qt.Unchecked)
             chk.setData(QtCore.Qt.UserRole, (group, f))
-            self.browse.setItem(f, 0, chk)
-            self.browse.setItem(f, 1, QtWidgets.QTableWidgetItem(ch.title))
+            self.browse.setItem(row, 0, chk)
+            self.browse.setItem(row, 1, QtWidgets.QTableWidgetItem(ch.title))
             val = ""
             if cells:
                 for ff, text, _v in cells:
                     if ff == f:
                         val = text
-            self.browse.setItem(f, 2, QtWidgets.QTableWidgetItem(val))
+            self.browse.setItem(row, 2, QtWidgets.QTableWidgetItem(val))
         self.browse.blockSignals(False)
 
     def _on_browsed(self, group, cells):
@@ -1739,11 +1760,12 @@ class ConnPane(QtWidgets.QWidget):
         if not cells:
             self._say("Group %d: not available on this ECU." % group)
             return
-        if self.browse.rowCount() != len(cells):
+        if getattr(self, "_browse_fields", None) != sorted({f for f, _t, _v in cells}):
             self._fill_browse(group, cells)
             return
+        rows = {f: r for r, f in enumerate(self._browse_fields)}
         for f, text, _v in cells:
-            it = self.browse.item(f, 2)
+            it = self.browse.item(rows[f], 2)
             if it is not None:
                 it.setText(text)
 
@@ -1790,7 +1812,7 @@ class ConnPane(QtWidgets.QWidget):
         avoid = unserved_for(self._namer)
         groups, missing = recipe_groups(self._namer, rec, rec.max_groups, avoid=avoid)
         self._channels = [self._namer.channel(g, f) for g in groups
-                          for f in range(self._namer.slots(g))]
+                          for f in self._cell_fields(g)]
         if {"soi", "dur"} <= set(rec.needs) | set(rec.wants) and \
                 _derived.can_add_eoi(self._channels):
             # end of injection, worked out from the row's SOI and duration

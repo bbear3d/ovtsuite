@@ -25,7 +25,7 @@ drivetrain-ratio parameters.*
 
 | Control | What it does |
 |---|---|
-| **Variant** | Which copy of the settings to show and edit. A file whose software serves several gearboxes holds one copy per gearbox, chosen by the car's coding — e.g. **automatic (TC) · main block** and **5-speed manual**. On EDC15 the copies are the datasets. The drop-down is greyed out when there is only one copy. |
+| **Variant** | Which copy of the settings to show and edit. A file whose software serves several gearboxes holds one copy per gearbox, chosen by the car's coding — e.g. **Automatic (TC) · main block** and **5-speed manual**. On EDC15 the copies are the datasets. The drop-down is greyed out when there is only one copy. |
 | **Copy edits to all copies** | When ticked, every value you type is written into the same setting of every copy. |
 | **Absolute ratios** | One value per drivetrain element (see below). Double-click a value to change it. On EDC15 files this table is headed **Gearbox settings** instead (see below). |
 | **V/N ratios** | The lower (**Min**) and upper (**Max**) edge of the band in which each gear is recognised. Double-click to change. |

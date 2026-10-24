@@ -60,7 +60,8 @@ How the table was located matters before you change it:
 - A curve (one row or one column of values) is shown along X whichever way
   the file stores it.
 - With a comparison open, the comparison's copy of the table is underneath,
-  below a dark banner. A project tab starts out compared with the original
+  below a dark banner (or in a grid of its own that scrolls with it: Tools >
+  Options > Editor > Comparison table). A project tab starts out compared with the original
   as read, so the cells you have changed since the read show in orange. See
   [Comparing files](comparison.md).
 

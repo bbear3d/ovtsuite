@@ -101,6 +101,7 @@ undo step.
 | Esc | Leave the cell as it was. |
 | = | A sum for every selected cell, typed in a box at the cell: `+5`, `-5`, `*1.05`, `/2`, `=120`, `+3%`, or an expression in `x`, the cell's value (`x*1.1+2`). Enter applies it, Esc cancels. Values are as shown (in a ZF converted view, engine rpm or road speed). |
 | Ctrl+3 | Show / hide the **3D surface** above the table |
+| Ctrl+J | With a comparison open: jump to the matching cells in the other copy, and back. Not in the default comparison layout -- see [Comparing files](comparison.md#scrolled-together). |
 | Enter in the **Modify selection** box | **Apply** |
 
 Mouse: double-click a cell to edit it; right-click for **Copy**,

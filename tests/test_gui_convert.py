@@ -29,6 +29,13 @@ def app():
 @pytest.fixture(autouse=True)
 def _own_config(tmp_path, monkeypatch):
     monkeypatch.setenv("OVT_CONVERTER_DIR", str(tmp_path / "cfg"))
+    # the window's size and splitter go to a file of the test's own, not
+    # the user's settings
+    from PySide6 import QtCore
+    from ovtsuite import appsettings
+    ini = str(tmp_path / "settings.ini")
+    monkeypatch.setattr(appsettings, "settings",
+                        lambda: QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat))
 
 
 def _wait(app, dlg, limit=120):
@@ -50,13 +57,52 @@ def test_definition_preview_and_convert(app, tmp_path):
     d.target.setCurrentIndex(d.target.findData("xdf"))
     assert d.out.text().endswith(".xdf")
     d.out.setText(str(tmp_path / "o.xdf"))
+    seen = []
+    d.progress.valueChanged.connect(seen.append)
     d.preview()
     _wait(app, d)
     assert d.table.rowCount() > 7000
+    assert d.progress.value() == d.progress.maximum() > 1      # a bar, not a spinner
+    del seen[:]
     d.convert()
     _wait(app, d)
     assert os.path.isfile(str(tmp_path / "o.xdf"))
     assert "read-back check passed" in d.summary.text()
+    # the bar filled from empty to full through the steps, never going back
+    assert d.progress.minimum() == 0 and d.progress.maximum() > 1
+    assert d.progress.value() == d.progress.maximum()
+    assert seen[0] == 0 and seen[-1] == d.progress.maximum()
+    middle = [v for v in seen if 0 < v < d.progress.maximum()]
+    assert len(middle) >= 3 and middle == sorted(middle)
+
+
+def test_progress_reports_the_share_done(tmp_path):
+    """The run reports how far it is beside each step's name: rising from
+    0 to 1, one-argument step callbacks working as before."""
+    if not os.path.isfile(OLS):
+        pytest.skip("reference file missing")
+    from ovtsuite import convert as C
+    steps, shares = [], []
+    C.run(C.Job(sources=[OLS], target="xdf", out=str(tmp_path / "a.xdf")),
+          progress=steps.append, fraction=shares.append)
+    assert "Reading" in steps and "Writing" in steps
+    assert shares == sorted(shares) and shares[-1] == 1.0 and len(shares) >= 4
+    assert all(0.0 < f <= 1.0 for f in shares)
+    steps2 = []
+    C.run(C.Job(sources=[OLS], target="xdf", out=str(tmp_path / "b.xdf")),
+          progress=steps2.append)
+    assert steps2 == steps
+
+
+def test_an_error_empties_the_bar(app, monkeypatch):
+    from ovtsuite.gui_convert import ConverterDialog
+    d = ConverterDialog(None)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *a, **k: None)
+    d._busy(True, "Converting...")
+    d._set_fraction(0.4)
+    assert 0 < d.progress.value() < d.progress.maximum()
+    d._convert_done(None, RuntimeError("no"))
+    assert d.progress.value() == 0
 
 
 def test_image_targets_hide_definition_transforms(app, tmp_path):
@@ -416,6 +462,48 @@ def test_edc16_ols_gives_its_binary_and_mpc(app, tmp_path):
     _wait(app, d)
     assert os.path.getsize(str(tmp_path / "flash.bin")) == 0x100000
     assert os.path.getsize(str(tmp_path / "mpc.bin")) == 0x70000
+
+
+def test_the_preview_starts_under_the_output_group(app):
+    """By default the tabs are only as tall as the Files tab's Input and
+    Output groups: the preview starts right under the Output group, and
+    has the rest. A splitter saved under the old key (the tabs taller) is
+    not restored; one saved since is."""
+    from ovtsuite import appsettings
+    from ovtsuite.gui_convert import ConverterDialog
+    from PySide6 import QtCore, QtWidgets as W
+
+    def gap(d):
+        out = [g for g in d.tabs.widget(0).findChildren(W.QGroupBox)
+               if g.title() == "Output"][0]
+        below = out.mapTo(d, QtCore.QPoint(0, out.height())).y()
+        return d.split.widget(1).mapTo(d, QtCore.QPoint(0, 0)).y() - below
+
+    d = ConverterDialog(None)
+    d.show()
+    app.processEvents()
+    assert d.split.sizes()[0] == d._files_height()
+    assert 0 <= gap(d) <= 30                     # the tab frame and the handle
+    # an old layout: the tabs 200 px taller than they need
+    top, prev = d.split.sizes()
+    d.split.setSizes([top + 200, max(80, prev - 200)])
+    st = appsettings.settings()
+    st.setValue("convert/split", d.split.saveState())
+    st.setValue("convert/geometry", d.saveGeometry())
+    st.sync()
+    d.hide()                                     # (closing would save the new key)
+    d2 = ConverterDialog(None)
+    d2.show()
+    app.processEvents()
+    assert 0 <= gap(d2) <= 30
+    d2.split.setSizes([d2.split.sizes()[0] + 40, d2.split.sizes()[1] - 40])
+    want = d2.split.sizes()
+    d2.close()                                   # kept under the new key
+    d3 = ConverterDialog(None)
+    d3.show()
+    app.processEvents()
+    assert d3.split.sizes() == want
+    d3.close()
 
 
 def test_the_window_keeps_its_shape(app):

@@ -10,8 +10,9 @@ cruise, the CAN partners of a standalone chassis, ...), not a single switch.
 Each parameter carries the value it takes in each target *state* and a
 *provenance* saying how that value is known. The engine (:mod:`.engine`)
 resolves each parameter name to the entity (or per-dataset / per-coding
-copies) in the loaded file, reads the current state, and -- for the copies
-the user ticks -- writes the target state as one undo step.
+copies: an EDC16 coding-variant copy is one more copy, see
+:mod:`.ents`) in the loaded file, reads the current state, and -- for the
+copies the user picks -- writes the target state as one undo step.
 
 The bundles themselves -- which parameters, which values -- belong to the
 platform's module: its ``features`` hook (``ModuleSpec.features``) returns a
@@ -114,6 +115,12 @@ class FeatureSet:
 #: ``fs_involved(session, group, ref=None, **opts)`` lists the tables and
 #: fault paths the feature works through, with what they hold now, for the
 #: window before a setting is picked (rows as ``fs_preview``'s, ``new`` "").
+#: It should name every table, axis and value the hook can write, so the
+#: window lists them before a setting is picked. A table row carries its
+#: ``entity`` (and ``axis``, ``cells``); a fault row its path's ``key`` and
+#: ``target`` class, which the window lets the user override path by path.
+#: ``group`` can be a coding-variant copy key (:func:`.ents.variant_key`):
+#: resolving names through :func:`.ents.one` handles it.
 HOOK_PROTOCOL = ("present", "groups", "state", "fs_describe", "fs_apply")
 
 _EMPTY = FeatureSet()

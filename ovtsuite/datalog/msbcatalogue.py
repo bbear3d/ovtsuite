@@ -297,7 +297,18 @@ class CatalogueNamer:
         if cells is None or field >= len(cells) or cells[field] is None:
             return ("Group %d / Cell %d" % (group, field + 1), "", "")
         label, signal, unit = cells[field]
+        if not label.startswith("Group "):
+            from ..signal_names import sentence_case
+            label = sentence_case(label)
         return (label, signal, unit)
+
+    def cell_fields(self, group: int) -> List[int]:
+        """The cells of ``group`` that carry a signal (see
+        ``ChannelNamer.cell_fields``); an empty cell is stored as None."""
+        cells = self._groups.get(group)
+        if not cells:
+            return list(range(self.slots(group)))
+        return [f for f, c in enumerate(cells) if c is not None]
 
     def channel(self, group: int, field: int) -> Channel:
         label, signal, unit = self.resolve(group, field)
@@ -308,7 +319,8 @@ class CatalogueNamer:
 
     def group_summary(self, group: int) -> str:
         cells = self._groups.get(group) or []
-        return ", ".join(c[0].split(" (")[0] for c in cells
+        return ", ".join(self.resolve(group, f)[0].split(" (")[0]
+                         for f, c in enumerate(cells)
                          if c is not None and not c[0].startswith("Group "))
 
     def find_signal(self, name: str) -> Optional[Tuple[int, int]]:

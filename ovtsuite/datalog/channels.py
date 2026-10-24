@@ -19,7 +19,7 @@ above them are never groups of their own.
 from typing import Dict, List, Optional, Tuple
 
 from .logfile import Channel
-from ..signal_names import english_units
+from ..signal_names import english_units, sentence_case
 
 
 class ChannelNamer:
@@ -68,6 +68,23 @@ class ChannelNamer:
         g = self._groups.get(group)
         return g.slots if g is not None else 4
 
+    def cell_fields(self, group: int) -> List[int]:
+        """The cells of ``group`` that carry a signal (0-based), in order --
+        what a cell list offers and a preset logs. An EDC16 group has eight
+        positions but often fills only some: a half with no map row, or a
+        cell holding the empty id 255, is sent as a pad cell and left out.
+        A group the binary does not describe lists all its positions."""
+        g = self._groups.get(group)
+        if g is None:
+            return list(range(self.slots(group)))
+        try:
+            ids = g.channels()
+        except Exception:
+            return list(range(self.slots(group)))
+        cells = getattr(g, "cells", None)
+        return [f for f, sid in enumerate(ids)
+                if sid != 255 and (cells is None or cells[f] is not None)]
+
     def resolve(self, group: int, field: int) -> Tuple[str, str, str]:
         """(label, signal, unit) for a cell; generic label when unknown."""
         generic = ("Group %d / Cell %d" % (group, field + 1), "", "")
@@ -85,7 +102,7 @@ class ChannelNamer:
             d = self._mb.descriptor(g.group, sid)
             if d is None or sid == 255:
                 return generic
-            name = d.name or ("xcwGrp%02d" % sid)
+            name = sentence_case(d.name) if d.name else ("xcwGrp%02d" % sid)
             sig = getattr(d, "signal", "") or ("xcwGrp%02d" % sid)
             return ("%s (G%d/%d)" % (name, group, field + 1), sig, "")
         if sid == 255 or self._cat is None:
@@ -93,7 +110,7 @@ class ChannelNamer:
         info = self._cat.info(sid)
         if not info.known:
             return ("Group %d / Cell %d (signal %d)" % (group, field + 1, sid), "", "")
-        human = info.human or info.name
+        human = sentence_case(info.human) if info.human else info.name
         label = "%s (%s)" % (human, info.name) if info.human else info.name
         # some catalogs still carry the definition's German unit ("mg/Hub")
         return (label, info.name, english_units(info.unit or ""))

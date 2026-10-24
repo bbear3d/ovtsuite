@@ -70,17 +70,29 @@ class _Worker(QtCore.QThread):
     files, values and checks added to it (``_main``: the first job was the
     conversion, not an extraction)."""
     progress = QtCore.Signal(str)
+    fraction = QtCore.Signal(float)               # share of all the jobs done, 0..1
     done = QtCore.Signal(object, object)          # result, error
 
     def __init__(self, jobs, parent=None):
         super().__init__(parent)
         self.jobs = list(jobs) if isinstance(jobs, (list, tuple)) else [jobs]
 
+    def _shares(self):
+        """Each job's slice of the bar: a conversion weighs four times an
+        extraction (copying stored bytes out is quick)."""
+        w = [1.0 if j.target == C.EXTRACT else 4.0 for j in self.jobs]
+        total, lo, out = sum(w) or 1.0, 0.0, []
+        for x in w:
+            out.append((lo / total, (lo + x) / total))
+            lo += x
+        return out
+
     def run(self):
         try:
             res = None
-            for job in self.jobs:
-                r = C.run(job, progress=self.progress.emit)
+            for job, (lo, hi) in zip(self.jobs, self._shares()):
+                r = C.run(job, progress=self.progress.emit,
+                          fraction=lambda f, lo=lo, hi=hi: self.fraction.emit(lo + (hi - lo) * f))
                 if res is None:
                     res = r
                     res._main = job.target != C.EXTRACT
@@ -114,6 +126,8 @@ class _InfoWorker(QtCore.QThread):
 
 
 class _PreviewWorker(QtCore.QThread):
+    progress = QtCore.Signal(str)
+    fraction = QtCore.Signal(float)
     done = QtCore.Signal(object, object)
 
     def __init__(self, job: C.Job, parent=None):
@@ -127,27 +141,31 @@ class _PreviewWorker(QtCore.QThread):
             job = C.Job.from_dict(self.job.to_dict())
             job.out = os.path.join(d, "preview" + C.EXT[job.target])
             kinds = C.classify(job.sources)
+            say = C.Steps(self.progress.emit, self.fraction.emit)
             if job.target == C.DIFF:
-                res = C.run(job)
+                res = C.run(job, say)
                 self.done.emit((res, None), None)
                 return
             if job.target in C.VAL or (job.target in C.IMG and kinds["values"]):
-                res = C.run(job)
+                res = C.run(job, say)
                 self.done.emit((res, _values_shown(job, res, kinds)), None)
                 return
             if job.target in C.IMG:
-                res = C.run(job)
+                res = C.run(job, say)
                 self.done.emit((res, None), None)
                 return
-            res = C.run(job)
-            if job.options.get("port"):
+            # the run, then the tables read again to list them (no port:
+            # reading them is the run's first half)
+            port = bool(job.options.get("port"))
+            res = C.run(job, say.part(0.0, 0.85 if port else 0.7))
+            if port:
                 # the tables as ported (the run placed them once already)
                 with open(res.out[0], "rb") as fh:
                     defn = C.load_definition(fh.read()) if job.target != "dam" else None
                 if defn is None:
-                    defn = C.prepare(job)[0]
+                    defn = C.prepare(job, progress=say.part(0.85, 1.0))[0]
             else:
-                defn = C.prepare(job)[0]
+                defn = C.prepare(job, progress=say.part(0.7, 1.0))[0]
             self.done.emit((res, defn), None)
         except Exception as exc:
             self.done.emit(None, exc)
@@ -517,6 +535,7 @@ class ConverterDialog(QtWidgets.QDialog):
         for b in (b_add, b_rm, b_bin, b_out, b_bo, b_mo, self.b_others):
             b.setMinimumWidth(btn_w)
         self.tabs.addTab(files, "Files")
+        self._files_page = files             # (the default split: just this tall)
 
         # -- Options ----------------------------------------------------------
         opts = QtWidgets.QWidget()
@@ -768,12 +787,12 @@ class ConverterDialog(QtWidgets.QDialog):
         brow.addWidget(self.b_folder)
         brow.addWidget(self.b_convert)
         root.addLayout(brow)
-        # what is happening, and a bar that moves while it does
+        # what is happening, and a bar that fills as it does
         srow = QtWidgets.QHBoxLayout()
         self.status = _ElidedLabel("")
         srow.addWidget(self.status, 1)
         self.progress = QtWidgets.QProgressBar()
-        self.progress.setRange(0, 1)
+        self.progress.setRange(0, self._BAR)
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(self.fontMetrics().height())
@@ -1769,6 +1788,8 @@ class ConverterDialog(QtWidgets.QDialog):
             return
         self._busy(True, "Preparing the preview...")
         w = _PreviewWorker(self.job(), self)
+        w.progress.connect(lambda m: self.status.setText(m + "..."))
+        w.fraction.connect(self._set_fraction)
         w.done.connect(self._preview_done)
         w.finished.connect(lambda w=w: shutil.rmtree(w.tmp, ignore_errors=True)
                            if w.tmp else None)
@@ -1777,7 +1798,7 @@ class ConverterDialog(QtWidgets.QDialog):
 
     def _preview_done(self, out, err):
         self._worker = None
-        self._busy(False, "")
+        self._busy(False, "", ok=err is None)
         if err is not None:
             self._set_summary("Cannot convert: %s" % err)
             return
@@ -1941,13 +1962,14 @@ class ConverterDialog(QtWidgets.QDialog):
         self._busy(True, "Converting...")
         w = _Worker(jobs, self)
         w.progress.connect(lambda m: self.status.setText(m + "..."))
+        w.fraction.connect(self._set_fraction)
         w.done.connect(self._convert_done)
         self._worker = w
         w.start()
 
     def _convert_done(self, res, err):
         self._worker = None
-        self._busy(False, "")
+        self._busy(False, "", ok=err is None)
         if err is not None:
             QtWidgets.QMessageBox.warning(self, "Converter", "Not converted: %s" % err)
             return
@@ -1969,14 +1991,23 @@ class ConverterDialog(QtWidgets.QDialog):
         self.b_folder.setEnabled(True)
         self._save_state()
 
-    def _busy(self, on: bool, text: str):
+    _BAR = 1000                             # the bar's steps
+
+    def _set_fraction(self, f: float) -> None:
+        """The share of the work done (the run reports it, rising)."""
+        v = int(round(max(0.0, min(1.0, f)) * self._BAR))
+        if v > self.progress.value():
+            self.progress.setValue(v)
+
+    def _busy(self, on: bool, text: str, ok: bool = True):
         for b in (self.b_convert, self.b_preview):
             b.setEnabled(not on)
         self.status.setText(text)
-        # moving while it works (the steps are named in the status), full
-        # when done
-        self.progress.setRange(0, 0 if on else 1)
-        self.progress.setValue(0 if on else 1)
+        # filling as the run reports how far it is (the step named in the
+        # status): empty at the start, full when done, empty again after
+        # an error
+        self.progress.setRange(0, self._BAR)
+        self.progress.setValue(self._BAR if (ok and not on) else 0)
         if on:
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.BusyCursor)
         else:
@@ -2190,11 +2221,32 @@ class ConverterDialog(QtWidgets.QDialog):
 
     # ---------------------------------------------------------- size
     _GEOM_KEY = "convert/geometry"
-    _SPLIT_KEY = "convert/split"
+    # "2": a split saved before the preview started under the Files tab's
+    # Output group (the tabs as tall as the tallest tab) is not restored
+    _SPLIT_KEY = "convert/split2"
+    _UNDER = 90                             # the Convert bar and status row, about
+
+    def _files_height(self) -> int:
+        """The tab area just tall enough for the Files tab -- its Input and
+        Output groups -- however tall the other tabs would like to be (it
+        is never made smaller than any tab's minimum)."""
+        tallest = max(self.tabs.widget(i).sizeHint().height()
+                      for i in range(self.tabs.count()))
+        need = self.tabs.sizeHint().height() - tallest + self._files_page.sizeHint().height()
+        return max(need, self.tabs.minimumSizeHint().height())
+
+    def _default_split(self) -> None:
+        """The preview from just under the Output group to the Convert bar."""
+        top = self._files_height()
+        total = sum(self.split.sizes()) if self.split.isVisible() else 0
+        total = max(total, self.height() - self._UNDER)
+        self.split.setSizes([top, max(160, total - top)])
 
     def _fit_window(self):
         """The size it was left at, else as tall as its settings need plus
-        a preview -- never taller or wider than the screen."""
+        a preview -- never taller or wider than the screen. The splitter as
+        it was left, else the tabs as tall as the Files tab needs and the
+        preview the rest."""
         from .appsettings import settings
         from .gui_fit import available, fit_to_screen
         st = settings()
@@ -2205,14 +2257,14 @@ class ConverterDialog(QtWidgets.QDialog):
                                   or self.height() > g.height()):
                 fit_to_screen(self, self.width(), self.height(), 1.0, 0.95)
             spl = st.value(self._SPLIT_KEY)
-            if spl is not None:
-                self.split.restoreState(spl)
+            if spl is None or not self.split.restoreState(spl):
+                self._default_split()
             return
-        top = self.tabs.sizeHint().height()
-        want_h = top + 300 + 90                 # preview + the rows under it
+        # as tall as the tallest tab plus a preview: the Files tab is the
+        # shortest, so the preview gets that room as well
+        want_h = self.tabs.sizeHint().height() + 300 + self._UNDER
         fit_to_screen(self, 880, want_h, 0.9, 0.85)
-        prev = max(160, self.height() - 90 - top)
-        self.split.setSizes([max(120, self.height() - 90 - prev), prev])
+        self._default_split()
 
     def _keep_size(self):
         from .appsettings import settings

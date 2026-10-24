@@ -211,7 +211,8 @@ class GearRatios:
             code, tx = hit
             cp.codings = [code]
             if tx:
-                cp.label = tx
+                # a drop-down entry: "Automatic (TC)", not "automatic (TC)"
+                cp.label = tx[:1].upper() + tx[1:]
                 if cp.is_primary:
                     cp.label += " · main block"
 

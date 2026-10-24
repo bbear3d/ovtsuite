@@ -84,6 +84,9 @@ def _apply(win, key: str) -> None:
     elif key == "ui/table_panels":
         from . import gui_panelayout
         gui_panelayout.apply_all(win, gui_panelayout.mode())
+    elif key == "ui/compare_layout":
+        from . import gui_cmpscroll
+        gui_cmpscroll.apply_all(win)
     elif key == "ui/theme":
         from . import gui_theme
         gui_theme.apply()

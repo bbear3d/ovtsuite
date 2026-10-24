@@ -73,6 +73,36 @@ primary's copy or in the comparison's, never both at once. A drag that crosses
 the banner stops at it, and clicking in the other copy starts a new selection
 there -- so **Copy** takes cells from one table only.
 
+### Scrolled together
+
+With a tall map the comparison's copy is far down the grid. **Tools >
+Options > Editor > Comparison table** can put it in a read-only grid of its
+own instead, **below** the table or **beside** it, the way the Measuring
+blocks dialog shows its comparison. The heading over it is the banner's
+text. The two grids are kept in step, whichever one you use:
+
+- scrolling, up and down and sideways;
+- column widths and row heights;
+- the current cell and the selection -- the matching cells are selected in
+  the other grid.
+
+The comparison's copy is on the primary's grid in every case (see below), so
+row for row and column for column the two grids show the same operating
+point -- also when the two tables are different sizes and the comparison's
+values were resampled. **Ctrl+C** in the comparison grid copies its selected
+cells. The default, **In the same grid, under the table**, is the layout
+described above.
+
+**In the same grid, matching cells marked** keeps that one grid, and frames
+the cells matching the selection in the other copy: select primary cells and
+their comparison cells are framed below the banner, select comparison cells
+and the primary's are framed. The frame is an outline, so the orange of a
+differing cell still shows.
+
+**Ctrl+J** jumps to the matching cells: it selects them in the other copy
+(or the other grid, below or beside) and scrolls to them. Press it again to
+come back. It does nothing in the default layout.
+
 The comparison's copy is laid out on the primary's grid, which depends on how
 the two tables match. The banner and the **comparison:** line in the notes
 above the grid say which case it is:
