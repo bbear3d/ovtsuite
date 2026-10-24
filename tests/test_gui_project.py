@@ -32,6 +32,9 @@ pytestmark = pytest.mark.slow          # whole-image sessions + the GUI
 
 LQ = os.path.join(BINARIES, "03G906016LQ.bin")
 ZF = os.path.join(ZF6HP_REFERENCE, "5.0TFSI-Stock.bin")
+# a set is named after the file it came from
+ECU = os.path.splitext(os.path.basename(LQ))[0]
+TCU = os.path.splitext(os.path.basename(ZF))[0]
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +106,7 @@ def test_a_set_is_compared_with_its_original_from_its_first_save(win, car):
     compare until the first save, then each is compared with the original."""
     assert win.open_path(car)
     tabs = _project_tabs(win)
-    assert sorted(t.project_ref.set.name for t in tabs) == ["ECU", "TCU"]
+    assert sorted(t.project_ref.set.name for t in tabs) == sorted([ECU, TCU])
     assert {t.platform() for t in tabs} == {"edc16", "zf6hp"}
     for t in tabs:
         assert "A6 ▸ " in win.tabs.tabText(win.tabs.indexOf(t))
@@ -125,29 +128,29 @@ def test_save_tab_only_and_save_all(win, car):
     assert ecu.save(tab_only=True)
     assert not ecu.is_dirty() and tcu.is_dirty()
     p = ovt.Project.load(car)
-    assert p.member_bytes(p.set("ECU").id, "flash")[0x100] == v_e
-    assert len(p.set("TCU").checkpoints) == 1          # untouched on disk
+    assert p.member_bytes(p.set(ECU).id, "flash")[0x100] == v_e
+    assert len(p.set(TCU).checkpoints) == 1          # untouched on disk
     assert tcu.save()                                  # Save = whole project
     p = ovt.Project.load(car)
-    assert len(p.set("TCU").checkpoints) == 2
+    assert len(p.set(TCU).checkpoints) == 2
 
 
 def test_last_used_tabs_and_opening_the_rest(G, win, car):
     win.open_path(car)
-    tcu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "TCU")
+    tcu = next(t for t in _project_tabs(win) if t.project_ref.set.name == TCU)
     assert win.close_tab(tcu)
     win.close_discarding()
     w2 = G.MainWindow()
     try:
         w2.open_path(car)
-        assert [t.project_ref.set.name for t in _project_tabs(w2)] == ["ECU"]
+        assert [t.project_ref.set.name for t in _project_tabs(w2)] == [ECU]
         menu = QtWidgets.QMenu()
         from ovtsuite import gui_project as gp
         gp.fill_open_menu(w2, menu)
-        tcu_act = next(a for a in menu.actions() if "TCU" in a.text())
+        tcu_act = next(a for a in menu.actions() if TCU in a.text())
         tcu_act.trigger()
         assert sorted(t.project_ref.set.name for t in _project_tabs(w2)) == \
-            ["ECU", "TCU"]
+            sorted([ECU, TCU])
     finally:
         w2.close_discarding()
 
@@ -160,11 +163,11 @@ def test_a_binary_can_be_removed_from_the_project(win, car, monkeypatch):
     doc = gp.docs(win)[0]
     ecu, tcu = sorted(_project_tabs(win), key=lambda t: t.project_ref.set.name)
     assert gp.remove_binary(win, doc, tcu.project_ref.sid)
-    assert [s.name for s in doc.project.sets] == ["ECU"]
+    assert [s.name for s in doc.project.sets] == [ECU]
     assert _project_tabs(win) == [ecu] and gp.docs(win) == [doc]
     assert not gp.remove_binary(win, doc, ecu.project_ref.sid)   # the last one
     assert ecu.save()
-    assert [s.name for s in ovt.Project.load(car).sets] == ["ECU"]
+    assert [s.name for s in ovt.Project.load(car).sets] == [ECU]
 
 
 def test_removing_the_open_binary_opens_another(win, car, monkeypatch):
@@ -173,12 +176,12 @@ def test_removing_the_open_binary_opens_another(win, car, monkeypatch):
         lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Yes))
     win.open_path(car)
     doc = gp.docs(win)[0]
-    tcu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "TCU")
+    tcu = next(t for t in _project_tabs(win) if t.project_ref.set.name == TCU)
     assert win.close_tab(tcu)
     ecu = _project_tabs(win)[0]
     assert gp.remove_binary(win, doc, ecu.project_ref.sid)
     assert gp.docs(win) == [doc]                    # the project stays open
-    assert [t.project_ref.set.name for t in _project_tabs(win)] == ["TCU"]
+    assert [t.project_ref.set.name for t in _project_tabs(win)] == [TCU]
 
 
 def test_the_window_title_names_the_project_file(win, car, tmp_path,
@@ -203,7 +206,7 @@ def test_closing_the_last_tab_closes_the_project(win, car):
 def test_crash_recovery_and_a_proper_exit(G, win, car):
     from ovtsuite import gui_project as gp
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     v = _poke(ecu, 0x1234)
     gp.autosave(win)
     doc = ecu.project_ref.doc
@@ -217,7 +220,7 @@ def test_crash_recovery_and_a_proper_exit(G, win, car):
     w2 = G.MainWindow()
     try:
         assert gp.recover(w2, recs[0])
-        got = next(t for t in _project_tabs(w2) if t.project_ref.set.name == "ECU")
+        got = next(t for t in _project_tabs(w2) if t.project_ref.set.name == ECU)
         assert got.is_dirty()
         assert got.primary.binfile.data[0x1234] == v   # raw, as edited
         w2.close_discarding()                          # a proper exit
@@ -328,7 +331,7 @@ def test_a_definition_can_replace_the_modules_maps(win, car, tmp_path,
     file's, and removing it goes back to the module's."""
     from ovtsuite import gui_project as gp
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     assert ecu.primary.support == "full"
     xdf = tmp_path / "mine.xdf"
     xdf.write_bytes(b"""<?xml version="1.0"?><XDFFORMAT version="1.80">
@@ -345,7 +348,7 @@ def test_a_definition_can_replace_the_modules_maps(win, car, tmp_path,
     ref = ecu.project_ref
     assert gp.attach_definition(win, ref.doc, ref.sid, str(xdf))
     assert asked and "defined by its module" in asked[0]
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     assert ecu.primary.support == "definition"
     assert [e.name for e in ecu.primary.entities] == ["My constant"]
     main = gp._sb._main_member(ref.doc.project, ref.sid)
@@ -358,7 +361,7 @@ def test_a_definition_beside_the_modules_maps(win, car, tmp_path, monkeypatch):
     from ovtsuite import defn as _defn
     from ovtsuite import gui_project as gp
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     n_module = len(ecu.primary.entities)
     xdf = tmp_path / "mine.xdf"
     xdf.write_bytes(b"""<?xml version="1.0"?><XDFFORMAT version="1.80">
@@ -371,7 +374,7 @@ def test_a_definition_beside_the_modules_maps(win, car, tmp_path, monkeypatch):
                         lambda self: self.defaultButton())
     ref = ecu.project_ref
     assert gp.attach_definition(win, ref.doc, ref.sid, str(xdf))
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     assert ecu.primary.support == "full"
     mine = [e for e in ecu.primary.entities if e.source == "definition"]
     assert [e.name for e in mine] == ["My constant"]
@@ -388,7 +391,7 @@ def test_the_modules_maps_can_be_hidden_and_shown_again(win, car, tmp_path,
     definition's maps; unticked, the module's come back beside them."""
     from ovtsuite import gui_project as gp
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     n_module = len(ecu.primary.entities)
     xdf = tmp_path / "mine.xdf"
     xdf.write_bytes(b"""<?xml version="1.0"?><XDFFORMAT version="1.80">
@@ -404,7 +407,7 @@ def test_the_modules_maps_can_be_hidden_and_shown_again(win, car, tmp_path,
     assert gp.attach_definition(win, doc, sid, str(xdf))
     assert gp.module_defines(win, doc, sid)
     assert gp.hide_builtin_maps(win, doc, sid, True)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     assert ecu.primary.support == "definition"
     assert [e.name for e in ecu.primary.entities] == ["My constant"]
     main = gp._sb._main_member(doc.project, sid)
@@ -412,7 +415,7 @@ def test_the_modules_maps_can_be_hidden_and_shown_again(win, car, tmp_path,
     assert gp.module_defines(win, doc, sid)          # still the module's binary
     assert not gp.hide_builtin_maps(win, doc, sid, True)      # no change
     assert gp.hide_builtin_maps(win, doc, sid, False)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     assert ecu.primary.support == "full"
     assert len(ecu.primary.entities) == n_module + 1
     assert "use" not in main.definition
@@ -431,7 +434,7 @@ def test_the_comparison_shares_the_tabs_definition(win, car):
 def test_a_patch_survives_the_project_and_can_be_removed(G, win, car):
     from ovtsuite import patch as _patch
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     s = ecu.primary
     addr = 0x1C0000
     before = bytes(s.binfile.data[addr:addr + 4])
@@ -444,13 +447,13 @@ def test_a_patch_survives_the_project_and_can_be_removed(G, win, car):
     assert bytes(s.binfile.data[addr:addr + 4]) != before
     assert ecu.save(tab_only=True)
     p = ovt.Project.load(car)
-    head = p.head(p.set("ECU").id)
+    head = p.head(p.set(ECU).id)
     assert head.kind == "patch" and any(l.startswith("PATCH ") for l in head.log)
     win.close_discarding()
     w2 = G.MainWindow()
     try:
         w2.open_path(car)
-        e2 = next(t for t in _project_tabs(w2) if t.project_ref.set.name == "ECU")
+        e2 = next(t for t in _project_tabs(w2) if t.project_ref.set.name == ECU)
         recs = _patch.list_applied_patches(e2.primary)
         assert len(recs) == 1 and not recs[0]["pending"]
         _patch.revert_applied_patch(e2.primary, recs[0])
@@ -459,7 +462,7 @@ def test_a_patch_survives_the_project_and_can_be_removed(G, win, car):
         # the version history the session sees is the project's
         from ovtsuite import history as _history
         ids = [v["id"] for v in _history.list_versions(e2.primary)]
-        branch = ovt.Project.load(car).set("ECU")
+        branch = ovt.Project.load(car).set(ECU)
         assert ids[:2] == [c.id for c in branch.lineage(branch.active.head)][:2]
     finally:
         w2.close_discarding()
@@ -573,7 +576,7 @@ def test_startup_offers_projects_not_tabs(G, win, car, tmp_path):
     assert [g["kind"] for g in groups] == ["project", "file"]
     a6 = groups[0]
     assert a6["title"] == "A6" and len(a6["indexes"]) == 2 and a6["ok"]
-    assert sorted(a6["tabs"]) == ["ECU · Stock", "TCU · Stock"]
+    assert sorted(a6["tabs"]) == sorted([ECU + " · Stock", TCU + " · Stock"])
     dlg = G.RestoreProjectsDialog(saved)
     assert dlg.list.count() == 2
     dlg.list.item(1).setCheckState(QtCore.Qt.CheckState.Unchecked)
@@ -582,7 +585,7 @@ def test_startup_offers_projects_not_tabs(G, win, car, tmp_path):
         win.close_discarding()          # (one window per project)
         fresh.show()
         made = fresh.restore_tabs(saved, dlg.chosen())
-        assert sorted(t.project_ref.set.name for t in made) == ["ECU", "TCU"]
+        assert sorted(t.project_ref.set.name for t in made) == sorted([ECU, TCU])
         # the Project panel comes back with them (it was missing)
         assert G._gp.panel(fresh).isVisible()
     finally:
@@ -610,7 +613,7 @@ def test_a_reopened_project_uses_its_stored_definitions(G, win, car):
 def test_an_edited_and_saved_tab_reopens_from_its_stored_definition(G, win, car):
     from ovtsuite import gui_project as gp
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     e = next(e for e in ecu.primary.entities
              if e.kind == "map" and not getattr(e, "text_kind", ""))
     ecu.primary.edit_cells(e, [(0, 0, e.cell(0, 0) + 1)])
@@ -618,8 +621,8 @@ def test_an_edited_and_saved_tab_reopens_from_its_stored_definition(G, win, car)
     assert gp.close_project(win, gp.docs(win)[0])
     assert win.open_path(car), [d.path for d in gp.docs(win)]
     names = [t.project_ref.set.name for t in _project_tabs(win)]
-    assert "ECU" in names, (names, [t.display_name() for t in win.workspaces()])
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    assert ECU in names, (names, [t.display_name() for t in win.workspaces()])
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     assert ecu.primary.defn_state == "used", ecu.primary.defn_state
 
 
@@ -710,7 +713,7 @@ def test_versions_merge_from_the_history_dialog_and_the_panel(G, win, car,
                                                                monkeypatch):
     from ovtsuite import gui_project as gp
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     e = next(e for e in ecu.primary.entities
              if e.kind == "map" and not getattr(e, "text_kind", ""))
     for i in range(3):
@@ -759,7 +762,7 @@ def test_find_in_definition_searches_the_definition_file_only(win, car, tmp_path
     from ovtsuite import gui_project as gp
     from ovtsuite.groups import DEFINITION
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     xdf = tmp_path / "mine.xdf"
     xdf.write_bytes(b"""<?xml version="1.0"?><XDFFORMAT version="1.80">
  <XDFHEADER><deftitle>Mine</deftitle></XDFHEADER>
@@ -771,7 +774,7 @@ def test_find_in_definition_searches_the_definition_file_only(win, car, tmp_path
                         lambda self: self.defaultButton())
     ref = ecu.project_ref
     assert gp.attach_definition(win, ref.doc, ref.sid, str(xdf))
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     win.show_workspace(ecu)
     assert ecu.primary.has_definition_file
     win.search_dock.open_in_definition()
@@ -786,7 +789,7 @@ def test_closing_a_projects_last_tab_is_close_project(G, win, car, monkeypatch):
     from ovtsuite import gui_project as gp
     win.open_path(car)
     tabs = _project_tabs(win)
-    tcu = next(t for t in tabs if t.project_ref.set.name == "TCU")
+    tcu = next(t for t in tabs if t.project_ref.set.name == TCU)
     win.close_tab(tcu)                               # not the last: no question
     ecu = _project_tabs(win)[0]
     e = next(e for e in ecu.primary.entities
@@ -800,7 +803,7 @@ def test_closing_a_projects_last_tab_is_close_project(G, win, car, monkeypatch):
     assert asked == ["Close project"]
     assert not gp.docs(win)
     p = ovt.Project.load(car)
-    assert p.head(p.set("ECU").id).kind == "save"
+    assert p.head(p.set(ECU).id).kind == "save"
 
 
 def test_patches_from_the_tabs_own_history_start_at_the_original(G, win, car,
@@ -811,7 +814,7 @@ def test_patches_from_the_tabs_own_history_start_at_the_original(G, win, car,
     way back to stock."""
     from ovtsuite import history, patch
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     assert ecu.comparison is None                # nothing saved yet
     e = next(e for e in ecu.primary.entities
              if e.kind == "map" and not getattr(e, "text_kind", ""))
@@ -819,7 +822,7 @@ def test_patches_from_the_tabs_own_history_start_at_the_original(G, win, car,
     ecu.primary.edit_cells(e, [(0, 0, before + 1)])
     assert ecu.save(tab_only=True)
     assert ecu.comparison is not None and ecu.comparison.version_of
-    assert ecu.comparison.binfile.name.endswith("ECU - original")
+    assert ecu.comparison.binfile.name.endswith(ECU + " - original")
     dlg = G.HistoryPatchDialog(ecu.primary, ecu)
     assert dlg.from_box.itemData(0) == history.ORIGINAL
     assert dlg.from_box.itemText(0) == "The original as read"
@@ -851,7 +854,7 @@ def test_a_log_kept_in_the_project_greys_the_file_row_from_the_start(win, car):
     and the file it would write is named after the project and set."""
     from ovtsuite.datalog.gui_log import DataLogDialog
     win.open_path(car)
-    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _project_tabs(win) if t.project_ref.set.name == ECU)
     win.show_workspace(ecu)
     dlg = DataLogDialog(win)
     try:
@@ -862,7 +865,7 @@ def test_a_log_kept_in_the_project_greys_the_file_row_from_the_start(win, car):
         assert pane.keep_in_project.isChecked()
         assert not pane.path_edit.isEnabled()
         pane._set_default_path()
-        assert os.path.basename(pane.path_edit.text()).startswith("A6-ECU_")
+        assert os.path.basename(pane.path_edit.text()).startswith("A6-%s_" % ECU)
     finally:
         dlg.close()
 
@@ -950,7 +953,7 @@ def test_logs_kept_in_a_project_can_be_viewed(G, win, car, tmp_path, monkeypatch
     from ovtsuite.project import Project
     data = _kept_log_bytes(tmp_path)
     proj = Project.load(car)
-    ecu = next(s for s in proj.sets if s.name == "ECU")
+    ecu = next(s for s in proj.sets if s.name == ECU)
     proj.add_log("pull.csv", data, set_id=ecu.id)
     proj.save(car)
     assert gp.open_project(win, car)
@@ -965,7 +968,7 @@ def test_logs_kept_in_a_project_can_be_viewed(G, win, car, tmp_path, monkeypatch
     # the logger's Open log...: the project's logs, then From a file...
     kept = pl.kept_logs(win)
     assert [(k.project, k.set_name, k.filename) for k in kept] == \
-        [("A6", "ECU", "pull.csv")]
+        [("A6", ECU, "pull.csv")]
     dlg._viewed = None
     dlg.tabs.setCurrentIndex(0)
     dlg._open_log()

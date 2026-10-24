@@ -356,7 +356,11 @@ def test_files_from_a_second_start_join_the_open_window(app, tmp_path):
 M235 = os.path.join(ROOT, "Reference", "WinOLS-formats", "f440_M235i_translated_axis_texts.ols")
 
 
-def test_ols_binaries_listed_and_extracted(app, tmp_path):
+def test_ols_binary_written_beside_the_conversion(app, tmp_path):
+    """A WinOLS project's binary is a ticked output on the Files tab, its
+    name filled in beside the file saved; its versions are on the Project
+    binaries tab, unticked. The binary alone can be written (the
+    conversion unticked)."""
     if not os.path.isfile(M235):
         pytest.skip("reference file missing")
     from ovtsuite import convert as C
@@ -365,25 +369,53 @@ def test_ols_binaries_listed_and_extracted(app, tmp_path):
     d.add_sources([M235])
     assert "embeds a 4 MB binary + 2 versions" in d.sources.item(0).text()
     assert "embedded in" in d.binary.placeholderText()
-    d.target.setCurrentIndex(d.target.findData(C.EXTRACT))
-    assert d.ex_list.topLevelItemCount() == 3
-    assert len(d.extract_picks()) == 3                       # all ticked at first
-    d._tick_extract("none")
-    assert d.extract_picks() == []
-    d._tick_extract("all")
-    d.ex_list.topLevelItem(1).setCheckState(0, d.ex_list.topLevelItem(0).checkState(0).Unchecked)
-    d.ex_list.topLevelItem(2).setText(2, "aee.bin")
-    d.out.setText(str(tmp_path))
-    j = d.job()
-    assert j.target == C.EXTRACT and [p["key"] for p in j.options["extract"]] == \
-        ["original", "version2"]
+    assert C.EXTRACT not in [d.target.itemData(i) for i in range(d.target.count())]
+    assert d.bin_on.isEnabled() and d.bin_on.isChecked()
+    assert d.bin_out.text().endswith("f440_M235i_translated_axis_texts.ori")
+    assert not d.mpc_on.isEnabled()             # no MPC in this project
+    assert d.ex_list.topLevelItemCount() == 3 and d.extract_picks() == []
+    d.ex_list.topLevelItem(2).setCheckState(0, d.ex_list.topLevelItem(0).checkState(0).Checked)
+    d.ex_list.topLevelItem(2).setText(2, "v2.bin")
+    d.out_on.setChecked(False)
+    d.out.setText(str(tmp_path / "x.xdf"))
+    d.bin_out.setText(str(tmp_path / "aee.ori"))
+    assert [o["key"] for o in d.embedded_outputs()] == ["original", "version2"]
     d.preview()
     assert d.table.rowCount() == 2
     d.convert()
     _wait(app, d)
-    assert sorted(n for n in os.listdir(str(tmp_path)) if n != "cfg") == \
-        ["aee.bin", "f440_M235i_translated_axis_texts_original.ori"]
-    assert os.path.getsize(str(tmp_path / "aee.bin")) == 0x400000
+    assert sorted(n for n in os.listdir(str(tmp_path)) if n != "cfg") ==         ["aee.ori", "v2.bin"]
+    assert os.path.getsize(str(tmp_path / "aee.ori")) == 0x400000
+    assert 0 < d.progress.value() == d.progress.maximum()      # done
+
+
+EDC16_OLS = os.path.join(ROOT, "Reference", "A2L", "2007_VW_DAMOS_Golf_Original_"
+                         "03G906016B__5645_0281011478_369564_BKC_1.9_104.7PS.bin.ols")
+
+
+def test_edc16_ols_gives_its_binary_and_mpc(app, tmp_path):
+    """An EDC16 project stores the original as two areas, the MPC's 448 KB
+    and the 1 MB flash: they are the Binary and MPC outputs, named
+    <project>.bin / <project>.mpc."""
+    if not os.path.isfile(EDC16_OLS):
+        pytest.skip("reference file missing")
+    from ovtsuite.gui_convert import ConverterDialog
+    d = ConverterDialog(None)
+    d.add_sources([EDC16_OLS])
+    stem = os.path.splitext(os.path.basename(EDC16_OLS))[0]
+    assert d.bin_on.isChecked() and d.mpc_on.isChecked()
+    assert os.path.basename(d.bin_out.text()) == stem + ".bin"
+    assert os.path.basename(d.mpc_out.text()) == stem + ".mpc"
+    d.out_on.setChecked(False)
+    d.bin_out.setText(str(tmp_path / "flash.bin"))
+    d.mpc_out.setText(str(tmp_path / "mpc.bin"))
+    d.mpc_on.setChecked(False)                  # each on its own
+    assert [o["key"] for o in d.embedded_outputs()] == ["original-area2"]
+    d.mpc_on.setChecked(True)
+    d.convert()
+    _wait(app, d)
+    assert os.path.getsize(str(tmp_path / "flash.bin")) == 0x100000
+    assert os.path.getsize(str(tmp_path / "mpc.bin")) == 0x70000
 
 
 def test_the_window_keeps_its_shape(app):
@@ -398,12 +430,12 @@ def test_the_window_keeps_its_shape(app):
     d.resize(900, 700)
     d.show()
     app.processEvents()
-    groups = [w for w in d._top.findChildren(W.QGroupBox) if w.parent() is d._top]
+    groups = d.tabs.widget(0).findChildren(W.QGroupBox)
 
     def shape():
         app.processEvents()
         return ((d.width(), d.height()), tuple(d.split.sizes()), d.minimumSizeHint().width(),
-                tuple(g.height() for g in groups), d.opts.height())
+                tuple(g.height() for g in groups), d.tabs.height(), d.opts.height())
     first = shape()
     for i in range(d.target.count()):
         d.target.setCurrentIndex(i)
@@ -417,4 +449,43 @@ def test_the_window_keeps_its_shape(app):
                      "--preset \"C:/Users/someone/AppData/Roaming/OVT/presets/x.json\"" * 2)
     d._set_summary("; ".join(["7290 tables will be written"] * 12))
     assert shape() == first
+    d.close()
+
+
+def test_tables_tab_lists_matches_and_fills_size_and_offset(app):
+    """The files are read in the background: the image size and offset fill
+    in (and are not passed on as given), and the Tables tab lists the tables
+    a filter matches -- with wildcards, or text found anywhere."""
+    if not os.path.isfile(OLS):
+        pytest.skip("reference file missing")
+    from ovtsuite.gui_convert import ConverterDialog
+    d = ConverterDialog(None)
+    d.add_sources([OLS])
+    d.target.setCurrentIndex(d.target.findData("xdf"))
+    d._read_info()
+    t = time.time()
+    while d._info is None and time.time() - t < 120:
+        app.processEvents()
+        time.sleep(0.02)
+    assert d._info is not None
+    assert d.size.text().startswith("0x") and d.base.text().startswith("0x")
+    j = d.job()
+    assert j.size is None and j.base is None          # what it works out anyway
+    total = d.match_list.count()
+    assert total > 1000
+    d.filter_box.setChecked(True)
+    d.pattern.setText("anw*_MAX")
+    d._fill_matches()
+    n = d.match_list.count()
+    assert 0 < n < total and all(d.match_list.item(i).text().lower().startswith("anw")
+                                 and "_max" in d.match_list.item(i).text().lower()
+                                 for i in range(n))
+    d.pattern.setText("_MAX")                         # no wildcard: anywhere
+    d._fill_matches()
+    assert d.match_list.count() >= n
+    assert d.job().filters.get("wildcard") is True
+    d.pattern_kind.setCurrentIndex(d.pattern_kind.findData("regex"))
+    d.pattern.setText("(")
+    d._fill_matches()
+    assert "Not a valid pattern" in d.match_count.text()
     d.close()

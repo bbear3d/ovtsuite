@@ -28,7 +28,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -65,20 +65,52 @@ def _size_text(n: int) -> str:
 
 # ------------------------------------------------------------------ worker
 class _Worker(QtCore.QThread):
-    """Runs a job (or a preview) off the GUI thread."""
+    """Runs jobs off the GUI thread -- the conversion, then the binaries a
+    WinOLS project holds -- as one result: the first job's, the others'
+    files, values and checks added to it (``_main``: the first job was the
+    conversion, not an extraction)."""
     progress = QtCore.Signal(str)
     done = QtCore.Signal(object, object)          # result, error
 
-    def __init__(self, job: C.Job, parent=None):
+    def __init__(self, jobs, parent=None):
         super().__init__(parent)
-        self.job = job
+        self.jobs = list(jobs) if isinstance(jobs, (list, tuple)) else [jobs]
 
     def run(self):
         try:
-            res = C.run(self.job, progress=self.progress.emit)
+            res = None
+            for job in self.jobs:
+                r = C.run(job, progress=self.progress.emit)
+                if res is None:
+                    res = r
+                    res._main = job.target != C.EXTRACT
+                    continue
+                res.out += r.out
+                res.values += r.values
+                res.check += r.check
+                res.warnings += r.warnings
+                res.report = "\n\n".join(x for x in (res.report, r.report) if x)
             self.done.emit(res, None)
         except Exception as exc:                  # shown, not raised
             self.done.emit(None, exc)
+
+
+class _InfoWorker(QtCore.QThread):
+    """Reads the files (:func:`convert.prepare`) for what they hold: the
+    definition, base and image size."""
+    done = QtCore.Signal(object, object, object)      # key, (defn, base, size), error
+
+    def __init__(self, job: C.Job, key, parent=None):
+        super().__init__(parent)
+        self.job = job
+        self.key = key
+
+    def run(self):
+        try:
+            defn, base, size = C.prepare(self.job)[:3]
+            self.done.emit(self.key, (defn, base, size), None)
+        except Exception as exc:                  # nothing to show then
+            self.done.emit(self.key, None, exc)
 
 
 class _PreviewWorker(QtCore.QThread):
@@ -350,78 +382,56 @@ class ConverterDialog(QtWidgets.QDialog):
         self._last: Optional[C.Result] = None
         self._kinds = {}                       # path -> ("definition"|"values"|"image", type)
 
-        # sections 1-3 scroll above a preview the splitter sizes, so the
-        # window fits a short screen (and keeps the size it was left at)
+        # Tabs, as the OLS-to-XDF tool lays its window out: Files (what goes
+        # in and every file that comes out), then the options by subject.
+        # The preview sits under them in a splitter; the Convert bar and its
+        # progress bar under that.
         root = QtWidgets.QVBoxLayout(self)
-        self._top = QtWidgets.QWidget()
-        outer = QtWidgets.QVBoxLayout(self._top)
-        outer.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QtWidgets.QTabWidget()
+        self._top = self.tabs                 # (the part above the preview)
+        lead = max(self.fontMetrics().horizontalAdvance(t) for t in
+                   ("Files:", "Binary:", "MPC:", "Convert to:", "Save as:", "ROM:")) + 30
 
-        # 1. sources
-        g = QtWidgets.QGroupBox("1. Files to convert")
+        # -- Files ------------------------------------------------------------
+        files = QtWidgets.QWidget()
+        fv = QtWidgets.QVBoxLayout(files)
+        g = QtWidgets.QGroupBox("Input")
         g.setToolTip("Definitions convert to other formats, or with the binary to "
                      "calibration values (DCM, CDFX).\nValue files convert to each "
                      "other.\nA definition together with value files writes the "
                      "values into a copy of the binary.")
-        gl = QtWidgets.QVBoxLayout(g)
+        gl = QtWidgets.QGridLayout(g)
+        gl.setColumnMinimumWidth(0, lead)
+        gl.setColumnStretch(1, 1)
+        lab = QtWidgets.QLabel("Files:")
+        gl.addWidget(lab, 0, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         self.sources = _DropList()
-        # a fixed height (it scrolls): the room under the sections goes to
-        # the stretch below them, not to this list, whatever the target
+        # a fixed height (it scrolls): the window keeps its shape
         self.sources.setFixedHeight(self.sources.fontMetrics().lineSpacing() * 5 + 12)
         self.sources.added.connect(self.add_sources)
-        gl.addWidget(self.sources)
-        row = QtWidgets.QHBoxLayout()
+        gl.addWidget(self.sources, 0, 1)
+        col = QtWidgets.QVBoxLayout()
         b_add = QtWidgets.QPushButton("Add files...")
         b_add.clicked.connect(self._browse_sources)
         b_rm = QtWidgets.QPushButton("Remove")
         b_rm.clicked.connect(self._remove_selected)
-        row.addWidget(b_add)
-        row.addWidget(b_rm)
-        row.addStretch(1)
-        gl.addLayout(row)
-        brow = QtWidgets.QHBoxLayout()
-        brow.addWidget(QtWidgets.QLabel("Binary (optional):"))
+        col.addWidget(b_add)
+        col.addWidget(b_rm)
+        col.addStretch(1)
+        gl.addLayout(col, 0, 2)
+        gl.addWidget(QtWidgets.QLabel("Binary:"), 1, 0)
         self.binary = QtWidgets.QLineEdit(binary)
-        self._binary_hint = ("settles the base address, sizes stored in the "
-                             "image and the checksum plugin")
+        self._binary_hint = ("optional: settles the base address, sizes stored in "
+                             "the image and the checksum plugin")
         self.binary.setPlaceholderText(self._binary_hint)
-        brow.addWidget(self.binary, 1)
+        gl.addWidget(self.binary, 1, 1)
         b_bin = QtWidgets.QPushButton("Browse...")
         b_bin.clicked.connect(self._browse_binary)
-        brow.addWidget(b_bin)
-        gl.addLayout(brow)
-        # porting onto another software version
-        self.port = QtWidgets.QCheckBox(
-            "The binary is another software version: find each table in it (port)")
-        self.port.setToolTip(
-            "The definition was made for other software than the binary. Every table "
-            "is placed by its own evidence (its stored header and axes, the tables "
-            "around it, and the original image's bytes when given) instead of one "
-            "offset. Tables nothing confirms are set apart.")
-        gl.addWidget(self.port)
-        self.port_box = QtWidgets.QWidget()
-        pb = QtWidgets.QHBoxLayout(self.port_box)
-        pb.setContentsMargins(20, 0, 0, 0)
-        pb.addWidget(QtWidgets.QLabel("Original image (optional):"))
-        self.reference = QtWidgets.QLineEdit()
-        self.reference.setPlaceholderText("the binary / HEX the definition was made for: "
-                                          "finds moved tables by their bytes")
-        pb.addWidget(self.reference, 1)
-        b_ref = QtWidgets.QPushButton("Browse...")
-        b_ref.clicked.connect(self._browse_reference)
-        pb.addWidget(b_ref)
-        self.unverified = QtWidgets.QComboBox()
-        self.unverified.addItem("Unconfirmed tables: in 'Unverified'", "category")
-        self.unverified.addItem("Unconfirmed tables: leave out", "skip")
-        pb.addWidget(self.unverified)
-        gl.addWidget(self.port_box)
-        self.port_box.setEnabled(False)
-        self.port.toggled.connect(self._port_toggled)
+        gl.addWidget(b_bin, 1, 2)
         # a RomRaider file holds many ROMs: which one
         self.rom_box = QtWidgets.QWidget()
         rb = QtWidgets.QHBoxLayout(self.rom_box)
         rb.setContentsMargins(0, 0, 0, 0)
-        rb.addWidget(QtWidgets.QLabel("ROM:"))
         self.rom = QtWidgets.QComboBox()
         self.rom.setToolTip(
             "A RomRaider definition file describes many ROMs. Use the one whose id "
@@ -432,13 +442,16 @@ class ConverterDialog(QtWidgets.QDialog):
         rb.addWidget(self.rom, 1)
         self.rom_found = _ElidedLabel()
         rb.addWidget(self.rom_found, 1)
-        gl.addWidget(self.rom_box)
+        self.rom_lab = QtWidgets.QLabel("ROM:")
+        gl.addWidget(self.rom_lab, 2, 0)
+        gl.addWidget(self.rom_box, 2, 1, 1, 2)
         # shown only for a RomRaider file, its room kept: the window does
         # not change shape when one is added or removed
-        sp = self.rom_box.sizePolicy()
-        sp.setRetainSizeWhenHidden(True)
-        self.rom_box.setSizePolicy(sp)
-        self.rom_box.setVisible(False)
+        for w in (self.rom_box, self.rom_lab):
+            sp = w.sizePolicy()
+            sp.setRetainSizeWhenHidden(True)
+            w.setSizePolicy(sp)
+            w.setVisible(False)
         self._rom_src = None                 # the RomRaider file the list is from
         self._rom_ids = []                   # its (xmlid, id string, id address, text)
         self._rom_default = None             # its ROM when none is named / found
@@ -446,52 +459,130 @@ class ConverterDialog(QtWidgets.QDialog):
         self._bin_seen = (None, None)        # (binary key, the ROM found in it)
         self.binary.textChanged.connect(self._update_rom_found)
         self.rom.currentIndexChanged.connect(self._update_rom_found)
-        outer.addWidget(g)
+        fv.addWidget(g)
 
-        # 2. target
-        g = QtWidgets.QGroupBox("2. Convert to")
-        tl = QtWidgets.QFormLayout(g)
+        g = QtWidgets.QGroupBox("Output")
+        ol = QtWidgets.QGridLayout(g)
+        ol.setColumnMinimumWidth(0, lead)
+        ol.setColumnStretch(1, 1)
+        ol.addWidget(QtWidgets.QLabel("Convert to:"), 0, 0)
         self.target = QtWidgets.QComboBox()
         self.target.currentIndexChanged.connect(self._target_changed)
-        tl.addRow("Format:", self.target)
+        ol.addWidget(self.target, 0, 1, 1, 2)
+        # each file written, ticked on its own: the converted definition (or
+        # values, or image), and the binary and MPC a WinOLS project holds
+        self.out_on = QtWidgets.QCheckBox("Save as:")
+        self.out_on.setChecked(True)
+        self.out_on.setToolTip("Write the converted file")
+        self.out = QtWidgets.QLineEdit()
+        b_out = QtWidgets.QPushButton("Browse...")
+        b_out.clicked.connect(self._browse_out)
+        self.bin_on = QtWidgets.QCheckBox("Binary:")
+        self.bin_on.setToolTip("Write the binary the WinOLS project holds (its "
+                               "original; the external flash where it also holds "
+                               "the MPC)")
+        self.bin_out = QtWidgets.QLineEdit()
+        b_bo = QtWidgets.QPushButton("Browse...")
+        b_bo.clicked.connect(lambda: self._browse_embedded(self.bin_out, "Binary"))
+        self.mpc_on = QtWidgets.QCheckBox("MPC:")
+        self.mpc_on.setToolTip("Write the processor's internal flash (MPC) the "
+                               "WinOLS project holds beside the binary")
+        self.mpc_out = QtWidgets.QLineEdit()
+        b_mo = QtWidgets.QPushButton("Browse...")
+        b_mo.clicked.connect(lambda: self._browse_embedded(self.mpc_out, "MPC"))
+        for r, (chk, edit, btn) in enumerate(((self.out_on, self.out, b_out),
+                                              (self.bin_on, self.bin_out, b_bo),
+                                              (self.mpc_on, self.mpc_out, b_mo)), start=1):
+            ol.addWidget(chk, r, 0)
+            ol.addWidget(edit, r, 1)
+            ol.addWidget(btn, r, 2)
+            chk.toggled.connect(lambda on, e=edit, b=btn: (e.setEnabled(on), b.setEnabled(on)))
+        self._emb_rows = ((self.bin_on, self.bin_out, b_bo), (self.mpc_on, self.mpc_out, b_mo))
+        self.emb_note = _ElidedLabel("")
+        self.emb_note.setStyleSheet("color: gray")
+        ol.addWidget(self.emb_note, 4, 1)
+        self.b_others = QtWidgets.QPushButton("Other binaries...")
+        self.b_others.setToolTip("The project's versions and areas, to write out "
+                                 "with the conversion")
+        self.b_others.clicked.connect(self._show_binaries)
+        ol.addWidget(self.b_others, 4, 2)
+        self._emb = {}                       # "binary" / "mpc" -> (source, Embedded)
+        self._auto_emb = {}                  # the names filled in, until edited
+        fv.addWidget(g)
+        fv.addStretch(1)
+        # the two groups' columns line up: labels, fields, buttons
+        btn_w = max(b.sizeHint().width() for b in (b_add, b_rm, b_bin, b_out))
+        for grid in (gl, ol):
+            grid.setColumnMinimumWidth(2, btn_w)
+        for b in (b_add, b_rm, b_bin, b_out, b_bo, b_mo, self.b_others):
+            b.setMinimumWidth(btn_w)
+        self.tabs.addTab(files, "Files")
+
+        # -- Options ----------------------------------------------------------
+        opts = QtWidgets.QWidget()
+        ov = QtWidgets.QVBoxLayout(opts)
+        self.opts_box = QtWidgets.QGroupBox("Format options")
+        obl = QtWidgets.QVBoxLayout(self.opts_box)
         self.opts = QtWidgets.QStackedWidget()
         self._opt_pages = {}
         self._build_option_pages()
-        tl.addRow(self.opts)
-        place = QtWidgets.QHBoxLayout()
+        obl.addWidget(self.opts)
+        ov.addWidget(self.opts_box)
+        g = QtWidgets.QGroupBox("Image and placement")
+        pf = QtWidgets.QFormLayout(g)
         self.size = QtWidgets.QLineEdit()
         self.size.setPlaceholderText("from the binary / definition")
         self.base = QtWidgets.QLineEdit()
         self.base.setPlaceholderText("from the binary / definition")
-        place.addWidget(QtWidgets.QLabel("Image size:"))
-        place.addWidget(self.size)
+        place = QtWidgets.QHBoxLayout()
+        place.addWidget(self.size, 1)
         place.addWidget(QtWidgets.QLabel("Offset 0 is address:"))
-        place.addWidget(self.base)
-        tl.addRow(place)
+        place.addWidget(self.base, 1)
+        pf.addRow("Image size:", place)
         self.dynamic = QtWidgets.QComboBox()
         self.dynamic.addItem("Write at the declared maximum", "max")
         self.dynamic.addItem("Leave them out", "skip")
-        tl.addRow("Tables sized by the image, with no binary:", self.dynamic)
-        outer.addWidget(g)
+        self.dynamic.setToolTip("Tables whose size the image stores (an EDC16 map's "
+                                "count words), when no binary is given")
+        pf.addRow("Tables sized by the image:", self.dynamic)
+        # porting onto another software version
+        self.port = QtWidgets.QCheckBox(
+            "The binary is another software version: find each table in it (port)")
+        self.port.setToolTip(
+            "The definition was made for other software than the binary. Every table "
+            "is placed by its own evidence (its stored header and axes, the tables "
+            "around it, and the original image's bytes when given) instead of one "
+            "offset. Tables nothing confirms are set apart.")
+        pf.addRow(self.port)
+        self.port_box = QtWidgets.QWidget()
+        pb = QtWidgets.QHBoxLayout(self.port_box)
+        pb.setContentsMargins(20, 0, 0, 0)
+        pb.addWidget(QtWidgets.QLabel("Original image:"))
+        self.reference = QtWidgets.QLineEdit()
+        self.reference.setPlaceholderText("optional: the binary / HEX the definition "
+                                          "was made for (finds moved tables by their bytes)")
+        pb.addWidget(self.reference, 1)
+        b_ref = QtWidgets.QPushButton("Browse...")
+        b_ref.clicked.connect(self._browse_reference)
+        pb.addWidget(b_ref)
+        self.unverified = QtWidgets.QComboBox()
+        self.unverified.addItem("Unconfirmed tables: in 'Unverified'", "category")
+        self.unverified.addItem("Unconfirmed tables: leave out", "skip")
+        pb.addWidget(self.unverified)
+        pf.addRow(self.port_box)
+        self.port_box.setEnabled(False)
+        self.port.toggled.connect(self._port_toggled)
+        ov.addWidget(g)
+        ov.addStretch(1)
+        self.tabs.addTab(opts, "Options")
 
-        # 3. transforms
-        g = QtWidgets.QGroupBox("3. Change on the way (optional)")
-        xl = QtWidgets.QVBoxLayout(g)
-        self.filter_box = QtWidgets.QGroupBox("Only some tables")
-        self.filter_box.setCheckable(True)
-        self.filter_box.setChecked(False)
-        fl = QtWidgets.QFormLayout(self.filter_box)
-        self.pattern = QtWidgets.QLineEdit()
-        self.pattern.setPlaceholderText("regular expression on name, symbol or description")
-        fl.addRow("Name matches:", self.pattern)
-        self.categories = QtWidgets.QLineEdit()
-        self.categories.setPlaceholderText("category names, separated by ;")
-        fl.addRow("In categories:", self.categories)
-        xl.addWidget(self.filter_box)
-        self.tr_box = QtWidgets.QGroupBox("Translate")
+        # -- Translation ------------------------------------------------------
+        trw = QtWidgets.QWidget()
+        tv = QtWidgets.QVBoxLayout(trw)
+        self.tr_box = QtWidgets.QGroupBox("Translate the names and descriptions")
         self.tr_box.setCheckable(True)
         self.tr_box.setChecked(False)
-        trl = QtWidgets.QGridLayout(self.tr_box)
+        trl = QtWidgets.QFormLayout(self.tr_box)
         self.tr_backend = QtWidgets.QComboBox()
         self.tr_backend.addItem("Built-in (German to English, offline)", "builtin")
         self.tr_backend.addItem("Online", "online")
@@ -513,47 +604,96 @@ class ConverterDialog(QtWidgets.QDialog):
         b_review.clicked.connect(self._review)
         b_set = QtWidgets.QPushButton("Translator settings...")
         b_set.clicked.connect(lambda: TranslatorSettings(self).exec())
-        trl.addWidget(QtWidgets.QLabel("Using:"), 0, 0)
-        trl.addWidget(self.tr_backend, 0, 1)
-        trl.addWidget(self.tr_provider, 0, 2)
-        trl.addWidget(QtWidgets.QLabel("From / to:"), 1, 0)
+        trl.addRow("Translator:", self.tr_backend)
+        trl.addRow("Online service:", self.tr_provider)
         fromto = QtWidgets.QHBoxLayout()
         fromto.addWidget(self.tr_from)
         fromto.addWidget(QtWidgets.QLabel("to"))
         fromto.addWidget(self.tr_to)
         fromto.addStretch(1)
-        trl.addLayout(fromto, 1, 1)
-        trl.addWidget(self.tr_mode, 1, 2)
+        trl.addRow("From:", fromto)
+        trl.addRow("Write:", self.tr_mode)
         btns = QtWidgets.QHBoxLayout()
         btns.addWidget(b_review)
         btns.addWidget(b_set)
         btns.addStretch(1)
-        trl.addLayout(btns, 2, 0, 1, 3)
+        trl.addRow(btns)
         self.tr_backend.currentIndexChanged.connect(
             lambda: self.tr_provider.setEnabled(self.tr_backend.currentData() == "online"))
         self.tr_provider.setEnabled(False)
         for w in (self.tr_backend, self.tr_provider, self.tr_from, self.tr_to):
             sig = getattr(w, "currentIndexChanged")
             sig.connect(self._forget_review)
-        xl.addWidget(self.tr_box)
-        outer.addWidget(g)
+        tv.addWidget(self.tr_box)
+        tv.addStretch(1)
+        self.tabs.addTab(trw, "Translation")
+
+        # -- Tables -----------------------------------------------------------
+        tbw = QtWidgets.QWidget()
+        bv = QtWidgets.QVBoxLayout(tbw)
+        self.filter_box = QtWidgets.QGroupBox("Only some tables")
+        self.filter_box.setCheckable(True)
+        self.filter_box.setChecked(False)
+        fl = QtWidgets.QFormLayout(self.filter_box)
+        prow = QtWidgets.QHBoxLayout()
+        self.pattern = QtWidgets.QLineEdit()
+        self.pattern.setPlaceholderText("part of a name, symbol or description; "
+                                        "* and ? as wildcards")
+        prow.addWidget(self.pattern, 1)
+        self.pattern_kind = QtWidgets.QComboBox()
+        self.pattern_kind.addItem("Wildcards", "wildcard")
+        self.pattern_kind.addItem("Regular expression", "regex")
+        self.pattern_kind.setToolTip(
+            "Wildcards: * stands for any text, ? for one character; text without "
+            "them matches anywhere in the name, symbol or description (case "
+            "does not matter). Regular expression: Python syntax.")
+        prow.addWidget(self.pattern_kind)
+        fl.addRow("Name matches:", prow)
+        self.categories = QtWidgets.QLineEdit()
+        self.categories.setPlaceholderText("category names, separated by ;")
+        fl.addRow("In categories:", self.categories)
+        bv.addWidget(self.filter_box)
+        mrow = QtWidgets.QHBoxLayout()
+        self.match_count = _ElidedLabel("")
+        mrow.addWidget(self.match_count, 1)
+        bv.addLayout(mrow)
+        self.match_list = QtWidgets.QListWidget()
+        self.match_list.setUniformItemSizes(True)
+        self.match_list.setToolTip("The tables the conversion writes, with these "
+                                   "settings")
+        bv.addWidget(self.match_list, 1)
+        self._match_timer = QtCore.QTimer(self)
+        self._match_timer.setSingleShot(True)
+        self._match_timer.setInterval(250)
+        self._match_timer.timeout.connect(self._fill_matches)
+        for sig in (self.pattern.textChanged, self.categories.textChanged,
+                    self.filter_box.toggled, self.pattern_kind.currentIndexChanged):
+            sig.connect(lambda *_: self._match_timer.start())
+        self.tabs.addTab(tbw, "Tables")
+        # the binaries a project holds beyond its binary and MPC: a window
+        # of their own (the Files tab's Other binaries...)
+        self._binaries_widget = self._build_binaries_tab()
+        self._binaries_dlg = None
+        # what the files hold, read in the background: image size, base,
+        # the tables (for the Tables tab)
+        self._info = None                   # (key, definition, base, size)
+        self._info_worker = None
+        self._info_timer = QtCore.QTimer(self)
+        self._info_timer.setSingleShot(True)
+        self._info_timer.setInterval(300)
+        self._info_timer.timeout.connect(self._read_info)
+        self.binary.textChanged.connect(lambda *_: self._info_timer.start())
+        self._auto_size = self._auto_base = ""
         # an unticked group shows its fields greyed out (not folded away):
-        # ticking one does not move everything under it
-        outer.addStretch(1)
-        self._top_scroll = QtWidgets.QScrollArea()
-        self._top_scroll.setWidgetResizable(True)
-        self._top_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self._top_scroll.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._top_scroll.setWidget(self._top)
+        # ticking one does not move anything
+
         self.split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.split.setChildrenCollapsible(False)
-        self.split.addWidget(self._top_scroll)
+        self.split.addWidget(self.tabs)
         root.addWidget(self.split, 1)
-        outer = root                          # the rest goes under the splitter
 
-        # 4. preview
-        g = QtWidgets.QGroupBox("4. Preview")
+        # -- preview ----------------------------------------------------------
+        g = QtWidgets.QGroupBox("Preview")
         pl = QtWidgets.QVBoxLayout(g)
         prow = QtWidgets.QHBoxLayout()
         self.b_preview = QtWidgets.QPushButton("Preview")
@@ -583,19 +723,7 @@ class ConverterDialog(QtWidgets.QDialog):
         self.split.setStretchFactor(0, 0)
         self.split.setStretchFactor(1, 1)
 
-        # 5. output
-        orow = QtWidgets.QHBoxLayout()
-        self.out_label = QtWidgets.QLabel("Save as:")
-        fm = self.out_label.fontMetrics()
-        self.out_label.setFixedWidth(max(fm.horizontalAdvance(t) for t in
-                                         ("Save as:", "Save in folder:")) + 6)
-        orow.addWidget(self.out_label)
-        self.out = QtWidgets.QLineEdit()
-        orow.addWidget(self.out, 1)
-        b_out = QtWidgets.QPushButton("Browse...")
-        b_out.clicked.connect(self._browse_out)
-        orow.addWidget(b_out)
-        outer.addLayout(orow)
+        # -- the Convert bar --------------------------------------------------
         brow = QtWidgets.QHBoxLayout()
         self.presets = QtWidgets.QComboBox()
         self.presets.setMinimumWidth(180)
@@ -627,8 +755,6 @@ class ConverterDialog(QtWidgets.QDialog):
         self._watch_dlg = None
         self.binary.textChanged.connect(self._watch_refresh)
         brow.addStretch(1)
-        self.status = _ElidedLabel("")
-        brow.addWidget(self.status, 1)
         self.b_report = QtWidgets.QPushButton("Report...")
         self.b_report.setEnabled(False)
         self.b_report.clicked.connect(self._show_report)
@@ -641,7 +767,18 @@ class ConverterDialog(QtWidgets.QDialog):
         brow.addWidget(self.b_report)
         brow.addWidget(self.b_folder)
         brow.addWidget(self.b_convert)
-        outer.addLayout(brow)
+        root.addLayout(brow)
+        # what is happening, and a bar that moves while it does
+        srow = QtWidgets.QHBoxLayout()
+        self.status = _ElidedLabel("")
+        srow.addWidget(self.status, 1)
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(self.fontMetrics().height())
+        srow.addWidget(self.progress, 1)
+        root.addLayout(srow)
 
         self._refresh_presets()
         self._restore_state()
@@ -763,8 +900,23 @@ class ConverterDialog(QtWidgets.QDialog):
         f.addRow(self.fix_cks)
         self._opt_pages["image"] = self.opts.addWidget(w)
 
-        # the binaries WinOLS projects embed, to extract
-        w, f = page()
+
+    def _build_binaries_tab(self) -> QtWidgets.QWidget:
+        """Every binary the WinOLS projects among the files hold -- the
+        original, each version, each area -- to write out beside the
+        conversion (the project's binary and MPC are on the Files tab)."""
+        w = QtWidgets.QWidget()
+        f = QtWidgets.QVBoxLayout(w)
+        lab = QtWidgets.QLabel("Every binary the WinOLS projects hold: each "
+                               "version, and each area of a binary put together "
+                               "from several memories. Ticked ones are written "
+                               "with the conversion, into the folder of the file "
+                               "saved; double-click a name to change it. The "
+                               "project's own binary and MPC are the Files tab's "
+                               "Binary and MPC rows.")
+        lab.setWordWrap(True)
+        lab.setStyleSheet("color: gray")
+        f.addWidget(lab)
         self.ex_list = QtWidgets.QTreeWidget()
         self.ex_list.setColumnCount(3)
         self.ex_list.setHeaderLabels(["Binary in the project", "Size", "Save as"])
@@ -778,25 +930,18 @@ class ConverterDialog(QtWidgets.QDialog):
         hdr.setStretchLastSection(True)
         hdr.resizeSection(0, 300)
         hdr.resizeSection(1, 70)
-        # a fixed height (it scrolls): the window keeps its shape whatever
-        # the projects hold
-        self.ex_list.setFixedHeight(self.ex_list.fontMetrics().lineSpacing() * 6 + 34)
         self.ex_list.setToolTip("Tick the binaries to write out; double-click a name to "
                                 "change it. Areas are parts of the binary above them "
-                                "(e.g. flash and MPC), so they are not ticked at first.")
+                                "(e.g. flash and MPC).")
         self.ex_list.itemChanged.connect(lambda *_: self._sync_extract_count())
-        f.addRow(self.ex_list)
+        f.addWidget(self.ex_list, 1)
         exrow = QtWidgets.QHBoxLayout()
         b_all = QtWidgets.QPushButton("Tick all")
         b_all.clicked.connect(lambda: self._tick_extract("all"))
         b_none = QtWidgets.QPushButton("Tick none")
         b_none.clicked.connect(lambda: self._tick_extract("none"))
-        b_def = QtWidgets.QPushButton("Defaults")
-        b_def.setToolTip("The original and every version ticked, the names as at first")
-        b_def.clicked.connect(lambda: self._tick_extract("default"))
         exrow.addWidget(b_all)
         exrow.addWidget(b_none)
-        exrow.addWidget(b_def)
         exrow.addSpacing(12)
         exrow.addWidget(QtWidgets.QLabel("Write as:"))
         self.ex_format = QtWidgets.QComboBox()
@@ -804,12 +949,101 @@ class ConverterDialog(QtWidgets.QDialog):
         self.ex_format.addItem("Binary (.bin)", "bin")
         self.ex_format.addItem("Intel HEX", "hex")
         self.ex_format.addItem("Motorola S-record", "srec")
+        self.ex_format.setToolTip("How the binaries are written (the Files tab's "
+                                  "binary and MPC too)")
         exrow.addWidget(self.ex_format)
         self.ex_count = _ElidedLabel("")
         exrow.addWidget(self.ex_count, 1)
-        f.addRow(exrow)
-        self._opt_pages["extract"] = self.opts.addWidget(w)
+        f.addLayout(exrow)
         self._ex_keep = {}                  # (source, key) -> (ticked, name) by hand
+        return w
+
+    # ------------------------------------------------- what the files hold
+    def _info_key(self):
+        return (tuple(self.source_paths()), self.binary.text().strip(),
+                self.rom.currentData())
+
+    def _read_info(self):
+        """Read the files in the background: the image size and base they
+        give, and their tables (the Tables tab's list)."""
+        if not self.source_paths() or self._mode() not in ("definition", "apply"):
+            self._info = None
+            self._show_info()
+            return
+        if self._info_worker is not None:
+            self._info_timer.start()        # one at a time
+            return
+        key = self._info_key()
+        if self._info is not None and self._info[0] == key:
+            return
+        job = C.Job(sources=self.source_paths(), target="xdf")
+        job.binary = self.binary.text().strip() or None
+        if self._rom_src is not None and self.rom.currentData():
+            job.options["rom"] = self.rom.currentData()
+        w = _InfoWorker(job, key, self)
+        w.done.connect(self._info_done)
+        self._info_worker = w
+        self.match_count.setText("Reading the tables...")
+        w.start()
+
+    def _info_done(self, key, out, err):
+        self._info_worker = None
+        if key != self._info_key():
+            self._info_timer.start()        # the files changed meanwhile
+            return
+        self._info = None if out is None else (key,) + tuple(out)
+        self._show_info()
+
+    def _show_info(self):
+        info = self._info
+        for edit, idx, auto in ((self.size, 3, "_auto_size"), (self.base, 2, "_auto_base")):
+            v = info[idx] if info is not None else None
+            # a base of 0 is information too; a size of 0 is none
+            val = "0x%X" % v if v is not None and (v or idx == 2) else ""
+            cur = edit.text()
+            if not cur or cur == getattr(self, auto):
+                edit.setText(val)
+                setattr(self, auto, val)
+        self._fill_matches()
+
+    def _fill_matches(self):
+        """The Tables tab's list: the tables written with these settings."""
+        self.match_list.clear()
+        info = self._info
+        if info is None:
+            self.match_count.setText("" if not self.source_paths() else
+                                     "The tables are listed once the files are read.")
+            return
+        tables = list(info[1].tables)
+        total = len(tables)
+        if self.filter_box.isChecked():
+            from .convert.transforms import filter_tables
+            f = {}
+            pat = self.pattern.text().strip()
+            if pat:
+                f["pattern"] = pat
+                if self.pattern_kind.currentData() == "wildcard":
+                    f["wildcard"] = True
+            cats = [c.strip() for c in self.categories.text().split(";") if c.strip()]
+            if cats:
+                f["categories"] = cats
+            try:
+                tables = filter_tables(tables, f)
+            except Exception as exc:                            # noqa: BLE001
+                self.match_count.setText("Not a valid pattern: %s" % exc)
+                return
+        shown = tables[:2000]
+        for t in shown:
+            name = t.name if not t.symbol or t.symbol == t.name else \
+                "%s  (%s)" % (t.name, t.symbol)
+            it = QtWidgets.QListWidgetItem(name)
+            it.setToolTip(t.description or "")
+            self.match_list.addItem(it)
+        self.match_count.setText(
+            "%d of %d tables%s" % (len(tables), total,
+                                   " (the first 2000 listed)" if len(tables) > len(shown)
+                                   else "") if self.filter_box.isChecked()
+            else "All %d tables (tick Only some tables to narrow them)" % total)
 
     def _set_summary(self, text: str) -> None:
         self.summary.setText(text)
@@ -841,7 +1075,7 @@ class ConverterDialog(QtWidgets.QDialog):
                 it = QtWidgets.QTreeWidgetItem([label, _size_text(e.size), e.name])
                 it.setFlags(it.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable |
                             QtCore.Qt.ItemFlag.ItemIsEditable)
-                ticked, name = self._ex_keep.get((src, e.key), (e.default, e.name))
+                ticked, name = self._ex_keep.get((src, e.key), (False, e.name))
                 it.setText(2, name)
                 it.setCheckState(0, QtCore.Qt.CheckState.Checked if ticked
                                  else QtCore.Qt.CheckState.Unchecked)
@@ -850,6 +1084,82 @@ class ConverterDialog(QtWidgets.QDialog):
                 self.ex_list.addTopLevelItem(it)
         self.ex_list.blockSignals(False)
         self._sync_extract_count()
+        self._sync_embedded()
+
+    def _sync_embedded(self):
+        """The Files tab's Binary and MPC rows: the first WinOLS project's
+        own binary and MPC, a default name filled in beside the file saved
+        (a name typed by hand is kept)."""
+        from .convert import embedded
+        self._emb = {}
+        srcs = self._ols_sources()
+        if srcs:
+            src = srcs[0]
+            stem = os.path.splitext(os.path.basename(src))[0]
+            try:
+                with open(src, "rb") as fh:
+                    items = embedded.images(fh.read(), stem)
+                main = embedded.main_images(items, stem)
+            except Exception:                                   # noqa: BLE001
+                main = {}
+            self._emb = {k: (src, e) for k, e in main.items()}
+        folder = os.path.dirname(os.path.abspath(
+            self.out.text().strip() or (srcs[0] if srcs else "."))) if srcs else ""
+        for key, (chk, edit, btn) in zip(("binary", "mpc"), self._emb_rows):
+            have = key in self._emb
+            chk.setEnabled(have)
+            if not have:
+                chk.setChecked(False)
+                edit.setEnabled(False)
+                btn.setEnabled(False)
+                if self._auto_emb.get(key) == edit.text():
+                    edit.setText("")
+                edit.setPlaceholderText("no %s in the files" % (
+                    "binary" if key == "binary" else "MPC"))
+                continue
+            e = self._emb[key][1]
+            want = os.path.join(folder, e.name)
+            cur = edit.text()
+            if not cur or self._auto_emb.get(key) == cur:
+                edit.setText(want)
+                self._auto_emb[key] = want
+            if key not in getattr(self, "_emb_seen", set()):
+                chk.setChecked(True)        # ticked when a project brings one
+            edit.setEnabled(chk.isChecked())
+            btn.setEnabled(chk.isChecked())
+            edit.setToolTip("%s, %s" % (e.label, _size_text(e.size)))
+        self._emb_seen = set(self._emb)
+        if self._emb:
+            src = self._emb[next(iter(self._emb))][0]
+            self.emb_note.setText("From %s%s." % (
+                os.path.basename(src), " (the first project)" if len(srcs) > 1 else ""))
+        else:
+            self.emb_note.setText("")
+        self.b_others.setEnabled(bool(srcs))
+        k = len(self.extract_picks())
+        self.b_others.setText("Other binaries (%d)..." % k if k else "Other binaries...")
+
+    def _show_binaries(self):
+        if self._binaries_dlg is None:
+            dlg = QtWidgets.QDialog(self)
+            dlg.setWindowTitle("Other binaries in the project")
+            lay = QtWidgets.QVBoxLayout(dlg)
+            lay.addWidget(self._binaries_widget, 1)
+            bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+            bb.rejected.connect(dlg.reject)
+            lay.addWidget(bb)
+            dlg.resize(720, 360)
+            dlg.finished.connect(lambda *_: self._sync_embedded())
+            self._binaries_dlg = dlg
+        self._binaries_dlg.show()
+        self._binaries_dlg.raise_()
+
+    def _browse_embedded(self, edit, what):
+        path, _f = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save the %s as" % what, edit.text(),
+            "Binary (*.bin *.mpc *.ori);;All files (*)")
+        if path:
+            edit.setText(path)
 
     def _remember_extract(self):
         for i in range(self.ex_list.topLevelItemCount()):
@@ -872,7 +1182,8 @@ class ConverterDialog(QtWidgets.QDialog):
         self._sync_extract_count()
 
     def extract_picks(self) -> List[dict]:
-        """The ticked binaries: ``[{"source", "key", "name"}]``."""
+        """The ticked binaries of the Project binaries list:
+        ``[{"source", "key", "name"}]``."""
         out = []
         for i in range(self.ex_list.topLevelItemCount()):
             it = self.ex_list.topLevelItem(i)
@@ -881,6 +1192,54 @@ class ConverterDialog(QtWidgets.QDialog):
             src, key, _d, name = it.data(0, QtCore.Qt.ItemDataRole.UserRole)
             out.append({"source": src, "key": key, "name": it.text(2).strip() or name})
         return out
+
+    def embedded_outputs(self) -> List[dict]:
+        """Every binary to write with the conversion: the Files tab's binary
+        and MPC (full paths), then the list's ticks (into the folder of the
+        file saved) -- ``[{"source", "key", "path", "label", "size"}]``,
+        each image once."""
+        out, seen = [], set()
+        for key, (chk, edit, _b) in zip(("binary", "mpc"), self._emb_rows):
+            if key in self._emb and chk.isChecked() and edit.text().strip():
+                src, e = self._emb[key]
+                out.append({"source": src, "key": e.key, "path": edit.text().strip(),
+                            "label": "%s (%s)" % ("Binary" if key == "binary" else "MPC",
+                                                  e.label), "size": e.size})
+                seen.add((src, e.key))
+        folder = os.path.dirname(os.path.abspath(
+            self.out.text().strip() or (self._ols_sources() or ["."])[0]))
+        sizes = {}
+        for i in range(self.ex_list.topLevelItemCount()):
+            it = self.ex_list.topLevelItem(i)
+            src, key, _d, _n = it.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            sizes[(src, key)] = (it.text(0), it.text(1))
+        for p in self.extract_picks():
+            if (p["source"], p["key"]) in seen:
+                continue
+            seen.add((p["source"], p["key"]))
+            label, _size = sizes.get((p["source"], p["key"]), (p["key"], ""))
+            out.append({"source": p["source"], "key": p["key"],
+                        "path": os.path.join(folder, p["name"]), "label": label,
+                        "size": None})
+        return out
+
+    def extract_jobs(self) -> List[C.Job]:
+        """The binaries to write, as extraction jobs (one per folder)."""
+        by_dir: Dict[str, List[dict]] = {}
+        for o in self.embedded_outputs():
+            d = os.path.dirname(os.path.abspath(o["path"]))
+            by_dir.setdefault(d, []).append(
+                {"source": o["source"], "key": o["key"],
+                 "name": os.path.basename(o["path"])})
+        jobs = []
+        for d, picks in by_dir.items():
+            j = C.Job(sources=sorted({p["source"] for p in picks}), target=C.EXTRACT,
+                      out=d)
+            j.options["extract"] = picks
+            j.options["extract_format"] = self.ex_format.currentData()
+            j.options["record"] = self.record.value()
+            jobs.append(j)
+        return jobs
 
     def _sync_extract_count(self):
         n = self.ex_list.topLevelItemCount()
@@ -1108,11 +1467,6 @@ class ConverterDialog(QtWidgets.QDialog):
 
     def _browse_out(self):
         t = self.target.currentData() or ""
-        if t == C.EXTRACT:
-            d = QtWidgets.QFileDialog.getExistingDirectory(self, "Extract into", self.out.text())
-            if d:
-                self.out.setText(d)
-            return
         path, _f = QtWidgets.QFileDialog.getSaveFileName(
             self, "Save as", self.out.text(),
             "%s (*%s);;All files (*)" % (C.NAMES.get(t, t), C.EXT.get(t, "")))
@@ -1142,6 +1496,7 @@ class ConverterDialog(QtWidgets.QDialog):
             it.setToolTip(p)
             self.sources.addItem(it)
         self._sync_targets()
+        self._info_timer.start()
         self._forget_review()
 
     def _remove_selected(self):
@@ -1149,6 +1504,7 @@ class ConverterDialog(QtWidgets.QDialog):
             self._kinds.pop(it.data(QtCore.Qt.ItemDataRole.UserRole), None)
             self.sources.takeItem(self.sources.row(it))
         self._sync_targets()
+        self._info_timer.start()
 
     def source_paths(self) -> List[str]:
         return [self.sources.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
@@ -1194,7 +1550,6 @@ class ConverterDialog(QtWidgets.QDialog):
                 fmts.append(C.DIFF)
             if any(t == "ols" for _k, t in self._kinds.values()):
                 fmts += list(C.IMG)             # its embedded image
-                fmts.append(C.EXTRACT)          # every binary it embeds
         for f in fmts:
             label = C.NAMES[f] + ("  (experimental)" if f in C.EXPERIMENTAL else "") \
                 + suffix.get(f, "")
@@ -1211,13 +1566,12 @@ class ConverterDialog(QtWidgets.QDialog):
         mode = self._mode()
         has_def = any(k == "definition" for k, _t in self._kinds.values())
         # greyed out, never hidden: the window keeps its shape
-        self.port.setEnabled(has_def and t != C.EXTRACT)
-        self.port_box.setEnabled(has_def and self.port.isChecked() and t != C.EXTRACT)
-        extract = t == C.EXTRACT
-        self.out_label.setText("Save in folder:" if extract else "Save as:")
-        if extract:
-            page = "extract"
-        elif t in C.VAL:
+        self.port.setEnabled(has_def)
+        self.port_box.setEnabled(has_def and self.port.isChecked())
+        extract = False
+        self.opts_box.setTitle("%s options" % C.NAMES.get(t, "Format") if t else
+                               "Format options")
+        if t in C.VAL:
             page = "values"
             self.values_note.setText(
                 "Every table's values are read out of the binary through the "
@@ -1233,8 +1587,6 @@ class ConverterDialog(QtWidgets.QDialog):
         self.filter_box.setEnabled(is_def or t in C.VAL or mode == "apply" or t == C.DIFF)
         self.tr_box.setEnabled(is_def or (t in C.VAL and mode != "values"))
         self.dynamic.setEnabled(is_def)
-        for wd in (self.size, self.base, self.binary):
-            wd.setEnabled(not extract)
         need = self._binary_needed()
         self.binary.setPlaceholderText(
             "needed: the binary of the other software version" if need == "port" else
@@ -1247,14 +1599,10 @@ class ConverterDialog(QtWidgets.QDialog):
             stem = os.path.splitext(src[0])[0]
             cur = self.out.text()
             if not cur or getattr(self, "_auto_out", "") == cur:
-                if extract:
-                    first = (self._ols_sources() or src)[0]
-                    self.out.setText(os.path.dirname(os.path.abspath(first)))
-                else:
-                    ins = list(src) + [self.binary.text().strip(),
-                                       self.reference.text().strip(),
-                                       self.patch_with.text().strip()]
-                    self.out.setText(C.free_output(stem + C.EXT[t], ins))
+                ins = list(src) + [self.binary.text().strip(),
+                                   self.reference.text().strip(),
+                                   self.patch_with.text().strip()]
+                self.out.setText(C.free_output(stem + C.EXT[t], ins))
                 self._auto_out = self.out.text()
         self._watch_refresh()
 
@@ -1292,19 +1640,19 @@ class ConverterDialog(QtWidgets.QDialog):
         t = self.target.currentData() or ""
         j = C.Job(sources=self.source_paths(), target=t, out=self.out.text().strip())
         j.binary = self.binary.text().strip() or None
-        if t == C.EXTRACT:
-            j.binary = None
-            j.options["extract"] = self.extract_picks()
-            j.options["extract_format"] = self.ex_format.currentData()
-            j.options["record"] = self.record.value()
-            return j
-        j.size = _int_or_none(self.size.text())
-        j.base = _int_or_none(self.base.text())
+        # a size / base filled in from the files is what the conversion
+        # works out anyway: only one typed over it is given
+        j.size = (None if self.size.text() == self._auto_size
+                  else _int_or_none(self.size.text()))
+        j.base = (None if self.base.text() == self._auto_base
+                  else _int_or_none(self.base.text()))
         j.dynamic = self.dynamic.currentData()
         if self.filter_box.isChecked():
             f = {}
             if self.pattern.text().strip():
                 f["pattern"] = self.pattern.text().strip()
+                if self.pattern_kind.currentData() == "wildcard":
+                    f["wildcard"] = True
             cats = [c.strip() for c in self.categories.text().split(";") if c.strip()]
             if cats:
                 f["categories"] = cats
@@ -1358,10 +1706,12 @@ class ConverterDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Converter",
                                           "A number is not readable: %s" % exc)
             return False
-        if self.target.currentData() == C.EXTRACT and not self.extract_picks():
-            QtWidgets.QMessageBox.information(self, "Converter",
-                                              "Tick the binaries to extract first.")
-            return False
+        if not self.out_on.isChecked():
+            if not self.embedded_outputs():
+                QtWidgets.QMessageBox.information(
+                    self, "Converter", "Tick a file to write first (Files tab).")
+                return False
+            return True                     # only binaries: nothing else to check
         need = self._binary_needed()
         has_image = any(k == "image" for k, _t in self._kinds.values())
         if need and not self.binary.text().strip() and not has_image:
@@ -1414,7 +1764,7 @@ class ConverterDialog(QtWidgets.QDialog):
     def preview(self):
         if not self._check_ready() or self._worker is not None:
             return
-        if self.target.currentData() == C.EXTRACT:
+        if not self.out_on.isChecked():
             self._show_extract(None)
             return
         self._busy(True, "Preparing the preview...")
@@ -1469,34 +1819,29 @@ class ConverterDialog(QtWidgets.QDialog):
             self.table.setItem(k, 5, QtWidgets.QTableWidgetItem(""))
 
     def _show_extract(self, res: Optional[C.Result]) -> None:
-        """The binaries to extract (a preview) or extracted (``res``)."""
+        """The binaries to write (a preview) or written (``res``)."""
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         self.table.setHorizontalHeaderLabels(["", "Binary", "Size", "File", "Folder", ""])
-        folder = self.out.text().strip()
-        picks = self.extract_picks()
-        sizes = {}
-        for i in range(self.ex_list.topLevelItemCount()):
-            it = self.ex_list.topLevelItem(i)
-            src, key, _d, _n = it.data(0, QtCore.Qt.ItemDataRole.UserRole)
-            sizes[(src, key)] = (it.text(0), it.text(1))
+        picks = self.embedded_outputs()
+        fmt = self.ex_format.currentData()
         for p in picks:
             k = self.table.rowCount()
             self.table.insertRow(k)
-            label, size = sizes.get((p["source"], p["key"]), (p["key"], ""))
-            name = p["name"]
-            fmt = self.ex_format.currentData()
+            name = os.path.basename(p["path"])
             if fmt in ("hex", "srec", "bin"):
                 name = os.path.splitext(name)[0] + {"hex": ".hex", "srec": ".s19",
                                                     "bin": ".bin"}[fmt]
-            for col, val in enumerate(("", label, size, name, folder, "")):
+            size = _size_text(p["size"]) if p.get("size") else ""
+            for col, val in enumerate(("", p["label"], size, name,
+                                       os.path.dirname(p["path"]), "")):
                 self.table.setItem(k, col, QtWidgets.QTableWidgetItem(val))
         self.table.resizeColumnToContents(0)
         self.table.setSortingEnabled(True)
         if res is None:
-            self._set_summary("%d binar%s will be written into %s, %s." % (
-                len(picks), "y" if len(picks) == 1 else "ies", folder or "the project's folder",
-                "exactly as stored" if self.ex_format.currentData() == "raw" else
+            self._set_summary("%d binar%s will be written, %s." % (
+                len(picks), "y" if len(picks) == 1 else "ies",
+                "exactly as stored" if fmt == "raw" else
                 "as %s" % self.ex_format.currentText()))
         else:
             self._set_summary("%s%s" % (res.values[0] if res.values else "Extracted.",
@@ -1506,7 +1851,7 @@ class ConverterDialog(QtWidgets.QDialog):
             self.b_report.setEnabled(True)
 
     def _show_result(self, res: C.Result, defn, preview: bool):
-        if self.target.currentData() == C.EXTRACT:
+        if not getattr(res, "_main", True):
             self._show_extract(res)
             return
         self.table.setSortingEnabled(False)
@@ -1576,21 +1921,25 @@ class ConverterDialog(QtWidgets.QDialog):
     def convert(self):
         if not self._check_ready() or self._worker is not None:
             return
-        job = self.job()
-        if not job.out:
-            self._browse_out()
-            job.out = self.out.text().strip()
+        jobs = []
+        if self.out_on.isChecked():
+            job = self.job()
             if not job.out:
+                self._browse_out()
+                job.out = self.out.text().strip()
+                if not job.out:
+                    return
+            hit = C.replaces_input(job, job.out)
+            if hit:
+                QtWidgets.QMessageBox.warning(
+                    self, "Converter",
+                    "The output would replace %s, which the conversion reads. "
+                    "Choose another name." % os.path.basename(hit))
                 return
-        hit = C.replaces_input(job, job.out)
-        if hit:
-            QtWidgets.QMessageBox.warning(
-                self, "Converter",
-                "The output would replace %s, which the conversion reads. "
-                "Choose another name." % os.path.basename(hit))
-            return
+            jobs.append(job)
+        jobs += self.extract_jobs()
         self._busy(True, "Converting...")
-        w = _Worker(job, self)
+        w = _Worker(jobs, self)
         w.progress.connect(lambda m: self.status.setText(m + "..."))
         w.done.connect(self._convert_done)
         self._worker = w
@@ -1605,7 +1954,7 @@ class ConverterDialog(QtWidgets.QDialog):
         defn = None
         try:
             t = self.target.currentData()
-            if t == C.EXTRACT:
+            if not getattr(res, "_main", True):
                 pass
             elif t in C.DEF_OUT:
                 defn = C.load_definition(open(res.out[0], "rb").read())
@@ -1624,6 +1973,10 @@ class ConverterDialog(QtWidgets.QDialog):
         for b in (self.b_convert, self.b_preview):
             b.setEnabled(not on)
         self.status.setText(text)
+        # moving while it works (the steps are named in the status), full
+        # when done
+        self.progress.setRange(0, 0 if on else 1)
+        self.progress.setValue(0 if on else 1)
         if on:
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.BusyCursor)
         else:
@@ -1756,6 +2109,8 @@ class ConverterDialog(QtWidgets.QDialog):
         f = d.get("filters") or {}
         self.filter_box.setChecked(bool(f))
         self.pattern.setText(f.get("pattern", ""))
+        self.pattern_kind.setCurrentIndex(
+            0 if f.get("wildcard") or not f.get("pattern") else 1)
         self.categories.setText("; ".join(f.get("categories", [])))
         tr = d.get("translate") or {}
         self.tr_box.setChecked(bool(tr))
@@ -1805,6 +2160,12 @@ class ConverterDialog(QtWidgets.QDialog):
             d.get("options", {}).pop("extract", None)       # picks of these files
             if d.get("translate"):
                 d["translate"].pop("rows", None)
+            d["window"] = {"tab": self.tabs.currentIndex(),
+                           "convert": self.out_on.isChecked(),
+                           "binary": self.bin_on.isChecked() or not self.bin_on.isEnabled()
+                           and self._win.get("binary", True),
+                           "mpc": self.mpc_on.isChecked() or not self.mpc_on.isEnabled()
+                           and self._win.get("mpc", True)}
             os.makedirs(T.config_dir(), exist_ok=True)
             with open(_cfg_path(_STATE), "w", encoding="utf-8") as fh:
                 json.dump(d, fh, indent=1)
@@ -1812,12 +2173,20 @@ class ConverterDialog(QtWidgets.QDialog):
             pass
 
     def _restore_state(self):
+        self._win = {}
         try:
             with open(_cfg_path(_STATE), encoding="utf-8") as fh:
                 d = json.load(fh)
         except (OSError, ValueError):
             return
         self.apply_settings(d)
+        win = d.get("window") or {}
+        self._win = win
+        self.tabs.setCurrentIndex(int(win.get("tab", 0) or 0))
+        self.out_on.setChecked(bool(win.get("convert", True)))
+        # a project's binary and MPC are ticked when it brings them, unless
+        # they were unticked last time
+        self._emb_seen = {k for k in ("binary", "mpc") if win.get(k) is False}
 
     # ---------------------------------------------------------- size
     _GEOM_KEY = "convert/geometry"
@@ -1839,7 +2208,7 @@ class ConverterDialog(QtWidgets.QDialog):
             if spl is not None:
                 self.split.restoreState(spl)
             return
-        top = self._top.sizeHint().height()
+        top = self.tabs.sizeHint().height()
         want_h = top + 300 + 90                 # preview + the rows under it
         fit_to_screen(self, 880, want_h, 0.9, 0.85)
         prev = max(160, self.height() - 90 - top)
@@ -1857,6 +2226,9 @@ class ConverterDialog(QtWidgets.QDialog):
     def closeEvent(self, ev):
         self._keep_size()
         self.closeEvent_watch()
+        iw = getattr(self, "_info_worker", None)
+        if iw is not None:
+            iw.wait(30000)
         w = self._worker
         if w is not None and not w.wait(10000):
             # still converting (a large port, an online translation): out of

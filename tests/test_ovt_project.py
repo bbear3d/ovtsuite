@@ -18,6 +18,7 @@ import zipfile
 
 import pytest
 
+from conftest import BINARIES  # noqa: E402
 from ovtsuite import container as _c
 from ovtsuite import project as ovt
 from ovtsuite.project import archive as _ar
@@ -779,3 +780,17 @@ def test_a_set_still_unknown_stays_a_plain_image(tmp_path):
     assert (ext, blob) == (".bin", flash)
     assert s.platform == "unknown" and s.members[0].role == "raw"
     assert not p.modified_since_save
+
+
+def test_a_set_is_named_after_its_file_and_can_be_renamed(tmp_path):
+    """An imported binary's set takes the file's name; renaming it replaces
+    that, and the new name is what the project keeps."""
+    lq = os.path.join(BINARIES, "03G906016LQ.bin")
+    if not os.path.exists(lq):
+        pytest.skip("reference binary missing")
+    proj, s = ovt.import_file(lq)
+    assert s.name == "03G906016LQ"
+    proj.rename_set(s.id, "Engine")
+    path = str(tmp_path / "car.ovt")
+    proj.save(path)
+    assert [x.name for x in ovt.Project.load(path).sets] == ["Engine"]

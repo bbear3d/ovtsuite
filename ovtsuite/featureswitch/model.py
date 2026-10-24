@@ -111,6 +111,9 @@ class FeatureSet:
 #: target, first, **opts)`` lists what a setting changes (rows of
 #: ``engine.write_rows`` / ``engine.fault_rows``) and ``state_text(session,
 #: group)`` says in words what the file holds when no setting matches.
+#: ``fs_involved(session, group, ref=None, **opts)`` lists the tables and
+#: fault paths the feature works through, with what they hold now, for the
+#: window before a setting is picked (rows as ``fs_preview``'s, ``new`` "").
 HOOK_PROTOCOL = ("present", "groups", "state", "fs_describe", "fs_apply")
 
 _EMPTY = FeatureSet()

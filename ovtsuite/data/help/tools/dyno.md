@@ -119,11 +119,15 @@ duration maps** to take the ECU's quantity as it is.
   limit, e.g. the Touareg R50 V10) -- applies `EngPrt_trqLimPBoost_MAP` in
   full. The ECU allows it only for a limited time (`EngPrt_tiBoostMax_C`), so
   it is off by default and the chart shows the steady limit.
-- **Engine** -- displacement and cylinders. EDC16 files store both (the
-  displacement as `ASMod_volEng_C`, or the cubic capacity sent to the
-  instrument cluster); EDC15 stores the cylinder count, and the displacement
-  comes from the definition's engine. If either is unknown the chart says so
-  and waits for you to enter it.
+- **Engine** -- displacement and cylinders, filled in from the file; change
+  either to override it (back to the file's figure, it follows the file
+  again). EDC16 files store both: the displacement is the cubic capacity sent
+  to the instrument cluster (`FrmMng_volCubCap_C`, 2.0 l on 03G906016LQ),
+  else the air model's `ASMod_volEng_C` -- which on some 2.0 files is a 1.90
+  carried over from the 1.9, so the note under the fields names both when
+  they differ. EDC15 stores the cylinder count, and the displacement comes
+  from the definition's engine. If either is unknown the chart says so and
+  waits for you to enter it.
 - The table lists every engine speed: power, torque, quantity, the quantity in
   the reference's terms, the limit that governs, boost and air. Double-click a
   **Limited by** cell to open that map.

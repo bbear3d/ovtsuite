@@ -26,12 +26,21 @@ def _span(t: TableDef) -> Tuple[int, int]:
 
 def filter_tables(tables: List[TableDef], f: Dict) -> List[TableDef]:
     """Tables matching every filter given: ``categories`` (any of),
-    ``pattern`` (a regular expression on the name, symbol or description),
+    ``pattern`` (a regular expression on the name, symbol or description;
+    with ``wildcard``, ``*`` / ``?`` wildcards instead, text without them
+    matching anywhere),
     ``start`` / ``end`` (image offsets the table lies within), ``kinds``,
     ``names`` (exact names, e.g. the tables that differ between two
     binaries)."""
     cats = set(f.get("categories") or [])
-    pat = re.compile(f["pattern"], re.I) if f.get("pattern") else None
+    pat = None
+    if f.get("pattern"):
+        p = f["pattern"]
+        if f.get("wildcard"):
+            rx = "".join(".*" if ch == "*" else "." if ch == "?" else re.escape(ch)
+                         for ch in p)
+            p = "^%s$" % rx if ("*" in p or "?" in p) else re.escape(p)
+        pat = re.compile(p, re.I)
     kinds = set(f.get("kinds") or [])
     names = set(f.get("names") or [])
     start, end = f.get("start"), f.get("end")

@@ -791,16 +791,24 @@ HEADER_NEAR = 16
 
 
 def rebase(blob: bytes, platform: str, old: bytes, new: bytes,
-           near: int = HEADER_NEAR) -> Optional[bytes]:
+           near: int = HEADER_NEAR,
+           reshaped: Optional[list] = None) -> Optional[bytes]:
     """The snapshot ``blob`` of image ``old``, made to describe ``new`` --
     another version of the same file -- or None when it can't be trusted to.
 
     Lets a project locate parameters on a set's ORIGINAL version (where no
     edited value can mislead detection) and open a modified version with
     that result. Cell values and checksums may differ; a change to any byte
-    just before a parameter (its header: a map's dimensions, an axis count)
+    just before a table (its header: a map's dimensions, an axis count)
     may have moved or reshaped it, so then None, and the version is
-    identified on its own."""
+    identified on its own. A single value has no header: a byte changed
+    in front of one is an unlisted parameter's value, not a reason to
+    re-identify.
+
+    With a list for ``reshaped``, a table whose header changed is accepted
+    instead and ``(name, group, kind)`` of it appended: the caller re-shapes
+    it to the record ``new`` holds (``ovtsuite.resize.adopt_headers``) -- a
+    table resized in the tune, by this app or another tool."""
     try:
         snap = json.loads(bytes(blob).decode("utf-8"))
         if len(old) != len(new) or check(snap, platform, old):
@@ -813,9 +821,15 @@ def rebase(blob: bytes, platform: str, old: bytes, new: bytes,
     import bisect
     merged = param_spans(ents)
     mstarts = [m[0] for m in merged]
-    starts = sorted({e.addr for e in ents} | {
-        ax.addr for e in ents for ax in (e.x, e.y)
-        if ax is not None and ax.addr is not None})
+    owner = {}
+    for e in ents:
+        axes = [ax.addr for ax in (e.x, e.y)
+                if ax is not None and ax.addr is not None]
+        if not axes and e.rows * e.cols <= 1:
+            continue                    # a value: no header in front of it
+        for a in [e.addr] + axes:
+            owner.setdefault(a, e)
+    starts = sorted(owner)
     mo, mn = memoryview(old), memoryview(new)
     n, blk = len(old), 4096
     for b0 in range(0, n, blk):
@@ -830,7 +844,12 @@ def rebase(blob: bytes, platform: str, old: bytes, new: bytes,
                 continue                # a cell or breakpoint: a value
             k = bisect.bisect_right(starts, i)
             if k < len(starts) and starts[k] - i <= near:
-                return None             # a header changed: re-identify
+                if reshaped is None:
+                    return None         # a header changed: re-identify
+                e = owner[starts[k]]
+                key = (e.name, e.group or "", e.kind)
+                if key not in reshaped:
+                    reshaped.append(key)
     snap["mask"] = mask_digest(new, ents)
     return json.dumps(snap, separators=(",", ":"),
                       allow_nan=True).encode("utf-8")

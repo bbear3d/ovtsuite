@@ -103,6 +103,39 @@ def images(data: bytes, stem: str) -> List[Embedded]:
     return out
 
 
+#: sizes of a processor's internal flash that WinOLS stores as an area of
+#: the original beside the external flash (EDC16: an MPC561 / 562's 448 KB,
+#: MPC563 / 565's 512 KB)
+MPC_SIZES = (0x70000, 0x80000)
+
+
+def main_images(items: List[Embedded], stem: str) -> Dict[str, Embedded]:
+    """The project's own binary and, where WinOLS stores it beside it, the
+    processor's internal flash: ``{"binary": ..., "mpc": ...}`` (either may
+    be missing), each with a default name ``<stem>.bin`` / ``<stem>.mpc``.
+
+    An original of two areas, one of them an internal-flash size, is the
+    external flash (the binary) and the MPC; an original with no areas is
+    the binary as it is."""
+    import dataclasses
+    orig = next((e for e in items if e.key == "original"), None)
+    if orig is None:
+        return {}
+    areas = [e for e in items if e.key.startswith("original-area")]
+    out: Dict[str, Embedded] = {}
+    if len(areas) == 2:
+        mpc = [a for a in areas if a.size in MPC_SIZES]
+        if len(mpc) == 1:
+            flash = next(a for a in areas if a is not mpc[0])
+            out["binary"] = dataclasses.replace(flash, name=stem + ".bin")
+            out["mpc"] = dataclasses.replace(mpc[0], name=stem + ".mpc")
+            return out
+    if not areas:
+        ext = os.path.splitext(orig.name)[1] or ".bin"
+        out["binary"] = dataclasses.replace(orig, name=stem + ext)
+    return out
+
+
 def summary(path: str, data: Optional[bytes] = None) -> str:
     """A line saying what a WinOLS project holds, for the file list:
     ``"WinOLS project: 7290 maps; embeds a 256 KB binary + 2 versions"``."""
