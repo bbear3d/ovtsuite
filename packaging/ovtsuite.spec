@@ -100,6 +100,12 @@ datas += [(str(FLASH_DIR / "j2534_bridge.py"), "bridge"),
 # groups ...) that nothing in the base app may import by itself, and a frozen
 # app cannot load what it does not carry. Same for the libraries the modules
 # import (external_imports.json, written by stage-base from the module sources).
+#: base modules used only while BUILDING module packages, never by the app:
+#: native.py drives Cython and setuptools (which drag in distutils, excluded
+#: below -- PyInstaller then fails: 'distutils already imported as
+#: ExcludedModule'). They stay in the source tree, out of the freeze.
+BUILD_ONLY = ("modules.native",)
+
 def _base_modules():
     out = []
     for d, dirs, files in os.walk(PKG_DIR):
@@ -108,7 +114,8 @@ def _base_modules():
         for f in files:
             if f.endswith(".py"):
                 out.append(rel if f == "__init__.py" else rel + "." + f[:-3])
-    return sorted(out)
+    skip = {"%s.%s" % (PKG, m) for m in BUILD_ONLY}
+    return sorted(m for m in out if m not in skip)
 
 
 try:
@@ -135,7 +142,8 @@ HIDDEN = _base_modules() + MODULE_IMPORTS + [
 # cold-start fast. (UPX is left off — it is known to corrupt Qt6 DLLs.)
 EXCLUDES = [
     "tkinter", "unittest", "pydoc", "doctest", "pdb", "lib2to3",
-    "test", "distutils", "setuptools", "pip",
+    "test", "distutils", "setuptools", "pip", "Cython",
+    *("%s.%s" % (PKG, m) for m in BUILD_ONLY),
     "matplotlib", "pandas", "scipy", "numpy", "PIL",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
     "PySide6.QtWebEngineQuick", "PySide6.QtWebChannel",
