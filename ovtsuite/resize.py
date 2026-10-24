@@ -1539,6 +1539,46 @@ def follow_headers(session, codec: Optional[LayoutCodec] = None) -> int:
     return n
 
 
+def adopt_headers(session, keys, codec: Optional[LayoutCodec] = None
+                  ) -> Tuple[int, List[str]]:
+    """Tables ``keys`` (``(name, group, kind)``) of a session opened with
+    another version's definition (``ovtsuite.defn.rebase``) whose headers
+    differ in this image -- resized in the tune: each is re-shaped to the
+    record this image holds and given a modifier, so a sibling session of
+    the other version (the comparison) follows its own header back.
+    Returns ``(re-shaped, problems)``."""
+    if not keys:
+        return 0, []
+    codec = codec or codec_for(session)
+    if codec is None:
+        return 0, ["the installed module cannot read resized tables"]
+    n, problems, recs = 0, [], []
+    for name, group, kind in keys:
+        e = next((x for x in getattr(session, "entities", []) or []
+                  if x.name == name and x.kind == kind
+                  and (x.group or "") == group), None)
+        if e is None:
+            continue
+        stock = dims(e)
+        start = codec.start_of(e)
+        shp = codec.read(e.binfile.data, start, e) if start is not None else None
+        if shp is None:
+            problems.append("%s: no valid record at its header" % name)
+            continue
+        if (shp.nx, shp.ny) == stock and shp.z_addr == e.addr:
+            continue
+        shape_entity(e, shp)
+        mark(e, stock)
+        n += 1
+        recs.append({"name": name, "group": group, "kind": kind,
+                     "mode": "inplace", "stock": list(stock),
+                     "now": [shp.nx, shp.ny], "sizes": [[shp.nx, shp.ny]],
+                     "copies": 0, "start": start})
+    if recs:
+        set_mods(session, merge(mods(session), recs))
+    return n, problems
+
+
 def dumps(lst) -> bytes:
     return json.dumps({"format": FORMAT, "mods": list(lst)},
                       indent=1, sort_keys=True).encode("utf-8")
@@ -1636,6 +1676,6 @@ __all__ = ["Shape", "LayoutCodec", "Limits", "Plan", "codec_for", "dims",
            "plan_one", "relocate_one", "plan", "resample", "spread",
            "set_of", "set_main", "set_limits", "plan_set", "SetLimits",
            "execute", "apply",
-           "follow", "follow_headers", "mods", "set_mods", "merge", "find",
+           "follow", "follow_headers", "adopt_headers", "mods", "set_mods", "merge", "find",
            "dumps", "loads", "apply_from_project", "is_resized", "MAX_POINTS",
            "RELOCATE_READY", "RELOCATE_WHY"]

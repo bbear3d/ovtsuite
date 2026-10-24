@@ -293,7 +293,7 @@ def test_a_6hp_version_pairs_every_schedule_with_the_loaded_file(tmp_path):
 
 #: ``MODEL_VERSION`` and the hash of ``defn.MODEL_FILES`` it was recorded with.
 #: See test_the_model_files_are_unchanged_or_model_version_was_considered.
-RECORDED_MODEL = (3, "03b83122c4f73c0176ba76b95fe929ae1e1eb7cc")
+RECORDED_MODEL = (3, "50b6532c2a3a7f8e091ffabacc4c2bf31c4cbda9")
 
 
 def test_the_model_files_are_unchanged_or_model_version_was_considered():
@@ -484,3 +484,20 @@ def test_rebase_refuses_when_a_header_changed():
     new[0x101] = 6                          # the count word before the axis
     assert D.rebase(_snap_of(old, [e]), "edc16", old, bytes(new)) is None
     assert D.rebase(_snap_of(old, [e]), "edc16", old, bytes(new[:-1])) is None
+
+
+def test_rebase_lists_a_resized_table_and_ignores_bytes_before_a_value():
+    from ovtsuite.model import Entity
+    old = bytes(range(256)) * 4
+    e = _one_map()
+    v = Entity("V", "constant", 1, [], "", "", 0x200, 1, 1, 16, False, "X", "kb")
+    new = bytearray(old)
+    new[0x101] = 6                          # the curve's count word
+    new[0x1F8] ^= 0xFF                      # an unlisted byte before a value
+    snap = _snap_of(old, [e, v])
+    assert D.rebase(snap, "edc16", old, bytes(new)) is None
+    got = []
+    assert D.rebase(snap, "edc16", old, bytes(new), reshaped=got) is not None
+    assert got == [("M", "", "curve")]
+    new[0x101] = old[0x101]                 # only the byte before the value
+    assert D.rebase(snap, "edc16", old, bytes(new)) is not None

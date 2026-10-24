@@ -367,6 +367,30 @@ def _axis_spans(entities) -> List[Tuple[int, int]]:
     return out
 
 
+def _header_spans(session) -> List[Tuple[int, int]]:
+    """``[(start, end)]`` of the record headers in front of the tables
+    (the count words before the first axis), where the platform's layout
+    codec (ovtsuite.resize) knows them."""
+    try:
+        from . import resize as _resize
+        codec = _resize.codec_for(session)
+    except Exception:
+        codec = None
+    if codec is None:
+        return []
+    out = []
+    for e in getattr(session, "entities", []) or []:
+        if e.kind not in ("map", "curve"):
+            continue
+        try:
+            st = codec.start_of(e)
+        except Exception:
+            st = None
+        if st is not None and 0 <= st < e.addr:
+            out.append((st, e.addr))
+    return out
+
+
 def diff_gaps(primary, comparison, *,
               exclude_checksums: bool = True) -> List[Tuple[int, int]]:
     """Byte ranges inside ``primary``'s own calibration region where the two
@@ -396,6 +420,15 @@ def diff_gaps(primary, comparison, *,
     # EDC16 and ZF -- and belong to it just the same: a changed breakpoint
     # is that parameter's change (diff_entities), not undefined data.
     spans = sorted(spans + _axis_spans(primary.entities))
+    # A table's header (its point counts) is the table's too, and so is
+    # whatever the COMPARISON's tables cover: a table resized in one of the
+    # two has a new count and a grown (or shrunk) tail outside the other's
+    # span. Carried as raw bytes, those would rewrite the target's header
+    # under cells laid out for its old size.
+    spans += _header_spans(primary) + _header_spans(comparison)
+    spans += [(e.addr, e.end) for e in comparison.entities
+              if getattr(e, "addr", None) is not None]
+    spans = sorted(spans + _axis_spans(comparison.entities))
     merged: List[Tuple[int, int]] = []
     for s0, s1 in spans:                # overlapping spans as one, for bisect
         if merged and s0 <= merged[-1][1]:
@@ -638,6 +671,32 @@ def _apply_axes(target: Entity, entry: PatchEntry, session) -> str:
     return ""
 
 
+def _resize_to(target, te: Entity, pe: PatchEntry) -> str:
+    """Resize ``te`` in place to the size ``pe`` was captured at (a table
+    resized in the patch's source), with the patch's breakpoints, so its
+    cells and axes go in exactly. Returns a note: what was done, or why the
+    values are fitted onto the target's own axes instead."""
+    if te.kind not in ("map", "curve") or not pe.x_axis or             (te.kind == "map" and not pe.y_axis):
+        return ""
+    have = "%dx%d" % (te.rows, te.cols)
+    want = "%dx%d" % (pe.rows, pe.cols)
+    try:
+        from . import resize as _resize
+        new_y = pe.y_axis if te.kind == "map" else ()
+        plans = _resize.plan(target, te, list(pe.x_axis), list(new_y))
+        _resize.execute(target, plans, label="Resize %s %s -> %s (patch)"
+                        % (te.name, have, want))
+    except Exception as ex:                       # noqa: BLE001
+        return ("%s: the patch has it at %s, this target at %s, and it could "
+                "not be resized here (%s); its values were fitted onto this "
+                "target's own axes" % (pe.name, want, have, ex))
+    if (te.rows, te.cols) != (pe.rows, pe.cols):
+        return ("%s: resized, but to %dx%d rather than the patch's %s; its "
+                "values were fitted onto the new axes"
+                % (pe.name, te.rows, te.cols, want))
+    return "%s resized %s -> %s, as in the patch" % (pe.name, have, want)
+
+
 @dataclass
 class ApplyResult:
     applied: List[str] = field(default_factory=list)
@@ -715,6 +774,12 @@ def apply_patch(patch: Patch, target, *,
                     (pe.name, "target address is %r (not established) and "
                               "was not confirmed" % te.source))
                 continue
+            conflict = bytes(target.binfile.data[te.addr:te.end]) != \
+                bytes(target.original[te.addr:te.end])
+            if (te.rows, te.cols) != (pe.rows, pe.cols):
+                note = _resize_to(target, te, pe)
+                if note:
+                    res.warnings.append(note)
             try:
                 cells = _reconcile(te, pe, target)
             except Incompatible as exc:
@@ -724,9 +789,7 @@ def apply_patch(patch: Patch, target, *,
                 res.skipped.append((pe.name, "nothing to write for this "
                                               "target's shape"))
                 continue
-            if bytes(target.binfile.data[te.addr:te.end]) != \
-                    bytes(target.original[te.addr:te.end]):
-                res.conflicts += 1
+            res.conflicts += conflict
             target.edit_cells(te, cells)
             if pe.changed_axes:
                 note = _apply_axes(te, pe, target)
@@ -950,6 +1013,10 @@ def revert_applied_patch(target, record: dict) -> RevertResult:
     cmd = Command(label, reverse_writes)
     cmd.apply(target.binfile)
     target.push(cmd, summary=label)
+    try:
+        target.follow_layout()          # a table the patch resized goes back
+    except Exception:
+        pass
     rec = _log_patch_record(
         target, source="revert of %s" % source, writes=reverse_writes,
         n_entries=record.get("n_entries", 0), n_blocks=record.get("n_blocks", 0))

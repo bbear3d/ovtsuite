@@ -332,9 +332,9 @@ def load_into(ws, doc, sid, bid) -> bool:
         return False
     log = _sb.history_text(proj, sid, b.head)
     defn = _sb.definition_for(proj, sid, bid, state)
-    located = None
+    located, reshaped = None, []
     if not _defn_fits(proj, sid, state, defn):
-        located = _locate_on_original(ws, doc, sid, b, state)
+        located = _locate_on_original(ws, doc, sid, b, state, reshaped)
         if located is not None:
             defn = located
     ext, data = _sb.working_file(proj, sid, state, defn=defn, log=log)
@@ -348,6 +348,13 @@ def load_into(ws, doc, sid, bid) -> bool:
     if located is not None and getattr(loaded, "defn_state", "") == "used":
         # stored as this branch's own once the tab is idle (keep_definition)
         loaded._defn_from_original = True
+        if reshaped:
+            # tables resized in the tune: their size follows its headers
+            from . import resize as _rz
+            try:
+                _rz.adopt_headers(loaded, reshaped)
+            except Exception:
+                pass
     why = _apply_definition(proj, sid, loaded)
     quiet = getattr(ws, "_quiet", False)
     ws._quiet = True                    # one project, not one popup per set
@@ -398,12 +405,14 @@ def _defn_fits(proj, sid, state, blob) -> bool:
                         bytes(data)) is None
 
 
-def _locate_on_original(ws, doc, sid, branch, state):
+def _locate_on_original(ws, doc, sid, branch, state, reshaped=None):
     """A definition for ``state`` (the branch head) made by identifying the
     branch's ORIGINAL version -- its root checkpoint -- so edited maps can't
     mislead detection. None when there is no separate original, it can't be
-    rebuilt or identified, or the head's structure differs from it (a header
-    edited): the head is then identified on its own, as before."""
+    rebuilt or identified, or the head's structure differs from it: the head
+    is then identified on its own, as before. A table whose header the head
+    changed (resized in the tune) does not count as a different structure:
+    it is listed in ``reshaped`` for :func:`resize.adopt_headers`."""
     proj = doc.project
     s = proj.set(sid)
     try:
@@ -433,7 +442,8 @@ def _locate_on_original(ws, doc, sid, branch, state):
         snap = _defn.build(sess, bytes(orig))
         if not snap:
             return None
-        return _defn.rebase(snap, platform, bytes(orig), bytes(head))
+        return _defn.rebase(snap, platform, bytes(orig), bytes(head),
+                            reshaped=reshaped)
     except Exception:
         return None
 

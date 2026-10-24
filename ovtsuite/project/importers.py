@@ -64,8 +64,15 @@ def _endian(platform: str) -> str:
 
 
 def _set_name(platform: str, filename: str) -> str:
+    """A new set's name: the file it came from, without its extension
+    ("03G906016LQ", "5.0TFSI-Stock") -- a project with two engine files
+    tells them apart by name, not "ECU" / "ECU 2". Without a file name, what
+    the set is (ECU, TCU, Cluster, HVAC)."""
     from ..platforms import platform as _p
     from .model import PLATFORM_SET_KIND
+    stem = os.path.splitext(os.path.basename(filename or ""))[0].strip()
+    if stem:
+        return stem
     kind = PLATFORM_SET_KIND.get(platform)
     if kind in ("ecu", "tcu"):
         return kind.upper()
@@ -73,7 +80,7 @@ def _set_name(platform: str, filename: str) -> str:
         return "Cluster"
     if kind == "hvac":
         return "HVAC"
-    return os.path.splitext(os.path.basename(filename))[0] or _p(platform).short
+    return _p(platform).short
 
 
 # ------------------------------------------------------------ legacy history

@@ -17,14 +17,36 @@ Open it with **Tools > Converter (definitions, values and binaries)...** in the 
 window, or on its own with the **OVT Converter** shortcut. Files dropped on
 the shortcut open as the files to convert.
 
+## The window
+
+The window is laid out in tabs:
+
+- **Files** -- what goes in (the files to convert, the binary, a RomRaider
+  file's ROM) and every file that comes out: the converted file and, for a
+  WinOLS project, the binary and MPC it holds, each ticked on its own.
+- **Options** -- the chosen format's own options (an XDF's checksum plugin
+  and patch, an A2L's addresses, an image's record size ...), the image size
+  and base address -- filled in from the files once they are read; type over
+  them to give your own -- and porting onto another software version.
+- **Translation** -- translating titles and descriptions.
+- **Tables** -- converting only some tables, with the list of the tables
+  that will be written.
+
+The preview sits under the tabs; drag the bar between them to give either
+more room. Under it, **Convert** and a bar that moves while a conversion
+runs, the step it is on beside it. The window remembers its settings, the
+tab it was left on and which outputs were ticked for next time; it keeps its
+size while you work, greying out what does not apply rather than adding or
+removing rows.
+
 ## Convert a definition
 
-1. **Files to convert:** drop the file on the list, or press **Add files...**.
-   Each file shows what it is. The type comes from the file's contents, not
-   its name, so a renamed file is still recognised. A WinOLS project also
-   says what it holds, e.g. *WinOLS project: 9477 maps; embeds a 4 MB
-   binary + 2 versions (Stage 1, Stage 1_AEE)*.
-2. **Binary (optional):** give the binary the definition is for when you have
+1. **Files** tab, **Files:** drop the file on the list, or press **Add
+   files...**. Each file shows what it is. The type comes from the file's
+   contents, not its name, so a renamed file is still recognised. A WinOLS
+   project also says what it holds, e.g. *WinOLS project: 9477 maps; embeds
+   a 4 MB binary + 2 versions (Stage 1, Stage 1_AEE)*.
+2. **Binary:** (optional) give the binary the definition is for when you have
    it. It settles three things a definition may leave to the image: where the
    image starts in the ECU's address space, the size of tables whose point
    counts are stored in the image, and (for an XDF) which checksum plugin
@@ -34,8 +56,7 @@ the shortcut open as the files to convert.
    place and check the tables, export values (DCM, CDFX), pick the checksum
    plugin (**Automatic**), write values into a copy of it, or save it as
    BIN, HEX or S-record. The report says when it was used.
-3. **Convert to:** pick the format. Only that format's options are shown
-   below it.
+3. **Convert to:** pick the format. Its options are on the **Options** tab.
 4. Press **Preview**. The list shows every table that will be written. A
    warning mark means the target cannot express that table fully: hover over
    the mark to see why.
@@ -47,12 +68,7 @@ After writing, the converter reads the result back with OVT-Suite's own
 reader and compares every table's address, size and width with what it
 meant to write. The summary line says whether that check passed.
 
-The window keeps its size while you work: changing the format, ticking an
-option or pressing a button greys out what does not apply rather than
-adding or removing rows. When the window is short the upper part scrolls;
-drag the bar above **4. Preview** to give either part more room.
-
-## Extract the binaries of a WinOLS project
+## The binary and MPC of a WinOLS project
 
 A WinOLS project (.ols) holds the binary WinOLS imported (the *original*)
 and every version made from it (*Stage 1* ...), each stored whole. A binary
@@ -60,23 +76,25 @@ WinOLS put together from several memories -- an EDC16's flash and its
 processor's internal flash (MPC), or a gearbox controller's two areas --
 lists them as areas #1, #2 ...
 
-1. Add the project to **Files to convert**.
-2. **Convert to:** pick **Embedded binaries (extract from the OLS)**.
-3. The list shows every binary in the project, ticked: the original and each
-   version. Each area is listed under its binary, not ticked (it is part of
-   the binary above it); tick it to save that memory on its own.
-   **Tick all**, **Tick none** and **Defaults** set every tick at once.
-4. **Save as** shows each file's name: `<project>_original.bin`,
-   `<project>_<version>.bin`, `<project>_original_area1.bin`. The original
-   keeps the extension of the file WinOLS imported when the project records
-   it (`.ori`, `.mod` ...). Double-click a name to change it.
-5. **Write as:** **As stored** writes the bytes exactly as the project holds
-   them (no padding, nothing changed); **Intel HEX** or **Motorola
-   S-record** writes them in that format instead (an area at its own
-   offset).
-6. **Save in folder:** where they go (the project's folder at first).
-   **Preview** lists the files; **Convert** writes them and reads each one
-   back to check it.
+With a project among the files, the **Files** tab's **Output** has a row for
+each, ticked, its name filled in beside the file saved:
+
+- **Binary:** the project's binary -- `<project>.bin` (or the extension of
+  the file WinOLS imported, `.ori`, `.mod` ...). For an EDC16 project that
+  holds the MPC too, this is the 1 MB external flash.
+- **MPC:** the processor's internal flash (448 or 512 KB), `<project>.mpc`,
+  where the project holds it.
+
+Untick any of them -- **Save as:** included, to write only the binaries --
+or change a name; **Convert** writes every ticked file in one go and reads
+each binary back to check it.
+
+**Other binaries...** (beside them) lists everything else the project
+holds: the original whole, each version and each area, none ticked. Tick one to write
+it too (into the folder of the file saved); double-click a name to change
+it. **Write as:** **As stored** writes the bytes exactly as the project
+holds them (no padding, nothing changed); **Intel HEX** or **Motorola
+S-record** writes them in that format instead (an area at its own offset).
 
 On the command line: `ovtsuite convert project.ols --list-images` lists
 them, `ovtsuite convert project.ols --extract-images -o folder` writes the
@@ -279,9 +297,19 @@ that the patch turns the original into the changed binary exactly.
 Patches already in an XDF are kept when it is converted to XDF. Other
 formats have no place for them, and the converter says so.
 
+## Only some tables
+
+On the **Tables** tab, tick **Only some tables** and give a name pattern, the
+categories, or both. **Wildcards** (the default): `*` stands for any text and
+`?` for one character, and text without them matches anywhere in a table's
+name, symbol or description -- `Smoke` and `*Smoke*` find the same tables,
+`AccPed_*_MAP` the pedal maps; case does not matter. **Regular expression**
+takes Python's syntax instead. The list under it shows the tables the
+conversion will write and how many of all, as you type.
+
 ## Translate
 
-Tick **Translate** to translate titles, descriptions, categories, axis names
+On the **Translation** tab, tick **Translate the names and descriptions** to translate titles, descriptions, categories, axis names
 and units on the way, into the same format or another. Identifiers (A2L and
 DAMOS names) are never changed.
 

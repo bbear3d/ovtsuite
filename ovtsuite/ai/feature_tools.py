@@ -24,6 +24,13 @@ from .tools import Registry, ToolError
 H = {"type": "string", "description": "Target handle from open_file / list_open (e.g. \"h1\")."}
 
 
+
+def _plain(rows):
+    """Preview rows as plain text fields (the window's entity and cell
+    references left out)."""
+    return [{k: v for k, v in r.items() if k not in ("entity", "axis", "cells")}
+            for r in (rows or [])]
+
 def _bundles(t):
     from ..gui_featureswitch import _present_bundles
     return _present_bundles(t.session)
@@ -100,9 +107,9 @@ def register(reg: Registry) -> None:
                 d["changes_by_setting"] = {}
                 for st in b.states:
                     try:
-                        d["changes_by_setting"][st] = hook.fs_preview(
+                        d["changes_by_setting"][st] = _plain(hook.fs_preview(
                             s, gs[0], st, first=True,
-                            ref=getattr(t, "comparison", None)) or []
+                            ref=getattr(t, "comparison", None)))
                     except Exception as ex:               # noqa: BLE001
                         d["changes_by_setting"][st] = [{"error": str(ex)}]
             out.append(d)
@@ -172,8 +179,8 @@ def register(reg: Registry) -> None:
         hook = M.hook(s, b.table_hook)
         if state and hook is not None and hasattr(hook, "fs_preview"):
             for i, g in enumerate(gs):
-                also += hook.fs_preview(s, g, state, first=i == 0,
-                                        ref=getattr(t, "comparison", None)) or []
+                also += _plain(hook.fs_preview(s, g, state, first=i == 0,
+                                               ref=getattr(t, "comparison", None)))
         return {"feature": b.id, "state": state, "changes": out, "parameters": listed,
                 "warnings": warns, "also_in_window": also,
                 "next": ("nothing changed yet: check_changes with 'changes', then "

@@ -336,16 +336,72 @@ def write_rows(session, writes, meaning: str = "") -> List[Dict[str, str]]:
         old = [_decode(obj, w[1], w[2]) for w in ws]
         new = [_decode(obj, w[1], w[3]) for w in ws]
         units = (getattr(obj, "units", "") or "").strip()
-        what = ("%s axis" % tag.upper()) if tag else (
+        single = not tag and ent.rows * ent.cols == 1
+        what = ("%s axis" % tag.upper()) if tag else "" if single else (
             "%d cell%s" % (len(ws), "" if len(ws) == 1 else "s"))
         desc = (getattr(ent, "description", "") or "").split("|")
         desc = desc[1].strip() if len(desc) > 1 else ""
         rows.append({"name": ent.name + (" (%s axis)" % tag.upper() if tag else ""),
-                     "meaning": (meaning or desc or "")[:80] + (" — %s" % what),
+                     "meaning": (meaning or desc or "")[:80] + (" — %s" % what if what else ""),
                      "current": _span_text(old) + (" " + units if units else ""),
                      "new": _span_text(new) + (" " + units if units else ""),
-                     "kind": "axis" if tag else "table"})
+                     "kind": "axis" if tag else "value" if single else "table",
+                     "entity": ent, "axis": tag,
+                     "cells": _cell_changes(ent, tag, ws, old, new)})
     return rows
+
+
+def _cell_changes(ent, tag, writes, old, new) -> Dict[tuple, tuple]:
+    """``{(row, col): (old, new)}`` (an axis: ``{(0, i): ...}``) of writes
+    falling in ``ent`` -- what a preview grid marks."""
+    out = {}
+    try:
+        if tag:
+            ax = getattr(ent, tag)
+            w = max(1, ax.bits // 8)
+            for wr, o, n in zip(writes, old, new):
+                out[(0, (wr[0] - ax.addr) // w)] = (o, n)
+            return out
+        where = {ent.addr + ent.index(r, c) * ent.step: (r, c)
+                 for r in range(ent.rows) for c in range(ent.cols)}
+        for wr, o, n in zip(writes, old, new):
+            rc = where.get(wr[0])
+            if rc is not None:
+                out[rc] = (o, n)
+    except Exception:
+        return {}
+    return out
+
+
+def table_now_rows(session, entities, meaning: str = "") -> List[Dict[str, str]]:
+    """Rows naming ``entities`` (tables a feature works through) with what
+    they hold now, for the window before a setting is picked."""
+    rows = []
+    for ent in entities:
+        if ent is None:
+            continue
+        try:
+            vals = [float(ent.cell(r, c)) for r in range(ent.rows)
+                    for c in range(ent.cols)]
+        except Exception:
+            vals = []
+        units = (getattr(ent, "units", "") or "").strip()
+        desc = (getattr(ent, "description", "") or "").split("|")
+        desc = desc[1].strip() if len(desc) > 1 else ""
+        n = ent.rows * ent.cols
+        rows.append({"name": ent.name,
+                     "meaning": (meaning or desc or "")[:80]
+                     + (" — %d cells" % n if n > 1 else ""),
+                     "current": _span_text(vals) + (" " + units if units else ""),
+                     "new": "", "kind": "table" if n > 1 else "value",
+                     "entity": ent, "axis": "", "cells": {}})
+    return rows
+
+
+def fault_now_rows(table, fps) -> List[Dict[str, str]]:
+    """Rows naming fault paths ``fps`` with their state now."""
+    return [dict(r, new="") for r in fault_rows(
+        table, [(fp, getattr(fp, "current_class", None)) for fp in fps])]
 
 
 # -- fault paths and "as the file was opened" ---------------------------------
@@ -465,5 +521,5 @@ def restore_writes(session, entities, fallback=None) -> List[tuple]:
 
 __all__ = ["Change", "present_params", "is_present", "groups", "read_values",
            "current_state", "match_info", "preset_values", "value_range", "plan",
-           "apply", "write_rows", "fault_rows", "fault_targets", "apply_faults",
+           "apply", "write_rows", "table_now_rows", "fault_now_rows", "fault_rows", "fault_targets", "apply_faults",
            "opened_raw", "restore_writes"]

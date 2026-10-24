@@ -30,6 +30,9 @@ pytestmark = pytest.mark.slow
 LQ = os.path.join(BINARIES, "03G906016LQ.bin")
 KN = os.path.join(BINARIES, "03G906016KN.bin")
 ZF = os.path.join(ZF6HP_REFERENCE, "5.0TFSI-Stock.bin")
+# a set is named after the file it came from
+ECU = os.path.splitext(os.path.basename(LQ))[0]
+TCU = os.path.splitext(os.path.basename(ZF))[0]
 
 
 @pytest.fixture(autouse=True)
@@ -187,7 +190,7 @@ def test_a_closed_project_comes_back_whole(win, car):
     assert "A6" in menu.actions()[0].text()
     back = win.reopen_last_closed()
     assert back is not None
-    assert sorted(t.project_ref.set.name for t in _ptabs(win)) == ["ECU", "TCU"]
+    assert sorted(t.project_ref.set.name for t in _ptabs(win)) == sorted([ECU, TCU])
     assert win.closed_history() == []
 
 
@@ -275,7 +278,7 @@ def test_file_information_shows_the_project_and_can_stay_quiet(win, car):
     st.remove(fi.SETTING)                       # whatever an earlier run left
     st.sync()
     assert gp.open_project(win, car)
-    ecu = next(t for t in _ptabs(win) if t.project_ref.set.name == "ECU")
+    ecu = next(t for t in _ptabs(win) if t.project_ref.set.name == ECU)
     rows = dict(fi.project_rows(ecu))
     assert rows["Project"] == "A6" and rows["Project file"] == car
     assert rows["Branch"] == "Stock" and rows["Unsaved changes"] == "no"

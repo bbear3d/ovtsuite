@@ -1504,10 +1504,12 @@ class DynoDialog(QtWidgets.QDialog):
                           "fuel-energy model (EDC15, or no conversion map)")
         self.f_loss = spin(0, 40, 1, 0, " %", "Drivetrain loss: 0 shows the crank, "
                            "more shows the wheels")
-        self.f_disp = spin(0, 10, 0.1, 2, " l", "Engine displacement; 0 = the file's")
+        self.f_disp = spin(0, 10, 0.1, 3, " l", "Engine displacement; filled in "
+                           "from the file, change it to override")
         self.f_cyl = QtWidgets.QSpinBox()
         self.f_cyl.setRange(0, 12)
-        self.f_cyl.setToolTip("Cylinders; 0 = the file's")
+        self.f_cyl.setToolTip("Cylinders; filled in from the file, change it to "
+                              "override")
         self.f_ob = QtWidgets.QCheckBox("Overboost")
         self.f_ob.setToolTip("Apply the overboost torque limit in full. The ECU "
                              "allows it only for a limited time; off shows the "
@@ -1621,8 +1623,10 @@ class DynoDialog(QtWidgets.QDialog):
             sb.valueChanged.connect(lambda v, k=key: self._set(**{k: float(v)}))
         self.f_cap.valueChanged.connect(lambda v: self._set(boost_cap=float(v) or None))
         self.f_ob.toggled.connect(lambda on: self._set(overboost=bool(on)))
-        self.f_disp.valueChanged.connect(lambda v: self._set(displacement=float(v) or None))
-        self.f_cyl.valueChanged.connect(lambda v: self._set(cylinders=int(v) or None))
+        self.f_disp.valueChanged.connect(lambda v: self._set(
+            displacement=self._override(float(v), "displacement")))
+        self.f_cyl.valueChanged.connect(lambda v: self._set(
+            cylinders=self._override(int(v), "cylinders")))
         self.preset_box.activated.connect(self._preset_chosen)
         self.preset_box.currentIndexChanged.connect(lambda _i: self._sync_preset_buttons())
         self.preset_save.clicked.connect(self._save_preset)
@@ -1661,6 +1665,16 @@ class DynoDialog(QtWidgets.QDialog):
     def _set(self, **kw):
         if not self._filling:
             self.state.set_condition(**kw)
+
+    def _override(self, v, key):
+        """An engine box's value as a condition: None (the file's own) when
+        it is 0 or what the file holds, so the box can show the file's
+        figure without pinning it for the next file."""
+        m = self.state.model
+        own = getattr(m, key, None) if m is not None else None
+        if not v or (own and abs(float(v) - float(own)) < 0.0005):
+            return None
+        return v
 
     def _show_toggled(self, _on=False):
         self.chart.show_power = self.show_p.isChecked()
@@ -2126,9 +2140,11 @@ class DynoDialog(QtWidgets.QDialog):
                             (self.f_coolant, c.coolant), (self.f_ve, c.ve),
                             (self.f_eff, c.efficiency), (self.f_loss, c.loss),
                             (self.f_cap, c.boost_cap or 0.0),
-                            (self.f_disp, c.displacement or 0.0)):
+                            (self.f_disp, c.displacement or (
+                                m.displacement if m is not None else None) or 0.0)):
                 sb.setValue(val)
-            self.f_cyl.setValue(c.cylinders or 0)
+            self.f_cyl.setValue(c.cylinders or (
+                m.cylinders if m is not None else None) or 0)
             self.f_ob.setChecked(bool(getattr(c, "overboost", False)))
             self.f_ob.setEnabled(bool(m is not None and m.has_overboost))
             if m is not None:

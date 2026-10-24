@@ -28,22 +28,24 @@ item is greyed out.
    name into the filter box. **Populated only** (on by default) hides empty
    blocks.
 3. Click the cell (an editable cell shows a small arrow) and pick another
-   signal from the list that opens — typing filters it; choosing an entry
-   writes it straight away. Or select a cell and type an id, press F2, or
+   signal from the list that opens — typing filters it. The change is held,
+   shaded yellow, until you press **Apply**. Or select a cell and type an id, press F2, or
    right-click it and choose **Change this cell...**. An id the file has no
    definition for is refused with a note under the table, rather than
    written. To select cells without opening the list, click the **Block**
    column or hold Ctrl or Shift.
 4. Select a cell to see its full name, and on EDC16 its internal signal number
    and display scaling, in the panel under the table.
-5. Save (**File > Save**: a new version in the project) and write it to the
+5. Press **Apply** to write every held change as one undo step (**Discard**
+   forgets them; closing the window with changes held asks which).
+6. Save (**File > Save**: a new version in the project) and write it to the
    car (see [ECU read / write](../flashing.md)).
 
 Each cell shows *id - name*. **255** is an empty slot. On EDC16 the id **0**
 is a real signal (engine speed), not an empty one.
 
-Every change is an ordinary edit (**Edit > Undo**, Ctrl+Z, takes it back).
-Choosing the value a cell already holds writes nothing.
+What **Apply** writes is an ordinary edit: **Edit > Undo** (Ctrl+Z) takes
+it back in one step. Choosing the value a cell already holds is no change.
 
 ## EDC16: up to eight cells per block
 
@@ -79,21 +81,26 @@ The **Descriptors** tab lists what each cell id points at: the **Message**
 number picks the value the ECU reads, **Display type** and **Norm** tell the
 scan tool how to scale it. Rescaling a descriptor is how, for example, the
 boost display is matched to a larger MAP sensor. Hex (`0x0F40`) is accepted.
+A descriptor change is held until **Apply**, like a cell's.
 
 ## Buttons
 
 | Button | What it does |
 |---|---|
-| **Clear selected block(s)** | Empties every cell of the selected blocks (255), as one undoable step. Also on the right-click menu. |
-| **Copy block(s) from comparison** | Only with a comparison file of the same ECU type open: sets the selected blocks' cells to what the comparison shows in the same block, as one undoable step. Signals are matched by meaning (the same internal signal, or on EDC15 the same message number), so this works between different software versions; a signal the primary file has no definition for is left as it is, and the panel says how many. |
+| **Clear selected block(s)** | Empties every cell of the selected blocks (255) -- held until **Apply**. Also on the right-click menu. |
+| **Copy block(s) from comparison** | Only with a comparison file of the same ECU type open: sets the selected blocks' cells to what the comparison shows in the same block -- held until **Apply**. Signals are matched by meaning (the same internal signal, or on EDC15 the same message number), so this works between different software versions; a signal the primary file has no definition for is left as it is, and the panel says how many. |
 | **Show in editor** | (EDC16) Selects the table chosen in **Related tables** in the main window. |
-| **Close** | Closes the window; changes stay in the tab until you save or undo them. |
+| **Apply** | Writes every held change (shaded yellow) as one undo step. |
+| **Discard** | Forgets the held changes. |
+| **Close** | Closes the window (asking first when changes are held); what was applied stays in the tab until you save or undo it. |
 
-With a comparison open, **Cmp 1** onwards show the comparison file's cells;
-those that show a different signal from the primary are highlighted, and so
-is the primary's own cell, whose tooltip names the comparison's signal.
-Untick **Comparison columns** to hide them and keep the window narrow: the
-shading and tooltips stay.
+With a comparison open, its blocks are a read-only table of their own under
+the primary's -- the same blocks on the same rows, so nothing is off to the
+side to scroll to. The two scroll together, keep the same column widths and
+the same selected cell; drag the bar between them to share the room. A cell
+that shows a different signal from the primary is highlighted in both, and
+the primary's tooltip names the comparison's signal. Untick **Show
+comparison** to hide the lower table: the shading and tooltips stay.
 
 ## Tips
 
