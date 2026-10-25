@@ -36,8 +36,11 @@ item is greyed out.
    column or hold Ctrl or Shift.
 4. Select a cell to see its full name, and on EDC16 its internal signal number
    and display scaling, in the panel under the table.
-5. Press **Apply** to write every held change as one undo step (**Discard**
-   forgets them; closing the window with changes held asks which).
+5. Press **Apply** to write every held change as one undo step and carry
+   on, or **OK** to write them and close the window. **Cancel** forgets
+   every change made since the last **Apply** (or since the window opened)
+   and closes; closing the window with the title bar's X or Esc while
+   changes are held asks whether to apply or discard them.
 6. Save (**File > Save**: a new version in the project) and write it to the
    car (see [ECU read / write](../flashing.md)).
 
@@ -93,9 +96,13 @@ A descriptor change is held until **Apply**, like a cell's.
 | **Clear selected block(s)** | Empties every cell of the selected blocks (255) -- held until **Apply**. Also on the right-click menu. |
 | **Copy block(s) from comparison** | Only with a comparison file of the same ECU type open: sets the selected blocks' cells to what the comparison shows in the same block -- held until **Apply**. Signals are matched by meaning (the same internal signal, or on EDC15 the same message number), so this works between different software versions; a signal the primary file has no definition for is left as it is, and the panel says how many. |
 | **Show in editor** | (EDC16) Selects the table chosen in **Related tables** in the main window. |
-| **Apply** | Writes every held change (shaded yellow) as one undo step. |
-| **Discard** | Forgets the held changes. |
-| **Close** | Closes the window (asking first when changes are held); what was applied stays in the tab until you save or undo it. |
+| **Apply** | Writes every held change (shaded yellow) as one undo step; the window stays open. |
+| **Cancel** | Forgets the changes made since the last **Apply** (or since the window opened) and closes the window. What was applied before stays. |
+| **OK** | Writes the held changes, as **Apply** does, and closes the window. What was applied stays in the tab until you save or undo it. |
+
+The title bar's X and Esc work as **Cancel**, but ask first when changes are
+held: **Apply** writes them, **Discard** forgets them, **Cancel** keeps the
+window open.
 
 With a comparison open, its blocks are a read-only table of their own under
 the primary's -- the same blocks on the same rows, so nothing is off to the

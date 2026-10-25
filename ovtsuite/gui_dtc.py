@@ -20,12 +20,21 @@ row for row, the cells that differ shaded in both.
 
 An edit made here redraws only the rows it changed; the whole table is
 rebuilt only when the filter changes or an edit arrives from elsewhere.
+
+Edits are written to the session as they are made -- the grid and the
+comparison shading follow at once -- and the rows changed since the window
+opened or since the last **Apply** are shaded as not applied yet. **Apply**
+makes them one undo step (:class:`~ovtsuite.undo_mark.UndoMark`); **OK**
+does the same and closes; **Cancel** puts every byte they changed back and
+closes. The title bar's X and Esc ask first when there are edits not
+applied.
 """
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .dtc import DtcTable
 from .session import TunerSession
+from .undo_mark import UndoMark
 
 ROLE = QtCore.Qt.ItemDataRole.UserRole
 SORT_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
@@ -47,6 +56,9 @@ SHOW_ECU = "Stored on the ECU"
 ALL_DATASETS = "All datasets"
 
 CMP_FG = QtGui.QColor(90, 90, 90)
+#: a row changed since the last Apply (as the measuring-block window shades
+#: its held cells)
+PENDING_BG = QtGui.QColor(255, 236, 170)
 _GREY = QtGui.QColor(150, 150, 150)
 _CHECKABLE = (QtCore.Qt.ItemFlag.ItemIsUserCheckable
               | QtCore.Qt.ItemFlag.ItemIsEnabled
@@ -97,6 +109,10 @@ class DtcDialog(QtWidgets.QDialog):
         self._has_cmp = self.cmp_dtc is not None and bool(self.cmp_dtc.paths)
         self._ecu_codes = {}            # code -> Dtc read from the ECU
         self._rev = None                # session revision the table shows
+        # the edits since the window opened / the last Apply: the undo
+        # commands they made, and each touched row's state before them
+        self._mark = UndoMark(session, "edit fault codes")
+        self._base = {}                 # id(fp) -> (fp, state before)
         has_lamps = getattr(self.dtc, "has_lamp_data", lambda: True)()
         self._lamps = tuple(LAMP_COLS) if has_lamps else ()
         self.setWindowTitle("Fault codes (DTC)")
@@ -308,10 +324,35 @@ class DtcDialog(QtWidgets.QDialog):
                 "the comparison binary's value. One undoable step.")
             copyc.clicked.connect(self._copy_all_from_cmp)
             btns.addWidget(copyc)
-        close = QtWidgets.QPushButton("Close")
-        close.clicked.connect(self.accept)
-        btns.addWidget(close)
         v.addLayout(btns)
+
+        # Apply, Cancel, OK -- in that order, OK last
+        ok_row = QtWidgets.QHBoxLayout()
+        self.pending_lbl = QtWidgets.QLabel("")
+        self.pending_lbl.setStyleSheet("color: #8a6d00")
+        ok_row.addWidget(self.pending_lbl)
+        ok_row.addStretch(1)
+        self.apply_btn = QtWidgets.QPushButton("Apply")
+        self.apply_btn.setToolTip(
+            "Keep the edits made since the window opened or since the last "
+            "Apply (rows shaded yellow) as one undo step")
+        self.apply_btn.clicked.connect(self.apply)
+        self.apply_btn.setDefault(True)
+        ok_row.addWidget(self.apply_btn)
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        self.cancel_btn.setToolTip(
+            "Take back every edit made since the last Apply (or since the "
+            "window opened) and close the window")
+        self.cancel_btn.setAutoDefault(False)
+        self.cancel_btn.clicked.connect(self.cancel)
+        ok_row.addWidget(self.cancel_btn)
+        self.ok_btn = QtWidgets.QPushButton("OK")
+        self.ok_btn.setToolTip("Keep the edits not applied yet (one undo "
+                               "step) and close the window")
+        self.ok_btn.setAutoDefault(False)
+        self.ok_btn.clicked.connect(self.ok)
+        ok_row.addWidget(self.ok_btn)
+        v.addLayout(ok_row)
 
         if not self.dtc.paths:
             self.detail.setText(note or "No fault paths were found in this binary.")
@@ -512,6 +553,12 @@ class DtcDialog(QtWidgets.QDialog):
                 stored.text, stored.status)
         if self._has_cmp and cfp is None:
             tip += "\nNot in the comparison binary."
+        pending = self._is_pending(fp)
+        if pending:
+            tip += ("\nChanged here, not applied yet (Apply keeps it, "
+                    "Cancel takes it back).")
+            bold = QtGui.QFont(self.table.font())
+            bold.setBold(True)
         for k in self._ids:
             txt, sk = cells[k]
             it = _Item(txt)
@@ -534,11 +581,16 @@ class DtcDialog(QtWidgets.QDialog):
             if stored is not None:
                 it.setBackground(diff_bg)
                 it.setForeground(dark_fg)
+            elif pending:
+                it.setBackground(PENDING_BG)
+                it.setForeground(dark_fg)
             elif differs:
                 it.setBackground(edit_bg)
                 it.setForeground(dark_fg)
             elif not en:
                 it.setForeground(_GREY)
+            if pending:
+                it.setFont(bold)
             if k in LAMP_COLS:
                 self._lamp_item(it, fp, k, dtc.lights(fp, k))
             self.table.setItem(r, self._col[k], it)
@@ -679,6 +731,7 @@ class DtcDialog(QtWidgets.QDialog):
         if self.session.modified:
             txt += "   (unsaved changes)"
         self.summary.setText(txt)
+        self._sync_pending()
 
     def _selected(self):
         out, seen = [], set()
@@ -848,25 +901,26 @@ class DtcDialog(QtWidgets.QDialog):
                 fps = [o for o in self._expand([fp], lamp=True)
                        if self.dtc.lights(o, lamp) != want
                        and self.dtc.can_set_lamp(o, lamp)]
-                if len(fps) == 1:
-                    self.dtc.set_lamp(fp, lamp, want)
-                else:
-                    self.dtc.set_lamp_many(fps, lamp, want)
                 touched = self._touched_by_lamp(fps)
+                with self._edit(touched, "%s %s" % (
+                        LAMP_COLS[lamp][1], "on" if want else "off")):
+                    if len(fps) == 1:
+                        self.dtc.set_lamp(fp, lamp, want)
+                    else:
+                        self.dtc.set_lamp_many(fps, lamp, want)
                 QtCore.QTimer.singleShot(0, lambda: self._refresh_rows(touched))
 
     def _switch(self, fps, enabled):
         """Switch ``fps`` on or off, as one undo step."""
         if not fps:
             return
-        if len(fps) == 1:
-            self.dtc.set_enabled(fps[0], enabled)
-        elif hasattr(self.dtc, "set_many"):
-            self.dtc.set_many(fps, enabled)
-        else:
-            with self.session.transaction(
-                    ("enable" if enabled else "disable")
-                    + " %d fault paths" % len(fps)):
+        with self._edit(fps, ("enable" if enabled else "disable")
+                        + " %d fault path(s)" % len(fps)):
+            if len(fps) == 1:
+                self.dtc.set_enabled(fps[0], enabled)
+            elif hasattr(self.dtc, "set_many"):
+                self.dtc.set_many(fps, enabled)
+            else:
                 for fp in fps:
                     self.dtc.set_enabled(fp, enabled)
 
@@ -875,15 +929,18 @@ class DtcDialog(QtWidgets.QDialog):
                if self.dtc.lights(fp, lamp) != on
                and self.dtc.can_set_lamp(fp, lamp)]
         if fps:
-            self.dtc.set_lamp_many(fps, lamp, on)
-            self._refresh_rows(self._touched_by_lamp(fps))
+            touched = self._touched_by_lamp(fps)
+            with self._edit(touched, "%s %s on %d fault path(s)" % (
+                    LAMP_COLS[lamp][1], "on" if on else "off", len(fps))):
+                self.dtc.set_lamp_many(fps, lamp, on)
+            self._refresh_rows(touched)
 
     def _set_mil_selected(self, mil):
         self._set_lamp_selected("mil", mil)
 
     def _set_class(self, fps, number):
-        with self.session.transaction("fault class %d on %d fault paths"
-                                      % (number, len(fps))):
+        with self._edit(fps, "fault class %d on %d fault paths"
+                        % (number, len(fps))):
             for fp in fps:
                 if fp.current_class != number:
                     self.dtc.set_class(fp, number)
@@ -956,7 +1013,9 @@ class DtcDialog(QtWidgets.QDialog):
                 pairs.append((fp.cla, fp.cla.eq.decode(want)))
                 done.append(fp)
         if pairs:
-            self.session.edit_values(pairs, "copy fault-code states from comparison")
+            with self._edit(done, "copy fault-code states from comparison"):
+                self.session.edit_values(
+                    pairs, "copy fault-code states from comparison")
             self._refresh_rows(done)
 
     def _copy_all_from_cmp(self):
@@ -1046,5 +1105,126 @@ class DtcDialog(QtWidgets.QDialog):
             except Exception as ex:
                 QtWidgets.QMessageBox.critical(self, "Error", str(ex))
                 return
-        self.dtc.restore_from(DtcTable(stock))
+        with self._edit(list(self.dtc.paths.values()),
+                        "restore DTC classes from stock"):
+            self.dtc.restore_from(DtcTable(stock))
         self._populate()
+
+    # -- Apply / Cancel / OK ---------------------------------------------
+    def _edit(self, fps, label):
+        """The context an edit made here runs in: one undo step, kept as
+        this window's (see :meth:`cancel`), each row's state noted first."""
+        for fp in fps:
+            if id(fp) not in self._base:
+                self._base[id(fp)] = (fp, self._sig(fp))
+        return self._mark.track(label)
+
+    def _sig(self, fp):
+        """What a row's 'changed, not applied' compares: the class (or
+        defect time) byte, and on EDC15 the path's own lamp bytes. Not
+        is_enabled(): on EDC16 that reads the coding copy shown, and a row
+        noted in one copy must compare the same in another."""
+        if self._edc15:
+            return (fp.current_class,
+                    tuple(self.dtc.lights(fp, lamp) for lamp in self._lamps))
+        return fp.current_class
+
+    def _is_pending(self, fp) -> bool:
+        b = self._base.get(id(fp))
+        return b is not None and self._sig(fp) != b[1]
+
+    def _pending_fps(self):
+        return [fp for fp, sig in self._base.values() if self._sig(fp) != sig]
+
+    def has_pending(self) -> bool:
+        """Edits made here since the window opened or the last Apply that
+        are still in effect (not undone from the main window)."""
+        return self._mark.has_pending()
+
+    def _sync_pending(self):
+        if not hasattr(self, "apply_btn"):
+            return                         # still building the window
+        n = len(self._pending_fps())
+        self.apply_btn.setEnabled(self.has_pending())
+        self.pending_lbl.setText(
+            "%d row%s changed, not applied" % (n, "" if n == 1 else "s")
+            if n else "")
+
+    def apply(self) -> int:
+        """Keep the edits made since the window opened or the last Apply
+        as one undo step. Returns how many rows they changed."""
+        rows = self._pending_fps()
+        self._mark.apply("edit fault codes")
+        self._base = {}
+        self._redraw(rows)
+        return len(rows)
+
+    def _redraw(self, fps):
+        """Redraw the rows of ``fps`` after Apply / Cancel moved the mark
+        (their shading goes); the whole table for a large set."""
+        if not fps:
+            self._rev = getattr(self.session, "revision", None)
+            self._refresh_summary(self.table.rowCount())
+        elif len(fps) < 200:
+            self._refresh_rows(fps)
+        else:
+            self._populate()
+
+    def cancel(self):
+        """Cancel: take back every edit made since the last Apply (or since
+        the window opened) and close -- no question: that is what it is
+        for."""
+        self._discard()
+        QtWidgets.QDialog.reject(self)
+
+    def ok(self):
+        """OK: keep the edits not applied yet, as Apply does, and close."""
+        self.apply()
+        QtWidgets.QDialog.accept(self)
+
+    def _discard(self):
+        rows = self._pending_fps()
+        self._mark.discard()
+        self._base = {}
+        if self.isVisible():
+            self._redraw(rows)
+
+    def _may_close(self) -> bool:
+        """Whether the window may go by the title bar's X or Esc: with
+        edits not applied, asks to apply or discard them (False when the
+        user cancels) -- a stray Esc should not lose a set of edits."""
+        if not self.has_pending():
+            return True
+        SB = QtWidgets.QMessageBox.StandardButton
+        n = len(self._pending_fps())
+        r = QtWidgets.QMessageBox.question(
+            self, "Fault codes",
+            "Keep the edits not applied yet (%d row%s changed)?\n\n"
+            "Apply keeps them as one undo step; Discard takes them back."
+            % (n, "" if n == 1 else "s"),
+            SB.Apply | SB.Discard | SB.Cancel, SB.Apply)
+        if r == SB.Cancel:
+            return False
+        if r == SB.Apply:
+            self.apply()
+        else:
+            self._discard()
+        return True
+
+    # Esc and the title bar's X end in done() by reject(); QDialog's own
+    # closeEvent calls reject(), so reject() must not call close() back
+    # (Qt ignores a close() made during one). Cancel and OK call QDialog's
+    # own reject() / accept(): they need no question.
+    def closeEvent(self, ev):
+        if not self._may_close():
+            ev.ignore()
+            return
+        super().closeEvent(ev)
+
+    def reject(self):
+        if self._may_close():
+            super().reject()
+
+    def accept(self):
+        if self._may_close():
+            super().accept()

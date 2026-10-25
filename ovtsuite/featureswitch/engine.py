@@ -54,9 +54,42 @@ def _hook_module(session, name: Optional[str]):
     return M.hook(session, name)
 
 
+def absent_why(session, bundle: M.Bundle) -> str:
+    """Why the bundle's table hook will not offer it on this file ("" when it
+    does, or when the hook gives no reason): the hook's optional
+    ``fs_absent_why``."""
+    h = _hook_module(session, bundle.table_hook)
+    fn = getattr(h, "fs_absent_why", None) if h is not None else None
+    if fn is None:
+        return ""
+    try:
+        return fn(session) or ""
+    except Exception:
+        return ""
+
+
+def states(session, bundle: M.Bundle) -> List[str]:
+    """The bundle's states this file can be set to: the hook's optional
+    ``fs_states`` (a file lacking what a state needs offers fewer), else
+    all of them."""
+    h = _hook_module(session, bundle.table_hook)
+    fn = getattr(h, "fs_states", None) if h is not None else None
+    if fn is not None:
+        try:
+            got = [s for s in (fn(session) or ()) if s in bundle.states]
+            if got:
+                return got
+        except Exception:
+            pass
+    return list(bundle.states)
+
+
 def is_present(session, bundle: M.Bundle) -> bool:
     """Whether the file carries this feature at all: any of its parameters, or
-    -- for a table-only feature -- the hook's table."""
+    -- for a table-only feature -- the hook's table. A hook that says why it
+    cannot be offered (:func:`absent_why`) keeps it out either way."""
+    if absent_why(session, bundle):
+        return False
     if present_params(session, bundle):
         return True
     h = _hook_module(session, bundle.table_hook)

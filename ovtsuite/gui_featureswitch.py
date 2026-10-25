@@ -31,6 +31,7 @@ Checksums are corrected on save.
 """
 from __future__ import annotations
 
+import html
 from typing import Dict, List, Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -85,6 +86,20 @@ def _present_bundles(s) -> List[M.Bundle]:
             continue
         if E.is_present(s, b):
             out.append(b)
+    return out
+
+
+def _absent_bundles(s) -> List[tuple]:
+    """``[(bundle, why)]``: the features of the file's platform (and family)
+    that its table hook will not offer here, with the hook's reason."""
+    fam = getattr(s, "family", None)
+    out = []
+    for b in M.bundles_for(s):
+        if b.families and fam not in b.families:
+            continue
+        why = E.absent_why(s, b)
+        if why:
+            out.append((b, why))
     return out
 
 
@@ -374,6 +389,14 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.list.setMinimumWidth(min(320, self.list.sizeHintForColumn(0) + 40))
         self.list.currentRowChanged.connect(self._select)
         left.addWidget(self.list, 1)
+        absent = _absent_bundles(self.session)
+        self.absent = QtWidgets.QLabel("<b>Not available on this file</b><br>" + "<br>".join(
+            "%s: %s." % (html.escape(b.title), html.escape(why)) for b, why in absent))
+        self.absent.setWordWrap(True)
+        self.absent.setMaximumWidth(max(320, self.list.minimumWidth()))
+        self.absent.setStyleSheet("color: gray")
+        self.absent.setVisible(bool(absent))
+        left.addWidget(self.absent)
         hint = QtWidgets.QLabel("● marks a feature with changes not applied yet.")
         hint.setStyleSheet("color: gray")
         hint.setWordWrap(True)
@@ -692,7 +715,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.state.clear()
         self.state.addItem("Keep as is (no change)", KEEP)
         if not b.readonly:
-            for s in b.states:
+            for s in E.states(self.session, b):
                 self.state.addItem(b.label(s), s)
         self.state.blockSignals(False)
         self._show_choice(b)

@@ -1,0 +1,276 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Blair Campbell
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+"""The comparison binary in the shift map and lock-up editors
+(ovtsuite.gui_gearbox_compare, ovtsuite.gearbox_edit.compare), offscreen, on
+the 6HP19 3.0 TFSI stage 1 image compared with the stock one."""
+import os
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("PySide6")
+from PySide6 import QtCore, QtWidgets  # noqa: E402
+
+from conftest import ZF6HP_REFERENCE as SIXHP  # noqa: E402
+
+pytestmark = pytest.mark.slow
+
+
+@pytest.fixture(autouse=True)
+def _own_settings(isolated_qsettings):
+    """Settings go to a file of the test's own (conftest)."""
+
+
+@pytest.fixture(scope="module")
+def app():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+@pytest.fixture(scope="module")
+def pair(app):
+    tuned = os.path.join(SIXHP, "3.0TFSI-Stage-1.bin")
+    stock = os.path.join(SIXHP, "3.0TFSI-Stock.bin")
+    if not (os.path.exists(tuned) and os.path.exists(stock)):
+        pytest.skip("no ZF 6HP reference binaries")
+    from ovtsuite.session import TunerSession
+    return TunerSession(tuned), TunerSession(stock)
+
+
+def _dialog(primary, comparison, kind="shift"):
+    from ovtsuite import gui_gearbox_edit as G
+
+    class WS(QtWidgets.QWidget):
+        pass
+    ws = WS()
+    ws.primary, ws.model, ws.project_ref = primary, None, None
+    ws.comparison = comparison
+    d = G.GearboxEditDialog(ws, G.schedule_set_for(primary, kind))
+    d._recompute()
+    return d
+
+
+@pytest.fixture
+def shift(pair):
+    d = _dialog(*pair)
+    yield d
+    d.close()
+
+
+@pytest.fixture
+def tcc(pair):
+    d = _dialog(*pair, kind="tcc")
+    yield d
+    d.close()
+
+
+# ------------------------------------------------------------- pairing (core)
+def test_pairing_by_key_and_shape(pair):
+    from ovtsuite import gearbox_edit as GE
+    from ovtsuite import gui_gearbox_edit as G
+    a, b = (G.schedule_set_for(s) for s in pair)
+    p = GE.pair_sets(a, b)
+    assert p.ok and len(p.pairs) == 82 and not p.unmatched and not p.axis_differs
+    assert all(a.schedules[i].key == b.schedules[j].key for i, j in p.pairs.items())
+    assert "82 of 82 schedules paired" in p.summary()
+    # nothing to pair with: said so, and off
+    assert not GE.pair_sets(a, None).ok
+    assert "no shift schedules" in GE.pair_sets(a, None).summary()
+    t = G.schedule_set_for(pair[1], "tcc")
+    assert not GE.pair_sets(a, t).ok        # another kind / other lines
+
+
+def test_copy_op_takes_the_comparisons_cells_exactly(pair):
+    from ovtsuite import gearbox_edit as GE
+    from ovtsuite import gui_gearbox_edit as G
+    a, b = (G.schedule_set_for(s) for s in pair)
+    p = GE.pair_sets(a, b)
+    i = next(i for i in p.pairs if a.schedules[i].values() != b.schedules[p.pairs[i]].values())
+    s, j = a.schedules[i], p.pairs[i]
+    bv = b.schedules[j].values()
+    diff = [k for k, (x, y) in enumerate(zip(s.values(), bv)) if x != y]
+    cells = [(i, k // s.cols, k % s.cols) for k in diff]
+    op = GE.copy_op(p, cells, {j: bv}, "copy", current={i: s.values()})
+    assert op is not None and len(op.values) == len(diff)
+    res = GE.Edit(a, [op]).compute()
+    assert res.grid[i] == bv
+    # nothing differs any more: no step
+    assert GE.copy_op(p, cells, {j: bv}, "copy", current={i: bv}) is None
+
+
+# ---------------------------------------------------------- the dialog: chart
+def test_ghost_lines_in_every_unit(shift):
+    cv = shift.cmpv
+    assert cv.chk.isVisibleTo(shift) and cv.chk.isChecked() and cv.chk.isEnabled()
+    assert "82 of 82" in cv.lbl.text()
+    shift._apply_preset("All schedules")
+    for u in range(shift.unit_box.count()):
+        shift.unit_box.setCurrentIndex(u)
+        shift._recompute()
+        assert shift.chart.series and all(s.get("cmp") for s in shift.chart.series)
+        assert "comparison" in shift.chart.title
+    # both values in the hover tooltip
+    shift.chart.resize(800, 500)
+    shift.chart.grab()                      # paints: sets the chart's transform
+    s = shift.chart.series[0]
+    tip = shift.chart.tip_at(s, 400)
+    assert "this file" in tip and "comparison" in tip
+
+
+def test_ghost_lines_on_the_lockup_editor(tcc):
+    assert tcc.cmpv.active()
+    tcc._apply_preset("Both codings: Gear 3")
+    tcc._recompute()
+    assert tcc.chart.series and all(s.get("cmp") for s in tcc.chart.series)
+
+
+def test_switch_off_hides_everything(shift):
+    cv = shift.cmpv
+    cv.chk.setChecked(False)
+    shift._recompute()
+    assert not any(s.get("cmp") for s in shift.chart.series)
+    assert not cv.box.isVisibleTo(shift)
+    assert all(shift.table.item(r, c).background().style() == QtCore.Qt.NoBrush
+               for r in range(shift.table.rowCount())
+               for c in range(shift.table.columnCount()) if shift.table.item(r, c))
+
+
+# ---------------------------------------------------------- the dialog: table
+def _differing(t):
+    return [(r, c) for r in range(t.rowCount()) for c in range(t.columnCount())
+            if t.item(r, c) is not None
+            and t.item(r, c).background().style() != QtCore.Qt.NoBrush]
+
+
+def test_comparison_table_shades_and_follows(shift):
+    from ovtsuite import gui as _g
+    cv, pt = shift.cmpv, shift.table
+    ct = cv.cmp_table
+    shift.range_edit.setText("10-12")
+    shift._select_range(False)
+    shift._recompute()
+    assert cv.box.isVisibleTo(shift) and "read only" in cv.head.text()
+    assert (ct.rowCount(), ct.columnCount()) == (pt.rowCount(), pt.columnCount())
+    assert [ct.verticalHeaderItem(r).text() for r in range(ct.rowCount())] == \
+        [pt.verticalHeaderItem(r).text() for r in range(pt.rowCount())]
+    diff = _differing(ct)
+    assert diff and _differing(pt) == diff
+    r, c = diff[0]
+    assert ct.item(r, c).background().color() == _g.DIFF_BG
+    assert "This file:" in ct.item(r, c).toolTip()
+    assert "Comparison:" in pt.item(r, c).toolTip()
+    assert ct.item(r, c).text() != pt.item(r, c).text()
+    # same column widths, current cell and scroll as the primary
+    assert all(pt.columnWidth(k) == ct.columnWidth(k) for k in range(pt.columnCount()))
+    pt.setCurrentCell(1, 3)
+    assert (ct.currentRow(), ct.currentColumn()) == (1, 3)
+    pt.resize(200, 120)
+    ct.resize(200, 120)
+    pt.horizontalHeader().resizeSection(0, 300)
+    assert ct.columnWidth(0) == 300
+    pt.horizontalScrollBar().setValue(pt.horizontalScrollBar().maximum())
+    assert ct.horizontalHeader().logicalIndexAt(0) == pt.horizontalHeader().logicalIndexAt(0)
+
+
+# ------------------------------------------------------- the dialog: copying
+def test_copy_selected_cells_is_a_step_and_one_undo(shift):
+    cv, pt = shift.cmpv, shift.table
+    s = shift.session
+    before = bytes(s.binfile.data)
+    shift.range_edit.setText("10.0, 11.0")
+    shift._select_range(False)
+    shift._recompute()
+    diff = _differing(pt)
+    assert len(diff) >= 2
+    pick = diff[:2]
+    for r, c in pick:
+        pt.setRangeSelected(QtWidgets.QTableWidgetSelectionRange(r, c, r, c), True)
+    menu = cv.table_menu(pt)
+    acts = {a.text(): a for a in menu.actions()}
+    act = acts["Copy selected cells from comparison"]
+    assert act.isEnabled()
+    act.trigger()
+    assert len(shift.steps) == 1 and shift.steps_list.count() == 1
+    assert "copy 2 cells from comparison" in shift.steps_list.item(0).text()
+    shift._recompute()
+    # no longer differing: the comparison copy unshaded, the primary's cell
+    # shaded as edited (the preview) with no comparison value in its tooltip
+    assert all((r, c) not in _differing(cv.cmp_table) for r, c in pick)
+    assert all("Comparison:" not in pt.item(r, c).toolTip() for r, c in pick)
+    assert shift.result.cells == 2
+    n = shift.edit.apply(s, "test", shift.result)
+    assert n == 2
+    s.undo()
+    assert bytes(s.binfile.data) == before
+
+
+def _line_differs(d, i, line):
+    s, cv = d.sset.schedules[i], d.cmpv
+    cmp_vals = cv.values(cv.pairing.pairs[i])
+    return any(d.result.grid[i][r * s.cols + line] != cmp_vals[r * s.cols + line]
+               for r in range(s.rows))
+
+
+def test_copy_whole_line_from_table_and_chart(tcc):
+    cv = tcc.cmpv
+    pr = cv.pairing
+    tcc._check_all(True)
+    tcc._recompute()
+    sel = tcc._selected()
+    i = None
+    for ln in tcc.sset.lines:               # a characteristic and line that differ
+        tcc.line_group.button(ln.index).click()
+        tcc._recompute()
+        line = tcc._line()
+        i = next((i for i in sel if _line_differs(tcc, i, line)), None)
+        if i is not None:
+            break
+    assert i is not None
+    key = tcc.sset.schedules[i].key
+    menu = cv.chart_menu(key)
+    act = menu.actions()[0]
+    assert act.isEnabled() and key in act.text()
+    act.trigger()
+    assert len(tcc.steps) == 1 and "copy whole" in tcc.steps_list.item(0).text()
+    tcc._recompute()
+    s, j = tcc.sset.schedules[i], pr.pairs[i]
+    assert [tcc.result.grid[i][r * s.cols + line] for r in range(s.rows)] == \
+        [cv.values(j)[r * s.cols + line] for r in range(s.rows)]
+    # the same line again: nothing left to copy, the menu says so
+    again = cv.chart_menu(key).actions()[0]
+    assert not again.isEnabled() and "no difference" in again.text()
+    # and from the table: the whole line of the selected row
+    row = tcc._selected().index(i)
+    tcc.table.setRangeSelected(QtWidgets.QTableWidgetSelectionRange(row, 0, row, 0), True)
+    acts = {a.text().split(" (")[0]: a for a in cv.table_menu(tcc.table).actions()}
+    assert not acts["Copy whole line from comparison"].isEnabled()
+    tcc.steps_list.setCurrentRow(0)
+    tcc._remove_step()
+    assert not tcc.steps
+
+
+# ------------------------------------------------- no / unusable comparison
+def test_no_comparison_adds_nothing(pair):
+    d = _dialog(pair[0], None)
+    try:
+        assert d.cmpv.chk is None and d.cmpv.box is None
+        assert d.table.contextMenuPolicy() != QtCore.Qt.CustomContextMenu
+        assert not any(s.get("cmp") for s in d.chart.series)
+    finally:
+        d.close()
+
+
+def test_comparison_without_a_matching_set_says_so(pair):
+    other = SimpleNamespace(platform="edc16", binfile=SimpleNamespace(name="other.bin"),
+                            revision=0)
+    d = _dialog(pair[0], other)
+    try:
+        cv = d.cmpv
+        assert cv.chk is not None and not cv.chk.isEnabled() and not cv.chk.isChecked()
+        assert "no shift schedules" in cv.lbl.text() and "other.bin" in cv.lbl.text()
+        assert cv.box is None and not any(s.get("cmp") for s in d.chart.series)
+    finally:
+        d.close()

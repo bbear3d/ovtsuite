@@ -1084,6 +1084,15 @@ def write(defn: Definition, tgt: str, size: int, image: Optional[bytes],
         text, n = fmt_dam.dumps(defn, size, image, warn, res.loss)
         res.warnings.extend(warn)
         return text.encode("latin-1", "replace"), n
+    if tgt == "kp":
+        from . import kp_passthrough
+        if kp_passthrough.applies(defn, job):
+            # a WinOLS file's own records and folders, as they are
+            warn: List[str] = []
+            data, n = kp_passthrough.write(defn, job, size, warn,
+                                           filtered=bool(job.filters))
+            _split_warnings(warn, res)
+            return data, n
     ents = _entities(defn, 0, size, image, None, job.dynamic, res.loss)
     le = defn.byte_order() == "<"
     warn = []
@@ -1111,6 +1120,14 @@ def write(defn: Definition, tgt: str, size: int, image: Optional[bytes],
         from ..a2l_export import export_a2l
         ecu = job.options.get("a2l_addresses") == "ecu"
         a2l_base = res.base if ecu else 0
+        if defn.info.get("source_type", "") in ("ols", "kp"):
+            # a WinOLS map's group is its folder (after its code block, as
+            # in an XDF), not the first category alone -- which in a project
+            # with several code blocks is the block, losing the folder
+            for e in ents:
+                t = getattr(e, "_tabledef", None)
+                if t is not None and t.categories:
+                    e.category_path = list(t.categories)
         text = export_a2l(ents, title, size, le, platform="", warnings=warn,
                           tiers=False, base=a2l_base)
         _split_warnings(warn, res)

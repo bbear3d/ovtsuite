@@ -253,6 +253,46 @@ def from_comparison(win):
     _write(ws, cells, "Copied from the comparison" + note)
 
 
+def comparison_cells(ws, view) -> List[Tuple[int, int]]:
+    """The comparison's Z cells selected in ``view`` (the table's own grid,
+    rows under the banner, or the comparison grid of its own), as the
+    primary's (r, c) they line up with -- the comparison is held on the
+    primary's axes. Empty when the selection holds none."""
+    m = ws.model
+    if not m._cmp:
+        return []
+    sel = view.selectionModel()
+    idxs = list(sel.selectedIndexes()) if sel is not None else []
+    if not idxs and view.currentIndex().isValid():
+        idxs = [view.currentIndex()]
+    out, seen = [], set()
+    for ix in idxs:
+        if not ix.isValid() or view.isRowHidden(ix.row()):
+            continue
+        k, a, b = m._kind(ix.row(), ix.column())
+        if k == "cz" and (a, b) not in seen and m._at(m._vals, a, b) is not None:
+            seen.add((a, b))
+            out.append((a, b))
+    return out
+
+
+def to_primary(ws, view) -> int:
+    """Right-click > Copy cells to primary, on comparison cells: their
+    values into the same cells of this file, as one undoable edit."""
+    if not _editable(ws):
+        return 0
+    m = ws.model
+    cells = []
+    for r, c in comparison_cells(ws, view):
+        v = m._at(m._cmp, r, c)
+        if v is not None and v != m._at(m._vals, r, c):
+            cells.append((r, c, v))
+    if not cells:
+        _say(ws, "The selected comparison cells already match this file.")
+        return 0
+    return _write(ws, cells, "Copied to the primary")
+
+
 def _as_read(ws) -> Tuple[Optional[bytes], str]:
     """The image the tab's cells go back to: the branch's as-read original
     in a project, else the file as it was opened."""
@@ -667,11 +707,12 @@ MENU_ACTIONS = ("Copy selected cells from comparison",
                 "Revert to last saved values", "Revert to as-read values")
 
 
-def add_to_menu(win, menu):
+def add_to_menu(win, menu, skip=()):
     """The revert actions in a table's right-click menu (the same actions,
-    so they show their shortcuts and follow Options)."""
+    so they show their shortcuts and follow Options); ``skip``: texts to
+    leave out."""
     acts = {a.text(): a for a in getattr(win, "_cell_actions", ())}
-    have = [acts[t] for t in MENU_ACTIONS if t in acts]
+    have = [acts[t] for t in MENU_ACTIONS if t in acts and t not in skip]
     if have:
         menu.addSeparator()
         for a in have:

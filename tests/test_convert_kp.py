@@ -19,6 +19,7 @@ import os
 import struct
 import zipfile
 import zlib
+from collections import Counter
 
 import pytest
 
@@ -249,27 +250,21 @@ def test_a_genuine_pack_converts_back_to_its_layout(tmp_path, path):
                if i not in _HEAD_FREE)
     assert b["tail"] == W._TAIL_BLOCK
     # the folders that hold maps, in the same order
-    used = {x["folder"] for x in a["records"]}
-    want = [f[2].strip() for f in a["folders"][2:] if f[0] in used]
-    assert [f[2] for f in b["folders"][2:]] == want
-    assert len(b["records"]) == len(a["records"])
-    for x, y in zip(a["records"], b["records"]):
-        _ours(y)
-        # the type follows the shape as the app reads it: a map of type 5
-        # goes out as type 4 (both store X fastest), one of a single row or
-        # a "value" of several cells as a curve (type 3)
-        assert y["typ"] in (2, 3, 4), x["desc"]
-        for k in ("org", "size", "cols", "rows", "addr"):
-            assert x[k] == y[k], (x["desc"], k)
-        assert y["factor"] == pytest.approx(x["factor"], rel=1e-9, abs=1e-12)
-        assert y["offset"] == pytest.approx(x["offset"], rel=1e-9, abs=1e-9)
-        for k in "XY":
-            # the axes the written type has (a value has none)
-            has = y["typ"] == 4 or (y["typ"] == 3 and k == "X")
-            if has and x[k]["source"] in (1, 3):
-                assert y[k]["source"] == 1
-                for f in ("addr", "org", "size"):
-                    assert x[k][f] == y[k][f], (x["desc"], k, f)
+    # a map pack passed through: the same folders in the same order, and
+    # every record as it was, byte for byte
+    assert b["folders"] == a["folders"]
+    assert b["records"] == a["records"]
+
+
+def _intern(d: bytes) -> bytes:
+    """The records of a format-292 file as stored: a map pack's archive,
+    or the list of a project (hexdump view and all)."""
+    h = winols.read_header(d)
+    p = d.find(winols.RECORDS_MAGIC, h.end) + 5
+    n = struct.unpack_from("<I", d, p)[0]
+    if d[p + 4:p + 8] == b"PK\x03\x04":
+        return zipfile.ZipFile(io.BytesIO(d[p + 4:p + 4 + n])).read("intern")[5:]
+    return d[p + 4:]
 
 
 @pytest.fixture(scope="module")
@@ -282,20 +277,142 @@ def gq(tmp_path_factory):
     return res, out.read_bytes()
 
 
-def test_the_edc15_project_converts_to_the_layout(gq):
+def test_the_edc15_project_passes_through(gq):
+    """The 038906019GQ project (an EDC15 with three code blocks, WinOLS
+    folders ARF_01 ... ARF_17): every map record, in its own folder, the
+    folder list as the project has it -- not regrouped by code block."""
     res, data = gq
-    assert res.check == [] and res.tables_out == 17292
+    src = winols.parse(open(GQ, "rb").read())
+    assert res.check == [] and res.tables_out == 17292 == len(src.records) - 1
     lay = layout(data)
     assert lay["head_count"] == 17292
-    assert [f[2] for f in lay["folders"][2:]] == [
-        "Codeblock 0", "Codeblock 1", "Codeblock 2"]
-    for x in lay["records"]:
-        _ours(x)
-        assert x["org"] in (1, 3)               # EDC15: 8 bit, 16 bit LE
-        assert x["ztail"][0] == 0x80000         # the 512 KB image
-    # and the app reads it back
+    # the project's folders (Potential maps holds no record: not listed,
+    # as in every format-292 pack WinOLS wrote)
+    assert lay["folders"] == [f for f in src.folder_list if f[1] != 9002]
+    assert not any(f[2].startswith("Codeblock") for f in lay["folders"])
+    assert [x["folder"] for x in lay["records"]] == \
+        [r.folder for r in src.records if r.type != 1]
+    assert Counter(x["folder"] for x in lay["records"])[0] == 16917
+    # the records as the project stores them (it is of format 292 too),
+    # but the hexdump view, which a map pack holds none of
     wf = winols.parse(data)
     assert not wf.problems and len(wf.records) == 17292
+    hexdump = src.records[0]
+    assert hexdump.type == 1
+    rest = _intern(open(GQ, "rb").read())
+    w = W._W()
+    W._passthrough_record(w, hexdump, 0x80000)
+    assert _intern(data) == rest[len(w.out):len(w.out) + len(_intern(data))]
+
+
+def _fields(r):
+    return (r.type, r.folder, r.name, r.org, r.size, r.cols, r.rows, r.addr,
+            r.factor, r.offset, r.signed, r.precision,
+            r.x.source, r.x.addr, r.x.org, r.x.factor, r.x.data,
+            r.y.source, r.y.addr, r.y.org, r.y.factor, r.y.data)
+
+
+def _texts(r):
+    return (r.description, r.label, r.units, r.x.label, r.x.units,
+            r.y.label, r.y.units)
+
+
+def test_translation_changes_only_texts(gq, tmp_path):
+    """Translated, the same records, folders and order: descriptions,
+    labels, units and folder names change; names (identifiers) do not."""
+    out = tmp_path / "en.kp"
+    res = C.run(C.Job(sources=[GQ], target="kp", out=str(out),
+                      translate={"backend": "builtin", "source": "de",
+                                 "target": "en", "mode": "replace"}))
+    assert res.check == []
+    a = winols.parse(gq[1])
+    b = winols.parse(out.read_bytes())
+    assert [_fields(r) for r in a.records] == [_fields(r) for r in b.records]
+    changed = sum(_texts(x) != _texts(y) for x, y in zip(a.records, b.records))
+    assert changed > len(a.records) // 2
+    assert [f[:2] for f in a.folder_list] == [f[:2] for f in b.folder_list]
+    names = dict((f, n) for f, _r, n in b.folder_list)
+    assert names[0] == "My maps" and names[1] == "Hexdump"
+    assert names[11] != "ARF_01: Struktur der Abgasrueckfuehrung"
+    assert "ARF_01" in names[11]
+
+
+def test_reviewed_translations_are_used(tmp_path):
+    """Rows reviewed in the window (planned on the converted definition)
+    are what goes in; a description joined with its value label in the
+    definition translates both parts."""
+    from ovtsuite.convert import kp_passthrough as P
+    got = P._reviewed([
+        {"field": "description", "kind": "text", "source": "A | Z: B",
+         "result": "a | Z: b"},
+        {"field": "category", "kind": "category", "source": "Ordner",
+         "result": "Folder"},
+        {"field": "units", "kind": "units", "source": "Grad", "result": "Grad"}])
+    assert got == {("text", "A | Z: B"): "a | Z: b", ("text", "A"): "a",
+                   ("text", "B"): "b", ("category", "Ordner"): "Folder"}
+    need(GENUINE[0])
+    wf = winols.parse(open(GENUINE[0], "rb").read())
+    desc = wf.records[0].description
+    out = tmp_path / "t.kp"
+    C.run(C.Job(sources=[GENUINE[0]], target="kp", out=str(out),
+                translate={"mode": "replace", "rows": [
+                    {"table": desc, "field": "name", "kind": "text",
+                     "source": desc, "result": "Renamed map"},
+                    {"table": "", "field": "category", "kind": "category",
+                     "source": "turbo boost", "result": "Boost"}]}))
+    back = winols.parse(out.read_bytes())
+    assert sum(r.description == "Renamed map" for r in back.records) == \
+        sum(r.description == desc for r in wf.records)
+    assert (3, 0, "Boost") in back.folder_list
+    assert [_fields(r) for r in back.records] == [_fields(r) for r in wf.records]
+
+
+def test_a_503_pack_passes_through_to_292(tmp_path):
+    """The 038906012FD pack (format 503, its maps in 23 folders): the same
+    records with the same fields and texts, and its folder list, in a
+    format-292 pack."""
+    path = os.path.join(REF, "EDC15", "EDC15V_362774_038906012FD_0281010653.kp")
+    need(path)
+    out = tmp_path / "fd.kp"
+    res = C.run(C.Job(sources=[path], target="kp", out=str(out)))
+    assert res.check == []
+    a = winols.parse(open(path, "rb").read())
+    data = out.read_bytes()
+    layout(data)
+    b = winols.parse(data)
+    assert len(b.records) == len(a.records) == 17373
+    assert [_fields(r) + _texts(r) for r in a.records] == \
+        [_fields(r) + _texts(r) for r in b.records]
+    assert b.folder_list == [f for f in a.folder_list if f[1] != 9002]
+
+
+def test_other_sources_keep_the_built_folders(tmp_path):
+    """Only a WinOLS source passes through: an XDF still goes in by its
+    categories."""
+    xdf = tmp_path / "s.xdf"
+    xdf.write_text(
+        '<XDFFORMAT version="1.80"><XDFHEADER><deftitle>t</deftitle>'
+        '<REGION type="0xFFFFFFFF" startaddress="0x0" size="0x1000" />'
+        '<CATEGORY index="0x0" name="Boost" /></XDFHEADER>'
+        '<XDFCONSTANT uniqueid="0x1"><title>K1</title>'
+        '<CATEGORYMEM index="0" category="1" />'
+        '<EMBEDDEDDATA mmedaddress="0x10" mmedelementsizebits="16" />'
+        '<MATH equation="X"><VAR id="X" /></MATH></XDFCONSTANT></XDFFORMAT>')
+    out = tmp_path / "s.kp"
+    C.run(C.Job(sources=[str(xdf)], target="kp", out=str(out), size=0x1000))
+    wf = winols.parse(out.read_bytes())
+    assert [n for _f, _r, n in wf.folder_list] == ["Hexdump", "My maps", "Boost"]
+
+
+def test_a2l_groups_of_a_project_name_its_folders(tmp_path):
+    """An A2L of a project with code blocks groups each map by block and
+    folder, as the XDF does -- not by the block alone."""
+    need(GQ)
+    out = tmp_path / "gq.a2l"
+    C.run(C.Job(sources=[GQ], target="a2l", out=str(out), self_check=False))
+    text = out.read_text(encoding="latin-1")
+    assert '"Codeblock 0 / ARF_01: Struktur der Abgasrueckfuehrung"' in text
+    assert '"Codeblock 2 / My maps"' in text
 
 
 def test_curves_carry_the_curve_view_setting():

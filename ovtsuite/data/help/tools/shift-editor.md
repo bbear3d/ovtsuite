@@ -28,6 +28,43 @@ written as **one undoable step** (Edit > Undo).
   line** the threshold the blended programs give, **Logged shifts** (in a
   project with logs) where the car actually shifted.
 
+## Comparing with another file
+
+When the tab has a comparison file (**File > Import as comparison...**, or
+**Compare with open tab** / **saved version** -- see
+[Comparing files](../editor/comparison.md)), the editor
+builds the comparison's schedules the same way and pairs them by name (SKL
+11.0 with SKL 11.0). A line above the chart says how many paired; a schedule
+missing from the comparison, or of another shape, is named there and left
+out. If the comparison has no schedules of this kind (another gearbox, other
+lines), it says so and the comparison features stay off.
+
+**Show comparison** (on by default) switches all of this on and off together:
+
+- **On the chart** each schedule's comparison line is drawn faded and dashed
+  in the schedule's own colour, behind this file's line, in whichever unit is
+  chosen. Hovering a line gives both values at that pedal and the difference.
+- **Under the table** a read-only copy of the value table shows the
+  comparison: same rows, columns and units, headed *Comparison: file (read
+  only)*. It scrolls, sizes its columns and moves its current cell with the
+  table above (either way). Cells that differ are shaded in both tables with
+  the "differs from comparison" colour, and each cell's tooltip gives the
+  other file's value. The table shows the edit's preview, so a cell a step
+  has already brought to the comparison's value is no longer shaded (a cell
+  the edit changes keeps the edit's own highlight).
+- Where a paired schedule's pedal axis differs from the comparison's, its
+  line is still drawn (on its own axis) but its cells are not compared,
+  shaded or copied.
+
+**Copying from the comparison.** Right-click selected cells in either table
+for **Copy selected cells from comparison**, or **Copy whole line from
+comparison** to take every pedal row of the shown line for the selected
+schedules; right-click a line on the chart to copy that schedule's whole
+line. Each adds a step to **Steps in this edit** -- previewed, removable with
+**Remove**, and written with the other steps by **Apply...** as one undoable
+step. Values are copied exactly, including a stored "off". Copying works
+with **Show comparison** off too.
+
 ## Steps
 
 | Step | What it does |

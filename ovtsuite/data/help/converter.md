@@ -21,15 +21,29 @@ the shortcut open as the files to convert.
 
 The window is laid out in tabs:
 
-- **Files** -- what goes in (the files to convert, the binary, a RomRaider
-  file's ROM) and every file that comes out: the converted file and, for a
-  WinOLS project, the binary and MPC it holds, each ticked on its own.
-- **Options** -- the chosen format's own options (an XDF's checksum plugin
-  and patch, an A2L's addresses, an image's record size ...), the image size
-  and base address -- filled in from the files once they are read; type over
-  them to give your own -- porting onto another software version, and what
-  to do when an output file is already there (see
-  [Output files already there](#output-files-already-there)).
+- **Files** -- the choice of files only: what goes in (the files to
+  convert, the binary), the format to convert to, and every file that
+  comes out: the converted file and, for a WinOLS project, the binary and
+  MPC it holds, each ticked on its own.
+- **Options** -- every option, for every format, all on this one tab (it
+  scrolls), so none needs a trip back to the Files tab:
+  - **Image and placement (every conversion)** -- the image size and base
+    address (filled in from the files once they are read; type over them to
+    give your own), tables whose size the image stores, what to do when an
+    output file is already there (see
+    [Output files already there](#output-files-already-there)), and porting
+    onto another software version.
+  - **Source: RomRaider definition** -- which ROM of a RomRaider file (see
+    [EcuFlash and RomRaider definitions](#ecuflash-and-romraider-definitions)).
+  - **Target: ...** -- one group per output format: TunerPro XDF (checksum
+    plugin, value blocks without an axis, a patch), ASAP2 (addresses),
+    WinOLS map pack, DAMOS, calibration values (DCM, CDFX), values written
+    into a binary (checksums, record size), binary images (record size,
+    fill byte, byte swap, checksums).
+
+  A group that does not apply to the files and the format chosen is greyed
+  out -- never hidden -- with a line saying when it applies, so you can
+  set it up beforehand; choosing a format scrolls its group into view.
 - **Translation** -- translating titles and descriptions.
 - **Tables** -- converting only some tables, with the list of the tables
   that will be written.
@@ -63,7 +77,8 @@ removing rows.
    place and check the tables, export values (DCM, CDFX), pick the checksum
    plugin (**Automatic**), write values into a copy of it, or save it as
    BIN, HEX or S-record. The report says when it was used.
-3. **Convert to:** pick the format. Its options are on the **Options** tab.
+3. **Convert to:** pick the format. Its options are on the **Options** tab,
+   in the group named after it.
 4. Press **Preview**. The list shows every table that will be written. A
    warning mark means the target cannot express that table fully: hover over
    the mark to see why.
@@ -130,6 +145,23 @@ On the command line: `ovtsuite convert project.ols --list-images` lists
 them, `ovtsuite convert project.ols --extract-images -o folder` writes the
 original and every version, `--only original version1 original-area2` (or
 `--only all`) picks, and `--to hex` / `--to srec` writes that format.
+
+## WinOLS project to map pack
+
+A WinOLS project (.ols) or map pack (.kp) converted to a map pack is passed
+through, not rebuilt: every map goes in as the project holds it -- its name,
+description, units, scaling, axes and type -- in the folder it is in, and
+the project's folder list goes in as it is (names, order). Nothing is
+regrouped (an EDC15 project's code blocks stay in their folders, not in
+*Codeblock* folders), renamed or left out. Translation, when ticked, is the
+one change: it rewrites the descriptions, value and axis labels, units and
+folder names -- never a map's name, which is its identifier.
+
+What a map pack of this layout cannot hold is not written, and the report
+says so: the hexdump view (WinOLS adds its own), axis point texts and the
+other languages a newer project keeps beside each text, and folders inside
+folders (each is listed at the top). *Potential maps* is WinOLS's own
+search: WinOLS shows it for the map pack as it does for any.
 
 ## Port a definition to another software version
 
@@ -233,7 +265,8 @@ them: the base is found by its id in the ROM's folder or the folder above it
 base is missing. A file written here is self-contained: it needs no base.
 
 **RomRaider** keeps many ROMs in one file (`ecu_defs.xml`). When such a file
-is added, a **ROM:** list appears under the binary:
+is added, the **ROM:** list on the **Options** tab (group **Source:
+RomRaider definition**, greyed out until then) applies:
 
 - **Found from the binary** (the default): the converter uses the ROM whose
   id string is in the binary, the way RomRaider recognises a ROM. The text
@@ -255,7 +288,7 @@ display name), and values apply back by either form.
 | ASAP2 A2L | Yes | Yes | Addresses as file offsets (WinOLS, TunerPro) or ECU addresses (INCA, CANape) |
 | Bosch DAMOS | Yes | Yes | Written back into a DAMOS, its own records are kept as they are |
 | WinOLS project (.ols) | Yes | No | Its binary is used when none is given; it and its versions can be [extracted](#extract-the-binaries-of-a-winols-project) |
-| WinOLS map pack (.kp) | Yes | Experimental | Laid out section by section as the map packs WinOLS 5.0 writes, and reads back in OVT-Suite; opens in WinOLS 5.87; if a WinOLS version refuses it, an A2L imports reliably |
+| WinOLS map pack (.kp) | Yes | Experimental | Laid out section by section as the map packs WinOLS 5.0 writes, and reads back in OVT-Suite; opens in WinOLS 5.87; if a WinOLS version refuses it, an A2L imports reliably. From a WinOLS project or map pack the maps pass through as they are: every map with its own name, description, units, scaling and axes, in the project's own folders (see [WinOLS project to map pack](#winols-project-to-map-pack)) |
 | EcuFlash XML | Yes | Yes | Finds the base a ROM includes beside it; writes one self-contained file |
 | RomRaider XML | Yes | Yes | Many ROMs per file: found from the binary or picked |
 | OVT definition (JSON) | Yes | Yes | Every field of the definition, for scripts and comparisons |

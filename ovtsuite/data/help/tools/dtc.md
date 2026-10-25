@@ -61,7 +61,7 @@ that selects it (**Manual (coding 2)**); it starts on the first. Choose
 
 **Apply edits to the same fault in every dataset** (ticked to start with)
 makes switching a code, or its lamp, do the same in every other dataset that
-has that fault with the same code, as one undo step — so the change holds
+has that fault with the same code — so the change holds
 whichever dataset the car's coding picks. Untick it to change only the
 dataset shown.
 
@@ -83,15 +83,39 @@ classes differently.
    back on. The row turns grey when it is off.
 3. To switch several at once, select the rows (Shift- or Ctrl-click, or
    Ctrl+A for everything the search shows) and press **Disable selected** or
-   **Enable selected**, or right-click them. That is one undo step however
-   many rows change.
-4. Save (**File > Save**, Ctrl+S): the edits become a new version of the
+   **Enable selected**, or right-click them.
+4. Press **Apply** to keep the changes and carry on, or **OK** to keep them
+   and close the window. **Cancel** takes back every change made since the
+   last **Apply** (or since the window opened) and closes.
+5. Save (**File > Save**, Ctrl+S): the edits become a new version of the
    tab's branch in the project, and the checksums are corrected as it is
    saved.
 
-Every change is an ordinary edit: **Edit > Undo** (Ctrl+Z) takes it back. The
-window can stay open while you work in the main window, and it follows edits
-made there (undo, a patch, the table grid).
+## Apply, Cancel and OK
+
+A change made here reaches the file at once, so the main window and the
+comparison shading show it straight away; the rows changed since the window
+opened or since the last **Apply** are shaded yellow, in bold, and the count
+is shown beside the buttons (while a row is yellow, its difference from the
+comparison is shaded in the comparison's table only).
+
+- **Apply** keeps those changes as **one** undo step — however many rows,
+  lamps and datasets they touched — and clears the shading. Switching a row
+  off and back on again leaves no undo step at all.
+- **Cancel** takes back every change made since the last **Apply** (or since
+  the window opened) — the bytes go back exactly as they were — and closes the
+  window. Changes applied earlier, and your other undo history, stay. If you
+  edited the file in the main window in between, those edits stay too, and
+  the take-back is an undo step of its own.
+- **OK** applies, as **Apply** does, and closes the window.
+- The title bar's X and Esc work as **Cancel**, but ask first when there are
+  changes not applied: **Apply** keeps them, **Discard** takes them back,
+  **Cancel** keeps the window open.
+
+What has been applied is an ordinary edit: **Edit > Undo** (Ctrl+Z) takes
+each **Apply** back in one step. The window can stay open while you work in
+the main window, and it follows edits made there (undo, a patch, the table
+grid).
 
 ## Keep a code but switch a warning lamp off
 
@@ -103,7 +127,7 @@ Untick a box to keep the fault — it is still detected and stored, and a scan
 tool still reads it — without that lamp. Tick it again to bring the lamp back.
 For several rows, select them and use **Warning lamps** (under the table) or
 right-click: **MIL off, keep the fault**, **MIL on**, **Glow-plug lamp off,
-keep the fault**, **Glow-plug lamp on**. Each is one undo step.
+keep the fault**, **Glow-plug lamp on**.
 
 A lamp box can only be switched on a row that is on; a row without a tick box
 says why when you hover over it.
@@ -235,12 +259,17 @@ Nothing in this window is guessed from another file.
 
 | Button | What it does |
 |---|---|
-| **Disable selected** / **Enable selected** | Switches every selected row off or on, as one undoable step. |
-| **Warning lamps** | For the selected rows: MIL off / on, glow-plug lamp off / on, keeping the faults. One undoable step. |
+| **Disable selected** / **Enable selected** | Switches every selected row off or on. |
+| **Warning lamps** | For the selected rows: MIL off / on, glow-plug lamp off / on, keeping the faults. |
 | **Read codes from ECU...** | Opens the **Fault codes from ECU** window, which reads the codes stored in the car's ECU (see [Reading fault codes](../logging/fault-codes.md)). Every row that can set one of the codes read is then highlighted (one code can belong to several rows) and **Show** switches to **Stored on the ECU** — pick **All fault paths** to see them highlighted among the rest; codes the ECU has stored that are not in this file are listed under the table. |
-| **Restore all from stock...** | Copies every fault path's class (EDC16) or time (EDC15) from a stock binary of the same software, as one undoable step — a quick way to undo all fault-code changes in a tune. In a project you are offered the set's original (as read): **Use the original**, or **Another file...** to pick a stock file. |
-| **Copy differences from comparison** | Only with a comparison open. Sets every row of the dataset shown (or every dataset) whose state differs to the comparison's value, as one undoable step. |
-| **Close** | Closes the window. Your changes stay in the tab until you save or undo them. |
+| **Restore all from stock...** | Copies every fault path's class (EDC16) or time (EDC15) from a stock binary of the same software — a quick way to undo all fault-code changes in a tune. In a project you are offered the set's original (as read): **Use the original**, or **Another file...** to pick a stock file. |
+| **Copy differences from comparison** | Only with a comparison open. Sets every row of the dataset shown (or every dataset) whose state differs to the comparison's value. |
+| **Apply** | Keeps the changes made since the window opened or the last **Apply** (rows shaded yellow) as one undo step; the window stays open. |
+| **Cancel** | Takes back the changes made since the last **Apply** (or since the window opened) and closes the window. |
+| **OK** | Applies, as **Apply** does, and closes the window. Applied changes stay in the tab until you save or undo them. |
+
+Every change made by these buttons, the tick boxes and the right-click menu
+counts towards the next **Apply** — or is taken back by **Cancel**.
 
 Right-click selected rows for **Disable**, **Enable**, the lamp switches,
 **Set fault class** (EDC16), **Copy codes to clipboard** and, with a

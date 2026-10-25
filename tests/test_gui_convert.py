@@ -209,7 +209,8 @@ def test_definition_and_values_write_into_a_binary(app, tmp_path):
     assert d._mode() == "apply"
     assert [d.target.itemData(i) for i in range(d.target.count())] == ["bin", "hex", "srec"]
     d.target.setCurrentIndex(d.target.findData("srec"))
-    assert d.opts.currentIndex() == d._opt_pages["apply"]
+    assert d._opt_groups["apply"][0].isEnabled()
+    assert not d._opt_groups["image"][0].isEnabled()
     d.apply_cks.setChecked(False)
     d.binary.setText(s19)
     d.out.setText(str(tmp_path / "out.s19"))
@@ -319,9 +320,9 @@ def test_romraider_rom_picker(app, tmp_path, monkeypatch):
     car = tmp_path / "car.bin"
     car.write_bytes(bytes(img))
     d = ConverterDialog(None)
-    assert d.rom_box.isHidden()
+    assert not d.rom_box.isEnabledTo(d)          # greyed out, not hidden
     d.add_sources([str(defs)])
-    assert not d.rom_box.isHidden()
+    assert d.rom_box.isEnabledTo(d)
     assert [d.rom.itemData(i) for i in range(d.rom.count())] == [
         None, "32BITBASE", "DZ1E402B", "A2WC500R"]
     d.target.setCurrentIndex(d.target.findData("json"))
@@ -339,7 +340,7 @@ def test_romraider_rom_picker(app, tmp_path, monkeypatch):
     assert d.job().options["rom"] == "DZ1E402B"
     d.sources.selectAll()
     d._remove_selected()
-    assert d.rom_box.isHidden() and "rom" not in d.job().options
+    assert not d.rom_box.isEnabledTo(d) and "rom" not in d.job().options
 
 
 def test_watch_a_folder(app, tmp_path):
@@ -581,4 +582,33 @@ def test_tables_tab_lists_matches_and_fills_size_and_offset(app):
     d.pattern.setText("(")
     d._fill_matches()
     assert "Not a valid pattern" in d.match_count.text()
+    d.close()
+
+
+def test_every_option_is_on_the_options_tab(app):
+    """The Options tab lists every format's options at once, each group
+    greyed out with the reason unless it applies; the Files tab holds file
+    choice only (no ROM picker)."""
+    from ovtsuite.gui_convert import ConverterDialog
+    from PySide6 import QtWidgets as W
+    d = ConverterDialog(None)
+    page = d.tabs.widget(1)
+    assert d.tabs.tabText(1) == "Options"
+    titles = [g.title() for g in page.findChildren(W.QGroupBox)]
+    for key, title in d._TARGET_GROUPS:
+        assert title in titles
+    assert "Source: RomRaider definition" in titles
+    files = d.tabs.widget(0)
+    for w in (d.rom, d.cks, d.a2l_addr, d.record, d.existing, d.dynamic):
+        assert page.isAncestorOf(w) and not files.isAncestorOf(w)
+    for i in range(d.target.count()):
+        d.target.setCurrentIndex(i)
+        on = [k for k, (g, _n) in d._opt_groups.items() if g.isEnabled()]
+        assert len(on) <= 1, (d.target.itemData(i), on)
+        for k, (g, note) in d._opt_groups.items():
+            assert bool(note.text()) == (not g.isEnabled()), (k, note.text())
+            assert not g.isHidden()
+    d.target.setCurrentIndex(d.target.findData("a2l"))
+    assert [k for k, (g, _n) in d._opt_groups.items() if g.isEnabled()] == ["a2l"]
+    assert "ASAP2" in d._opt_groups["xdf"][1].text()       # "now: ASAP2 (A2L)"
     d.close()

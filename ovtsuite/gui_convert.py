@@ -241,6 +241,27 @@ class _ElidedLabel(QtWidgets.QLabel):
         return QtCore.QSize(min(h.width(), 320), h.height())
 
 
+class _ScrollPage(QtWidgets.QScrollArea):
+    """A tab page that scrolls: it asks for no more height than a short
+    tab, so a long list of options does not make the window taller."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def sizeHint(self):                                 # noqa: N802 - Qt name
+        w = self.widget()
+        width = (w.sizeHint().width() if w is not None else 400) + \
+            self.verticalScrollBar().sizeHint().width()
+        return QtCore.QSize(width, self.fontMetrics().lineSpacing() * 8)
+
+    def minimumSizeHint(self):                          # noqa: N802 - Qt name
+        return QtCore.QSize(self.sizeHint().width(),
+                            self.fontMetrics().lineSpacing() * 4)
+
+
 class _DropList(QtWidgets.QListWidget):
     """The source files: drop files on it, or Add files..."""
     added = QtCore.Signal(list)
@@ -508,15 +529,8 @@ class ConverterDialog(QtWidgets.QDialog):
         self.rom_found = _ElidedLabel()
         rb.addWidget(self.rom_found, 1)
         self.rom_lab = QtWidgets.QLabel("ROM:")
-        gl.addWidget(self.rom_lab, 2, 0)
-        gl.addWidget(self.rom_box, 2, 1, 1, 2)
-        # shown only for a RomRaider file, its room kept: the window does
-        # not change shape when one is added or removed
-        for w in (self.rom_box, self.rom_lab):
-            sp = w.sizePolicy()
-            sp.setRetainSizeWhenHidden(True)
-            w.setSizePolicy(sp)
-            w.setVisible(False)
+        # (on the Options tab, in the RomRaider group: greyed out unless a
+        # RomRaider file is among the files)
         self._rom_src = None                 # the RomRaider file the list is from
         self._rom_ids = []                   # its (xmlid, id string, id address, text)
         self._rom_default = None             # its ROM when none is named / found
@@ -585,16 +599,15 @@ class ConverterDialog(QtWidgets.QDialog):
         self._files_page = files             # (the default split: just this tall)
 
         # -- Options ----------------------------------------------------------
+        # Every option of every format, at once: the general ones, then each
+        # source format's and each target format's in a group of its own,
+        # greyed out (with the reason) when it does not apply to the files
+        # and target chosen -- never shown or hidden, so nothing moves, and
+        # no option needs a trip to the Files tab. The page scrolls.
         opts = QtWidgets.QWidget()
         ov = QtWidgets.QVBoxLayout(opts)
-        self.opts_box = QtWidgets.QGroupBox("Format options")
-        obl = QtWidgets.QVBoxLayout(self.opts_box)
-        self.opts = QtWidgets.QStackedWidget()
-        self._opt_pages = {}
-        self._build_option_pages()
-        obl.addWidget(self.opts)
-        ov.addWidget(self.opts_box)
-        g = QtWidgets.QGroupBox("Image and placement")
+        self._opt_groups = {}                # key -> (group, reason label)
+        g = QtWidgets.QGroupBox("Image and placement (every conversion)")
         pf = QtWidgets.QFormLayout(g)
         self.size = QtWidgets.QLineEdit()
         self.size.setPlaceholderText("from the binary / definition")
@@ -654,8 +667,16 @@ class ConverterDialog(QtWidgets.QDialog):
         self.port_box.setEnabled(False)
         self.port.toggled.connect(self._port_toggled)
         ov.addWidget(g)
+        # a source format's options
+        g, f = self._opt_group("rom", "Source: RomRaider definition")
+        f.addRow(self.rom_lab, self.rom_box)
+        ov.addWidget(g)
+        # each target format's options
+        self._build_option_pages(ov)
         ov.addStretch(1)
-        self.tabs.addTab(opts, "Options")
+        self.opts = _ScrollPage()
+        self.opts.setWidget(opts)
+        self.tabs.addTab(self.opts, "Options")
 
         # -- Translation ------------------------------------------------------
         trw = QtWidgets.QWidget()
@@ -869,14 +890,50 @@ class ConverterDialog(QtWidgets.QDialog):
         self._fit_window()
 
     # ---------------------------------------------------------- options
-    def _build_option_pages(self):
-        def page():
-            w = QtWidgets.QWidget()
-            f = QtWidgets.QFormLayout(w)
-            f.setContentsMargins(0, 0, 0, 0)
-            return w, f
+    #: the target groups, in the order listed: key -> its title
+    _TARGET_GROUPS = (
+        ("xdf", "Target: TunerPro XDF"),
+        ("a2l", "Target: ASAP2 (A2L)"),
+        ("kp", "Target: WinOLS map pack (KP)"),
+        ("dam", "Target: DAMOS"),
+        ("values", "Target: calibration values (DCM, CDFX)"),
+        ("apply", "Target: values written into a binary"),
+        ("image", "Target: binary image (BIN, Intel HEX, S-record)"),
+    )
+    #: when each group applies, for the line saying why it is greyed out
+    _GROUP_WHEN = {
+        "rom": "a RomRaider definition is among the files",
+        "xdf": "converting to TunerPro XDF",
+        "a2l": "converting to ASAP2 (A2L)",
+        "kp": "converting to a WinOLS map pack (KP)",
+        "dam": "converting to DAMOS",
+        "values": "converting to DCM or CDFX",
+        "apply": "writing value files into a binary (a definition and value "
+                 "files among the files, an image format chosen)",
+        "image": "converting a binary to BIN, Intel HEX or S-record",
+    }
 
-        w, f = page()
+    def _opt_group(self, key: str, title: str):
+        """An options group whose first line says, while it is greyed out,
+        when it applies: ``(group, form layout)``."""
+        g = QtWidgets.QGroupBox(title)
+        f = QtWidgets.QFormLayout(g)
+        note = _ElidedLabel("")
+        note.setStyleSheet("color: gray")
+        f.addRow(note)
+        self._opt_groups[key] = (g, note)
+        return g, f
+
+    def _build_option_pages(self, ov):
+        """A group per target format's options, added to ``ov``."""
+        titles = dict(self._TARGET_GROUPS)
+
+        def page(key):
+            g, f = self._opt_group(key, titles[key])
+            ov.addWidget(g)
+            return g, f
+
+        w, f = page("xdf")
         self.cks = QtWidgets.QComboBox()
         f.addRow("Checksum plugin:", self.cks)
         self.cks.currentIndexChanged.connect(self._cks_changed)
@@ -917,41 +974,35 @@ class ConverterDialog(QtWidgets.QDialog):
         self.patch_with.textChanged.connect(
             lambda t: self.patch_opts.setEnabled(bool(t.strip())))
         self.patch_with.textChanged.connect(lambda _t: self._target_changed())
-        self._opt_pages["xdf"] = self.opts.addWidget(w)
         self._fill_checksums()
 
-        w, f = page()
+        w, f = page("a2l")
         self.a2l_addr = QtWidgets.QComboBox()
         self.a2l_addr.addItem("File offsets (WinOLS, TunerPro, %s)" % branding.APP_NAME, "offset")
         self.a2l_addr.addItem("ECU addresses (INCA, CANape)", "ecu")
         f.addRow("Addresses:", self.a2l_addr)
-        self._opt_pages["a2l"] = self.opts.addWidget(w)
 
-        w, f = page()
-        lab = QtWidgets.QLabel("Experimental: a map pack written here reads back in "
-                               "%s; whether WinOLS opens it is not yet tested. "
-                               "An A2L imports into WinOLS reliably." % branding.APP_NAME)
+        w, f = page("kp")
+        lab = QtWidgets.QLabel("Experimental: laid out as the map packs WinOLS 5.0 "
+                               "writes; WinOLS 5.87 opens it. From a WinOLS project or "
+                               "map pack, its maps and folders go in as they are "
+                               "(translated, when chosen). If a WinOLS version refuses "
+                               "it, an A2L imports reliably.")
         lab.setWordWrap(True)
         f.addRow(lab)
-        self._opt_pages["kp"] = self.opts.addWidget(w)
 
-        w, f = page()
+        w, f = page("dam")
         lab = QtWidgets.QLabel("Writing back into a DAMOS keeps its records as they "
                                "are; from any other format a new DAMOS is written.")
         lab.setWordWrap(True)
         f.addRow(lab)
-        self._opt_pages["dam"] = self.opts.addWidget(w)
 
-        w, f = page()
-        self._opt_pages["plain"] = self.opts.addWidget(w)
-
-        w, f = page()
+        w, f = page("values")
         self.values_note = QtWidgets.QLabel("")
         self.values_note.setWordWrap(True)
         f.addRow(self.values_note)
-        self._opt_pages["values"] = self.opts.addWidget(w)
 
-        w, f = page()
+        w, f = page("apply")
         lab = QtWidgets.QLabel("The values are written into a copy of the binary, each "
                                "where the definition places its table. Values the "
                                "definition does not have, or whose size differs, are "
@@ -966,9 +1017,8 @@ class ConverterDialog(QtWidgets.QDialog):
         self.apply_record.setRange(1, 255)
         self.apply_record.setValue(32)
         f.addRow("Bytes per record (HEX / S-record):", self.apply_record)
-        self._opt_pages["apply"] = self.opts.addWidget(w)
 
-        w, f = page()
+        w, f = page("image")
         self.record = QtWidgets.QSpinBox()
         self.record.setRange(1, 255)
         self.record.setValue(32)
@@ -979,7 +1029,6 @@ class ConverterDialog(QtWidgets.QDialog):
         f.addRow(self.swap16)
         self.fix_cks = QtWidgets.QCheckBox("Correct checksums (through the installed module)")
         f.addRow(self.fix_cks)
-        self._opt_pages["image"] = self.opts.addWidget(w)
 
 
     def _build_binaries_tab(self) -> QtWidgets.QWidget:
@@ -1455,7 +1504,10 @@ class ConverterDialog(QtWidgets.QDialog):
         """Show the ROM picker while a RomRaider file is among the sources."""
         from .convert import fmt_romxml
         src = self._romraider_source()
-        self.rom_box.setVisible(src is not None)
+        g, note = self._opt_groups["rom"]
+        g.setEnabled(src is not None)
+        note.setText("" if src is not None else
+                     "Applies when %s." % self._GROUP_WHEN["rom"])
         if src == self._rom_src:
             return
         keep = self.rom.currentData() or self._want_rom
@@ -1651,20 +1703,30 @@ class ConverterDialog(QtWidgets.QDialog):
         self.port.setEnabled(has_def)
         self.port_box.setEnabled(has_def and self.port.isChecked())
         extract = False
-        self.opts_box.setTitle("%s options" % C.NAMES.get(t, "Format") if t else
-                               "Format options")
         if t in C.VAL:
             page = "values"
-            self.values_note.setText(
-                "Every table's values are read out of the binary through the "
-                "definition, with its shared axes, by name." if mode != "values" else
-                "The values are converted as they are; several files are merged, a "
-                "later file's value replacing an earlier one's.")
         elif t in C.IMG and mode == "apply":
             page = "apply"
         else:
-            page = t if t in self._opt_pages else ("image" if t in C.IMG else "plain")
-        self.opts.setCurrentIndex(self._opt_pages[page])
+            page = t if t in self._opt_groups else ("image" if t in C.IMG else "")
+        self.values_note.setText(
+            "The values are converted as they are; several files are merged, a "
+            "later file's value replacing an earlier one's." if mode == "values" else
+            "Every table's values are read out of the binary through the "
+            "definition, with its shared axes, by name.")
+        now = C.NAMES.get(t, t) if t else "nothing chosen"
+        for key, (g, note) in self._opt_groups.items():
+            if key == "rom":
+                continue                     # (by the files: _sync_roms)
+            on = key == page
+            g.setEnabled(on)
+            note.setText("" if on else "Applies when %s (now: %s)."
+                         % (self._GROUP_WHEN[key], now))
+        if page and page != getattr(self, "_opt_page", None):
+            # the chosen target's group scrolled into view (only when the
+            # target changes: the user's own scrolling is left alone)
+            self.opts.ensureWidgetVisible(self._opt_groups[page][0], 0, 0)
+        self._opt_page = page
         is_def = t in C.DEF_OUT
         self.filter_box.setEnabled(is_def or t in C.VAL or mode == "apply" or t == C.DIFF)
         self.tr_box.setEnabled(is_def or (t in C.VAL and mode != "values"))

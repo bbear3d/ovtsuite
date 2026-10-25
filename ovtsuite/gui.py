@@ -6022,7 +6022,12 @@ if HAVE_QT:
             sub = menu.addMenu("Copy %s from tab" % what)
             self.win.fill_copy_from_menu(sub, self)
             from . import gui_cellkeys as _gck
-            _gck.add_to_menu(self.win, menu)       # revert actions
+            skip = ()
+            if _gck.comparison_cells(self, self.table):    # comparison rows
+                menu.addAction("Copy cells to primary",
+                               lambda: _gck.to_primary(self, self.table))
+                skip = ("Copy selected cells from comparison",)
+            _gck.add_to_menu(self.win, menu, skip)  # revert actions
             e = self.model.entity
             if e is not None and e.kind in ("map", "curve") and \
                     getattr(e, "source", "") != "user":

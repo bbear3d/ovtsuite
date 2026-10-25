@@ -14,8 +14,16 @@ table and fault path before anything is written, and writes everything you
 changed as **one undo step**.
 
 The window lists only the functions this file carries (they come from the
-EDC15 / EDC16 module). A file of another kind (a gearbox, a cluster) does not
-offer the window.
+EDC15 / EDC16 module). A function the module knows but will not offer on
+this file is listed under the functions, greyed, as **Not available on this
+file**, with the reason: EGR on an EDC15 file whose definition places
+the EGR switch on a byte that holds neither 0 nor 1 (a placement in doubt,
+so nothing is written there), or places neither the switch nor the EGR
+coolant correction. An EDC15 file with the coolant correction but no EGR
+switch still offers EGR, as **On** and **Cut when the engine is warm**
+only: those change just the coolant correction, and **Off** needs the
+switch. A file of another kind (a gearbox, a cluster) does not offer the
+window.
 
 ## Change a function
 
@@ -105,6 +113,15 @@ undo step.
 | **Electric heater outputs** (EDC16, EDC15) | The ECU outputs switching the electric heating elements that warm the cabin heater while the engine is cold: on EDC16 the heater switch for outputs 1 and 2 plus the number of connected elements; on EDC15 the number of glow-element outputs of the coolant heater. Files with coding variants (e.g. 1.9 TDI BEW) have a copy per coding: stock files have the outputs on for manual-gearbox codings and off for automatic ones (on EDC15, on in manual datasets, off in automatic ones). **On** sets three elements; enter the number fitted if fewer. |
 | **Road speed source** (EDC15) | 1: a speed sender wired to the ECU's road-speed input (normally on the gearbox; its pulse constant is in VSS pulse settings). 2: a tachograph's speed output. 3: the CAN message from the ABS / ESP unit. 4: the CAN message from the instrument cluster. 3 and 4 exist only on later (P+ / VGK) software. |
 | **Smoke limiter: air mass or boost pressure** | Switching to boost pressure fills the boost-pressure limiter map from this file's air-mass limiter, so the limit stays what it is today (a 2 x 2 placeholder map is enlarged first -- moved to free space when it cannot grow where it is -- with new engine-speed and boost-pressure axes), and fills a flat intake-temperature correction. A file that already limits by boost pressure keeps its own map. The list shows the air-mass limiter and the volumetric efficiency too: the fill reads them, it does not write them. |
+
+On EDC15 files whose definition comes from the disassembly (038906012FD /
+GN, 038906012HA, the later PD software) EGR works through the same switch:
+the definition places it (and on PD software the air-mass gate and the
+EGR-on duty) where the code that reads it points, and the EGR fault paths --
+listed there by number (*F0D_X*) -- are recognised by their fault codes
+(P1402, P1441, P3102-P3105, P0401 / P0402 or P3130 / P3131). Those
+definitions do not place the EGR fault-reaction masks: **Off** leaves them
+as they are and says so.
 
 A fault path switched back on gets the class it had when the file was
 opened. One that was already off then gets the class it has in the

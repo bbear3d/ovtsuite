@@ -284,6 +284,8 @@ class CompareGrid(QtCore.QObject):
         self.view.horizontalHeader().setMinimumSectionSize(
             t.horizontalHeader().minimumSectionSize())
         self.view.setToolTip("")
+        self.view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._menu)
         QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, self.view,
                         self.copy, context=QtCore.Qt.ShortcutContext
                         .WidgetWithChildrenShortcut)
@@ -474,6 +476,17 @@ class CompareGrid(QtCore.QObject):
             pass
 
     # -- copy ---------------------------------------------------------
+    def _menu(self, pos) -> None:
+        """Right-click in the comparison grid: copy its cells as text, or
+        into the same cells of this file."""
+        from . import gui_cellkeys as _gck
+        menu = QtWidgets.QMenu(self.view)
+        menu.addAction("Copy", self.copy)
+        to = menu.addAction("Copy cells to primary",
+                            lambda: _gck.to_primary(self.ws, self.view))
+        to.setEnabled(bool(_gck.comparison_cells(self.ws, self.view)))
+        menu.exec(self.view.viewport().mapToGlobal(pos))
+
     def copy(self) -> None:
         """Ctrl+C in the comparison grid: its selection as tab-separated
         text, as the table copies its own."""

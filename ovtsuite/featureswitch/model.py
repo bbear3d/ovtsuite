@@ -123,6 +123,9 @@ class FeatureSet:
 #: window lists them before a setting is picked. A table row carries its
 #: ``entity`` (and ``axis``, ``cells``); a fault row its path's ``key`` and
 #: ``target`` class, which the window lets the user override path by path.
+#: ``fs_absent_why(session)`` (optional) says why the feature cannot be
+#: offered on this file ("" when it can): the feature is then left out and
+#: the window lists it, with that reason, under the features it offers.
 #: ``group`` can be a coding-variant copy key (:func:`.ents.variant_key`):
 #: resolving names through :func:`.ents.one` handles it.
 HOOK_PROTOCOL = ("present", "groups", "state", "fs_describe", "fs_apply")

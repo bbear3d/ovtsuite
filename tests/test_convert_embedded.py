@@ -214,14 +214,24 @@ def test_ols_categories_match_the_expected_xdf(tmp_path):
     its block (CATEGORYMEM 0) and its WinOLS folder (CATEGORYMEM 1), the
     folders numbered by name. The one name that differs is the folder
     WinOLS calls "My maps", which the expected XDF names from its maps' commonest
-    word ("LLR")."""
+    word ("LLR").
+
+    The expected XDF is whichever copy carries the expected mark in its first line: the pair's XDF, or Reference/EDC15/038906019GQ.xdf -- an
+    XDF OVT-Suite exported over the pair's is not it."""
     from ovtsuite import convert as C
     src = PAIR + ".ols" if os.path.isfile(PAIR + ".ols") else GQ
-    if not os.path.isfile(PAIR + ".xdf"):
-        pytest.skip("the sample pair is not present")
+    ref = None
+    for cand in (PAIR + ".xdf", os.path.splitext(GQ)[0] + ".xdf"):
+        if os.path.isfile(cand):
+            with open(cand, encoding="latin-1") as fh:
+                text = fh.read()
+            if "expected-mark" in text[:200]:
+                ref = text
+                break
+    if ref is None:
+        pytest.skip("no expected XDF of the sample project")
     _data(src)
-    with open(PAIR + ".xdf", encoding="latin-1") as fh:
-        ref_names, ref_tables = _xdf_cats(fh.read())
+    ref_names, ref_tables = _xdf_cats(ref)
     out = str(tmp_path / "o.xdf")
     C.run(C.Job(sources=[src], target="xdf", out=out, self_check=False))
     with open(out, encoding="latin-1") as fh:

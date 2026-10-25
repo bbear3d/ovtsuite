@@ -464,6 +464,23 @@ def write_kp(entities, image_size: int, title: str = "",
         if _record(rec, e, fid, image_size, little_endian, warnings, version,
                    image if new else None, blob):
             n += 1
+    builtin = [(1, 9001, "Hexdump"), (0, 9000, "My maps")]
+    rest = [(fid, 0, label) for label, fid in folders.items()]
+    if new:
+        rest.append((2, 9002, "Potential maps"))
+    listed = builtin + sorted(rest, key=lambda f: f[2].lower())
+    return _assemble(rec, n, listed, image_size, title, version, blob, closing)
+
+
+def _assemble(rec: "_W", n: int, listed, image_size: int, title: str,
+              version: int = VERSION, blob: Optional[bytearray] = None,
+              closing: Optional[bytes] = None) -> bytes:
+    """The map pack around the records in ``rec`` (``n`` of them, after
+    its ``u8 0, u32 count``): the header, the version list, the record
+    archive, the folder list ``listed`` (``[(id, resource, name)]`` in the
+    order written) and the closing block."""
+    new = version >= 503
+    blob = blob if blob is not None else bytearray()
     struct.pack_into("<I", rec.out, 1, n)
     z = _zip_intern(bytes(rec.out))
     w = _W(nul=not new, ml=new)
@@ -500,13 +517,8 @@ def write_kp(entities, image_size: int, title: str = "",
     w.u32(len(z))
     w.raw(z)
     w.raw(FOLDERS_MAGIC + b"\0\0\0\0" + FOLDERS_MAGIC)
-    builtin = [(1, 9001, "Hexdump"), (0, 9000, "My maps")]
-    rest = [(fid, 0, label) for label, fid in folders.items()]
-    if new:
-        rest.append((2, 9002, "Potential maps"))
-    listed = builtin + sorted(rest, key=lambda f: f[2].lower())
     w.u32(len(listed))
-    for fid, res, label in listed:              # as WinOLS: by name
+    for fid, res, label in listed:
         w.u32(fid)
         w.u32(res)
         w.mlstr(label)
@@ -532,6 +544,124 @@ def write_kp(entities, image_size: int, title: str = "",
     struct.pack_into("<I", w.out, 20, len(w.out))
     struct.pack_into("<I", w.out, images_at, marker)
     return bytes(w.out)
+
+
+# ------------------------------------------------------------ pass-through
+#: The profiles whose record blocks are format 292's own, field for field
+#: (a record read with one of them is written back byte for byte).
+_SAME_292 = ("292",)
+#: ... and those whose end-address block is (303: the 292 layout with the
+#: 117-byte block before the counts).
+_ZTAIL_292 = ("292", "303")
+
+
+def _passthrough_axis(w: "_W", a, same: bool) -> None:
+    def text(field, value):
+        return None if same and field in a.none else value
+    w.str(text("label", a.label))
+    w.str(text("units", a.units))
+    w.f64(a.factor)
+    w.f64(a.offset)
+    for v in (a.source, a.addr, a.org, a.size, a.numbase):
+        w.u32(v)
+    w.raw(a.pre if same and len(a.pre) == 14 else b"\0" * 14)
+    w.u32(a.precision)
+    w.u8(1 if a.signed else 0)
+    w.u32(len(a.data))
+    w.raw(bytes(a.data))
+    w.raw(a.after if len(a.after) == 8 else b"\0\0\0\0\xff\xff\xff\xff")
+
+
+def _passthrough_record(w: "_W", r, image_size: int) -> None:
+    """Record ``r`` (a :class:`~.winols.Record`) in format 292. One read
+    with the 292 profile goes out as it was read; one read with another
+    has its fields written in the 292 layout (the blocks that layout does
+    not share made as :func:`write_kp` makes them)."""
+    same = r.profile in _SAME_292
+
+    def text(field, value):
+        return None if same and field in r.none else value
+    w.u8(r.lead)
+    w.u32(-1)
+    w.str(r.bit_texts if same else (r.bit_texts or ""))
+    w.u8(r.bit_u8)
+    w.str(text("description", r.description))
+    for v in (r.type, r.h1, r.org, r.size, r.numbase, r.folder):
+        w.u32(v)
+    w.str(text("name", r.name))
+    if same and len(r.pre) == len(_PRE):
+        w.raw(r.pre)
+    else:
+        pre = bytearray(_PRE)
+        pre[_SIGNED_AT] = 1 if r.signed else 0
+        w.raw(bytes(pre))
+    for v in (r.cols, r.rows, r.c2, r.c3, r.precision):
+        w.u32(v)
+    w.str(text("label", r.label))
+    w.str(text("units", r.units))
+    w.f64(r.factor)
+    w.f64(r.offset)
+    w.u32(r.addr)
+    w.u32(r.end)
+    if r.profile in _ZTAIL_292 and len(r.ztail) == 32:
+        w.raw(r.ztail)
+    else:
+        w.raw(struct.pack("<8I", image_size, 0, 0, r.addr, 0, 0, image_size, 0))
+    _passthrough_axis(w, r.x, same)
+    _passthrough_axis(w, r.y, same)
+    w.raw(r.tail if len(r.tail) == len(_TAIL) else _TAIL)
+    w.raw(r.flags if len(r.flags) == 3 else b"\x01\x01\x01")
+
+
+def write_kp_records(records, folders, image_size: int, title: str = "",
+                     warnings: Optional[List[str]] = None) -> bytes:
+    """A map pack (format 292) holding WinOLS ``records`` as they are --
+    the pass-through of an OLS or KP: every record with its own type,
+    texts, scaling, axes and folder id, and the folder list ``folders``
+    (``[(id, resource, name)]``) in the order given. Nothing is regrouped,
+    renamed or left out but the hexdump view (type 1), which no map pack
+    WinOLS writes holds, and *Potential maps* when no record is in it (no
+    format-292 pack lists it; WinOLS shows it all the same). Texts in
+    other languages a record carries (format 397 on) and axis point texts
+    have no place in format 292 and are not written."""
+    warnings = warnings if warnings is not None else []
+    rec = _W(nul=True, ml=False)
+    rec.u8(0)
+    rec.u32(0)
+    n = 0
+    used = set()
+    texts = 0
+    for r in records:
+        if r.type == 1:
+            continue
+        _passthrough_record(rec, r, image_size)
+        used.add(r.folder)
+        if any(a.texts for a in (r.x, r.y)):
+            texts += 1
+        n += 1
+    if texts:
+        warnings.append("%d maps have axis point texts, which a map pack of "
+                        "format 292 cannot hold -- not written" % texts)
+    listed = []
+    have = set()
+    for fid, res, name in folders:
+        if fid in have:
+            continue
+        if res == 9002 and fid not in used:
+            continue
+        have.add(fid)
+        listed.append((fid, res, name))
+    for fid, res, name in ((1, 9001, "Hexdump"), (0, 9000, "My maps")):
+        if fid not in have:
+            listed.insert(0 if fid == 1 else 1, (fid, res, name))
+            have.add(fid)
+    lost = sorted(used - have)
+    if lost:
+        warnings.append("%d maps name a folder the file does not list (%s) -- "
+                        "WinOLS shows them in My maps"
+                        % (sum(1 for r in records if r.type != 1 and r.folder in lost),
+                           ", ".join(map(str, lost[:10]))))
+    return _assemble(rec, n, listed, image_size, title, VERSION)
 
 
 def template_closing(data: bytes) -> bytes:

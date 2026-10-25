@@ -180,10 +180,12 @@ def _is_dark() -> bool:
 # --------------------------------------------------------------------- chart
 class ScheduleChart(QtWidgets.QWidget):
     """One line of many schedules over pedal %: before faint, after solid,
-    the paired line dashed. Hover names the nearest schedule; a click on it
-    emits ``picked``."""
+    the paired line dashed, the comparison binary's line (``cmp``) faded and
+    dashed behind. Hover names the nearest schedule; a click on it emits
+    ``picked``, a right-click ``context`` (key, global position)."""
 
     picked = QtCore.Signal(str)
+    context = QtCore.Signal(str, QtCore.QPoint)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -203,7 +205,8 @@ class ScheduleChart(QtWidgets.QWidget):
         self.update()
 
     def _bounds(self):
-        ys = [v for s in self.series for k in ("before", "after", "pair_before", "pair_after")
+        ys = [v for s in self.series for k in ("before", "after", "pair_before", "pair_after",
+                                               "cmp")
               for _p, v in (s.get(k) or ())]
         ys += [v for s in self.series for ref in (s.get("refs") or ()) for _p, v in ref]
         for _lab, before, after in self.overlay.get("effective") or ():
@@ -269,6 +272,12 @@ class ScheduleChart(QtWidgets.QWidget):
                 c3.setAlpha(70)
                 p.setPen(QtGui.QPen(c3, 1.0, QtCore.Qt.DotLine))
                 p.drawPolyline(poly(ref))
+        for s in self.series:           # the comparison's lines, behind
+            if s.get("cmp"):
+                c6 = QtGui.QColor(s["color"])
+                c6.setAlpha(150 if self.highlight == s["key"] else 95)
+                p.setPen(QtGui.QPen(c6, 1.6, QtCore.Qt.DashLine))
+                p.drawPolyline(poly(s["cmp"]))
         for s in self.series:
             hl = self.highlight == s["key"]
             col = QtGui.QColor(s["color"])
@@ -316,15 +325,30 @@ class ScheduleChart(QtWidgets.QWidget):
         X, Y = self._xform[0], self._xform[1]
         best, bd = None, 12.0
         for s in self.series:
-            pts = [(X(a), Y(b)) for a, b in s["after"]]
-            for (ax, ay), (bx, by) in zip(pts, pts[1:]):
-                dx, dy = bx - ax, by - ay
-                L = dx * dx + dy * dy or 1.0
-                t = max(0.0, min(1.0, ((pos.x() - ax) * dx + (pos.y() - ay) * dy) / L))
-                d = ((ax + t * dx - pos.x()) ** 2 + (ay + t * dy - pos.y()) ** 2) ** 0.5
-                if d < bd:
-                    best, bd = s, d
+            for line in (s["after"], s.get("cmp") or ()):
+                pts = [(X(a), Y(b)) for a, b in line]
+                for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+                    dx, dy = bx - ax, by - ay
+                    L = dx * dx + dy * dy or 1.0
+                    t = max(0.0, min(1.0, ((pos.x() - ax) * dx + (pos.y() - ay) * dy) / L))
+                    d = ((ax + t * dx - pos.x()) ** 2 + (ay + t * dy - pos.y()) ** 2) ** 0.5
+                    if d < bd:
+                        best, bd = s, d
         return best
+
+    def tip_at(self, s, x: float) -> str:
+        """``s``'s tooltip; with a comparison line, both values at pedal
+        ``x`` (screen x)."""
+        tip = s.get("tip", s["key"])
+        if not s.get("cmp") or not self._xform or not s.get("after"):
+            return tip
+        from .gearbox_edit.model import interp
+        m_l, W = self._xform[2], self._xform[4]
+        ped = max(0.0, min(100.4, (x - m_l) / W * 100.4))
+        a = interp([p for p, _ in s["after"]], [v for _, v in s["after"]], ped)
+        b = interp([p for p, _ in s["cmp"]], [v for _, v in s["cmp"]], ped)
+        return "%s\nat %.1f %% pedal: this file %.0f, comparison %.0f (%+.0f) %s" % (
+            tip, ped, a, b, a - b, self.unit)
 
     def _nearest_point(self, pos):
         if not self._xform:
@@ -348,7 +372,8 @@ class ScheduleChart(QtWidgets.QWidget):
             self.highlight = key
             self.update()
         if s:
-            QtWidgets.QToolTip.showText(ev.globalPosition().toPoint(), s.get("tip", key), self)
+            QtWidgets.QToolTip.showText(ev.globalPosition().toPoint(),
+                                        self.tip_at(s, ev.position().x()), self)
         else:
             QtWidgets.QToolTip.hideText()
 
@@ -360,6 +385,11 @@ class ScheduleChart(QtWidgets.QWidget):
         s = self._nearest(ev.position())
         if s:
             self.picked.emit(s["key"])
+
+    def contextMenuEvent(self, ev):
+        s = self._nearest(QtCore.QPointF(ev.pos()))
+        if s:
+            self.context.emit(s["key"], ev.globalPos())
 
 
 # -------------------------------------------------------------------- dialog
@@ -753,6 +783,8 @@ class GearboxEditDialog(QtWidgets.QDialog):
         vs.addWidget(self.table)
         vs.setSizes([520, 300])
         v.addWidget(vs, 1)
+        from .gui_gearbox_compare import CompareView
+        self.cmpv = CompareView(self, v, vs)    # the comparison binary, if any
         return w
 
     def _line(self) -> int:
@@ -1414,8 +1446,10 @@ class GearboxEditDialog(QtWidgets.QDialog):
         pts = self._event_points(line)
         if pts:
             overlay["points"] = pts
+        title += self.cmpv.decorate(series, line)
         self.chart.set_series(series, unit, title, overlay)
         self._fill_table(line)
+        self.cmpv.fill(line)
 
     # ------------------------------------------------- blends and logs
     def _blends(self) -> List[GE.Blend]:

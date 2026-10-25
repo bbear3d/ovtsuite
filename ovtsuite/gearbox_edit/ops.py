@@ -442,3 +442,30 @@ class SetOff(Op):
             grid[i][k] = float(val)
             changed[(i, r, c)] = self.describe()
         return changed
+
+
+@dataclass
+class SetValues(Op):
+    """Write given stored values, cell for cell: ``{(schedule, row, line):
+    value}`` -- cells copied from another file (the comparison binary), so a
+    stored "off" is copied as it is and the scope's pedal range, taper and
+    direction do not apply. The scope only says what the step covers."""
+    scope: Scope
+    values: Dict[Tuple[int, int, int], float]
+    label: str = "set values"
+    name = "values"
+
+    def describe(self):
+        return self.label
+
+    def apply(self, grid, sset):
+        changed = {}
+        for (i, r, c), v in self.values.items():
+            s = sset.schedules[i]
+            if r >= s.rows or c >= s.cols:
+                continue
+            k = r * s.cols + c
+            if grid[i][k] != v:
+                grid[i][k] = float(v)
+                changed[(i, r, c)] = self.describe()
+        return changed

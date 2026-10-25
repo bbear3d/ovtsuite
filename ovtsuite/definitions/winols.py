@@ -217,6 +217,14 @@ class Axis:
     precision: int
     data: bytes
     texts: List[str] = field(default_factory=list)
+    #: the fields kept as read, so a record can be written back unchanged
+    #: (:func:`ovtsuite.definitions.winols_write.write_kp_records`): the
+    #: number base, the bytes before the precision, the 8 bytes after the
+    #: data, and which texts were "no string" rather than empty
+    numbase: int = 10
+    pre: bytes = b""
+    after: bytes = b""
+    none: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -239,23 +247,43 @@ class Record:
     addr: int
     x: Axis
     y: Axis
+    #: the fields kept as read, for writing the record back unchanged: the
+    #: leading byte, the bit texts and the byte after them, the second
+    #: header word, the block before the counts, the two words after them,
+    #: the end address, the bytes after it, the record tail and its three
+    #: display flags, the profile it was read with and which texts were
+    #: "no string" rather than empty
+    lead: int = 0
+    bit_texts: Optional[str] = ""
+    bit_u8: int = 0
+    h1: int = 2
+    pre: bytes = b""
+    c2: int = 0
+    c3: int = 0
+    end: int = 0
+    ztail: bytes = b""
+    tail: bytes = b""
+    flags: bytes = b"\x01\x01\x01"
+    profile: str = ""
+    none: Tuple[str, ...] = ()
 
 
 def _axis(r: _R) -> Axis:
     P = r.P
-    label = r.mlstr() or ""
-    units = r.str() or ""
+    label0 = r.mlstr()
+    units0 = r.str()
+    label, units = label0 or "", units0 or ""
     factor, offset = r.f64(), r.f64()
     source, addr, org, size = r.u32(), r.u32(), r.u32(), r.u32()
-    r.u32()                                     # number base
-    r.p += P.axpre
+    numbase = r.u32()
+    pre = r.raw(P.axpre)
     prec = r.i32()
     signed = bool(r.u8())
     n = r.u32()
     if n > 0x100000:
         raise ValueError("axis data of %d bytes at 0x%X" % (n, r.p - 4))
     data = r.raw(n)
-    r.p += 8
+    after = r.raw(8)
     texts: List[str] = []
     if P.axid:
         r.str()                                 # axis id
@@ -267,36 +295,41 @@ def _axis(r: _R) -> Axis:
             # string; with none, the 12 bytes read past it before)
             texts.append(r.mlstr() or "")
         r.p += P.axextra
+    none = tuple(k for k, v in (("label", label0), ("units", units0)) if v is None)
     return Axis(label, units, factor, offset, source, addr, org, size, signed,
-                prec, data, texts)
+                prec, data, texts, numbase, bytes(pre), bytes(after), none)
 
 
 def _record(r: _R) -> Record:
     P = r.P
-    r.u8()
+    lead = r.u8()
+    bit_texts, bit_u8 = "", 0
     if P.prefix:
         if r.i32() != -1:
             raise ValueError("no record marker at 0x%X" % (r.p - 4))
-        r.mlstr()                               # bit texts
-        r.u8()
-    desc = r.mlstr() or ""
-    typ, _h1, org, size, numbase, folder = (r.u32() for _ in range(6))
+        bit_texts = r.mlstr()                   # bit texts
+        bit_u8 = r.u8()
+    desc0 = r.mlstr()
+    desc = desc0 or ""
+    typ, h1, org, size, numbase, folder = (r.u32() for _ in range(6))
     if not 1 <= typ <= 16:
         raise ValueError("record type %d at 0x%X" % (typ, r.p - 24))
-    name = r.str() or ""
+    name0 = r.str()
+    name = name0 or ""
     pre = r.raw(P.precx)
     signed = bool(pre[-3])
-    cols, rows, _c2, _c3, prec = (r.u32() for _ in range(5))
-    label = r.str() or ""
-    units = r.str() or ""
+    cols, rows, c2, c3, prec = (r.u32() for _ in range(5))
+    label0 = r.str()
+    units0 = r.str()
+    label, units = label0 or "", units0 or ""
     factor, offset = r.f64(), r.f64()
     addr = r.u32()
-    r.u32()                                     # end address
-    r.p += P.ztail
+    end = r.u32()                               # end address
+    ztail = r.raw(P.ztail)
     x = _axis(r)
     y = _axis(r)
     # record tail: counts again, display settings, the 01 01 01 marker
-    r.p += 6 + 4 + 4 + 4 + 1 + 1 + 8 + 8 + 4 + 1 + 8 + 8 + 8 + 4 + 8
+    tail = r.raw(6 + 4 + 4 + 4 + 1 + 1 + 8 + 8 + 4 + 1 + 8 + 8 + 8 + 4 + 8)
     # three on/off display settings (usually 01 01 01; a Simos 18.1 and an
     # MG1 project carry 01 01 00): anything else means the record was read
     # out of step
@@ -305,8 +338,12 @@ def _record(r: _R) -> Record:
         raise ValueError("record tail out of step at 0x%X" % (r.p - 3))
     if P.tailn >= 0:
         r.p += 4 + P.tailn
+    none = tuple(k for k, v in (("description", desc0), ("name", name0),
+                                ("label", label0), ("units", units0)) if v is None)
     return Record(typ, org, size, numbase, folder, name, desc, cols, rows,
-                  signed, prec, label, units, factor, offset, addr, x, y)
+                  signed, prec, label, units, factor, offset, addr, x, y,
+                  lead, bit_texts, bit_u8, h1, bytes(pre), c2, c3, end,
+                  bytes(ztail), bytes(tail), bytes(flags), P.name, none)
 
 
 def _walk(d: bytes, start: int, count: int, prof: _Profile,
@@ -439,16 +476,25 @@ def _folder_list(d: bytes, p: int, nul: bool, ml: bool, tail: int, n: int):
     parent)]`` -- ValueError when one does not parse."""
     out = []
     for _ in range(n):
-        fid, _res, name, q = _folder_entry(d, p, nul, ml)
+        fid, res, name, q = _folder_entry(d, p, nul, ml)
         p = q + tail
         if p > len(d):
             raise ValueError("folder list past the end")
-        out.append((fid, (name or "").strip(), q))
+        out.append((fid, (name or "").strip(), q, (res, name or "")))
     return out
 
 
 def read_folder_tree(d: bytes, p: int, prof: _Profile, ver: int = 0
                      ) -> Tuple[Dict[int, str], Dict[int, int]]:
+    """``({id: name}, {id: parent id})`` of the folder section at ``p``
+    (see :func:`read_folder_list`)."""
+    names, parents, _ents = read_folder_list(d, p, prof, ver)
+    return names, parents
+
+
+def read_folder_list(d: bytes, p: int, prof: _Profile, ver: int = 0
+                     ) -> Tuple[Dict[int, str], Dict[int, int],
+                                List[Tuple[int, int, str]]]:
     """The folder section after the map list: ``({id: name}, {id: parent
     id})``. The section is ``11 88 63 98``, ``u32 k`` and k map templates
     (usually none), then ``11 88 63 98``, ``u32 n`` and n entries --
@@ -458,9 +504,10 @@ def read_folder_tree(d: bytes, p: int, prof: _Profile, ver: int = 0
     length differs between formats (0 / 15 / 25 / 29 bytes; from 25 bytes
     its ``i32`` 8 bytes before the next entry is the parent folder, -1 at
     the top). The layout is the one that reads every entry in sequence:
-    the profile's first, then the others."""
+    the profile's first, then the others. The third item is every entry
+    as listed: ``[(id, resource, name)]``, in the file's order."""
     if d[p:p + 4] != FOLDERS_MAGIC:
-        return {}, {}
+        return {}, {}, []
     k = struct.unpack_from("<I", d, p + 4)[0]
     starts = []
     if d[p + 8:p + 12] == FOLDERS_MAGIC:
@@ -490,7 +537,7 @@ def read_folder_tree(d: bytes, p: int, prof: _Profile, ver: int = 0
                 ents = _folder_list(d, q + 8, nul, ml, tail, n)
             except (ValueError, struct.error, IndexError):
                 continue
-            names = {fid: name for fid, name, _q in ents}
+            names = {fid: name for fid, name, _q, _r in ents}
             parents = {}
             # a folder inside another names it in its tail, where a folder
             # at the top (the first, Hexdump) has -1; formats without it
@@ -498,12 +545,13 @@ def read_folder_tree(d: bytes, p: int, prof: _Profile, ver: int = 0
             o = d.find(NO_PARENT, ents[0][2], ents[0][2] + tail)
             if tail >= 4 and o >= 0 and o + 4 <= ents[0][2] + tail:
                 o -= ents[0][2]
-                for fid, _n, q2 in ents:
+                for fid, _n, q2, _r in ents:
                     par = struct.unpack_from("<i", d, q2 + o)[0]
                     if par >= 0 and par != fid and par in names:
                         parents[fid] = par
-            return names, parents
-    return {}, {}
+            # the list keeps each name as written (not stripped)
+            return names, parents, [(fid, r[0], r[1]) for fid, _n, _q, r in ents]
+    return {}, {}, []
 
 
 def read_folders(d: bytes, p: int, prof: _Profile) -> Dict[int, str]:
@@ -594,6 +642,9 @@ class WinOlsFile:
     #: the memory areas the image was put together from (``#1``, ``#2``
     #: ...: ``(name, start, end)`` as image offsets), when there are several
     areas: List[Tuple[str, int, int]] = field(default_factory=list)
+    #: every folder as the file lists it, in its order: ``[(id, resource,
+    #: name)]`` (resource 9000 My maps, 9001 Hexdump, 9002 Potential maps)
+    folder_list: List[Tuple[int, int, str]] = field(default_factory=list)
 
 
 def _segments(d: bytes, limit: int, image_len: int, nul: bool) -> List[Tuple[int, int]]:
@@ -681,17 +732,18 @@ def _parse_at(d: bytes, h: Header, p: int) -> WinOlsFile:
             raise DefinitionError("map pack without its record archive (%s)" % ex)
         n = struct.unpack_from("<I", intern, 1)[0]
         recs, _end, prof, probs = read_records(intern, 5, n, ver, kp=True)
-        folders, parents = read_folder_tree(d, start + 4 + count, prof, ver)
+        folders, parents, flist = read_folder_list(d, start + 4 + count, prof, ver)
         return WinOlsFile("kp", h, recs, folders, problems=probs, declared=n,
-                          parents=parents)
+                          parents=parents, folder_list=flist)
     recs, end, prof, probs = read_records(d, start + 4, count, ver)
-    folders, parents = read_folder_tree(d, end, prof, ver)
+    folders, parents, flist = read_folder_list(d, end, prof, ver)
     versions = _versions(d, h, p, end)
     image = versions[0].data if versions else b""
     segs = _segments(d, p, len(image), prof.nul) if image else []
     areas = _areas(d, p, len(image)) if image else []
     return WinOlsFile("ols", h, recs, folders, image, segs, probs, count,
-                      versions=versions, parents=parents, areas=areas)
+                      versions=versions, parents=parents, areas=areas,
+                      folder_list=flist)
 
 
 def _versions(d: bytes, h: Header, limit: int, end: int = 0) -> List[Version]:
@@ -899,7 +951,7 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
     skipped = 0
     blocks = codeblocks(wf.records)
     multi = max(blocks, default=0) > 0
-    for rec, cb in zip(wf.records, blocks):
+    for i, (rec, cb) in enumerate(zip(wf.records, blocks)):
         if rec.type == 1 or not rec.addr:
             continue                            # hexdump view / no data
         z = _storage(rec.org, rec.signed, rec.addr, rec.factor, rec.offset,
@@ -931,6 +983,9 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
                      y=_axis_def(rec.y, rows) if k == "map" else None,
                      # WinOLS's own decimal places, as WinOLS's map view shows them
                      decimals=rec.precision if 0 < rec.precision < 16 else None)
+        # the record it came from (``wf.records[i]``): a map pack written
+        # from the file passes its records through (convert.kp_passthrough)
+        t.ols_record = i
         defn.tables.append(t)
     if skipped:
         defn.warnings.append("%d maps use a data organisation this version "

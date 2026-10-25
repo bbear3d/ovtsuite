@@ -8,7 +8,9 @@ scan tool shows and the signals in their cells, edited and then applied.
 
 Each block is one row of cells; with a comparison binary, the comparison's
 blocks are a table of their own under it, scrolled and selected with it. Cell edits, clearing and copying from the comparison are
-held -- shown in bold -- until **Apply** writes them as one undo step.
+held -- shown in bold -- until **Apply** (or **OK**, which also closes the
+window) writes them as one undo step; **Cancel** forgets them and closes.
+The title bar's X and Esc ask first when there are changes not applied.
 """
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -84,7 +86,7 @@ class MsBlockDialog(QtWidgets.QDialog):
             v.addWidget(QtWidgets.QLabel(
                 "This binary's definition has no %s, so there are no "
                 "measuring blocks to show." % what))
-            b = QtWidgets.QPushButton("Close")
+            b = QtWidgets.QPushButton("OK")
             b.clicked.connect(self.accept)
             v.addWidget(b)
             return
@@ -313,19 +315,25 @@ class MsBlockDialog(QtWidgets.QDialog):
         self.pending_lbl = QtWidgets.QLabel("")
         self.pending_lbl.setStyleSheet("color: #8a6d00")
         btns.addWidget(self.pending_lbl)
-        self.discard_btn = QtWidgets.QPushButton("Discard")
-        self.discard_btn.setToolTip("Forget the changes not applied yet")
-        self.discard_btn.clicked.connect(self._discard)
-        btns.addWidget(self.discard_btn)
+        # Apply, Cancel, OK -- in that order, OK last
         self.apply_btn = QtWidgets.QPushButton("Apply")
-        self.apply_btn.setToolTip("Write the changes (shaded yellow) as one undo step")
+        self.apply_btn.setToolTip("Write the changes (shaded yellow) as one "
+                                  "undo step and keep the window open")
         self.apply_btn.clicked.connect(self.apply)
         self.apply_btn.setDefault(True)
         btns.addWidget(self.apply_btn)
-        close = QtWidgets.QPushButton("Close")
-        close.setAutoDefault(False)
-        close.clicked.connect(self.reject)
-        btns.addWidget(close)
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        self.cancel_btn.setToolTip("Forget the changes not applied yet (made "
+                                   "since the last Apply) and close the window")
+        self.cancel_btn.setAutoDefault(False)
+        self.cancel_btn.clicked.connect(self.cancel)
+        btns.addWidget(self.cancel_btn)
+        self.ok_btn = QtWidgets.QPushButton("OK")
+        self.ok_btn.setToolTip("Write the changes not applied yet (one undo "
+                               "step) and close the window")
+        self.ok_btn.setAutoDefault(False)
+        self.ok_btn.clicked.connect(self.ok)
+        btns.addWidget(self.ok_btn)
         v.addLayout(btns)
         from .gui_fit import fit_to_screen
         want = 140 + self._cell_w * n
@@ -387,7 +395,6 @@ class MsBlockDialog(QtWidgets.QDialog):
     def _sync_pending(self):
         n = len(self._pending) + len(self._pending_desc)
         self.apply_btn.setEnabled(bool(n))
-        self.discard_btn.setEnabled(bool(n))
         self.pending_lbl.setText("%d change%s not applied" % (n, "" if n == 1 else "s")
                                  if n else "")
 
@@ -428,9 +435,25 @@ class MsBlockDialog(QtWidgets.QDialog):
         self._populate()
         self._sync_pending()
 
+    def cancel(self):
+        """Cancel: forget every change made since the last Apply (or since
+        the window opened) and close -- no question: that is what it is
+        for."""
+        if getattr(self, "mb", None) is not None and self.mb.available:
+            self._pending.clear()
+            self._pending_desc.clear()
+        QtWidgets.QDialog.reject(self)
+
+    def ok(self):
+        """OK: write the changes not applied yet, as Apply does, and close."""
+        if getattr(self, "mb", None) is not None and self.mb.available:
+            self.apply()
+        QtWidgets.QDialog.accept(self)
+
     def _may_close(self) -> bool:
-        """Whether the window may go: with changes not applied, asks to
-        apply or discard them (False when the user cancels)."""
+        """Whether the window may go by the title bar's X or Esc: with
+        changes not applied, asks to apply or discard them (False when the
+        user cancels) -- a stray Esc should not lose a set of edits."""
         if getattr(self, "mb", None) is None or not self.mb.available \
                 or not self.has_pending():
             return True
@@ -449,10 +472,11 @@ class MsBlockDialog(QtWidgets.QDialog):
             self._pending_desc.clear()
         return True
 
-    # Close, Esc and the title bar's X all end in done(). QDialog's own
+    # Esc and the title bar's X end in done() by reject(). QDialog's own
     # closeEvent calls reject(), so reject() must not call close() back:
     # Qt ignores a close() made while one is in progress, and the window
-    # stayed open (the Close button did nothing).
+    # stayed open (the old Close button did nothing). Cancel and OK call
+    # QDialog's own reject() / accept(): they need no question.
     def closeEvent(self, ev):
         if not self._may_close():
             ev.ignore()

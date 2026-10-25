@@ -28,13 +28,14 @@ does that once, for any gearbox a module describes:
   crossover, the lead, converter slip) and the operation that writes them;
 * :mod:`.partload` -- part-load strategies (economy / sport by mode) and the
   pedal-axis move to where the engine asks for full torque;
-* :mod:`.replay` -- logged drives replayed against a set of lines.
+* :mod:`.replay` -- logged drives replayed against a set of lines;
+* :mod:`.compare` -- the set paired with the comparison binary's.
 
 Nothing is locked: the user may edit any line of any schedule. Checks warn.
 """
 from .model import Line, Schedule, ScheduleSet, Scope, parse_range
 from .ops import (BandRemap, CopyFrom, Offset, Scale, SetCurve, SlidePedal,
-                  SetGap, SetOff, Smooth, TrackReference, ratio_of)
+                  SetGap, SetOff, SetValues, Smooth, TrackReference, ratio_of)
 from .checks import (GapCheck, IdenticalCheck, MonotonicCheck, ReferenceGapCheck,
                      RpmLimitCheck, SharedCheck, Finding)
 from .edit import Edit
@@ -43,15 +44,17 @@ from .logfit import Event, Fit, evaluate, fit_weights, lookup_from
 from .fullload import (FullLoadPlan, FullLoadTarget, ShiftTarget, StepCheck, TorqueCurve,
                        VehicleModel, plan_upshifts)
 from .partload import PartLoadTarget, RemapPedalAxis, Strategy
+from .compare import Pairing, copy_op, pair_sets
 
 __all__ = [
     "Line", "Schedule", "ScheduleSet", "Scope", "parse_range",
     "BandRemap", "CopyFrom", "Offset", "Scale", "SetCurve", "SlidePedal", "Smooth",
-    "SetGap", "SetOff", "TrackReference", "ratio_of",
+    "SetGap", "SetOff", "SetValues", "TrackReference", "ratio_of",
     "GapCheck", "IdenticalCheck", "MonotonicCheck", "ReferenceGapCheck", "RpmLimitCheck", "SharedCheck",
     "Finding",
     "Edit", "Blend", "blend_pedal", "effective_line",
     "Event", "Fit", "evaluate", "fit_weights", "lookup_from",
     "FullLoadPlan", "FullLoadTarget", "ShiftTarget", "StepCheck", "TorqueCurve",
     "VehicleModel", "plan_upshifts", "PartLoadTarget", "RemapPedalAxis", "Strategy",
+    "Pairing", "copy_op", "pair_sets",
 ]

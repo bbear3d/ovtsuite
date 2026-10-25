@@ -303,3 +303,75 @@ def test_no_banner_painted_under_the_table_in_its_own_grid(win, m):
     _mode("off")
     sep = ws.model.sep_row()
     assert ws.table.columnSpan(sep, 0) == ws.model.columnCount()
+
+
+def _differing_cz(ws):
+    """A comparison cell (grid row, col) whose value differs from this
+    file's, and the primary (r, c) it lines up with."""
+    m = ws.model
+    for gr in range(m.sep_row() + 1, m.rowCount()):
+        for gc in range(m.columnCount()):
+            k, a, b = m._kind(gr, gc)
+            if k == "cz" and m._at(m._vals, a, b) is not None \
+                    and m._at(m._cmp, a, b) is not None \
+                    and m._at(m._cmp, a, b) != m._at(m._vals, a, b):
+                return (gr, gc), (a, b)
+    return None, None
+
+
+def _differing_map(win):
+    """A map on screen whose comparison differs somewhere, with that cell."""
+    names = {e.name for e in win.current.primary.entities}
+    for name in (TALL, RESAMPLED, "AccPed_trqEng0_MAP", "FlMng_qAFSCDSmoke_MAP"):
+        if name in names:
+            ws = _show(win, name)
+            cell, rc = _differing_cz(ws)
+            if cell:
+                return ws, cell, rc
+    pytest.skip("no map whose comparison differs")
+
+
+@pytest.mark.parametrize("m", ["off", "below"])
+def test_copy_cells_to_primary_from_the_comparison(win, m):
+    """Right-click > Copy cells to primary on comparison cells writes their
+    values into the same cells of this file, one undoable step -- in the
+    table's own grid (rows under the banner) and in the comparison grid."""
+    from ovtsuite import gui_cellkeys as gck
+    _mode(m)
+    ws, cell, rc = _differing_map(win)
+    view = ws.cmp_grid.view if m == "below" else ws.table
+    ix = ws.model.index(*cell)
+    view.selectionModel().setCurrentIndex(ix, SEL.ClearAndSelect)
+    assert gck.comparison_cells(ws, view) == [rc]
+    want = ws.model._at(ws.model._cmp, *rc)
+    assert gck.to_primary(ws, view) == 1
+    assert ws.model._at(ws.model._vals, *rc) == want
+    ws.primary.undo()
+    ws.model.refresh()
+    assert ws.model._at(ws.model._vals, *rc) != want
+    view.clearSelection()
+    _mode("off")
+
+
+def test_the_menu_offers_copy_to_primary_on_comparison_rows(win, monkeypatch):
+    """On comparison rows the table's menu has Copy cells to primary in
+    place of Copy selected cells from comparison."""
+    from PySide6 import QtWidgets as W
+    _mode("off")
+    ws, cell, _rc = _differing_map(win)
+    texts = {}
+
+    class Menu(W.QMenu):                # records what it holds, never opens
+        def exec(self, *_a):
+            texts["t"] = [a.text() for a in self.actions() if a.text()]
+    monkeypatch.setattr(W, "QMenu", Menu)
+    ws.table.selectionModel().setCurrentIndex(ws.model.index(*cell),
+                                              SEL.ClearAndSelect)
+    ws._table_menu(QtCore.QPoint(1, 1))
+    assert "Copy cells to primary" in texts["t"]
+    assert "Copy selected cells from comparison" not in texts["t"]
+    ws.table.selectionModel().setCurrentIndex(ws.model.index(1, 1),
+                                              SEL.ClearAndSelect)
+    ws._table_menu(QtCore.QPoint(1, 1))
+    assert "Copy cells to primary" not in texts["t"]
+    assert "Copy selected cells from comparison" in texts["t"]
