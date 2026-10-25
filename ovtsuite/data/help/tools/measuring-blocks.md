@@ -29,7 +29,7 @@ item is greyed out.
    blocks.
 3. Click the cell (an editable cell shows a small arrow) and pick another
    signal from the list that opens — typing filters it. The change is held,
-   shaded yellow, until you press **Apply**. Or select a cell and type an id, press F2, or
+   shaded pale yellow and bold, until you press **Apply**. Or select a cell and type an id, press F2, or
    right-click it and choose **Change this cell...**. An id the file has no
    definition for is refused with a note under the table, rather than
    written. To select cells without opening the list, click the **Block**
@@ -96,7 +96,7 @@ A descriptor change is held until **Apply**, like a cell's.
 | **Clear selected block(s)** | Empties every cell of the selected blocks (255) -- held until **Apply**. Also on the right-click menu. |
 | **Copy block(s) from comparison** | Only with a comparison file of the same ECU type open: sets the selected blocks' cells to what the comparison shows in the same block -- held until **Apply**. Signals are matched by meaning (the same internal signal, or on EDC15 the same message number), so this works between different software versions; a signal the primary file has no definition for is left as it is, and the panel says how many. |
 | **Show in editor** | (EDC16) Selects the table chosen in **Related tables** in the main window. |
-| **Apply** | Writes every held change (shaded yellow) as one undo step; the window stays open. |
+| **Apply** | Writes every held change (shaded pale yellow) as one undo step; the window stays open. |
 | **Cancel** | Forgets the changes made since the last **Apply** (or since the window opened) and closes the window. What was applied before stays. |
 | **OK** | Writes the held changes, as **Apply** does, and closes the window. What was applied stays in the tab until you save or undo it. |
 
@@ -108,15 +108,29 @@ With a comparison open, its blocks are a read-only table of their own under
 the primary's -- the same blocks on the same rows, so nothing is off to the
 side to scroll to. The two scroll together, keep the same column widths and
 the same selected cell; drag the bar between them to share the room. A cell
-that shows a different signal from the primary is highlighted in both, and
+that shows a different signal from the primary is shaded orange in both, and
 the primary's tooltip names the comparison's signal. Cells are compared by
 what they show, not by their names: the same id with the same definition in
 both files is the same signal even when it has no name (a bare number, or a
 "CAN bus signal" entry), so comparing a file with itself or with its own
-original highlights nothing. Between different software versions a named
+original shades nothing. Between different software versions a named
 signal is matched by its name, so the same signal under another id is not
-highlighted either. Untick **Show
+shaded either. Untick **Show
 comparison** to hide the lower table: the shading and tooltips stay.
+
+## Table colours
+
+The tables use the colours of the rest of the app:
+
+| Colour | Meaning |
+|---|---|
+| Pale yellow, bold | A change held until **Apply** (on the **Blocks** and **Descriptors** tabs). In the table above it takes the place of orange; the comparison's copy of the cell stays orange if it differs from the held signal. |
+| Orange | This cell shows a different signal from the comparison (in both tables). |
+| Grey text | In the table above: an empty cell (255), or **—** where a block has no map row for that half. The comparison's text is a little quieter than the primary's throughout. |
+| Accent colour (blue) | Selected cells; the comparison selects the same cell. |
+
+Every other row is shaded lightly, as in the table editor, to help follow a
+block across.
 
 ## Tips
 

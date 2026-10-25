@@ -788,6 +788,8 @@ class GearboxEditDialog(QtWidgets.QDialog):
         # over a cell's own fill rather than a faint grey that the
         # comparison / pending fills hide
         self.table.setAlternatingRowColors(True)
+        from .gui_cellmarks import CellDelegate
+        self.table.setItemDelegate(CellDelegate(self.table))  # selected text readable
         vs.addWidget(self.table)
         vs.setSizes([520, 300])
         v.addWidget(vs, 1)

@@ -273,3 +273,51 @@ def test_restore_and_copy_from_comparison_are_taken_back_too(
     d.cancel()
     assert bytes(s.binfile.data) == applied
     assert len(s.undo_stack) == n1
+
+
+def test_cell_colours_follow_the_table_editor(app, s, monkeypatch):
+    """As the engine fault-code window and the table editor: a state that
+    differs from the comparison orange (gui.DIFF_BG, dark text) in the On box
+    and Cmp on; a row not applied yet PENDING_BG, bold, dark text -- over
+    orange in On, while Cmp on stays orange; a code the gearbox has stored
+    STORED_BG under both; alternating rows so the selection shows."""
+    _no_question(monkeypatch)
+    from types import SimpleNamespace
+    from ovtsuite import gui
+    from ovtsuite.gui_cellmarks import CellDelegate, STORED_BG
+    from ovtsuite.gui_tcu_dtc import PENDING_BG
+    original = s.sibling(bytes(s.binfile.data), "6HP - as read")
+    d = _window(s, compare=original)
+    rows = {r.key: r for r in d.model.rows(d._vi())}
+    k1, k2, k3 = [k for k in _distinct_on(d, 8) if rows[k].vag_numbers][:3]
+    _untick(app, d, k1)
+    d.apply()                               # k1 differs, applied
+    _untick(app, d, k2)                     # k2 differs, not applied
+    d._ecu_codes = {rows[k].vag_numbers[0]: SimpleNamespace(
+        code=rows[k].vag_numbers[0], text="stored", status=0x28)
+        for k in (k1, k3)}
+    d._populate()
+    cmp_col = d._cols.index("Cmp on")
+    dark = gui.CELL_DARK_FG
+
+    def cell(k, c):
+        return d.table.item(_keys(d).index(k), c)
+
+    for c in (0, cmp_col):                  # the primary's state, the comparison's
+        assert cell(k1, c).background().color() == gui.DIFF_BG
+        assert cell(k1, c).foreground().color() == dark
+    assert cell(k1, 1).background().color() == STORED_BG
+    for c in range(d.table.columnCount()):
+        it = cell(k2, c)
+        if c == cmp_col:
+            assert it.background().color() == gui.DIFF_BG
+        else:
+            assert it.background().color() == PENDING_BG and it.font().bold()
+            assert it.foreground().color() == dark
+        assert cell(k3, c).background().color() == STORED_BG
+    for r in range(d.table.rowCount()):
+        for c in range(d.table.columnCount()):
+            assert d.table.item(r, c).background().color() != gui.EDIT_BG
+    assert d.table.alternatingRowColors()
+    assert isinstance(d.table.itemDelegate(), CellDelegate)
+    d.cancel()

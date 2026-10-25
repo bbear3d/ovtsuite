@@ -12,17 +12,20 @@ held -- shown in bold -- until **Apply** (or **OK**, which also closes the
 window) writes them as one undo step; **Cancel** forgets them and closes.
 The title bar's X and Esc ask first when there are changes not applied.
 """
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
+from .gui_cellmarks import (OFF_FG, PENDING_BG, CellDelegate,  # noqa: F401
+                            cmp_fg, mark_differs, mark_pending,
+                            selection_text)
 from .msblock import MeasuringBlocks
 from .session import TunerSession
 from .signal_names import sentence_case
 from .signals import EMPTY_IDS, SignalCatalog, observed_ids
 
-#: a cell edited but not applied yet
-PENDING_BG = QtGui.QColor(255, 236, 170)
-#: the comparison's cells
-CMP_FG = QtGui.QColor(90, 90, 90)
+#: the app's cell colours (:mod:`ovtsuite.gui_cellmarks`): a cell edited
+#: but not applied yet (PENDING_BG, bold, dark text; it takes the place of
+#: orange in the primary), a cell that differs from the comparison (orange,
+#: dark text, in both tables), an empty slot's grey text
 
 
 def _tidy(text: str) -> str:
@@ -43,10 +46,6 @@ def _ds_text(ds) -> str:
         txt += " - " + ident
     return txt
 
-
-def _colors():
-    from .gui import CELL_DARK_FG, EDIT_BG
-    return EDIT_BG, CELL_DARK_FG
 
 class MsBlockDialog(QtWidgets.QDialog):
     """View/edit the measuring-block (signal-block) structure.
@@ -198,6 +197,9 @@ class MsBlockDialog(QtWidgets.QDialog):
                 hi = self.table.horizontalHeaderItem(1 + i)
                 hi.setToolTip("Sent from the map row 127 above the group's own")
         self.table.verticalHeader().setVisible(False)
+        # as the table editor; it also makes the Windows 11 style draw the
+        # selection solid, so it shows over the shaded cells
+        self.table.setAlternatingRowColors(True)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         self._cell_w = 160
@@ -209,7 +211,13 @@ class MsBlockDialog(QtWidgets.QDialog):
             QtWidgets.QAbstractItemView.SelectItems)
         self.table.itemSelectionChanged.connect(lambda: self._show_detail(self.table))
         from .gui import SignalDelegate
-        delegate = SignalDelegate(self._choices, self.catalog, self.table)
+
+        class _Delegate(SignalDelegate):
+            def initStyleOption(self, opt, index):
+                super().initStyleOption(opt, index)
+                selection_text(opt)         # selected text readable
+        self.table.setItemDelegate(CellDelegate(self.table))
+        delegate = _Delegate(self._choices, self.catalog, self.table)
         self._delegate = delegate
         for col in range(1, n + 1):
             self.table.setItemDelegateForColumn(col, delegate)
@@ -234,6 +242,8 @@ class MsBlockDialog(QtWidgets.QDialog):
             self.cmp_table = QtWidgets.QTableWidget(0, len(_mcols))
             self.cmp_table.setHorizontalHeaderLabels(_mcols)
             self.cmp_table.verticalHeader().setVisible(False)
+            self.cmp_table.setAlternatingRowColors(True)
+            self.cmp_table.setItemDelegate(CellDelegate(self.cmp_table))
             self.cmp_table.setEditTriggers(
                 QtWidgets.QAbstractItemView.NoEditTriggers)
             ch = self.cmp_table.horizontalHeader()
@@ -572,7 +582,6 @@ class MsBlockDialog(QtWidgets.QDialog):
     # ---------------------------------------------------- the table
     def _populate(self):
         self._loading = True
-        edit_bg, dark_fg = _colors()
         needle = self.filter.text().strip()
         groups = (self.mb.populated_groups() if self.pop_only.isChecked()
                   else self.mb.groups())
@@ -586,8 +595,7 @@ class MsBlockDialog(QtWidgets.QDialog):
         self.table.setRowCount(len(groups))
         if self.cmp_table is not None:
             self.cmp_table.setRowCount(len(groups))
-        bold = QtGui.QFont(self.table.font())
-        bold.setBold(True)
+        quiet = cmp_fg(self.cmp_table) if self.cmp_table is not None else None
         for r, g in enumerate(groups):
             num = QtWidgets.QTableWidgetItem(str(g.number))
             num.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
@@ -616,11 +624,9 @@ class MsBlockDialog(QtWidgets.QDialog):
                         tip += "\n" + info.note
                     it.setToolTip(tip)
                 else:
-                    it.setForeground(QtGui.QColor(150, 150, 150))
+                    it.setForeground(OFF_FG)
                 if held is not None:
-                    it.setBackground(PENDING_BG)
-                    it.setForeground(dark_fg)
-                    it.setFont(bold)
+                    mark_pending(it, self.table.font())
                     it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "")
                                   + "Not applied yet (the file has %s)"
                                   % self._cell_text(ch, g))
@@ -638,18 +644,17 @@ class MsBlockDialog(QtWidgets.QDialog):
                 it = QtWidgets.QTableWidgetItem(
                     "—" if cid is None else self._cmp_cell_text(cid, cg))
                 it.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
-                it.setForeground(CMP_FG)
+                it.setForeground(quiet)
                 if cid is not None:
                     it.setData(QtCore.Qt.UserRole, cid)
                     mine = shown[c] if c < len(shown) else None
                     if self._cmp_differs(g, cid, mine):
-                        it.setBackground(edit_bg)
-                        it.setForeground(dark_fg)
+                        # orange in both; a held primary cell stays yellow
+                        mark_differs(it)
                         own = self.table.item(r, c + 1)
                         if own is not None and own.data(QtCore.Qt.UserRole) is not None \
                                 and self._key(g, c) not in self._pending:
-                            own.setBackground(edit_bg)
-                            own.setForeground(dark_fg)
+                            mark_differs(own)
                         if own is not None:
                             own.setToolTip((own.toolTip() + "\n" if own.toolTip() else "")
                                            + "Comparison: " + it.text())
@@ -887,6 +892,8 @@ class MsBlockDialog(QtWidgets.QDialog):
         self.desc_tbl = QtWidgets.QTableWidget(0, len(self._DESC_COLS))
         self.desc_tbl.setHorizontalHeaderLabels(self._DESC_COLS)
         self.desc_tbl.verticalHeader().setVisible(False)
+        self.desc_tbl.setAlternatingRowColors(True)
+        self.desc_tbl.setItemDelegate(CellDelegate(self.desc_tbl))
         dh = self.desc_tbl.horizontalHeader()
         dh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         dh.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
@@ -917,7 +924,7 @@ class MsBlockDialog(QtWidgets.QDialog):
                 it = QtWidgets.QTableWidgetItem(t)
                 it.setData(QtCore.Qt.UserRole, (ds, i))
                 if c in self._DESC_FIELD and (ds, i, self._DESC_FIELD[c]) in held:
-                    it.setBackground(PENDING_BG)
+                    mark_pending(it, self.desc_tbl.font())
                     it.setToolTip("Not applied yet")
                 if c not in self._DESC_FIELD or d.entities.get(self._DESC_FIELD[c]) is None:
                     it.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)

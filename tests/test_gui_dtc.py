@@ -74,8 +74,10 @@ def test_comparison_after_the_first_save_opens(app, fd):
         assert on.checkState() == QtCore.Qt.CheckState.Unchecked
         assert d.cmp_table.item(r, 0).checkState() == QtCore.Qt.CheckState.Checked
         assert "Comparison: on" in on.toolTip()
-        from ovtsuite.gui import EDIT_BG
-        assert on.background().color() == EDIT_BG
+        from ovtsuite.gui import CELL_DARK_FG, DIFF_BG
+        assert on.background().color() == DIFF_BG       # orange, as the editor
+        assert on.foreground().color() == CELL_DARK_FG
+        assert d.cmp_table.item(r, 0).background().color() == DIFF_BG
         assert not (d.cmp_table.item(r, 0).flags()
                     & QtCore.Qt.ItemFlag.ItemIsUserCheckable)   # read only
         d.show_box.setCurrentText("Differs from comparison")
@@ -425,3 +427,109 @@ def test_edc16_lamp_and_class_edits_cancel_exactly(app, monkeypatch):
     assert len(s.undo_stack) == n0 + 2 and d.has_pending()
     d.cancel()
     assert bytes(s.binfile.data) == opened and len(s.undo_stack) == n0
+
+
+# -- cell colours: the app's convention (ovtsuite.gui_cellmarks) -------------
+# Differs from the comparison: gui.DIFF_BG with gui.CELL_DARK_FG in both
+# tables; changed, not applied: PENDING_BG, bold, dark text, which wins over
+# orange in the primary (the comparison's copy stays orange); stored on the
+# ECU: STORED_BG, under both; alternating rows so the selection shows.
+
+def _bg(it):
+    return it.background().color()
+
+
+def _fg(it):
+    return it.foreground().color()
+
+
+def test_cell_colours_follow_the_table_editor(app, own_fd, monkeypatch):
+    _no_question(monkeypatch)
+    from types import SimpleNamespace
+    from ovtsuite import gui
+    from ovtsuite.gui_cellmarks import CellDelegate, STORED_BG
+    from ovtsuite.gui_dtc import DtcDialog, PENDING_BG
+    s = own_fd
+    original = s.sibling(bytes(s.binfile.data), "FD - as read")
+    d = DtcDialog(s, compare=original)
+    d.show()
+    k1, k2, k3 = [k for k in _enabled_keys(d, 20)
+                  if d.dtc.paths[k].stored_codes][:3]
+    _untick(app, d, k1)
+    d.apply()                               # k1 now differs, applied
+    _untick(app, d, k2)                     # k2 differs too, not applied
+    codes = {}
+    for k in (k1, k3):
+        c = d.dtc.paths[k].stored_codes[0]
+        codes[c] = SimpleNamespace(code=c, text="stored", status=0x28)
+    d._ecu_codes = codes
+    d._populate()
+    app.processEvents()
+    on, path = d._col["on"], d._col["path"]
+    dark = gui.CELL_DARK_FG
+
+    # differs (and stored): orange where it differs, in both tables, violet
+    # in the rest of the row
+    r1 = _row_of(d, k1)
+    for t in (d.table, d.cmp_table):
+        assert _bg(t.item(r1, on)) == gui.DIFF_BG
+        assert _fg(t.item(r1, on)) == dark
+    assert _bg(d.table.item(r1, path)) == STORED_BG
+    assert _fg(d.table.item(r1, path)) == dark
+    assert _bg(d.cmp_table.item(r1, path)) != STORED_BG   # the car's, not the file's
+
+    # not applied: the whole primary row yellow, bold, dark -- over orange --
+    # while the comparison's copy of the differing cell stays orange
+    r2 = _row_of(d, k2)
+    for c in range(d.table.columnCount()):
+        it = d.table.item(r2, c)
+        assert _bg(it) == PENDING_BG and it.font().bold() and _fg(it) == dark
+    assert _bg(d.cmp_table.item(r2, on)) == gui.DIFF_BG
+    assert not d.cmp_table.item(r2, path).font().bold()
+
+    # stored only: the row violet, dark text
+    r3 = _row_of(d, k3)
+    for c in range(d.table.columnCount()):
+        it = d.table.item(r3, c)
+        assert _bg(it) == STORED_BG and _fg(it) == dark
+
+    # nothing of the old light blue left
+    for t in (d.table, d.cmp_table):
+        for r in range(t.rowCount()):
+            for c in range(t.columnCount()):
+                assert _bg(t.item(r, c)) != gui.EDIT_BG
+
+    # alternating rows (the Windows 11 style then draws the selection solid)
+    # and a delegate that writes selected text in the selected-text colour
+    for t in (d.table, d.cmp_table):
+        assert t.alternatingRowColors()
+        assert isinstance(t.itemDelegate(), CellDelegate)
+    d.cancel()
+
+
+def test_pending_colour_is_shared_and_stored_stands_apart():
+    from ovtsuite import gui, gui_cellmarks, gui_dtc, gui_msblock, gui_tcu_dtc
+    assert (gui_dtc.PENDING_BG is gui_msblock.PENDING_BG
+            is gui_tcu_dtc.PENDING_BG is gui_cellmarks.PENDING_BG)
+    assert gui_dtc.STORED_BG is gui_tcu_dtc.STORED_BG
+    st = gui_cellmarks.STORED_BG
+    for other in (gui.DIFF_BG, gui_cellmarks.PENDING_BG):
+        # a hue well apart from orange and yellow, not just a shade of them
+        d = abs(st.hslHue() - other.hslHue())
+        assert min(d, 360 - d) > 90
+    # light enough for the dark text it carries in either theme
+    assert st.lightness() > 180
+
+
+def test_selected_text_uses_the_selected_text_colour(app):
+    from PySide6 import QtGui
+    from ovtsuite.gui_cellmarks import selection_text
+    opt = QtWidgets.QStyleOptionViewItem()
+    opt.palette.setColor(QtGui.QPalette.ColorRole.Text, QtGui.QColor(20, 20, 20))
+    opt.palette.setColor(QtGui.QPalette.ColorRole.HighlightedText,
+                         QtGui.QColor(255, 255, 255))
+    selection_text(opt)                     # not selected: left alone
+    assert opt.palette.color(QtGui.QPalette.ColorRole.Text) == QtGui.QColor(20, 20, 20)
+    opt.state |= QtWidgets.QStyle.StateFlag.State_Selected
+    selection_text(opt)
+    assert opt.palette.color(QtGui.QPalette.ColorRole.Text) == QtGui.QColor(255, 255, 255)

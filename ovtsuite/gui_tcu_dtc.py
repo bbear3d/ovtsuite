@@ -23,8 +23,11 @@ title bar's X and Esc ask first when there are edits not applied.
 
 import re
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
+from .gui_cellmarks import (OFF_FG, PENDING_BG, STORED_BG,  # noqa: F401
+                            CellDelegate, mark_differs, mark_pending,
+                            mark_stored)
 from .session import TunerSession
 from .tcu_dtc import model_for
 from .undo_mark import UndoMark
@@ -39,13 +42,10 @@ SHOW_CODED = "With a fault code"
 SHOW_DIFF = "Differs from comparison"
 SHOW_ECU = "Stored on the ECU"
 
-#: a row changed since the last Apply (as the engine fault-code window)
-PENDING_BG = QtGui.QColor(255, 236, 170)
-
-
-def _colors():
-    from . import gui as _g
-    return _g.DIFF_BG, _g.EDIT_BG, _g.CELL_DARK_FG
+#: the app's cell colours (:mod:`ovtsuite.gui_cellmarks`), as the engine
+#: fault-code window: a row changed since the last Apply (PENDING_BG, bold),
+#: the On and Cmp on cells of a row whose state differs from the comparison
+#: (orange), a fault the gearbox has stored (STORED_BG); an off fault grey
 
 
 class _Item(QtWidgets.QTableWidgetItem):
@@ -154,6 +154,10 @@ class TcuDtcDialog(QtWidgets.QDialog):
         self.table = QtWidgets.QTableWidget(0, len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.verticalHeader().setVisible(False)
+        # as the table editor; it also makes the Windows 11 style draw the
+        # selection solid, so it shows over the shaded cells
+        self.table.setAlternatingRowColors(True)
+        self.table.setItemDelegate(CellDelegate(self.table))   # selected text
         self.table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(
@@ -288,7 +292,6 @@ class TcuDtcDialog(QtWidgets.QDialog):
         cmp = self._cmp_rows()
         terms = self.filter.text().lower().split()
         show = self.show_box.currentText()
-        diff_bg, edit_bg, dark_fg = _colors()
         shown = []
         for r in rows:
             c = cmp.get(r.key)
@@ -309,8 +312,6 @@ class TcuDtcDialog(QtWidgets.QDialog):
             shown.append((r, c, differs, stored))
 
         pend = set(self._pending_keys())
-        bold = QtGui.QFont(self.table.font())
-        bold.setBold(True)
         sorting = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
@@ -343,30 +344,31 @@ class TcuDtcDialog(QtWidgets.QDialog):
             pending = r.key in pend
             if stored is not None:
                 tip += "\nSTORED ON ECU: %s (status 0x%02X)" % (stored.text, stored.status)
-                chk.setBackground(diff_bg)
-            elif pending:
-                chk.setBackground(PENDING_BG)
             if pending:
                 tip += ("\nChanged here, not applied yet (Apply keeps it, "
                         "Cancel takes it back).")
+            # as the shift editor: not applied (whole row) > differs from
+            # the comparison (On and Cmp on: the primary's cell and the
+            # comparison's) > stored on the ECU (whole row) > off (grey)
+            if pending:
+                mark_pending(chk, self.table.font())
+            elif differs:
+                mark_differs(chk)
+            elif stored is not None:
+                mark_stored(chk)
             for j, (txt, sk) in enumerate(cells):
                 it = _Item(txt)
                 it.setData(ROLE, r.key)
                 it.setData(SORT_ROLE, sk)
                 it.setToolTip(tip)
-                if stored is not None:
-                    it.setBackground(diff_bg)
-                    it.setForeground(dark_fg)
-                elif differs and j == cmp_col:
-                    it.setBackground(edit_bg)
-                    it.setForeground(dark_fg)
+                if differs and j == cmp_col:
+                    mark_differs(it)    # the comparison's: orange even when held
                 elif pending:
-                    it.setBackground(PENDING_BG)
-                    it.setForeground(dark_fg)
+                    mark_pending(it, self.table.font())
+                elif stored is not None:
+                    mark_stored(it)
                 elif not r.on:
-                    it.setForeground(QtGui.QColor(150, 150, 150))
-                if pending:
-                    it.setFont(bold)
+                    it.setForeground(OFF_FG)
                 self.table.setItem(i, j + 1, it)
         self.table.blockSignals(False)
         self.table.setSortingEnabled(sorting)

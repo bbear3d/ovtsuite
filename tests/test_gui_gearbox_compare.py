@@ -433,3 +433,14 @@ def test_comparison_without_a_matching_set_says_so(pair):
         assert cv.box is None and not any(s.get("cmp") for s in d.chart.series)
     finally:
         d.close()
+
+
+@pytest.mark.parametrize("kind", ["shift", "tcc"])
+def test_selected_shaded_cells_keep_readable_text(pair, kind):
+    """A shaded cell's dark text would vanish on the solid selection: both
+    tables draw a selected cell's text in the selected-text colour."""
+    from ovtsuite.gui_cellmarks import CellDelegate
+    d = _dialog(*pair, kind=kind)
+    for t in (d.table, d.cmpv.cmp_table):
+        assert isinstance(t.itemDelegate(), CellDelegate)
+    d.close()

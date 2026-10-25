@@ -95,9 +95,10 @@ classes differently.
 
 A change made here reaches the file at once, so the main window and the
 comparison shading show it straight away; the rows changed since the window
-opened or since the last **Apply** are shaded yellow, in bold, and the count
-is shown beside the buttons (while a row is yellow, its difference from the
-comparison is shaded in the comparison's table only).
+opened or since the last **Apply** are shaded pale yellow, in bold, and the
+count is shown beside the buttons (while a row is yellow, its difference from
+the comparison is shaded orange in the comparison's table only). See
+[Table colours](#table-colours).
 
 - **Apply** keeps those changes as **one** undo step — however many rows,
   lamps and datasets they touched — and clears the shading. Switching a row
@@ -227,12 +228,27 @@ With a comparison file open (the tab's comparison — in a project, the
 original as read once the tab is saved) its fault codes are shown in a
 read-only table of their own under the primary's, row for row: the same
 fault on the same row, sorted, scrolled and selected with the primary's.
-Every cell that differs is shaded in both tables, and a shaded primary cell's
-tooltip gives the comparison's value; the panel under the table says what the
+Every cell that differs is shaded orange in both tables, as in the table
+editor, and a shaded primary cell's tooltip gives the comparison's value; the panel under the table says what the
 comparison has for the selected row. **Show comparison** hides or shows the
 lower table (the shading stays), and **Show > Differs from comparison** lists
 just the rows whose state — on/off, class or time, lamps — differs. A fault
 the comparison does not have shows **—**.
+
+## Table colours
+
+The tables use the colours of the rest of the app:
+
+| Colour | Meaning |
+|---|---|
+| Pale yellow, bold | Changed here, not applied yet: **Apply** or **OK** keeps it, **Cancel** takes it back. The whole row, in the table above only; it takes the place of orange and violet there. |
+| Orange | This cell differs from the comparison (in both tables; the comparison's copy stays orange while the row above is yellow). |
+| Light violet | The car's ECU has this fault stored (after **Read codes from ECU...**). The whole row, under any orange cell. |
+| Grey text | The fault is switched off (or, in the comparison, not in that file). |
+| Accent colour (blue) | Selected rows; the comparison selects the same row. |
+
+Every other row is shaded lightly, as in the table editor, to help follow a
+row across.
 
 
 The line under the title says where the fault tables were found and how many
@@ -261,10 +277,10 @@ Nothing in this window is guessed from another file.
 |---|---|
 | **Disable selected** / **Enable selected** | Switches every selected row off or on. |
 | **Warning lamps** | For the selected rows: MIL off / on, glow-plug lamp off / on, keeping the faults. |
-| **Read codes from ECU...** | Opens the **Fault codes from ECU** window, which reads the codes stored in the car's ECU (see [Reading fault codes](../logging/fault-codes.md)). Every row that can set one of the codes read is then highlighted (one code can belong to several rows) and **Show** switches to **Stored on the ECU** — pick **All fault paths** to see them highlighted among the rest; codes the ECU has stored that are not in this file are listed under the table. |
+| **Read codes from ECU...** | Opens the **Fault codes from ECU** window, which reads the codes stored in the car's ECU (see [Reading fault codes](../logging/fault-codes.md)). Every row that can set one of the codes read is then shaded light violet (one code can belong to several rows) and **Show** switches to **Stored on the ECU** — pick **All fault paths** to see them among the rest; codes the ECU has stored that are not in this file are listed under the table. |
 | **Restore all from stock...** | Copies every fault path's class (EDC16) or time (EDC15) from a stock binary of the same software — a quick way to undo all fault-code changes in a tune. In a project you are offered the set's original (as read): **Use the original**, or **Another file...** to pick a stock file. |
 | **Copy differences from comparison** | Only with a comparison open. Sets every row of the dataset shown (or every dataset) whose state differs to the comparison's value. |
-| **Apply** | Keeps the changes made since the window opened or the last **Apply** (rows shaded yellow) as one undo step; the window stays open. |
+| **Apply** | Keeps the changes made since the window opened or the last **Apply** (rows shaded pale yellow) as one undo step; the window stays open. |
 | **Cancel** | Takes back the changes made since the last **Apply** (or since the window opened) and closes the window. |
 | **OK** | Applies, as **Apply** does, and closes the window. Applied changes stay in the tab until you save or undo them. |
 

@@ -30,9 +30,12 @@ closes. The title bar's X and Esc ask first when there are edits not
 applied.
 """
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from .dtc import DtcTable
+from .gui_cellmarks import (OFF_FG, PENDING_BG, STORED_BG,  # noqa: F401
+                            CellDelegate, cmp_fg, mark_differs, mark_pending,
+                            mark_stored)
 from .session import TunerSession
 from .undo_mark import UndoMark
 
@@ -55,20 +58,15 @@ SHOW_ECU = "Stored on the ECU"
 #: the dataset box's entry for every dataset at once
 ALL_DATASETS = "All datasets"
 
-CMP_FG = QtGui.QColor(90, 90, 90)
-#: a row changed since the last Apply (as the measuring-block window shades
-#: its held cells)
-PENDING_BG = QtGui.QColor(255, 236, 170)
-_GREY = QtGui.QColor(150, 150, 150)
+#: the app's cell colours (:mod:`ovtsuite.gui_cellmarks`): a row changed
+#: since the last Apply (PENDING_BG, bold), a cell that differs from the
+#: comparison (orange, in both tables), a fault the ECU has stored
+#: (STORED_BG); a switched-off fault's text is grey
+_GREY = OFF_FG
 _CHECKABLE = (QtCore.Qt.ItemFlag.ItemIsUserCheckable
               | QtCore.Qt.ItemFlag.ItemIsEnabled
               | QtCore.Qt.ItemFlag.ItemIsSelectable)
 _READ_ONLY = QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
-
-
-def _colors():
-    from . import gui as _g
-    return _g.DIFF_BG, _g.EDIT_BG, _g.CELL_DARK_FG
 
 
 def _check(on):
@@ -371,6 +369,10 @@ class DtcDialog(QtWidgets.QDialog):
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         t.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         t.horizontalHeader().setStretchLastSection(True)
+        # as the table editor; it also makes the Windows 11 style draw the
+        # selection solid, so it shows over the shaded cells
+        t.setAlternatingRowColors(True)
+        t.setItemDelegate(CellDelegate(t))     # selected text readable
 
     # -- helpers -------------------------------------------------------
     def _key(self, fp):
@@ -538,7 +540,6 @@ class DtcDialog(QtWidgets.QDialog):
         """(Re)draw primary row ``r`` for ``fp``. Signals blocked, sorting
         off: the caller's business."""
         dtc = self.dtc
-        diff_bg, edit_bg, dark_fg = _colors()
         en = dtc.is_enabled(fp)
         stored = self._stored(fp)
         cells = self._cells(dtc, fp)
@@ -557,8 +558,6 @@ class DtcDialog(QtWidgets.QDialog):
         if pending:
             tip += ("\nChanged here, not applied yet (Apply keeps it, "
                     "Cancel takes it back).")
-            bold = QtGui.QFont(self.table.font())
-            bold.setBold(True)
         for k in self._ids:
             txt, sk = cells[k]
             it = _Item(txt)
@@ -578,19 +577,16 @@ class DtcDialog(QtWidgets.QDialog):
                 ctip = ("Ticked: the fault is detected and stored (the class "
                         "decides which lamp, if any, it lights)\n") + ctip
             it.setToolTip(ctip)
-            if stored is not None:
-                it.setBackground(diff_bg)
-                it.setForeground(dark_fg)
-            elif pending:
-                it.setBackground(PENDING_BG)
-                it.setForeground(dark_fg)
+            # as the shift editor: not applied (whole row) > differs from
+            # the comparison > stored on the ECU (whole row) > off (grey)
+            if pending:
+                mark_pending(it, self.table.font())
             elif differs:
-                it.setBackground(edit_bg)
-                it.setForeground(dark_fg)
+                mark_differs(it)
+            elif stored is not None:
+                mark_stored(it)
             elif not en:
                 it.setForeground(_GREY)
-            if pending:
-                it.setFont(bold)
             if k in LAMP_COLS:
                 self._lamp_item(it, fp, k, dtc.lights(fp, k))
             self.table.setItem(r, self._col[k], it)
@@ -601,7 +597,6 @@ class DtcDialog(QtWidgets.QDialog):
         t = self.cmp_table
         fp = self.dtc.paths.get(key)
         cfp = self._cmp_of(key, fp) if fp is not None else None
-        _diff_bg, edit_bg, dark_fg = _colors()
         if cfp is None:
             for k in self._ids:
                 it = QtWidgets.QTableWidgetItem("—" if k != "desc" else
@@ -614,11 +609,12 @@ class DtcDialog(QtWidgets.QDialog):
         mine = self._cells(self.dtc, fp)
         cells = self._cells(self.cmp_dtc, cfp)
         cen = self.cmp_dtc.is_enabled(cfp)
+        quiet = cmp_fg(t)
         for k in self._ids:
             it = QtWidgets.QTableWidgetItem(cells[k][0])
             it.setFlags(_READ_ONLY)
             it.setData(ROLE, key)
-            it.setForeground(CMP_FG)
+            it.setForeground(quiet)
             if k == "on":
                 it.setCheckState(_check(cen))
                 differs = cen != self.dtc.is_enabled(fp)
@@ -628,9 +624,8 @@ class DtcDialog(QtWidgets.QDialog):
                 differs = cells[k] != mine[k]
             else:
                 differs = k not in ("path", "desc") and cells[k] != mine[k]
-            if differs:
-                it.setBackground(edit_bg)
-                it.setForeground(dark_fg)
+            if differs:                 # orange here even while the
+                mark_differs(it)        # primary's cell is held (yellow)
             elif not cen:
                 it.setForeground(_GREY)
             t.setItem(r, self._col[k], it)

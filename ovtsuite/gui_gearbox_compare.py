@@ -41,13 +41,13 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import gearbox_edit as GE
+# a cell the edit's steps would change, not applied yet: the colour the
+# fault-code and measuring-block windows give their held changes, from one
+# place, with bold text
+from .gui_cellmarks import PENDING_BG
 
 SHOW_TEXT = "Show comparison"
 
-#: a cell the edit's steps would change, not applied yet -- the colour the
-#: fault-code and measuring-block windows give their held changes
-#: (``gui_dtc.PENDING_BG``, ``gui_msblock.PENDING_BG``), with bold text
-PENDING_BG = QtGui.QColor(255, 236, 170)
 #: item data on a primary cell the edit changes (so the comparison shading
 #: leaves it alone)
 PENDING_ROLE = int(QtCore.Qt.UserRole) + 41
@@ -150,6 +150,8 @@ class CompareView(QtCore.QObject):
         # like the main editor's comparison grid (gui_cmpscroll): rows as
         # the table above shades them, the selection drawn the same way
         self.cmp_table.setAlternatingRowColors(dlg.table.alternatingRowColors())
+        from .gui_cellmarks import CellDelegate
+        self.cmp_table.setItemDelegate(CellDelegate(self.cmp_table))
         self.cmp_table.verticalHeader().setDefaultSectionSize(
             dlg.table.verticalHeader().defaultSectionSize())
         cl.addWidget(self.cmp_table)
