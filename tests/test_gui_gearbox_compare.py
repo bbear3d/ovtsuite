@@ -179,6 +179,100 @@ def test_comparison_table_shades_and_follows(shift):
     assert ct.horizontalHeader().logicalIndexAt(0) == pt.horizontalHeader().logicalIndexAt(0)
 
 
+def _cells(t):
+    return [(r, c) for r in range(t.rowCount()) for c in range(t.columnCount())
+            if t.item(r, c) is not None]
+
+
+def test_cell_colours_follow_the_main_editor(shift):
+    """Differs from the comparison: the main editor's orange and dark text
+    (gui.TableModel._cell_style), in both tables. A cell the edit would
+    change: the app's "held, not applied yet" look (the fault-code and
+    measuring-block windows: PENDING_BG, bold, dark text), which wins over
+    the orange in the primary while the comparison's copy still says
+    whether it differs from the preview. No other fill (the old translucent
+    amber, or anything else) in either table."""
+    from ovtsuite import gui as _g
+    from ovtsuite import gui_dtc, gui_msblock
+    from ovtsuite import gui_gearbox_compare as GC
+    assert GC.PENDING_BG == gui_dtc.PENDING_BG == gui_msblock.PENDING_BG
+    pt, ct = shift.table, shift.cmpv.cmp_table
+    shift.range_edit.setText("10-12")
+    shift._select_range(False)
+    shift._recompute()
+    # no edit yet: only the comparison colours, the same in both tables
+    diff = _differing(ct)
+    assert diff and _differing(pt) == diff
+    for t in (pt, ct):
+        for r, c in diff:
+            it = t.item(r, c)
+            assert it.background().color() == _g.DIFF_BG
+            assert it.foreground().color() == _g.CELL_DARK_FG
+            assert not it.font().bold() and not GC.is_pending(it)
+    # a pending offset over part of the pedal range
+    shift.op_box.setCurrentIndex(shift.op_box.findData("offset"))
+    shift.amount.setValue(150)
+    shift.p_from.setValue(40.0)
+    shift.p_to.setValue(70.0)
+    shift._recompute()
+    changed = {(row, r) for row, i in enumerate(shift._selected())
+               for r in range(shift.sset.schedules[i].rows)
+               if shift.result.grid[i][r * shift.sset.schedules[i].cols + shift._line()]
+               != shift.edit.origin[i][r * shift.sset.schedules[i].cols + shift._line()]}
+    assert changed and len(changed) < len(_cells(pt))
+    cdiff = set(_differing(ct))
+    assert changed & cdiff                   # the precedence case is there
+    for r, c in _cells(pt):
+        it, cit = pt.item(r, c), ct.item(r, c)
+        bg, fg = it.background(), it.foreground()
+        if (r, c) in changed:                # held change: wins
+            assert GC.is_pending(it) and it.font().bold()
+            assert bg.color() == GC.PENDING_BG and fg.color() == _g.CELL_DARK_FG
+            assert "not applied yet" in it.toolTip()
+        elif (r, c) in cdiff:                # differs only
+            assert bg.color() == _g.DIFF_BG and fg.color() == _g.CELL_DARK_FG
+            assert not it.font().bold()
+        else:                                # neither: the view's own colours
+            assert bg.style() == QtCore.Qt.NoBrush
+            assert fg.style() == QtCore.Qt.NoBrush
+        # the comparison copy: orange where it differs from the preview,
+        # nothing else ever
+        if (r, c) in cdiff:
+            assert cit.background().color() == _g.DIFF_BG
+            assert cit.foreground().color() == _g.CELL_DARK_FG
+        else:
+            assert cit.background().style() == QtCore.Qt.NoBrush
+        assert not cit.font().bold()
+    # both tables shade rows like the main editor's grid -- in the Windows
+    # 11 style that also draws the selection over the cell fills
+    assert pt.alternatingRowColors() and ct.alternatingRowColors()
+
+
+def test_cell_colours_in_the_lockup_editor(tcc):
+    from ovtsuite import gui as _g
+    from ovtsuite import gui_gearbox_compare as GC
+    tcc._check_all(True)
+    tcc._recompute()
+    pt, ct = tcc.table, tcc.cmpv.cmp_table
+    diff = _differing(ct)
+    assert diff and _differing(pt) == diff
+    for t in (pt, ct):
+        assert t.alternatingRowColors()
+        for r, c in diff:
+            assert t.item(r, c).background().color() == _g.DIFF_BG
+            assert t.item(r, c).foreground().color() == _g.CELL_DARK_FG
+    tcc.op_box.setCurrentIndex(tcc.op_box.findData("offset"))
+    tcc.amount.setValue(50)
+    tcc._recompute()
+    pend = [(r, c) for r, c in _cells(pt) if GC.is_pending(pt.item(r, c))]
+    assert pend
+    assert all(pt.item(r, c).background().color() == GC.PENDING_BG
+               and pt.item(r, c).font().bold() for r, c in pend)
+    assert all(ct.item(r, c).background().style() in (QtCore.Qt.NoBrush,)
+               or ct.item(r, c).background().color() == _g.DIFF_BG
+               for r, c in _cells(ct))
+
+
 def _pump():
     for _ in range(3):
         QtWidgets.QApplication.processEvents()

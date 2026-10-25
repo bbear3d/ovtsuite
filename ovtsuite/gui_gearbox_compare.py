@@ -17,7 +17,8 @@ comparison's schedule set with the same provider as the window's own
 * a read-only copy of the value table for the comparison under the table,
   same rows, columns and units, scrolled, sized and selected with it
   (:class:`gui_cmpscroll.ViewLink`), the cells that differ shaded in both
-  with the app's "differs from comparison" colour and the other value in
+  with the main editor's "differs from comparison" colours (``gui.DIFF_BG``
+  with ``gui.CELL_DARK_FG`` text, in either theme) and the other value in
   the tooltip;
 * right-click **Copy selected cells from comparison** / **Copy whole line
   from comparison** (on the table, either copy, or on a line on the chart):
@@ -25,7 +26,11 @@ comparison's schedule set with the same provider as the window's own
   other step (one undo step), and removed with Remove.
 
 The tables show the edit's preview: a cell a step has already brought to
-the comparison's value is no longer shaded. When the comparison has no
+the comparison's value is no longer shaded. A cell the edit would change is
+"held, not applied yet", shown as the fault-code and measuring-block windows
+show theirs (:data:`PENDING_BG`, bold, dark text); in the primary table that
+wins over the comparison shading, as it does there, while the comparison's
+copy of the cell still shows whether it differs from the preview. When the comparison has no
 matching set (another gearbox, other lines) or a schedule another shape,
 the status beside the switch says so and those parts stay off.
 """
@@ -33,16 +38,48 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import gearbox_edit as GE
 
 SHOW_TEXT = "Show comparison"
 
+#: a cell the edit's steps would change, not applied yet -- the colour the
+#: fault-code and measuring-block windows give their held changes
+#: (``gui_dtc.PENDING_BG``, ``gui_msblock.PENDING_BG``), with bold text
+PENDING_BG = QtGui.QColor(255, 236, 170)
+#: item data on a primary cell the edit changes (so the comparison shading
+#: leaves it alone)
+PENDING_ROLE = int(QtCore.Qt.UserRole) + 41
+
 
 def _colors():
     from . import gui as _g
     return _g.DIFF_BG, _g.CELL_DARK_FG
+
+
+def mark_differs(item: QtWidgets.QTableWidgetItem) -> None:
+    """``item`` in the main editor's "differs from comparison" colours:
+    opaque orange, dark text (the default text is light in the dark theme)."""
+    bg, fg = _colors()
+    item.setBackground(QtGui.QBrush(bg))
+    item.setForeground(QtGui.QBrush(fg))
+
+
+def mark_pending(item: QtWidgets.QTableWidgetItem, font: QtGui.QFont) -> None:
+    """``item`` as a change held until Apply: :data:`PENDING_BG`, bold, dark
+    text. Wins over :func:`mark_differs` in the primary table."""
+    _bg, fg = _colors()
+    item.setBackground(QtGui.QBrush(PENDING_BG))
+    item.setForeground(QtGui.QBrush(fg))
+    bold = QtGui.QFont(font)
+    bold.setBold(True)
+    item.setFont(bold)
+    item.setData(PENDING_ROLE, True)
+
+
+def is_pending(item: Optional[QtWidgets.QTableWidgetItem]) -> bool:
+    return bool(item is not None and item.data(PENDING_ROLE))
 
 
 def comparison_of(ws):
@@ -110,6 +147,9 @@ class CompareView(QtCore.QObject):
         self.cmp_table = QtWidgets.QTableWidget()
         self.cmp_table.setObjectName("gearboxCompareTable")
         self.cmp_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        # like the main editor's comparison grid (gui_cmpscroll): rows as
+        # the table above shades them, the selection drawn the same way
+        self.cmp_table.setAlternatingRowColors(dlg.table.alternatingRowColors())
         self.cmp_table.verticalHeader().setDefaultSectionSize(
             dlg.table.verticalHeader().defaultSectionSize())
         cl.addWidget(self.cmp_table)
@@ -186,7 +226,6 @@ class CompareView(QtCore.QObject):
             h = pt.horizontalHeaderItem(c)
             ct.setHorizontalHeaderItem(c, QtWidgets.QTableWidgetItem(h.text() if h else ""))
         ct.setVerticalHeaderLabels([dlg.sset.schedules[i].key for i in self._sel])
-        diff_bg, dark_fg = _colors()
         pr = self.pairing
         for row, i in enumerate(self._sel):
             s = dlg.sset.schedules[i]
@@ -213,13 +252,11 @@ class CompareView(QtCore.QObject):
                     tip += "\nThe pedal axes differ: not compared cell for cell"
                 elif cv != pv:
                     tip += "\nThis file: %.0f (%+.0f)" % (pv * f, (pv - cv) * f)
-                    it.setBackground(diff_bg)
-                    it.setForeground(dark_fg)
+                    mark_differs(it)
                     mine = pt.item(row, r)
                     if mine is not None:
-                        if mine.background().style() == QtCore.Qt.NoBrush:
-                            mine.setBackground(diff_bg)
-                            mine.setForeground(dark_fg)
+                        if not is_pending(mine):     # held change wins
+                            mark_differs(mine)
                         mine.setToolTip(mine.toolTip() + "\nComparison: %.0f (%+.0f)"
                                         % (cv * f, (pv - cv) * f))
                 it.setToolTip(tip)

@@ -783,6 +783,11 @@ class GearboxEditDialog(QtWidgets.QDialog):
         self.table = QtWidgets.QTableWidget()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setDefaultSectionSize(22)
+        # as the main editor's grid: besides the row shading, it is what
+        # makes the Windows 11 style draw the selection in the accent colour
+        # over a cell's own fill rather than a faint grey that the
+        # comparison / pending fills hide
+        self.table.setAlternatingRowColors(True)
         vs.addWidget(self.table)
         vs.setSizes([520, 300])
         v.addWidget(vs, 1)
@@ -1662,8 +1667,8 @@ class GearboxEditDialog(QtWidgets.QDialog):
                     h.setToolTip("The selected schedules have different pedal axes: "
                                  "hover a cell for its pedal %")
         t.setVerticalHeaderLabels([self.sset.schedules[i].key for i in sel])
-        hl = QtGui.QColor("#e8b04a")
-        hl.setAlpha(90)
+        from .gui_gearbox_compare import mark_pending
+        font = t.font()
         for row, i in enumerate(sel):
             s = self.sset.schedules[i]
             f = self._factor(s, line)
@@ -1675,8 +1680,12 @@ class GearboxEditDialog(QtWidgets.QDialog):
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 tip = "%s at %.1f %% pedal" % (s.key, s.pedal[r])
                 if abs(new - old) > 1e-9:
-                    it.setBackground(hl)
-                    tip += "\nwas %.0f, would be %.0f (%+.0f)" % (old, new, new - old)
+                    # held until Apply: the app's "not applied yet" look
+                    # (the comparison shading leaves it alone, see
+                    # gui_gearbox_compare)
+                    mark_pending(it, font)
+                    tip += ("\nwas %.0f, would be %.0f (%+.0f): not applied yet"
+                            % (old, new, new - old))
                 it.setToolTip(tip)
                 t.setItem(row, r, it)
         t.resizeColumnsToContents()
