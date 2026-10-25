@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""The shift-map editor window (Tools > ZF 6HP > Shift map editor...).
+"""The shift-map editor window (Tools > Shift map editor...).
 
 Edits many schedules at once through :mod:`ovtsuite.gearbox_edit`. A gearbox
 module supplies the schedules (``PROVIDERS``); this window knows no gearbox.
@@ -32,6 +32,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import gearbox_edit as GE
 from . import speedview as _sv
+from .gui_compact import WrapCheckBox, compact_combo, fixed_width
 
 #: (platform, kind) -> (module, function) returning a ScheduleSet for a session.
 PROVIDERS = {
@@ -420,7 +421,9 @@ class GearboxEditDialog(QtWidgets.QDialog):
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setStretchFactor(2, 0)
-        split.setSizes([320, 760, 360])
+        # the chart gets the width: the side panes are as narrow as their
+        # controls allow (all three stay resizable)
+        split.setSizes([260, 1000, 340])
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
@@ -845,6 +848,7 @@ class GearboxEditDialog(QtWidgets.QDialog):
             if key == "track" and not self.has_refs:
                 continue
             self.op_box.addItem(text, key)
+        compact_combo(self.op_box, 12)
         self.op_box.currentIndexChanged.connect(self._op_changed)
         f.addRow("Operation", self.op_box)
         self.amount = QtWidgets.QDoubleSpinBox(decimals=1, minimum=-5000, maximum=5000)
@@ -873,6 +877,7 @@ class GearboxEditDialog(QtWidgets.QDialog):
             "Which of the pair stays where it is. The gap is upper minus lower: "
             + ("OR minus RO, the band slip control starts and stops in"
                if self.kind == "tcc" else "the upshift minus the downshift that undoes it"))
+        compact_combo(self.anchor_box, 12)
         self.anchor_lbl = QtWidgets.QLabel("Which")
         f.addRow(self.anchor_lbl, self.anchor_box)
         self.anchor_box.currentIndexChanged.connect(lambda *_: self._schedule())
@@ -883,14 +888,12 @@ class GearboxEditDialog(QtWidgets.QDialog):
         self.ref_box.setToolTip("Whose upshift out of the gear to follow")
         self.ref_lbl = QtWidgets.QLabel("Upshift of")
         f.addRow(self.ref_lbl, self.ref_box)
-        wr = QtWidgets.QHBoxLayout()
         self.within_chk = QtWidgets.QCheckBox("only where closer than")
         self.within = QtWidgets.QSpinBox(minimum=0, maximum=3000, value=100, suffix=" rpm out")
+        self.within_w = QtWidgets.QWidget()
+        wr = _Flow(self.within_w)
         wr.addWidget(self.within_chk)
         wr.addWidget(self.within)
-        wr.setContentsMargins(0, 0, 0, 0)
-        self.within_w = QtWidgets.QWidget()
-        self.within_w.setLayout(wr)
         f.addRow("", self.within_w)
         self.ref_box.currentIndexChanged.connect(lambda *_: self._schedule())
         self.within_chk.toggled.connect(lambda *_: self._schedule())
@@ -912,15 +915,14 @@ class GearboxEditDialog(QtWidgets.QDialog):
         c0.blockSignals(False)
         self._lines_follow = True
         f.addRow("Lines", lines_w)
-        self.with_pair = QtWidgets.QCheckBox("and each one's pair" if self.kind != "tcc"
+        self.with_pair = WrapCheckBox("and each one's pair" if self.kind != "tcc"
                                              else "and each one's pair (RO \u2194 OR)")
         self.with_pair.setToolTip("Also apply the step to the paired line of every ticked "
                                   "line, so the two move together")
         self.with_pair.toggled.connect(lambda *_: self._schedule())
         f.addRow("", self.with_pair)
         self.pedal_w = QtWidgets.QWidget()
-        pr = QtWidgets.QHBoxLayout(self.pedal_w)
-        pr.setContentsMargins(0, 0, 0, 0)
+        pr = _Flow(self.pedal_w)
         self.p_from = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, suffix=" %")
         self.p_to = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, value=100.4, suffix=" %")
         pr.addWidget(self.p_from)
@@ -928,20 +930,25 @@ class GearboxEditDialog(QtWidgets.QDialog):
         pr.addWidget(self.p_to)
         f.addRow("Pedal", self.pedal_w)
         self.fade_w = QtWidgets.QWidget()
-        tr = QtWidgets.QHBoxLayout(self.fade_w)
-        tr.setContentsMargins(0, 0, 0, 0)
+        tr = _Flow(self.fade_w)
         self.taper = QtWidgets.QCheckBox("from")
         self.t_from = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, value=80, suffix=" %")
         self.t_to = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=100.4, value=100, suffix=" %")
-        tr.addWidget(self.taper)
-        tr.addWidget(self.t_from)
-        tr.addWidget(QtWidgets.QLabel("to 0 at"))
-        tr.addWidget(self.t_to)
+        # "from x" and "to 0 at y" wrap as pairs when the pane is narrow
+        for a, b in ((self.taper, self.t_from), (QtWidgets.QLabel("to 0 at"), self.t_to)):
+            pair = QtWidgets.QWidget()
+            ph = QtWidgets.QHBoxLayout(pair)
+            ph.setContentsMargins(0, 0, 0, 0)
+            ph.addWidget(a)
+            ph.addWidget(b)
+            tr.addWidget(pair)
         f.addRow("Fade", self.fade_w)
         self.taper.setToolTip("Full amount below the first pedal, fading to nothing at the second")
         self.direction = QtWidgets.QComboBox()
         for key, text in DIRECTIONS:
             self.direction.addItem(text, key)
+        compact_combo(self.direction, 8)
+        fixed_width(self.amount, self.amount2, self.blend)
         f.addRow("Direction", self.direction)
         # the full-load optimum's own controls (shift editor only)
         self.fl_panel = None
@@ -990,72 +997,84 @@ class GearboxEditDialog(QtWidgets.QDialog):
 
         cbox = QtWidgets.QGroupBox("Checks (advisory)")
         cf = QtWidgets.QGridLayout(cbox)
-        self.gap_on = QtWidgets.QCheckBox(
+        cf.setHorizontalSpacing(4)
+        cf.setColumnStretch(0, 1)
+
+        def mode_box(items):
+            # short names in the box, the full meaning in each item's tooltip;
+            # only the index is read
+            box = QtWidgets.QComboBox()
+            for short, full in items:
+                box.addItem(short)
+                box.setItemData(box.count() - 1, full, QtCore.Qt.ToolTipRole)
+            box.setToolTip("What happens where the check fails: " + "; ".join(
+                full.lower() if i else full for i, (_s, full) in enumerate(items)))
+            return compact_combo(box, 6)
+
+        self.gap_on = WrapCheckBox(
             "OR above RO by ≥" if self.kind == "tcc" else "Gap to the opposite shift ≥")
         self.gap_on.setChecked(True)
         self.gap = QtWidgets.QSpinBox(minimum=0, maximum=2000, value=60, suffix=" rpm out")
         self.gap.setToolTip("Output rpm. Held to the smaller of this and the cell's own gap before the edit")
-        self.gap_fix = QtWidgets.QComboBox()
-        self.gap_fix.addItems(["Warn only", "Auto-fix: take back the edit",
-                               "Auto-fix: move the opposite shift"])
+        self.gap_fix = mode_box((("Warn only", "Warn only"),
+                                 ("Fix: undo edit", "Auto-fix: take back the edit"),
+                                 ("Fix: move other", "Auto-fix: move the opposite shift")))
         cf.addWidget(self.gap_on, 0, 0)
         cf.addWidget(self.gap, 0, 1)
-        cf.addWidget(self.gap_fix, 1, 0, 1, 2)
-        self.mono_on = QtWidgets.QCheckBox("Line never falls as pedal rises")
+        cf.addWidget(self.gap_fix, 0, 2)
+        self.mono_on = WrapCheckBox("Line never falls as pedal rises")
         self.mono_on.setChecked(self.kind != "tcc")
-        self.mono_fix = QtWidgets.QComboBox()
-        self.mono_fix.addItems(["Warn only", "Auto-fix: pull back the edited row",
-                                "Auto-fix: running maximum"])
-        cf.addWidget(self.mono_on, 2, 0, 1, 2)
-        cf.addWidget(self.mono_fix, 3, 0, 1, 2)
-        self.rpm_on = QtWidgets.QCheckBox("Engine rpm after the shift")
+        self.mono_fix = mode_box((("Warn only", "Warn only"),
+                                  ("Fix: pull back", "Auto-fix: pull back the edited row"),
+                                  ("Fix: running max", "Auto-fix: running maximum")))
+        cf.addWidget(self.mono_on, 1, 0, 1, 2)
+        cf.addWidget(self.mono_fix, 1, 2)
+        self.rpm_on = WrapCheckBox("Engine rpm after the shift")
         self.rpm_lo = QtWidgets.QSpinBox(minimum=0, maximum=8000, value=1300, prefix="≥ ")
         self.rpm_hi = QtWidgets.QSpinBox(minimum=0, maximum=8000, value=4500, prefix="≤ ")
-        self.lock_on = QtWidgets.QCheckBox("Full lock (RC) below the upshift by ≥")
+        cf.addWidget(self.rpm_on, 2, 0)
+        cf.addWidget(self.rpm_lo, 2, 1)
+        cf.addWidget(self.rpm_hi, 2, 2)
+        self.lock_on = WrapCheckBox("Full lock (RC) below the upshift by ≥")
         self.lock_on.setVisible(self.kind == "tcc" and self.has_refs)
         self.lock_on.setChecked(self.kind == "tcc" and self.has_refs)
         self.lock_m = QtWidgets.QSpinBox(minimum=0, maximum=3000, value=100, suffix=" rpm out")
         self.lock_m.setVisible(self.kind == "tcc" and self.has_refs)
         self.lock_on.setToolTip("Warn where an edited RC cell sits closer than this to the "
                                 "upshift out of the gear in a program that uses it")
-        cf.addWidget(self.lock_on, 6, 0)
-        cf.addWidget(self.lock_m, 6, 1)
-        self.same_on = QtWidgets.QCheckBox("Identical %s stay identical" % (
+        cf.addWidget(self.lock_on, 3, 0)
+        cf.addWidget(self.lock_m, 3, 1)
+        self.same_on = WrapCheckBox("Identical %s stay identical" % (
             "characteristics" if self.kind == "tcc" else "schedules"))
         self.same_on.setChecked(True)
         self.same_on.setToolTip(
             "Warn when the edit reaches only some of a group that was byte-identical "
             "(the factory keeps such groups on purpose, e.g. lock-up slots 2/6, 3/7, 4/8)")
-        self.same_fix = QtWidgets.QComboBox()
-        self.same_fix.addItems(["Warn only", "Auto-fix: extend the edit to the rest"])
-        cf.addWidget(self.same_on, 7, 0, 1, 2)
-        cf.addWidget(self.same_fix, 8, 0, 1, 2)
-        self.step_on = QtWidgets.QCheckBox("No step steeper than 1.5 \u00d7 the factory's")
+        self.same_fix = mode_box((("Warn only", "Warn only"),
+                                  ("Fix: extend edit", "Auto-fix: extend the edit to the rest")))
+        cf.addWidget(self.same_on, 4, 0, 1, 2)
+        cf.addWidget(self.same_fix, 4, 2)
+        self.step_on = WrapCheckBox("No step steeper than 1.5 \u00d7 the factory's")
         self.step_on.setToolTip(
             "Warn where the edit makes a line rise between two pedal rows more steeply "
             "than 1.5 times its own steepest factory rise (the kickdown step aside)")
         self.step_on.setChecked(self.kind != "tcc")
         self.step_on.setVisible(self.kind != "tcc")
-        cf.addWidget(self.step_on, 9, 0, 1, 2)
+        cf.addWidget(self.step_on, 5, 0, 1, 3)
         self.step_on.toggled.connect(lambda *_: self._schedule())
-        self.conv_on = QtWidgets.QCheckBox("Upshifts land with the converter locked")
+        self.conv_on = WrapCheckBox("Upshifts land with the converter locked")
         self.conv_on.setToolTip(
             "Warn where the edit puts an upshift below the lock-up map's OR for the next "
             "gear in that program: the converter is still open after the shift, which costs "
             "what an early (economy) shift was for")
         self.conv_on.setChecked(self.kind != "tcc")
         self.conv_on.setVisible(self.kind != "tcc")
-        cf.addWidget(self.conv_on, 10, 0, 1, 2)
+        cf.addWidget(self.conv_on, 6, 0, 1, 3)
         self.conv_on.toggled.connect(lambda *_: self._schedule())
         self.same_on.toggled.connect(lambda *_: self._schedule())
         self.same_fix.currentIndexChanged.connect(lambda *_: self._schedule())
         self.lock_on.toggled.connect(lambda *_: self._schedule())
         self.lock_m.valueChanged.connect(lambda *_: self._schedule())
-        cf.addWidget(self.rpm_on, 4, 0, 1, 2)
-        rr = QtWidgets.QHBoxLayout()
-        rr.addWidget(self.rpm_lo)
-        rr.addWidget(self.rpm_hi)
-        cf.addLayout(rr, 5, 0, 1, 2)
         for wdg in (self.gap_on, self.mono_on, self.rpm_on):
             wdg.toggled.connect(lambda *_: self._schedule())
         for wdg in (self.gap, self.rpm_lo, self.rpm_hi):

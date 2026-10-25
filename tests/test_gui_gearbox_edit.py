@@ -89,7 +89,7 @@ def test_saved_set_without_a_project(dlg):
 
 
 def test_tools_menu_opens_the_editor(app, tmp_path):
-    """Tools > ZF 6HP > Shift map editor... on a real main window."""
+    """Tools > Shift map editor... on a real main window."""
     path = os.path.join(SIXHP, "3.0TFSI-Stock.bin")
     if not os.path.exists(path):
         pytest.skip("no ZF 6HP reference binaries")
@@ -97,7 +97,7 @@ def test_tools_menu_opens_the_editor(app, tmp_path):
     from ovtsuite.session import TunerSession
     w = G.MainWindow(TunerSession(path), None)
     try:
-        act = next(a for a in w.zf6hp_menu.actions() if a.text() == "Shift map editor...")
+        act = next(a for a in w.tools_menu.actions() if a.text() == "Shift map editor...")
         act.trigger()
         dlg = w.current.tool("shiftedit")
         assert dlg is not None and len(dlg.sset.schedules) == 82
@@ -187,7 +187,7 @@ def test_tcc_gear3_edit_through_the_window(tcc):
 
 
 def test_tools_menu_opens_the_lockup_editor(app, tmp_path):
-    """Tools > ZF 6HP > Lock-up (TCC) editor... on a real main window."""
+    """Tools > Lock-up (TCC) editor... on a real main window."""
     path = os.path.join(SIXHP, "3.0TFSI-Stock.bin")
     if not os.path.exists(path):
         pytest.skip("no ZF 6HP reference binaries")
@@ -195,7 +195,7 @@ def test_tools_menu_opens_the_lockup_editor(app, tmp_path):
     from ovtsuite.session import TunerSession
     w = G.MainWindow(TunerSession(path), None)
     try:
-        act = next(a for a in w.zf6hp_menu.actions() if a.text() == "Lock-up (TCC) editor...")
+        act = next(a for a in w.tools_menu.actions() if a.text() == "Lock-up (TCC) editor...")
         act.trigger()
         dlg = w.current.tool("tccedit")
         assert dlg is not None and dlg.sset.kind == "tcc" and dlg.sset.schedules
@@ -302,7 +302,7 @@ _8HP = os.path.join(os.path.dirname(__file__), os.pardir, "Reference", "ZF8HP", 
 
 
 def test_8hp_editors_from_the_tools_menu(app):
-    """Tools > ZF 8HP > both editors on a Gen1 image: 14 line buttons, gear
+    """Tools > both gearbox editors on a Gen1 8HP image: 14 line buttons, gear
     groups for the WK characteristics, no upshift-reference controls."""
     if not os.path.exists(_8HP):
         pytest.skip("no ZF 8HP reference image")
@@ -310,7 +310,7 @@ def test_8hp_editors_from_the_tools_menu(app):
     from ovtsuite.session import TunerSession
     w = G.MainWindow(TunerSession(_8HP), None)
     try:
-        acts = {a.text(): a for a in w.zf8hp_menu.actions()}
+        acts = {a.text(): a for a in w.tools_menu.actions()}
         acts["Shift map editor..."].trigger()
         dlg = w.current.tool("shiftedit")
         assert dlg is not None and len(dlg.line_group.buttons()) == 14
@@ -328,3 +328,52 @@ def test_8hp_editors_from_the_tools_menu(app):
         dlg.close()
     finally:
         w.close_discarding()
+
+
+def _pane_widths(d, app):
+    d.show()
+    d.resize(1274, 892)
+    app.processEvents()
+    sp = d.findChild(QtWidgets.QSplitter)
+    return sp, sp.sizes()
+
+
+@pytest.mark.parametrize("kind", ["shift", "tcc"])
+def test_the_chart_gets_the_width(request, app, kind):
+    """The step / checks pane stays narrow (long check-box texts wrap, combo
+    boxes do not size to their longest item, the hidden full-load / part-load
+    panels do not widen it): at a typical window size the centre (the chart)
+    is the widest pane."""
+    d = request.getfixturevalue("dlg" if kind == "shift" else "tcc")
+    try:
+        sp, (nav, centre, editor) = _pane_widths(d, app)
+        assert sp.widget(2).minimumWidth() <= 400
+        assert centre > editor and centre > nav
+        assert centre >= 0.45 * sum((nav, centre, editor))
+        # every operation's controls still fit without sideways scrolling
+        for i in range(d.op_box.count()):
+            d.op_box.setCurrentIndex(i)
+            app.processEvents()
+            assert sp.widget(2).horizontalScrollBar().maximum() == 0, d.op_box.itemText(i)
+    finally:
+        d.close()
+
+
+def test_check_modes_keep_their_meaning(dlg):
+    """The checks' mode boxes show short names; the index (what the edit
+    reads) and the full meaning (the item tooltip) are unchanged."""
+    from PySide6 import QtCore
+    assert dlg.gap_fix.count() == 3 and dlg.mono_fix.count() == 3 and dlg.same_fix.count() == 2
+    assert dlg.gap_fix.itemData(2, QtCore.Qt.ToolTipRole) == "Auto-fix: move the opposite shift"
+    dlg.same_fix.setCurrentIndex(1)
+    from ovtsuite import gearbox_edit as GE
+    assert any(isinstance(c, GE.IdenticalCheck) and c.autofix for c in dlg._checks())
+
+
+def test_wrap_check_box(app):
+    from ovtsuite.gui_compact import WrapCheckBox
+    c = WrapCheckBox("Kickdown downshifts move with their upshift")
+    assert c.minimumSizeHint().width() < c.sizeHint().width() // 2
+    assert c.heightForWidth(c.minimumSizeHint().width()) > c.heightForWidth(c.sizeHint().width())
+    c.setText("changed")
+    assert c.text() == "changed"

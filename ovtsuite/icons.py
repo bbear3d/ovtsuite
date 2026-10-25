@@ -4,7 +4,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Toolbar and menu icons: Lucide SVGs (``data/icons``, ISC licence, see
-Help > Credits & licences) drawn in the palette's text colour.
+Help > Credits & licences) drawn in the palette's text colour. A few the set
+has no match for (``shift-map``, ``lock-up``, ``needle-sweep``) are the app's
+own, drawn in the same style. A module's own Tools-menu item names its icon
+in its declaration (:class:`ovtsuite.modules.api.MenuTool`).
 
 An :class:`_SvgEngine` draws the outline icon at whatever size is asked for,
 in the colour of the palette in use *when it is drawn* -- so the icons follow
@@ -77,6 +80,8 @@ FOR_ACTION = {
     "tools/end-of-injection": "syringe",
     "tools/dyno-chart": "chart-spline",
     "tools/feature-switches": "toggle-right",
+    "tools/shift-map-editor": "shift-map",
+    "tools/lock-up-tcc-editor": "lock-up",
     "tools/bus-sniffer-j2534": "radio",
     "tools/ecu-simulator-bench": "flask-conical",
     "tools/converter-definitions-values-and-binaries": "file-symlink",

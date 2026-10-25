@@ -375,3 +375,73 @@ def test_the_menu_offers_copy_to_primary_on_comparison_rows(win, monkeypatch):
     ws._table_menu(QtCore.QPoint(1, 1))
     assert "Copy cells to primary" not in texts["t"]
     assert "Copy selected cells from comparison" in texts["t"]
+
+
+# ------------------------------------- views of different sizes (ViewLink)
+def _last_shown(view, orient):
+    """The last section ``view`` shows (at its trailing edge)."""
+    if orient == QtCore.Qt.Vertical:
+        h, n = view.verticalHeader(), view.viewport().height()
+    else:
+        h, n = view.horizontalHeader(), view.viewport().width()
+    i = h.logicalIndexAt(n - 1)
+    return i if i >= 0 else h.count() - 1
+
+
+def _first_shown(view, orient):
+    h = view.verticalHeader() if orient == QtCore.Qt.Vertical else view.horizontalHeader()
+    return h.logicalIndexAt(0)
+
+
+@pytest.mark.parametrize("per_item", [True, False])
+def test_views_of_different_sizes_reach_their_ends_together(per_item):
+    """A taller (wider) view scrolls less far than a shorter one: at either
+    end both views are at that end and show the same last (first) row;
+    in between they keep the same top row where both can; a resize that
+    moves an end brings the other view back to it."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from ovtsuite.gui_cmpscroll import ViewLink
+    host = QtWidgets.QWidget()
+    a, b = QtWidgets.QTableWidget(60, 30, host), QtWidgets.QTableWidget(60, 30, host)
+    mode = (QtWidgets.QAbstractItemView.ScrollPerItem if per_item
+            else QtWidgets.QAbstractItemView.ScrollPerPixel)
+    for t in (a, b):
+        t.setVerticalScrollMode(mode)
+        t.setHorizontalScrollMode(mode)
+    a.setGeometry(0, 0, 500, 400)
+    b.setGeometry(0, 400, 260, 150)
+    same = (lambda i: i)
+    link = ViewLink(a, b, same, same)
+    host.show()
+    _pump()
+    V, H = QtCore.Qt.Vertical, QtCore.Qt.Horizontal
+    try:
+        for orient in (V, H):
+            bar = (lambda t: t.verticalScrollBar() if orient == V
+                   else t.horizontalScrollBar())
+            assert bar(a).maximum() != bar(b).maximum()
+            for src, dst in ((a, b), (b, a)):
+                bar(src).setValue(bar(src).maximum())
+                _pump()
+                assert bar(dst).value() == bar(dst).maximum(), (orient, src is a)
+                assert _last_shown(dst, orient) == _last_shown(src, orient) == \
+                    (59 if orient == V else 29)
+                bar(src).setValue(0)
+                _pump()
+                assert bar(dst).value() == 0
+                # partway, short of both ends: the same top row
+                mid = min(bar(a).maximum(), bar(b).maximum()) // 2
+                bar(src).setValue(mid)
+                _pump()
+                assert _first_shown(dst, orient) == _first_shown(src, orient)
+        # a at its bottom, b made shorter: b back at its bottom too
+        a.verticalScrollBar().setValue(a.verticalScrollBar().maximum())
+        _pump()
+        b.setGeometry(0, 400, 260, 110)
+        _pump()
+        assert _last_shown(b, V) == 59
+        assert link.enabled
+    finally:
+        host.close()
+        host.deleteLater()
+        _pump()

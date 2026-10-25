@@ -16,6 +16,12 @@ datasets start with:
 * The first EDC15P software (512 KB, 1998-99: 038906019AM, 045906019Q):
   ``55 55 00 00 50 50 32 32 2E 2E 3x 3x`` -- "UP2.x", doubled the same way --
   at the start of a 32 KB block. Its tables are the EDC15P ones.
+
+An MSA15 / EDC15V image can also come as its calibration sets alone: a
+whole number of 32 KB blocks, each one a V3 dataset, with no program code
+(the WinOLS project of 0281001410 / E4EDA020 carries just its two sets).
+Its maps can be read and edited, but with no code there is no verify driver,
+so its checksums cannot be checked or corrected and it cannot be flashed.
 """
 
 import re
@@ -73,12 +79,29 @@ def datasets_v3(data: bytes):
     return [off for off in range(0, len(data), V3_BLOCK) if v3_version(data, off)]
 
 
+def datasets_v3_sets_only(data: bytes):
+    """Offsets of the datasets of an MSA15/EDC15V image that holds only its
+    calibration sets: shorter than the 256 KB flash, a whole number of 32 KB
+    blocks, and EVERY block a V3 dataset (an image with anything else in it
+    is not this). Empty otherwise."""
+    n = len(data)
+    if not n or n >= V3_SIZE or n % V3_BLOCK:
+        return []
+    bases = list(range(0, n, V3_BLOCK))
+    return bases if all(v3_version(data, b) for b in bases) else []
+
+
+def is_v3_sets_only(data: bytes) -> bool:
+    """An MSA15/EDC15V image of calibration sets only (no program code)."""
+    return bool(datasets_v3_sets_only(data))
+
+
 def detect(data: bytes) -> bool:
     """True when ``data`` is an EDC15 image: a V4.1 dataset signature on a 4 KB
     boundary in a plausible C167 flash size, or an MSA15/EDC15V 256 KB image
-    with a V3 dataset on a 32 KB boundary, or a 512 KB image of the first
-    EDC15P software with a P2 one."""
-    if datasets_v3(data) or datasets_p2(data):
+    with a V3 dataset on a 32 KB boundary (or that image's calibration sets on
+    their own), or a 512 KB image of the first EDC15P software with a P2 one."""
+    if datasets_v3(data) or datasets_p2(data) or datasets_v3_sets_only(data):
         return True
     if len(data) < 0x40000 or len(data) > 0x100000:
         return False
@@ -96,7 +119,7 @@ def is_v3(data: bytes) -> bool:
 def datasets(data: bytes):
     """Offsets of every dataset signature: V4.1 ones on 4 KB boundaries, or
     the MSA15/EDC15V ones, or the first EDC15P software's P2 ones."""
-    v3 = datasets_v3(data)
+    v3 = datasets_v3(data) or datasets_v3_sets_only(data)
     if v3:
         return v3
     v41 = [off for off in range(0, len(data) - len(DATASET_SIG), 0x1000)
@@ -134,7 +157,7 @@ def byte_swapped(data: bytes) -> bool:
     signature reads the same either way round, so the ident decides (and,
     in an image with none, the table headers' RAM pointers)."""
     data = bytes(data)
-    bases = datasets_v3(data)
+    bases = datasets_v3(data) or datasets_v3_sets_only(data)
     if not bases:
         return False
     sw = swap16(data)

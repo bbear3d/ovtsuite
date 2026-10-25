@@ -44,8 +44,9 @@ def _own_config(tmp_path, monkeypatch):
 
 
 def _wait(app, dlg, limit=120):
+    """Until the run is done and the bar has eased to where it ends."""
     t = time.time()
-    while dlg._worker is not None and time.time() - t < limit:
+    while (dlg._worker is not None or dlg.progress.animating()) and time.time() - t < limit:
         app.processEvents()
         time.sleep(0.02)
     app.processEvents()
@@ -78,7 +79,11 @@ def test_definition_preview_and_convert(app, tmp_path):
     assert d.progress.value() == d.progress.maximum()
     assert seen[0] == 0 and seen[-1] == d.progress.maximum()
     middle = [v for v in seen if 0 < v < d.progress.maximum()]
-    assert len(middle) >= 3 and middle == sorted(middle)
+    # eased, not jumping: many small steps, rising (how many depends on the
+    # timer ticks the machine's load allows -- the easing itself is tested
+    # in test_gui_smoothbar)
+    assert len(middle) >= 8 and middle == sorted(middle)
+    assert seen == sorted(seen)
 
 
 def test_progress_reports_the_share_done(tmp_path):
@@ -97,6 +102,12 @@ def test_progress_reports_the_share_done(tmp_path):
     C.run(C.Job(sources=[OLS], target="xdf", out=str(tmp_path / "b.xdf")),
           progress=steps2.append)
     assert steps2 == steps
+    # each step also says where it should end, ahead of the share done
+    shares3, ends = [], []
+    C.run(C.Job(sources=[OLS], target="xdf", out=str(tmp_path / "c.xdf")),
+          C.Steps(None, shares3.append, expect=ends.append))
+    assert shares3 == shares and ends == sorted(ends) and len(ends) >= 4
+    assert ends[-1] == 1.0
 
 
 def test_an_error_empties_the_bar(app, monkeypatch):
@@ -105,6 +116,10 @@ def test_an_error_empties_the_bar(app, monkeypatch):
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *a, **k: None)
     d._busy(True, "Converting...")
     d._set_fraction(0.4)
+    t = time.time()
+    while d.progress.animating() and time.time() - t < 5:
+        app.processEvents()
+        time.sleep(0.01)
     assert 0 < d.progress.value() < d.progress.maximum()
     d._convert_done(None, RuntimeError("no"))
     assert d.progress.value() == 0
@@ -117,7 +132,9 @@ def test_image_targets_hide_definition_transforms(app, tmp_path):
     d = ConverterDialog(None)
     d.add_sources([LQ])
     assert [d.target.itemData(i) for i in range(d.target.count())] == ["bin", "hex", "srec"]
-    assert not d.tr_box.isEnabled() and not d.filter_box.isEnabled()
+    # editable all the same, a line saying the conversion chosen does not use them
+    assert d.tr_box.isEnabled() and d.filter_box.isEnabled()
+    assert "not by" in d.tr_note.text() and "not by" in d.filter_note.text()
     d.target.setCurrentIndex(d.target.findData("hex"))
     d.out.setText(str(tmp_path / "o.hex"))
     d.convert()
@@ -163,7 +180,8 @@ def test_value_files_offer_value_targets(app, tmp_path):
     d.add_sources([VF])
     assert [d.target.itemData(i) for i in range(d.target.count())] == ["dcm", "cdfx"]
     d.target.setCurrentIndex(d.target.findData("cdfx"))
-    assert d.filter_box.isEnabled() and not d.tr_box.isEnabled()
+    assert d.filter_box.isEnabled() and d.tr_box.isEnabled()
+    assert "Applies" in d.filter_note.text() and "not by" in d.tr_note.text()
     d.out.setText(str(tmp_path / "o.cdfx"))
     d.convert()
     _wait(app, d)
@@ -209,8 +227,9 @@ def test_definition_and_values_write_into_a_binary(app, tmp_path):
     assert d._mode() == "apply"
     assert [d.target.itemData(i) for i in range(d.target.count())] == ["bin", "hex", "srec"]
     d.target.setCurrentIndex(d.target.findData("srec"))
-    assert d._opt_groups["apply"][0].isEnabled()
-    assert not d._opt_groups["image"][0].isEnabled()
+    assert d.applying_groups() == ["apply"]
+    assert d._opt_groups["image"][0].isEnabled()          # editable all the same
+    assert d._opt_groups["apply"][0].title().endswith(d.APPLIES)
     d.apply_cks.setChecked(False)
     d.binary.setText(s19)
     d.out.setText(str(tmp_path / "out.s19"))
@@ -239,7 +258,7 @@ def test_port_onto_another_software_version(app, tmp_path, monkeypatch):
                         lambda *a, **k: asked.append(a[2]))
     d = ConverterDialog(None)
     d.add_sources([FK + ".a2l"])
-    # greyed out until wanted, never hidden (the window keeps its shape)
+    # its fields follow its tick, never hidden (the window keeps its shape)
     assert d.port.isEnabled() and not d.port_box.isEnabled()
     d.port.setChecked(True)
     assert d.port_box.isEnabled()
@@ -320,9 +339,12 @@ def test_romraider_rom_picker(app, tmp_path, monkeypatch):
     car = tmp_path / "car.bin"
     car.write_bytes(bytes(img))
     d = ConverterDialog(None)
-    assert not d.rom_box.isEnabledTo(d)          # greyed out, not hidden
+    # editable always; marked as applying once a RomRaider file is added
+    assert d.rom_box.isEnabledTo(d) and "rom" not in d.applying_groups()
+    assert "RomRaider" in d._opt_groups["rom"][1].text()
     d.add_sources([str(defs)])
-    assert d.rom_box.isEnabledTo(d)
+    assert d.rom_box.isEnabledTo(d) and "rom" in d.applying_groups()
+    assert d._opt_groups["rom"][1].text() == ""
     assert [d.rom.itemData(i) for i in range(d.rom.count())] == [
         None, "32BITBASE", "DZ1E402B", "A2WC500R"]
     d.target.setCurrentIndex(d.target.findData("json"))
@@ -340,7 +362,8 @@ def test_romraider_rom_picker(app, tmp_path, monkeypatch):
     assert d.job().options["rom"] == "DZ1E402B"
     d.sources.selectAll()
     d._remove_selected()
-    assert not d.rom_box.isEnabledTo(d) and "rom" not in d.job().options
+    assert d.rom_box.isEnabledTo(d) and "rom" not in d.applying_groups()
+    assert "rom" not in d.job().options
 
 
 def test_watch_a_folder(app, tmp_path):
@@ -586,29 +609,174 @@ def test_tables_tab_lists_matches_and_fills_size_and_offset(app):
 
 
 def test_every_option_is_on_the_options_tab(app):
-    """The Options tab lists every format's options at once, each group
-    greyed out with the reason unless it applies; the Files tab holds file
+    """The Options tab lists every format's options at once, every one
+    editable whatever is chosen; the group that applies is marked "(applies
+    now)", the others say when they are used. The Files tab holds file
     choice only (no ROM picker)."""
     from ovtsuite.gui_convert import ConverterDialog
     from PySide6 import QtWidgets as W
     d = ConverterDialog(None)
     page = d.tabs.widget(1)
     assert d.tabs.tabText(1) == "Options"
-    titles = [g.title() for g in page.findChildren(W.QGroupBox)]
-    for key, title in d._TARGET_GROUPS:
-        assert title in titles
-    assert "Source: RomRaider definition" in titles
     files = d.tabs.widget(0)
     for w in (d.rom, d.cks, d.a2l_addr, d.record, d.existing, d.dynamic):
         assert page.isAncestorOf(w) and not files.isAncestorOf(w)
+    editable = (W.QComboBox, W.QLineEdit, W.QCheckBox, W.QSpinBox)
     for i in range(d.target.count()):
         d.target.setCurrentIndex(i)
-        on = [k for k, (g, _n) in d._opt_groups.items() if g.isEnabled()]
+        titles = [g.title() for g in page.findChildren(W.QGroupBox)]
+        for key, title in d._TARGET_GROUPS:
+            assert any(t.startswith(title) for t in titles)
+        assert any(t.startswith("Source: RomRaider definition") for t in titles)
+        on = d.applying_groups()
         assert len(on) <= 1, (d.target.itemData(i), on)
         for k, (g, note) in d._opt_groups.items():
-            assert bool(note.text()) == (not g.isEnabled()), (k, note.text())
-            assert not g.isHidden()
+            assert g.isEnabled() and not g.isHidden(), k
+            assert g.title().endswith(d.APPLIES) == (k in on), (k, g.title())
+            assert bool(note.text()) == (k not in on), (k, note.text())
+            assert note.text() == "" or note.text().startswith("Used when")
+        # nothing on the page greyed out (but the port's fields, which follow
+        # its own tick, and the patch's, which follow the patch file)
+        for w in [w for c in editable for w in page.findChildren(c)]:
+            if d.port_box.isAncestorOf(w) or d.patch_opts.isAncestorOf(w):
+                continue
+            assert w.isEnabledTo(d), (d.target.itemData(i), w)
     d.target.setCurrentIndex(d.target.findData("a2l"))
-    assert [k for k, (g, _n) in d._opt_groups.items() if g.isEnabled()] == ["a2l"]
+    assert d.applying_groups() == ["a2l"]
+    assert d._opt_groups["a2l"][0].title() == "Target: ASAP2 (A2L)" + d.APPLIES
     assert "ASAP2" in d._opt_groups["xdf"][1].text()       # "now: ASAP2 (A2L)"
+    # an option of a format not chosen is set, kept, and used once chosen
+    d.cks.setCurrentIndex(d.cks.findData("keep"))     # (never "dll": a file dialog)
+    assert d.cks.isEnabled()
+    d.a2l_addr.setCurrentIndex(d.a2l_addr.findData("ecu"))
+    d.target.setCurrentIndex(d.target.findData("xdf"))
+    d.a2l_addr.setCurrentIndex(d.a2l_addr.findData("offset"))   # edited while XDF
+    d.target.setCurrentIndex(d.target.findData("a2l"))
+    assert d.a2l_addr.currentData() == "offset"
+    assert d.job().options["a2l_addresses"] == "offset"
+    # kept with the window's state though another target is chosen
+    d.a2l_addr.setCurrentIndex(d.a2l_addr.findData("ecu"))
+    d.record.setValue(16)
+    d.target.setCurrentIndex(d.target.findData("xdf"))
+    d._save_state()
+    d.close()
+    d2 = ConverterDialog(None)
+    assert d2.target.currentData() == "xdf"
+    assert d2.a2l_addr.currentData() == "ecu" and d2.record.value() == 16
+    d2.target.setCurrentIndex(d2.target.findData("a2l"))
+    assert d2.job().options["a2l_addresses"] == "ecu"
+    d2.close()
+
+
+def test_ols_to_kp_keeps_the_projects_folders_and_names_what_it_wrote(app, tmp_path):
+    """OLS to KP the way a user does it (the window's defaults, the
+    project's binary ticked, translation on): the map pack holds the
+    project's own folders -- no "Codeblock" folders made up -- and the
+    summary and status start with the file written, then the binary beside
+    it; run again with Skip, it says the file was left as it was."""
+    if not os.path.isfile(OLS):
+        pytest.skip("reference file missing")
+    from ovtsuite.definitions import winols as W
+    from ovtsuite.gui_convert import ConverterDialog
+    with open(OLS, "rb") as fh:
+        want = [f[2] for f in W.parse(fh.read()).folder_list]
+    for translate in (False, True):
+        d = ConverterDialog(None)
+        d.add_sources([OLS])
+        d.target.setCurrentIndex(d.target.findData("kp"))
+        out = tmp_path / ("t%d.kp" % translate)
+        d.out.setText(str(out))
+        d.tr_box.setChecked(translate)
+        if d.bin_on.isEnabled():
+            d.bin_on.setChecked(True)
+            d.bin_out.setText(str(tmp_path / "t.ori"))
+        j = d.job()
+        assert len(j.sources) == 1 and not j.options.get("port")
+        d.convert()
+        _wait(app, d)
+        with open(str(out), "rb") as fh:
+            got = [f[2] for f in W.parse(fh.read()).folder_list]
+        assert not any("codeblock" in g.lower().replace(" ", "") for g in got), got
+        if not translate:
+            assert set(got) <= set(want) and len(got) >= len(want) - 1, (got, want)
+        else:
+            assert len(got) >= len(want) - 1
+        text = d.summary.text()
+        assert text.startswith("Wrote %s (" % out.name), text
+        if d.bin_on.isChecked():
+            assert "also wrote t.ori" in text
+        assert d.status.text().startswith("Saved %s" % out.name)
+        d.close()
+    # again, the overwrite setting Skip: left as it was, said so first
+    d = ConverterDialog(None)
+    d.add_sources([OLS])
+    d.target.setCurrentIndex(d.target.findData("kp"))
+    d.out.setText(str(tmp_path / "t0.kp"))
+    d.bin_on.setChecked(False)
+    d.existing.setCurrentIndex(d.existing.findData("skip"))
+    d.convert()
+    _wait(app, d)
+    text = d.summary.text()
+    assert text.startswith("Nothing written: t0.kp was already there and left as it was"), text
+    assert "left as it was" in d.status.text()
+    d.close()
+
+
+GQ_OLS = os.path.join("C:\\", "Claude", "WinOLS samples", "Tests", "OLS-tests",
+                      "( 038906019GQ  0281010941 (Original) - 363213).ols")
+
+
+def test_ols_to_kp_with_binary_and_mpc_passes_the_project_through(app, tmp_path):
+    """The 038906019GQ project to a map pack from the window, translated,
+    overwriting, its binary and MPC written beside: the pack holds the
+    project's folders (translated) and its 17292 maps with the project's
+    factors, offsets and addresses; the summary names the .kp first, then
+    the binary and MPC, each by name. Written under tmp_path only."""
+    if not os.path.isfile(GQ_OLS):
+        pytest.skip("reference file missing")
+    from ovtsuite.definitions import winols as W
+    from ovtsuite.gui_convert import ConverterDialog
+    with open(GQ_OLS, "rb") as fh:
+        src = W.parse(fh.read())
+    d = ConverterDialog(None)
+    d.add_sources([GQ_OLS])
+    d.target.setCurrentIndex(d.target.findData("kp"))
+    out = tmp_path / "gq.kp"
+    d.out.setText(str(out))
+    d.tr_box.setChecked(True)
+    d.tr_backend.setCurrentIndex(d.tr_backend.findData("builtin"))
+    d.existing.setCurrentIndex(d.existing.findData("overwrite"))
+    # (this project holds a binary and no MPC: the MPC row ticked only
+    # when one is there)
+    assert d.bin_on.isEnabled()
+    d.bin_on.setChecked(True)
+    d.bin_out.setText(str(tmp_path / "gq.ori"))
+    mpc = d.mpc_on.isEnabled()
+    if mpc:
+        d.mpc_on.setChecked(True)
+        d.mpc_out.setText(str(tmp_path / "gq.mpc"))
+    d.convert()
+    _wait(app, d, limit=600)
+    assert out.is_file()
+    with open(str(out), "rb") as fh:
+        kp = W.parse(fh.read())
+    # the project's folders (Potential maps holds no map: not listed), by
+    # id and resource, their names translated
+    want = [f for f in src.folder_list if f[1] != 9002]
+    assert [f[:2] for f in kp.folder_list] == [f[:2] for f in want]
+    names = dict((f, n) for f, _r, n in kp.folder_list)
+    assert "Hexdump" in names.values() and "My maps" in names.values()
+    assert "ARF_01" in names[11] and names[11] != dict(
+        (f, n) for f, _r, n in src.folder_list)[11], names[11]
+    maps = [r for r in src.records if r.type != 1]
+    assert len(kp.records) == len(maps) == 17292
+    for a, b in zip(maps, kp.records):
+        assert (a.factor, a.offset, a.addr) == (b.factor, b.offset, b.addr), a.name
+    text = d.summary.text()
+    assert text.startswith("Wrote gq.kp (17292 maps, folders kept)"), text
+    assert "also wrote gq.ori" in text, text
+    assert (tmp_path / "gq.ori").is_file()
+    if mpc:
+        assert "gq.mpc" in text and (tmp_path / "gq.mpc").is_file()
+    assert d.status.text().startswith("Saved gq.kp")
     d.close()

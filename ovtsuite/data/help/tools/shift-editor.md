@@ -5,8 +5,8 @@ context: GearboxEditDialog, BlendDialog
 ---
 # Shift map and lock-up editors
 
-**Tools > ZF 6HP > Shift map editor...** and **Lock-up (TCC) editor...** (and
-the same under ZF 8HP) edit many schedules at once: every shift program's
+**Tools > Shift map editor...** and **Tools > Lock-up (TCC) editor...**, shown
+while a ZF 6HP or ZF 8HP tab is in front, edit many schedules at once: every shift program's
 upshift and downshift lines, or every lock-up characteristic's thresholds.
 An edit is a list of **steps**, previewed before anything is written, and
 written as **one undoable step** (Edit > Undo).
@@ -92,7 +92,8 @@ this edit**; the steps apply in order, and **Remove** drops one.
 falling as the pedal rises, engine rpm too low after a shift, lock-up not
 below the upshift, schedules that were identical no longer identical, a step
 steeper than the factory's, an upshift landing with the converter open.
-They warn; they do not block.
+They warn; they do not block. The box beside a check can instead have it fix
+the edit (**Fix: ...**); hover an entry for what that fix does.
 
 **Apply...** writes the edit as one step, with a version label; **Save as a
 project version** saves it in the project's history too. **Blends...**

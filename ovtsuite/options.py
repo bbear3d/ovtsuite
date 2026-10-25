@@ -49,6 +49,8 @@ class Option:
     choices: Tuple[Tuple[str, str], ...] = ()
     #: takes effect at the next start only
     restart: bool = False
+    #: the module (id) the option is for: shown only while it is installed
+    module: str = ""
 
 
 GENERAL = "General"
@@ -58,6 +60,10 @@ APPEARANCE = "Appearance"
 TOOLBAR = "Toolbar"
 MODULES = "Modules"
 AI = "AI"
+
+#: ZF 6HP: also correct the program-area checksums (session
+#: ``correct_program_area``); the key it had as a Tools-menu switch
+PROGRAM_AREA_KEY = "zf6hp/correct_program_area"
 
 OPTIONS: Tuple[Option, ...] = (
     # -- General -----------------------------------------------------------
@@ -95,6 +101,12 @@ OPTIONS: Tuple[Option, ...] = (
            help="Off: ask first."),
     Option("projects/watch_s", 2, "Look at the open projects' files every",
            PROJECTS, "int", minimum=1, maximum=60, suffix=" s"),
+    Option(PROGRAM_AREA_KEY, False, "ZF 6HP: also correct the program-area "
+           "checksums", PROJECTS,
+           help="Rewrites the program / boot-area descriptor self-checks "
+           "(CRC-32) as well as the calibration checksum. Off unless you edit "
+           "program or boot bytes: a calibration tune never changes them.",
+           module="zf6hp"),
     # -- Editor --------------------------------------------------------------
     Option("history/version_menu_max", 25, "Versions listed in Compare with "
            "saved version", EDITOR, "int", minimum=5, maximum=200),
@@ -246,6 +258,24 @@ _TOOLBAR_RENAMES = (
     # the Find button shows / hides the panel (Edit > Find still opens it)
     ("find-panel", "edit/find", "edit/find-panel"),
 )
+#: ``(name, old ids, new id)``: buttons whose menu item moved (the old id is
+#: gone); new id None: the item left the menus. Done once, like a rename.
+_TOOLBAR_MOVES = (
+    # the modules' Tools sub-menus went: their items are in Tools itself, and
+    # the ZF 6HP program-area switch is in Options > Projects and saving
+    ("tools-flat", ("tools/zf-6hp/shift-map-editor",
+                    "tools/zf-8hp/shift-map-editor"), "tools/shift-map-editor"),
+    ("tools-flat-tcc", ("tools/zf-6hp/lock-up-tcc-editor",
+                        "tools/zf-8hp/lock-up-tcc-editor"),
+     "tools/lock-up-tcc-editor"),
+    ("tools-flat-e16", ("tools/bosch-edc16/block-builder",), "tools/block-builder"),
+    ("tools-flat-vdo", ("tools/vdo-cluster/needle-sweep",), "tools/needle-sweep"),
+    ("tools-flat-zf6", ("tools/zf-6hp/correct-program-area-checksums",), None),
+)
+
+
+def _migration_names() -> List[str]:
+    return [r[0] for r in _TOOLBAR_RENAMES] + [r[0] for r in _TOOLBAR_MOVES]
 
 
 def _migrate_toolbar(items: List[str]) -> List[str]:
@@ -256,10 +286,21 @@ def _migrate_toolbar(items: List[str]) -> List[str]:
         return items
     done = {x for x in raw.split(",") if x}     # (``set`` is ours, here)
     todo = [r for r in _TOOLBAR_RENAMES if r[0] not in done]
-    if not todo:
+    moves = [r for r in _TOOLBAR_MOVES if r[0] not in done]
+    if not todo and not moves:
         return items
     for name, old, new in todo:
         items = [new if x == old and new not in items else x for x in items]
+        done.add(name)
+    for name, olds, new in moves:
+        out: List[str] = []
+        for x in items:
+            if x in olds:
+                if new is None or new in out or new in items:
+                    continue            # gone, or the button is there already
+                x = new
+            out.append(x)
+        items = out
         done.add(name)
     s.setValue(TOOLBAR_MIGRATED_KEY, ",".join(sorted(done)))
     s.setValue(TOOLBAR_KEY, json.dumps(items))
@@ -273,8 +314,7 @@ def set_toolbar(ids: List[str]) -> None:
         return
     s = _store()
     # (chosen now: no older toolbar's buttons to change)
-    s.setValue(TOOLBAR_MIGRATED_KEY,
-               ",".join(sorted(r[0] for r in _TOOLBAR_RENAMES)))
+    s.setValue(TOOLBAR_MIGRATED_KEY, ",".join(sorted(_migration_names())))
     if ids == DEFAULT_TOOLBAR:
         s.remove(TOOLBAR_KEY)
     else:
@@ -292,6 +332,14 @@ def shortcuts() -> Dict[str, str]:
     for k in s.allKeys():
         if k.startswith(SHORTCUT_PREFIX):
             out[k[len(SHORTCUT_PREFIX):]] = str(s.value(k) or "")
+    for _name, olds, new in _TOOLBAR_MOVES:      # a moved item keeps its key
+        for old in olds:
+            if old in out:
+                seq = out.pop(old)
+                s.remove(SHORTCUT_PREFIX + old)
+                if new is not None and new not in out:
+                    out[new] = seq
+                    s.setValue(SHORTCUT_PREFIX + new, seq)
     return out
 
 

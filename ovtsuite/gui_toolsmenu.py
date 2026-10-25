@@ -7,11 +7,11 @@
 
 A tool that works on the tab (``needs_file`` / ``enabled_when`` in
 ``MainWindow._act``) and is disabled for it -- another platform's editor, a
-tool that needs the module's maps, anything with no file open -- is hidden
-while the menu is open, and a module's sub-menu goes when none of its items
-is left. Window-wide tools (the flasher, the logger, the block builder,
-Modules...) always show, and so does a sub-menu that says its module is not
-installed.
+module's own tool (:mod:`ovtsuite.gui_modtools`), a tool that needs the
+module's maps, anything with no file open -- is hidden while the menu is
+open, and a sub-menu goes when none of its items is left. Window-wide tools
+(the flasher, the logger, Modules...) always show, and so does a disabled
+sub-menu.
 
 Only the menu hides them: the actions stay visible elsewhere (a toolbar
 button greys out rather than disappearing as tabs change), and are made
@@ -34,7 +34,7 @@ def _hide(menu, tab, hidden) -> bool:
         sub = a.menu()
         if sub is not None:
             if not a.isEnabled():
-                shown = True                # its module is not installed
+                shown = True                # disabled: says why
             elif _hide(sub, tab, hidden):
                 shown = True
             else:

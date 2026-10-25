@@ -20,7 +20,7 @@ def vdo_main(ctx):
 
 
 @shot("vdo-sweep", "vdo/help", size=(820, 600),
-      what="Tools > VDO Cluster > Needle sweep... on a VWK501MH 01.10 EEPROM")
+      what="Tools > Needle sweep... on a VWK501MH 01.10 EEPROM")
 def vdo_sweep(ctx):
     ctx.need_module("vdo")
     from ovtsuite import gui

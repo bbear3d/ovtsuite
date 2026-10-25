@@ -19,7 +19,9 @@ this file is listed under the functions, greyed, as **Not available on this
 file**, with the reason: EGR on an EDC15 file whose definition places
 the EGR switch on a byte that holds neither 0 nor 1 (a placement in doubt,
 so nothing is written there), or places neither the switch nor the EGR
-coolant correction. An EDC15 file with the coolant correction but no EGR
+coolant correction; or cruise control on an EDC15 file whose definition
+places the cruise control type on a byte holding a value that is no type
+the software knows. An EDC15 file with the coolant correction but no EGR
 switch still offers EGR, as **On** and **Cut when the engine is warm**
 only: those change just the coolant correction, and **Off** needs the
 switch. A file of another kind (a gearbox, a cluster) does not offer the
@@ -111,7 +113,10 @@ undo step.
 | **Boost pressure (MAP) sensor** (EDC16, EDC15) | Sets the ECU's boost-sensor curve to the Bosch sensor fitted; see [Boost pressure (MAP) sensor](#boost-pressure-map-sensor) below. |
 | **Gearbox type** (EDC16) | **Manual** (0), **Automatic (torque converter / Tiptronic)** (1), **DSG (dual-clutch)** (1) and **Multitronic (CVT)** (3). A torque-converter automatic and a DSG are the same value: stock files of both hold 1 (e.g. 038906016N coding 150034, Tiptronic; 038906016AB coding 150038 and 03G906016AC, DSG), so a file holding 1 shows as *Automatic ... or DSG*. Multitronic files (03G906016LQ, GC, MF) hold 3. The A2L also names 2 (*automatisch shift*) and 4 (automated manual, "Z-car only"); no stock file uses either, so they are offered only as values in the **New** column, not as settings. |
 | **Electric heater outputs** (EDC16, EDC15) | The ECU outputs switching the electric heating elements that warm the cabin heater while the engine is cold: on EDC16 the heater switch for outputs 1 and 2 plus the number of connected elements; on EDC15 the number of glow-element outputs of the coolant heater. Files with coding variants (e.g. 1.9 TDI BEW) have a copy per coding: stock files have the outputs on for manual-gearbox codings and off for automatic ones (on EDC15, on in manual datasets, off in automatic ones). **On** sets three elements; enter the number fitted if fewer. |
+| **Cruise control stalk source** (EDC15) | **Cruise control off** (0), **Stalk wired to the ECU** (3, what every stock file of the corpus holds) or **Over CAN (GRA message)** (2, needs a gateway that sends it), with the stalk's input pins switched to match. MSA15 / EDC15V software has no cruise control over CAN and offers only the first two. On files whose definition comes from the disassembly (038906012FD / GN, 038906012HA, the later PD software) the definition places the cruise control type where the code that reads it points. |
 | **Road speed source** (EDC15) | 1: a speed sender wired to the ECU's road-speed input (normally on the gearbox; its pulse constant is in VSS pulse settings). 2: a tachograph's speed output. 3: the CAN message from the ABS / ESP unit. 4: the CAN message from the instrument cluster. 3 and 4 exist only on later (P+ / VGK) software. |
+| **Auto to Manual Conversion** (EDC15 VE pump) | The automatic and manual datasets of a VE-pump file were set up for slightly different injection pump / nozzle builds, and a manual car runs better on the automatic setup. **Automatic map** copies the injection pump's quantity-adjuster voltage map, values and breakpoints, from the automatic dataset into each manual dataset whose map has the same size, as one undo step. Where the automatic datasets hold different maps, **Copy from:** picks the one to copy. **Manual map** is the manual dataset's own map, as the file was opened (choose it to put the map back). A file whose manual map already equals the automatic one shows **Automatic map**, with nothing to change. Unit-injector (PD) files have no such map and do not offer it. |
+| **Injection pump: 10 mm → 11 mm plunger** (EDC15 VE pump) | For a VE pump rebuilt with an 11 mm plunger (pump head) in place of the stock 10 mm one. The fuel a VE pump delivers per stroke follows the plunger's area, so at the same quantity-adjuster position an 11 mm plunger delivers (11/10)² = 1.21 times as much. **11 mm plunger** multiplies the fuel-quantity axis of the injection pump's quantity-adjuster voltage map by 1.21 in every dataset (51 mg/stroke becomes 61.71), keeping the voltages, so the ECU drives the adjuster to the right position for the fuel it asks for. Requested fuel, the smoke and torque limiters and the rest are not changed: the engine gets the same fuel as before; raise the limiters yourself to use the extra capacity. **10 mm (stock)** puts the stock breakpoints back; applying 11 mm twice does not scale twice. Chosen together with the automatic pump voltage map above, the map is copied first and then scaled. After fitting the pump, set the injection timing and check the idle and full-load quantities on the car; new nozzles are a separate change. Unit-injector (PD) files do not offer it. |
 | **Smoke limiter: air mass or boost pressure** | Switching to boost pressure fills the boost-pressure limiter map from this file's air-mass limiter, so the limit stays what it is today (a 2 x 2 placeholder map is enlarged first -- moved to free space when it cannot grow where it is -- with new engine-speed and boost-pressure axes), and fills a flat intake-temperature correction. A file that already limits by boost pressure keeps its own map. The list shows the air-mass limiter and the volumetric efficiency too: the fill reads them, it does not write them. |
 
 On EDC15 files whose definition comes from the disassembly (038906012FD /
@@ -194,7 +199,10 @@ here.
 ## Cut when warm: the coolant axis
 
 **EGR > Cut when the engine is warm** fills the warmest coolant line of the
-EGR coolant-temperature correction (on EDC15, the one the dataset uses).
+EGR coolant-temperature correction. On EDC15 a dataset can hold three of
+them -- the EGR setpoint correction (in mg of air) and two corrections of
+the EGR duty (in %) -- and a file may calibrate more than one, so every one
+the dataset holds is cut (a duty correction at 100 %).
 Many stock maps end well below the usual cut
 temperature (the last coolant breakpoint is often about 51 °C), so a line at
 **Cut above:** has to be made:
@@ -215,6 +223,15 @@ temperature (the last coolant breakpoint is often about 51 °C), so a line at
   clear, the two warmest breakpoints are raised instead (the second to a
   degree below the set temperature, so the cut is as sudden), and those two
   OEM breakpoints are overwritten.
+- Some EDC15 maps already end in spare breakpoints far above any coolant
+  temperature (about 148, 149 and 150 °C) whose lines hold the same as the
+  warmest real one. Those are used instead: the first becomes the breakpoint
+  a degree below the set temperature, the second the set temperature, and
+  they and the last are filled with the cut. A map whose real breakpoints
+  end at 18 °C then reads *18, 79, 80, 150 °C*, with nothing before 79 °C
+  changed and no resizing needed.
+- A map with only two coolant breakpoints keeps its cold one: only its
+  warmest is raised.
 - Either way the axis keeps rising as the ECU stores it: no two breakpoints
   share a stored value, and the second-warmest is at least one stored step
   below the warmest.

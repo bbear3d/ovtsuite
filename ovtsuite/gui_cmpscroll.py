@@ -86,12 +86,17 @@ class ViewLink(QtCore.QObject):
         self._maps = {(a, _V): row_map, (b, _V): row_unmap,
                       (a, _H): col_map, (b, _H): col_unmap}
         self._busy = False
+        self._pending = False
         self.enabled = True
         for src, dst in ((a, b), (b, a)):
             src.verticalScrollBar().valueChanged.connect(
                 lambda _v, s=src, d=dst: self._scrolled(s, d, _V))
             src.horizontalScrollBar().valueChanged.connect(
                 lambda _v, s=src, d=dst: self._scrolled(s, d, _H))
+            # a viewport resize (or rows added) changes the range, and an
+            # end that one view had reached may have moved
+            for bar in (src.verticalScrollBar(), src.horizontalScrollBar()):
+                bar.rangeChanged.connect(self._range_changed)
             src.horizontalHeader().sectionResized.connect(
                 lambda i, _o, w, s=src, d=dst: self._resized(s, d, i, w, _H))
             src.verticalHeader().sectionResized.connect(
@@ -125,10 +130,26 @@ class ViewLink(QtCore.QObject):
              else view.horizontalScrollMode())
         return m == QtWidgets.QAbstractItemView.ScrollMode.ScrollPerItem
 
+    @staticmethod
+    def _extent(view, orient) -> int:
+        vp = view.viewport()
+        return vp.height() if orient == _V else vp.width()
+
+    @staticmethod
+    def _at_end(view, orient) -> bool:
+        bar = ViewLink._bar(view, orient)
+        return bar.maximum() > bar.minimum() and bar.value() >= bar.maximum()
+
     # -- scrolling ----------------------------------------------------
     def align(self, src, dst, orient) -> None:
         """Scroll ``dst`` so the section at ``src``'s leading edge (or the
-        first one after it that maps) is at ``dst``'s."""
+        first one after it that maps) is at ``dst``'s -- or, with ``src``
+        scrolled to its end, the section at its trailing edge at ``dst``'s
+        trailing edge, so the two views can differ in size (and so in how
+        far they scroll) and still both show their last rows there."""
+        if self._at_end(src, orient):
+            self._align_end(src, dst, orient)
+            return
         hs, hd = self._header(src, orient), self._header(dst, orient)
         first = hs.logicalIndexAt(0)
         if first < 0:
@@ -156,6 +177,71 @@ class ViewLink(QtCore.QObject):
                 off = off * hd.sectionSize(target) // size
             value = hd.sectionPosition(target) + off
         bar.setValue(value)
+
+    def _align_end(self, src, dst, orient) -> None:
+        """``src`` is at its end: bring the last section it shows (or the
+        last one before it that maps) to ``dst``'s trailing edge."""
+        hs, hd = self._header(src, orient), self._header(dst, orient)
+        if hs.count() == 0:
+            return
+        last = hs.logicalIndexAt(self._extent(src, orient) - 1)
+        vis = (hs.visualIndex(last) if last >= 0 else hs.count() - 1)
+        target = None
+        for v in range(vis, -1, -1):
+            li = hs.logicalIndex(v)
+            if hs.isSectionHidden(li):
+                continue
+            target = self._map(src, orient, li)
+            if target is not None:
+                break
+        if target is None or hd.isSectionHidden(target):
+            return
+        bar = self._bar(dst, orient)
+        tv = hd.visualIndex(target)
+        if all(hd.isSectionHidden(hd.logicalIndex(v))
+               for v in range(tv + 1, hd.count())):
+            bar.setValue(bar.maximum())     # dst's last section: its end
+            return
+        room = self._extent(dst, orient)
+        if self._per_item(dst, orient):
+            # the first shown section from which ``target`` still fits
+            top, used = tv, 0
+            for v in range(tv, -1, -1):
+                li = hd.logicalIndex(v)
+                if hd.isSectionHidden(li):
+                    continue
+                used += hd.sectionSize(li)
+                if used > room and v != tv:
+                    break
+                top = v
+            value = sum(1 for v in range(top)
+                        if not hd.isSectionHidden(hd.logicalIndex(v)))
+        else:
+            value = hd.sectionPosition(target) + hd.sectionSize(target) - room
+        bar.setValue(max(bar.minimum(), value))
+
+    def _range_changed(self, *_a) -> None:
+        """A scroll range changed (a view resized, sections added): once
+        the views have settled, bring ``b`` back in step with ``a``."""
+        if self._pending or not self.enabled:
+            return
+        self._pending = True
+        QtCore.QTimer.singleShot(0, self._resync)
+
+    def _resync(self) -> None:
+        self._pending = False
+        if self._busy or not self.enabled:
+            return
+        try:
+            self.a.model(), self.b.model()
+        except RuntimeError:            # a view went away meanwhile
+            return
+        self._busy = True
+        try:
+            self.align(self.a, self.b, _V)
+            self.align(self.a, self.b, _H)
+        finally:
+            self._busy = False
 
     def _scrolled(self, src, dst, orient) -> None:
         if self._busy or not self.enabled:

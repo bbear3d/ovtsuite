@@ -117,12 +117,14 @@ The end of the status bar shows the state of the file in front of you:
 
 ### ZF 6HP program-area checksums
 
-**Tools > ZF 6HP > Correct program-area checksums** is a switch, off by
-default, available with a ZF 6HP file open. When it is on, a save or flash
-also rewrites the self-checks of the program and boot area, not just the
-calibration checksum. A calibration tune never changes those areas; turn it
-on only when you edit program or boot bytes, or a descriptor's identity. The
-setting is remembered and applies to every open tab at once. See the [ZF 6HP](modules/zf6hp/index.md) module's
+**ZF 6HP: also correct the program-area checksums**, in **Tools > Options...**
+on the **Projects and saving** page (see [Options](options.md#projects-and-saving)),
+is a switch, off by default, shown while the ZF 6HP module is installed. When
+it is on, a save or flash of a ZF 6HP file also rewrites the self-checks of
+the program and boot area, not just the calibration checksum. A calibration
+tune never changes those areas; turn it on only when you edit program or boot
+bytes, or a descriptor's identity. The setting is remembered and applies to
+every open tab at once. See the [ZF 6HP](modules/zf6hp/index.md) module's
 help.
 
 ## Version history

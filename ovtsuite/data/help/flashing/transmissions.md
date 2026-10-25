@@ -75,9 +75,10 @@ skips that comparison and rewrites both areas.
   calibration checksum is corrected first. If the module cannot read the
   file's checksum layout, nothing is written silently: **Checksum cannot be
   corrected** explains that the calibration would be written as it is, and
-  **No** (the default) cancels. **Tools > ZF 6HP > Correct program-area
-  checksums** (main window) also corrects the program-area
-  checksums; leave it off unless you edited program bytes.
+  **No** (the default) cancels. **ZF 6HP: also correct the program-area
+  checksums** (main window, **Tools > Options... > Projects and saving**)
+  also corrects the program-area checksums; leave it off unless you edited
+  program bytes.
 - A write takes a few minutes. Do not cancel it: the 6HP19 / 6HP26 stops in
   the middle of an area when cancelled.
 

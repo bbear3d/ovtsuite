@@ -112,8 +112,12 @@ class FeatureSet:
 #: adds a tick box: ``key`` (passed in ``opts`` as True / False), ``label``,
 #: ``default``, ``tip`` and ``states``; ``fs_check_why(session, group,
 #: target, **opts)`` says why it can't apply to a copy ("" when it can), and
-#: the window greys it with that reason. ``fs_preview(session, group,
-#: target, first, **opts)`` lists what a setting changes (rows of
+#: the window greys it with that reason. An optional ``FS_CHOICE`` dict adds
+#: a drop-down: ``key`` (passed in ``opts`` as the item's key), ``label``,
+#: ``tip`` and ``states``; its items are ``fs_choices(session)`` -> ``[(key,
+#: text)]``, and it is shown only when there are two or more (the first is
+#: the default; without the choice the key is not passed).
+#: ``fs_preview(session, group, target, first, **opts)`` lists what a setting changes (rows of
 #: ``engine.write_rows`` / ``engine.fault_rows``) and ``state_text(session,
 #: group)`` says in words what the file holds when no setting matches.
 #: ``fs_involved(session, group, ref=None, **opts)`` lists the tables and

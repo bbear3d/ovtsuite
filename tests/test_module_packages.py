@@ -387,6 +387,33 @@ print("ok")
     assert _tree_code(left) == []
     assert os.path.isfile(os.path.join(left, "unins000.exe"))
     assert os.path.isfile(os.path.join(left, "aisin", "help", "index.md"))
+    assert os.path.isfile(os.path.join(left, "SUPERSEDED"))
+
+
+def test_an_emptied_source_copy_is_no_install(world, legacy, tmp_path):
+    """A source copy whose code was removed (a module setup's, which keeps
+    its uninstaller) is not reported as a damaged install when no compiled
+    copy is found -- running from source, or with modules hidden: the module
+    is simply not installed. That holds for a copy emptied before the
+    SUPERSEDED marker existed (every listed code file gone) too."""
+    setup_dir = str(tmp_path / "bysetup")
+    env = {"LOCALAPPDATA": str(tmp_path / "home"), "XDG_DATA_HOME": str(tmp_path / "home")}
+    _run(world, "from %s.modules import installer; installer.install(%r, scope=%r)"
+         % (PKG, legacy, setup_dir), setup_dir, env)
+    left = os.path.join(setup_dir, "aisin")
+    open(os.path.join(left, "unins000.exe"), "wb").close()
+    for p in _tree_code(left):
+        os.remove(os.path.join(left, *p.split("/")))
+    assert not os.path.exists(os.path.join(left, "SUPERSEDED"))
+    out = _run(world, r'''
+from {pkg}.modules import installer, registry
+assert "aisin" not in installer.discover(), installer.discover()
+assert "aisin" not in registry.problems(), registry.problems()
+assert "damaged" not in registry.missing_text("aisin")
+print("ok")
+'''.format(pkg=PKG), setup_dir, env)
+    assert out.endswith("ok"), out
+    assert os.path.isfile(os.path.join(left, "unins000.exe"))     # left alone
 
 
 @needs_native

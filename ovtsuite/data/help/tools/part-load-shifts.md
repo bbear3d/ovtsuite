@@ -5,8 +5,8 @@ context: PartLoadPanel, AxisPanel, ReplayBox, EfficiencyDialog
 ---
 # Part-load shift strategy and log replay
 
-The shift map editor (**Tools > ZF 6HP > Shift map editor...**, and the same
-under ZF 8HP) has two steps for the rows below full load. It also has a
+The shift map editor (**Tools > Shift map editor...**, with a ZF 6HP or ZF
+8HP tab in front) has two steps for the rows below full load. It also has a
 **Replay** box that shows what any edit does to fuel and response on the
 drives you have logged. The full-load points come from the
 [full-load step](full-load-shifts.md), so both steps use the same engine.

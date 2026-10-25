@@ -12,6 +12,13 @@ buttons (one undo step), restore every row from a stock file, compare with
 the comparison file. What a row is, and which bytes switch it, is the
 module's business; this window only puts the module's edits through the
 session's undo stack.
+
+Edits are written to the session as they are made -- the grid and the
+comparison follow at once -- and the rows changed since the window opened or
+since the last **Apply** are shaded as not applied yet. **Apply** makes them
+one undo step (:class:`~ovtsuite.undo_mark.UndoMark`); **OK** does the same
+and closes; **Cancel** puts every byte they changed back and closes. The
+title bar's X and Esc ask first when there are edits not applied.
 """
 
 import re
@@ -20,6 +27,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .session import TunerSession
 from .tcu_dtc import model_for
+from .undo_mark import UndoMark
 
 ROLE = QtCore.Qt.ItemDataRole.UserRole
 SORT_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
@@ -30,6 +38,9 @@ SHOW_OFF = "Disabled"
 SHOW_CODED = "With a fault code"
 SHOW_DIFF = "Differs from comparison"
 SHOW_ECU = "Stored on the ECU"
+
+#: a row changed since the last Apply (as the engine fault-code window)
+PENDING_BG = QtGui.QColor(255, 236, 170)
 
 
 def _colors():
@@ -75,6 +86,10 @@ class TcuDtcDialog(QtWidgets.QDialog):
                 self.cmp_model = cm
         self._has_cmp = self.cmp_model is not None
         self._ecu_codes = {}
+        # the edits since the window opened / the last Apply: the undo
+        # commands they made, and each changed row's state before them
+        self._mark = UndoMark(session, "edit fault codes")
+        self._base = {}                 # row key -> state before (_state)
         m = self.model
         self.setWindowTitle(getattr(m, "title", "Gearbox fault codes"))
         self.resize(940, 640)
@@ -194,12 +209,37 @@ class TcuDtcDialog(QtWidgets.QDialog):
                              "file's (one undo step)")
             copyc.clicked.connect(self._copy_all_from_cmp)
             btns.addWidget(copyc)
-        close = QtWidgets.QPushButton("Close")
-        close.clicked.connect(self.accept)
-        btns.addWidget(close)
         v.addLayout(btns)
         for b in (self.off_btn, self.on_btn):
             b.setEnabled(m is not None)
+
+        # Apply, Cancel, OK -- in that order, OK last
+        ok_row = QtWidgets.QHBoxLayout()
+        self.pending_lbl = QtWidgets.QLabel("")
+        self.pending_lbl.setStyleSheet("color: #8a6d00")
+        ok_row.addWidget(self.pending_lbl)
+        ok_row.addStretch(1)
+        self.apply_btn = QtWidgets.QPushButton("Apply")
+        self.apply_btn.setToolTip(
+            "Keep the edits made since the window opened or since the last "
+            "Apply (rows shaded yellow) as one undo step")
+        self.apply_btn.clicked.connect(self.apply)
+        self.apply_btn.setDefault(True)
+        ok_row.addWidget(self.apply_btn)
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        self.cancel_btn.setToolTip(
+            "Take back every edit made since the last Apply (or since the "
+            "window opened) and close the window")
+        self.cancel_btn.setAutoDefault(False)
+        self.cancel_btn.clicked.connect(self.cancel)
+        ok_row.addWidget(self.cancel_btn)
+        self.ok_btn = QtWidgets.QPushButton("OK")
+        self.ok_btn.setToolTip("Keep the edits not applied yet (one undo "
+                               "step) and close the window")
+        self.ok_btn.setAutoDefault(False)
+        self.ok_btn.clicked.connect(self.ok)
+        ok_row.addWidget(self.ok_btn)
+        v.addLayout(ok_row)
 
         self._rows = {}
         self._populate()
@@ -268,6 +308,9 @@ class TcuDtcDialog(QtWidgets.QDialog):
                 continue
             shown.append((r, c, differs, stored))
 
+        pend = set(self._pending_keys())
+        bold = QtGui.QFont(self.table.font())
+        bold.setBold(True)
         sorting = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
@@ -297,9 +340,15 @@ class TcuDtcDialog(QtWidgets.QDialog):
                               2 if c is None else (0 if c.on else 1)))
             cells.append((r.desc, r.desc.lower()))
             tip = "%s  %s" % (r.ident, r.desc)
+            pending = r.key in pend
             if stored is not None:
                 tip += "\nSTORED ON ECU: %s (status 0x%02X)" % (stored.text, stored.status)
                 chk.setBackground(diff_bg)
+            elif pending:
+                chk.setBackground(PENDING_BG)
+            if pending:
+                tip += ("\nChanged here, not applied yet (Apply keeps it, "
+                        "Cancel takes it back).")
             for j, (txt, sk) in enumerate(cells):
                 it = _Item(txt)
                 it.setData(ROLE, r.key)
@@ -311,8 +360,13 @@ class TcuDtcDialog(QtWidgets.QDialog):
                 elif differs and j == cmp_col:
                     it.setBackground(edit_bg)
                     it.setForeground(dark_fg)
+                elif pending:
+                    it.setBackground(PENDING_BG)
+                    it.setForeground(dark_fg)
                 elif not r.on:
                     it.setForeground(QtGui.QColor(150, 150, 150))
+                if pending:
+                    it.setFont(bold)
                 self.table.setItem(i, j + 1, it)
         self.table.blockSignals(False)
         self.table.setSortingEnabled(sorting)
@@ -338,6 +392,7 @@ class TcuDtcDialog(QtWidgets.QDialog):
     def _refresh_summary(self, shown, rows):
         if self.model is None:
             self.summary.setText("No fault-code table")
+            self._sync_pending()
             return
         on = sum(1 for r in rows if r.on)
         txt = "%d faults - %d enabled, %d disabled" % (len(rows), on, len(rows) - on)
@@ -346,6 +401,7 @@ class TcuDtcDialog(QtWidgets.QDialog):
         if self.session.modified:
             txt += "   (unsaved changes)"
         self.summary.setText(txt)
+        self._sync_pending()
 
     def _selected(self):
         out, seen = [], set()
@@ -404,12 +460,19 @@ class TcuDtcDialog(QtWidgets.QDialog):
             return False
         if ask and plan.confirm and not self._confirm(plan.confirm):
             return False
-        with self.session.transaction(plan.label or "fault codes"):
+        before = self._state()
+        with self._mark.track(plan.label or "fault codes"):
             for addr, data in plan.edits:
                 self.session.edit_bytes(addr, data)
+        self.model.refresh(bytes(self.session.binfile.data))
+        # note each row this edit changed -- in any variant, and rows that
+        # share a switch with the ones asked for -- as it was before
+        after = self._state()
+        for k, sig in before.items():
+            if k not in self._base and after.get(k) != sig:
+                self._base[k] = sig
         if plan.refused:
             self._tell("Not changed:\n" + "\n".join(plan.refused))
-        self.model.refresh(bytes(self.session.binfile.data))
         return True
 
     def _switch(self, keys, on):
@@ -522,6 +585,112 @@ class TcuDtcDialog(QtWidgets.QDialog):
             return
         self._apply(plan, ask=False)
         self._populate()
+
+
+    # -- Apply / Cancel / OK ---------------------------------------------
+    def _state(self):
+        """Row key -> its on/off in every variant: what a row's 'changed,
+        not applied' compares (a switch made in a variant not shown
+        counts)."""
+        m = self.model
+        if m is None:
+            return {}
+        out = {}
+        for vi in range(max(1, len(getattr(m, "variants", None) or ()))):
+            for r in m.rows(vi):
+                out.setdefault(r.key, []).append(r.on)
+        return {k: tuple(v) for k, v in out.items()}
+
+    def _pending_keys(self):
+        if not self._base:
+            return []
+        now = self._state()
+        return [k for k, sig in self._base.items() if now.get(k) != sig]
+
+    def has_pending(self) -> bool:
+        """Edits made here since the window opened or the last Apply that
+        are still in effect (not undone from the main window)."""
+        return self._mark.has_pending()
+
+    def _sync_pending(self):
+        if not hasattr(self, "apply_btn"):
+            return                         # still building the window
+        n = len(self._pending_keys())
+        self.apply_btn.setEnabled(self.has_pending())
+        self.pending_lbl.setText(
+            "%d row%s changed, not applied" % (n, "" if n == 1 else "s")
+            if n else "")
+
+    def apply(self) -> int:
+        """Keep the edits made since the window opened or the last Apply
+        as one undo step. Returns how many rows they changed."""
+        n = len(self._pending_keys())
+        self._mark.apply("edit fault codes")
+        self._base = {}
+        self._populate()
+        return n
+
+    def cancel(self):
+        """Cancel: take back every edit made since the last Apply (or since
+        the window opened) and close -- no question: that is what it is
+        for."""
+        self._discard()
+        QtWidgets.QDialog.reject(self)
+
+    def ok(self):
+        """OK: keep the edits not applied yet, as Apply does, and close."""
+        self.apply()
+        QtWidgets.QDialog.accept(self)
+
+    def _discard(self):
+        self._mark.discard()
+        self._base = {}
+        if self.model is not None:
+            try:
+                self.model.refresh(bytes(self.session.binfile.data))
+            except Exception:
+                pass                        # keep the last good read
+        self._populate()
+
+    def _may_close(self) -> bool:
+        """Whether the window may go by the title bar's X or Esc: with
+        edits not applied, asks to apply or discard them (False when the
+        user cancels) -- a stray Esc should not lose a set of edits."""
+        if not self.has_pending():
+            return True
+        SB = QtWidgets.QMessageBox.StandardButton
+        n = len(self._pending_keys())
+        r = QtWidgets.QMessageBox.question(
+            self, self.windowTitle(),
+            "Keep the edits not applied yet (%d row%s changed)?\n\n"
+            "Apply keeps them as one undo step; Discard takes them back."
+            % (n, "" if n == 1 else "s"),
+            SB.Apply | SB.Discard | SB.Cancel, SB.Apply)
+        if r == SB.Cancel:
+            return False
+        if r == SB.Apply:
+            self.apply()
+        else:
+            self._discard()
+        return True
+
+    # Esc and the title bar's X end in done() by reject(); QDialog's own
+    # closeEvent calls reject(), so reject() must not call close() back
+    # (Qt ignores a close() made during one). Cancel and OK call QDialog's
+    # own reject() / accept(): they need no question.
+    def closeEvent(self, ev):
+        if not self._may_close():
+            ev.ignore()
+            return
+        super().closeEvent(ev)
+
+    def reject(self):
+        if self._may_close():
+            super().reject()
+
+    def accept(self):
+        if self._may_close():
+            super().accept()
 
 
 def pick_stock_session(dialog, mainwin, question, title):

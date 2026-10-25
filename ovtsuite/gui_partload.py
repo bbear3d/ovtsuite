@@ -20,6 +20,7 @@ from PySide6 import QtCore, QtWidgets
 
 from . import gearbox_edit as GE
 from .gearbox_edit import partload as PL
+from .gui_compact import WrapCheckBox, compact_combo, fixed_width
 
 LEAVE = "Leave alone"
 CUSTOM = "Custom"
@@ -54,10 +55,13 @@ class _StrategyRow:
         self.gap = QtWidgets.QSpinBox(minimum=50, maximum=98, suffix=" %")
         self.gap.setToolTip("The downshift that undoes it sits at this share of the "
                             "post-shift speed (hysteresis)")
-        grid.addWidget(QtWidgets.QLabel(ROW_TITLES.get(mode, mode)), row, 0)
-        grid.addWidget(self.box, row, 1)
-        for c, w in enumerate((self.floor, self.start, self.curve, self.gap), 2):
-            grid.addWidget(w, row, c)
+        compact_combo(self.box, 8)
+        # the mode's name and its preset on one line, the numbers under the
+        # column heads below it: narrow enough for the editor's side pane
+        grid.addWidget(QtWidgets.QLabel(ROW_TITLES.get(mode, mode)), 2 * row - 1, 0, 1, 2)
+        grid.addWidget(self.box, 2 * row - 1, 2, 1, 2)
+        for c, w in enumerate((self.floor, self.start, self.curve, self.gap)):
+            grid.addWidget(w, 2 * row, c)
         self._busy = False
         self.box.setCurrentText(default)
         self._preset()
@@ -111,7 +115,8 @@ class PartLoadPanel(QtWidgets.QWidget):
         v = QtWidgets.QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         g = QtWidgets.QGridLayout()
-        for c, t in enumerate(("", "Strategy", "Floor", "From", "Curve", "Down at")):
+        g.setHorizontalSpacing(3)
+        for c, t in enumerate(("Floor", "From", "Curve", "Down at")):
             lab = QtWidgets.QLabel(t)
             lab.setStyleSheet("color: palette(mid);")
             g.addWidget(lab, 0, c)
@@ -126,20 +131,21 @@ class PartLoadPanel(QtWidgets.QWidget):
         self.fraction = QtWidgets.QSpinBox(minimum=1, maximum=100, value=100, suffix=" %")
         self.fraction.setToolTip("How far each cell moves toward the strategy: less keeps "
                                  "more of the line's own shape")
+        fixed_width(self.fraction)
         f.addRow("How far", self.fraction)
-        self.ft_chk = QtWidgets.QCheckBox("Rows where the ECU asks for full torque get the "
-                                          "full-load points")
+        self.ft_chk = WrapCheckBox("Rows where the ECU asks for full torque get the "
+                                   "full-load points")
         self.ft_chk.setChecked(True)
         self.ft_chk.setToolTip(
             "From the pedal where the engine's driver's wish already asks for full torque "
             "(every gear, 1500-3500 rpm) the rows are full load in engine terms. The other "
             "way to line the two up is the step 'Pedal axis to the ECU's full torque'.")
-        f.addRow("", self.ft_chk)
+        f.addRow(self.ft_chk)
         self.down_chk = QtWidgets.QCheckBox("Downshifts too")
         self.down_chk.setChecked(True)
         self.down_chk.setToolTip("Write the downshift that undoes each upshift as well, "
                                  "at the strategy's hysteresis")
-        f.addRow("", self.down_chk)
+        f.addRow(self.down_chk)
         self.anchor_lbl = QtWidgets.QLabel()
         self.anchor_lbl.setWordWrap(True)
         self.anchor_lbl.setStyleSheet("color: palette(mid);")
@@ -202,6 +208,7 @@ class AxisPanel(QtWidgets.QWidget):
         self.ft.setToolTip("Pedal where the engine already asks for full torque: the "
                            "gearbox's top part-load row is moved here")
         self.ft_lbl = QtWidgets.QLabel()
+        self.ft_lbl.setWordWrap(True)
         self.ft_lbl.setStyleSheet("color: palette(mid);")
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.ft)
@@ -211,13 +218,14 @@ class AxisPanel(QtWidgets.QWidget):
                                              suffix=" %")
         self.keep.setToolTip("Breakpoints below this stay where they are; those above it "
                              "(up to the top part-load row) are squeezed toward full torque")
+        fixed_width(self.keep)
         f.addRow("Keep rows below", self.keep)
-        self.tcc_chk = QtWidgets.QCheckBox("Move the lock-up (TCC) maps' pedal axes too")
+        self.tcc_chk = WrapCheckBox("Move the lock-up (TCC) maps' pedal axes too")
         self.tcc_chk.setChecked(True)
         self.tcc_chk.setToolTip(
             "So lock-up keeps meeting the shifts at the same pedal. The manual-mode "
             "(TIPAN) tables are not moved.")
-        f.addRow("", self.tcc_chk)
+        f.addRow(self.tcc_chk)
         self.preview = QtWidgets.QLabel()
         self.preview.setWordWrap(True)
         self.preview.setStyleSheet("color: palette(mid);")
@@ -320,7 +328,9 @@ class ReplayBox(QtWidgets.QGroupBox):
         self._thread = None
         self._worker = None
         v = QtWidgets.QVBoxLayout(self)
-        row = QtWidgets.QHBoxLayout()
+        from .gui_gearbox_edit import _Flow
+        row_w = QtWidgets.QWidget()
+        row = _Flow(row_w)
         self.run_btn = QtWidgets.QPushButton("Replay")
         self.run_btn.setToolTip(
             "Drive the project's logged trips again with the lines as they are and as the "
@@ -337,9 +347,8 @@ class ReplayBox(QtWidgets.QGroupBox):
         self.map_btn.clicked.connect(self.open_map)
         row.addWidget(self.run_btn)
         row.addWidget(self.live_chk)
-        row.addStretch(1)
         row.addWidget(self.map_btn)
-        v.addLayout(row)
+        v.addWidget(row_w)
         prog = QtWidgets.QHBoxLayout()
         self.bar = QtWidgets.QProgressBar()
         self.bar.setTextVisible(True)

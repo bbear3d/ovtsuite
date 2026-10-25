@@ -40,7 +40,7 @@ keeps, so an installed module keeps working across app updates:
 import importlib
 import inspect
 from dataclasses import dataclass, field
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 #: The API level this base app implements.
 MODULE_API = 1
@@ -112,6 +112,30 @@ class TunerProPlugin:
     redistributable: bool = False
 
 
+#: Where a module's :class:`MenuTool` goes in the main window's Tools menu
+TOOLS_EDITORS = "editors"      # with the table editors (shift map, lock-up ...)
+TOOLS_SETTINGS = "settings"    # with the unit's settings (gear ratios, VSS ...)
+TOOLS_FILES = "files"          # with ECU read / write and the converter
+
+
+@dataclass(frozen=True)
+class MenuTool:
+    """One item a module puts in the main window's **Tools** menu (its
+    ``menu_tools`` hook returns them). The base app places it in ``section``
+    among its own tools and, like them, hides it while the tab in front is
+    not one it ``applies`` to -- there are no per-module sub-menus."""
+    text: str                             # "Block builder..."
+    #: ``run(win)`` -- ``win`` is the main window, ``win.current`` the tab
+    run: Callable[[Any], Any]
+    section: str = TOOLS_EDITORS
+    #: an icon name in the app's ``data/icons`` ("" for none)
+    icon: str = ""
+    tooltip: str = ""
+    #: ``applies(ws) -> bool`` for the tab in front (it has a file open);
+    #: None: a tab of one of the module's platforms, fully supported
+    applies: Optional[Callable[[Any], bool]] = None
+
+
 @dataclass(frozen=True)
 class ModuleSpec:
     id: str                               # == package name under ovtsuite
@@ -166,6 +190,10 @@ class ModuleSpec:
     #: base app's Feature switches window. Optional: without it the window
     #: is not offered.
     features: Optional[str] = None
+    #: ``menu_tools() -> [MenuTool]`` -- items this module adds to the main
+    #: window's Tools menu (ovtsuite.gui_modtools). Optional: a module
+    #: without it adds none.
+    menu_tools: Optional[str] = None
     #: Data files this module owns: globs relative to the app's ``data``
     #: directory. Its code is its package (``<app>/<id>/``). Every data file
     #: belongs to exactly one module or to the base app -- the build checks.

@@ -5,8 +5,8 @@ context: FullLoadPanel
 ---
 # Full-load shift points from the engine's torque
 
-The shift map editor (**Tools > ZF 6HP > Shift map editor...**, and the same
-under ZF 8HP) has a step called **Full-load optimum (engine torque)**. It sets
+The shift map editor (**Tools > Shift map editor...**, with a ZF 6HP or ZF
+8HP tab in front) has a step called **Full-load optimum (engine torque)**. It sets
 the full-throttle upshifts from the torque of an engine ECU kept in the **same
 project**, then blends them into the rest of each line.
 

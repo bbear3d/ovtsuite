@@ -128,7 +128,8 @@ CREDITS: Tuple[Credit, ...] = (
     Credit(
         "Lucide icons",
         "The toolbar and menu icons (a selection of the SVG files, "
-        "lucide-static 0.469.0, in data/icons)",
+        "lucide-static 0.469.0, in data/icons; shift-map, lock-up and "
+        "needle-sweep there are the app's own, in the same style)",
         "Copyright (c) Cole Bemis 2013-2022 as part of Feather (MIT); "
         "Copyright (c) Lucide Contributors 2022",
         "ISC", INCORPORATED, "https://lucide.dev/",

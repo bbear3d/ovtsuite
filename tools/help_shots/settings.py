@@ -31,6 +31,13 @@ def options_general(ctx):
     return _options(ctx, "General")[1]
 
 
+@shot("options-projects", "data/help", size=(860, 560),
+      what="Tools > Options... > Projects and saving, with the ZF 6HP "
+           "program-area checksum switch")
+def options_projects(ctx):
+    return _options(ctx, "Projects and saving")[1]
+
+
 @shot("options-toolbar", "data/help", size=(860, 600),
       what="Tools > Options... > Toolbar: the button editor")
 def options_toolbar(ctx):

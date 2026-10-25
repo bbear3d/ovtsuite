@@ -38,6 +38,9 @@ and sniffer use them too (the theme, for example).
 | **Notice when another program changes an open project's file** | Watches the open projects' files while you work (see [When another program changes the project file](projects.md#when-another-program-changes-the-project-file)). When it is off, the app still checks before every save and never writes over another program's changes without asking. |
 | **Reload a project with nothing unsaved when its file changes** | On: such a project reloads by itself. Off: the app asks first. |
 | **Look at the open projects' files every** | How often the watch looks. |
+| **ZF 6HP: also correct the program-area checksums** | Shown while the ZF 6HP module is installed; off unless you change it. On: a save or flash of a ZF 6HP file also rewrites the program and boot area's self-checks, not just the calibration checksum. A calibration tune never changes those areas; turn it on only when you edit program or boot bytes. Every open tab follows at once. See [ZF 6HP program-area checksums](editing.md#zf-6hp-program-area-checksums). |
+
+![Tools > Options, the Projects and saving page](images/options-projects.png)
 
 ## Editor
 

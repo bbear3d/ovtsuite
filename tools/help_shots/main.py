@@ -117,7 +117,8 @@ def _tuned_pair(ctx):
     """The LQ file's project on a *Stage 1* branch with two maps raised
     (unsaved), compared -- as a project tab starts out -- with the original
     as read."""
-    w = ctx.main_window(ctx.ref("edc16_lq"), branch="Stage 1")
+    f = ctx.ref("edc16_lq")
+    w = ctx.main_window(f, f, branch="Stage 1")     # compared with the original
     ws = _ws(w)
     _bump(ws, MAP)
     _bump(ws, MAP2, 1.1, rows=range(10, 16), cols=range(0, 4))

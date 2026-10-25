@@ -124,7 +124,7 @@ unit is installed** (the tab and the project are not changed by this):
 |---|---|---|
 | **EDC16** | EDC16 module | |
 | **EDC15** | EDC15 module | The write is refused rather than written with guessed checksum ranges. |
-| **ZF6HP** — 6HP19 / 6HP26 (TP 2.0) | ZF 6HP module | The calibration checksum; also the program-area checksums when **Tools > ZF 6HP > Correct program-area checksums** is on. For a layout the module cannot read you are asked first (**Checksum cannot be corrected**); **No** cancels. |
+| **ZF6HP** — 6HP19 / 6HP26 (TP 2.0) | ZF 6HP module | The calibration checksum; also the program-area checksums when **Tools > Options... > Projects and saving > ZF 6HP: also correct the program-area checksums** is on. For a layout the module cannot read you are asked first (**Checksum cannot be corrected**); **No** cancels. |
 | **Cluster (VDO K-line)** | VDO Cluster module | |
 | **ZF6HP** — 6HP28 (UDS) | Not corrected | The file is sent exactly as it is. With the ZF 6HP module installed the confirmation warns when the calibration checksum does not match. Correct it before writing. |
 | **Climatronic** | 4F/4L HVAC module | The internal flash checksum, as **Save** does. For a firmware whose checksum the module has not mapped you are asked first. |

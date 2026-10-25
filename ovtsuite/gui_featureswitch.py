@@ -438,6 +438,14 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.chk.toggled.connect(self._opt_changed)
         self._chk_spec = None
         row.addWidget(self.chk)
+        # and its choice (the dataset a table is copied from ...): shown
+        # when the hook lists two or more
+        self.choice_lbl = QtWidgets.QLabel()
+        self.choice_sel = QtWidgets.QComboBox()
+        self.choice_sel.currentIndexChanged.connect(self._opt_changed)
+        self._choice_spec = None
+        row.addWidget(self.choice_lbl)
+        row.addWidget(self.choice_sel)
         right.addLayout(row)
 
         self.preview = QtWidgets.QTableWidget(0, len(_COLS))
@@ -746,6 +754,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                 if p is not None else chk.get("default", False)))
             self.chk.blockSignals(False)
         self.chk.setVisible(bool(chk))
+        self._load_choice(b, p)
         self._loading = False
         self._sync_buttons()
         self._refresh_preview()
@@ -756,7 +765,50 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         if chk and chk.get("key"):
             # what was asked for: the hook falls back where it cannot
             out[chk["key"]] = self.chk.isChecked()
+        cs = self._choice_spec
+        if cs and cs.get("key") and self.choice_sel.currentData() is not None:
+            out[cs["key"]] = self.choice_sel.currentData()
         return out
+
+    def _load_choice(self, b, p):
+        """The hook's choice (``FS_CHOICE``, its items from
+        ``fs_choices``): shown only when there are two or more."""
+        hook = self._hook(b)
+        cs = getattr(hook, "FS_CHOICE", None)
+        items = []
+        if cs and hasattr(hook, "fs_choices"):
+            try:
+                items = list(hook.fs_choices(self.session) or [])
+            except Exception:                             # noqa: BLE001
+                items = []
+        if len(items) < 2:
+            cs = None
+        self._choice_spec = cs
+        self.choice_sel.blockSignals(True)
+        self.choice_sel.clear()
+        if cs:
+            for key, text in items:
+                self.choice_sel.addItem(text, key)
+            want = p.opts.get(cs.get("key")) if p is not None else None
+            self.choice_sel.setCurrentIndex(max(0, self.choice_sel.findData(want)))
+            self.choice_sel.setToolTip(cs.get("tip", ""))
+            self.choice_lbl.setText(cs.get("label", ""))
+        self.choice_sel.blockSignals(False)
+        self.choice_lbl.setVisible(bool(cs))
+        self.choice_sel.setVisible(bool(cs))
+
+    def _sync_choice(self, b):
+        """The hook's choice is live only for the settings it applies to."""
+        cs = self._choice_spec
+        if not cs:
+            return
+        pend = self.pending.get(b.id)
+        only = cs.get("states")
+        on = not only or (pend is not None and any(
+            pend.copies[c].state in only for c in self._view_copies(b)
+            if c in pend.copies))
+        self.choice_sel.setEnabled(on and not _view_only(self.ws))
+        self.choice_lbl.setEnabled(on)
 
     def _ref(self):
         """The comparison (in a project tab, the file as first read): where a
@@ -1137,6 +1189,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
 
     def _sync_opt(self, b):
         """The hook's number is live only for the settings it applies to."""
+        self._sync_choice(b)
         spec = self._opt_spec
         if not spec:
             return

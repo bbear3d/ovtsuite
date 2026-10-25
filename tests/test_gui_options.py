@@ -233,3 +233,55 @@ def test_the_find_button_toggles_and_ctrl_f_opens(win, app):
 def _toolbar_ids_actions(w):
     from ovtsuite import gui_toolbar
     return gui_toolbar.toolbar(w).actions()
+
+
+def test_zf6hp_program_area_switch_is_an_option(win, monkeypatch):
+    """Options > Projects and saving holds the ZF 6HP program-area switch
+    (once Tools > ZF 6HP > Correct program-area checksums): the value stored
+    under its old key shows, and a change reaches the open tabs and what a
+    file reads at load."""
+    from ovtsuite import gui
+    from ovtsuite.gui_options import OptionsDialog
+    from ovtsuite.modules import registry
+    key = "zf6hp/correct_program_area"
+    assert opt.PROGRAM_AREA_KEY == key and gui.PROGRAM_AREA_KEY == key
+    assert opt.BY_KEY[key].page == opt.PROJECTS
+    texts = [a.text() for a in win.tools_menu.actions()]
+    assert not any("program-area" in t for t in texts)
+    if not registry.is_installed("zf6hp"):
+        dlg = OptionsDialog(win, opt.PROJECTS)
+        assert key not in dlg.widgets               # not without the module
+        dlg.reject()
+        return
+    s = opt._store()
+    s.setValue(key, True)                           # as the menu switch left it
+    s.sync()
+    assert gui.program_area_pref() is True
+    synced = []
+    monkeypatch.setattr(win, "_sync_program_area", lambda: synced.append(1))
+    dlg = OptionsDialog(win, opt.PROJECTS)
+    box = dlg.widgets[key]
+    assert isinstance(box, QtWidgets.QCheckBox) and box.isChecked()
+    box.setChecked(False)
+    assert dlg.apply()
+    assert gui.program_area_pref() is False and synced
+    dlg.restore_page_defaults()
+    assert not box.isChecked()
+    dlg.reject()
+
+
+def test_the_program_area_switch_reaches_open_tabs(win):
+    class _P:
+        correct_program_area = False
+
+    class _Ws:
+        primary = _P()
+    ws = _Ws()
+    win.workspaces = lambda: [ws]
+    try:
+        opt.set(opt.PROGRAM_AREA_KEY, True)         # e.g. the Options dialog
+        assert ws.primary.correct_program_area is True
+        opt.set(opt.PROGRAM_AREA_KEY, False)
+        assert ws.primary.correct_program_area is False
+    finally:
+        del win.workspaces

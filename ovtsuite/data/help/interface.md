@@ -245,10 +245,12 @@ saving](editing.md#version-history).
 
 The menu lists only the tools the tab in front can use: another platform's
 editors, tools that need the module's maps, and (with no file open) every
-tool that works on a file are left out, as is a module's sub-menu with
-nothing in it for this tab. Switch tabs and the menu follows. Window-wide
-tools -- ECU read / write, Data logging, the bus sniffer, Modules... -- are
-always there, and so is a sub-menu for a module that is not installed.
+tool that works on a file are left out. Switch tabs and the menu follows.
+Window-wide tools -- ECU read / write, Data logging, the bus sniffer,
+Modules... -- are always there. A tool that belongs to one module, such as
+the EDC16 block builder or the VDO needle sweep, is an item of the menu like
+the others, next to the tools of its kind, and is shown only for that
+module's tabs (and only while the module is installed).
 
 | Item | Shortcut | Where it is described |
 |---|---|---|
@@ -256,8 +258,12 @@ always there, and so is a sub-menu for a module that is not installed.
 | **Measuring blocks...** | Ctrl+M | [Parameter tools](tools.md) |
 | **End of injection...** | | [End of injection](tools/end-of-injection.md) (EDC15P / EDC16 unit-injector engines) |
 | **Dyno chart...** | | [Dyno chart](tools/dyno.md) (EDC15 / EDC16) |
+| **Feature switches...** | | [Feature switches](tools/feature-switches.md) (EDC15 / EDC16) |
+| **Shift map editor...** | | [Shift map and lock-up editors](tools/shift-editor.md) (ZF 6HP / ZF 8HP) |
+| **Lock-up (TCC) editor...** | | [Shift map and lock-up editors](tools/shift-editor.md) (ZF 6HP / ZF 8HP) |
 | **Gear ratios...** | Ctrl+G | [Parameter tools](tools.md) |
 | **VSS pulse settings...** | Ctrl+U | [Parameter tools](tools.md) |
+| **Needle sweep...** | | For a VDO cluster tab. See [VDO cluster](modules/vdo/needle-sweep.md). |
 | **Hex editor...** | Ctrl+H | [Hex editor](editor/hex-editor.md) |
 | **Verify checksums...** | | [Editing and saving](editing.md#checksums) |
 | **EEPROM editor...** | | [EEPROM editor](tools/eeprom.md) -- one editor for EDC15 and EDC16 EEPROMs. Needs the Bosch EDC15 or EDC16 module, but no open tab. |
@@ -266,9 +272,8 @@ always there, and so is a sub-menu for a module that is not installed.
 | **Tune from logs...** | | [Tune from logs](modules/edc16/logtune.md) (EDC16; the shift torque report on a ZF 6HP) |
 | **Bus sniffer (J2534)...** | | [Bus sniffer](sniffer.md) |
 | **ECU simulator (bench)...** | | [ECU simulator](simulator.md) |
-| **Bosch EDC16 > Block builder...** | | One complete EDC16U31/U34 put together from blocks of different files. See [Block builder](modules/edc16/block-builder.md). |
-| **ZF 6HP > Correct program-area checksums** | | A switch, off by default, for a ZF 6HP tab. See [Editing and saving](editing.md#zf-6hp-program-area-checksums). |
-| **VDO Cluster > Needle sweep...** | | For a VDO cluster tab. See [VDO cluster](modules/vdo/needle-sweep.md). |
+| **Converter (definitions, values and binaries)...** | | [Converter](converter.md) |
+| **Block builder...** | | For an EDC16 tab: one complete EDC16U31/U34 put together from blocks of different files. See [Block builder](modules/edc16/block-builder.md). |
 | **AI > Assistant** | Ctrl+Shift+A | Opens, folds or brings back the assistant panel on the right. See [The assistant panel](ai/assistant.md). |
 | **AI > Proposals...** | | Changes an AI has proposed: preview, accept or reject. See [Proposals and plans](ai/proposals.md). |
 | **AI > Settings...** | | The AI service the app uses, its key and model, privacy and usage. See [AI settings and privacy](ai/settings.md). |
@@ -276,7 +281,7 @@ always there, and so is a sub-menu for a module that is not installed.
 | **AI > Share open tabs with AI apps** | | A switch, off by default: lets a connected AI app see the open tabs. See [Sharing open tabs](ai/ai-apps.md#sharing-open-tabs). |
 | **AI > Connect an AI app...** | | The entry that connects Claude, ChatGPT, Cursor, VS Code or another MCP app to OVT-Suite. See [Connecting an AI app](ai/ai-apps.md). |
 | **Modules...** | | [Modules](modules.md) |
-| **Options...** | Ctrl+, | [Options](options.md): start-up, saving, theme, the toolbar and the keyboard shortcuts. |
+| **Options...** | Ctrl+, | [Options](options.md): start-up, saving, theme, the toolbar and the keyboard shortcuts. The ZF 6HP program-area checksum switch is there too, on **Projects and saving** (see [Editing and saving](editing.md#zf-6hp-program-area-checksums)). |
 
 **ZF 6HP** and **VDO Cluster** are sub-menus of the tools of one module
 each; a sub-menu is greyed out when its module is not installed. The first

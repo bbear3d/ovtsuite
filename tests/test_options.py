@@ -6,6 +6,7 @@
 """The app's options (ovtsuite.options): defaults, typed values, the toolbar
 list, changed shortcuts, reset, export / import, and the change signal."""
 
+import json
 import os
 import sys
 
@@ -101,3 +102,22 @@ def test_a_saved_toolbar_gets_the_find_panel_button_once():
 def test_a_toolbar_chosen_now_is_not_changed():
     opt.set_toolbar(["edit/find"])
     assert opt.toolbar() == ["edit/find"]
+
+
+def test_moved_tools_menu_items_keep_their_buttons_and_keys():
+    """The modules' Tools sub-menus went: a saved toolbar's buttons and a
+    changed shortcut follow their item to Tools itself (once)."""
+    s = opt._store()
+    s.setValue(opt.TOOLBAR_KEY, json.dumps([
+        "file/save", "tools/zf-6hp/shift-map-editor",
+        "tools/zf-8hp/shift-map-editor", "tools/bosch-edc16/block-builder",
+        "tools/zf-6hp/correct-program-area-checksums",
+        "tools/vdo-cluster/needle-sweep", "tools/zf-8hp/lock-up-tcc-editor"]))
+    s.setValue(opt.SHORTCUT_PREFIX + "tools/zf-6hp/lock-up-tcc-editor", "F9")
+    s.sync()
+    want = ["file/save", "tools/shift-map-editor", "tools/block-builder",
+            "tools/needle-sweep", "tools/lock-up-tcc-editor"]
+    assert opt.toolbar() == want
+    assert opt.toolbar() == want
+    assert opt.shortcuts() == {"tools/lock-up-tcc-editor": "F9"}
+    assert opt.shortcuts() == {"tools/lock-up-tcc-editor": "F9"}

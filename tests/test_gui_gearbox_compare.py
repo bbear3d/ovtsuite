@@ -172,7 +172,72 @@ def test_comparison_table_shades_and_follows(shift):
     pt.horizontalHeader().resizeSection(0, 300)
     assert ct.columnWidth(0) == 300
     pt.horizontalScrollBar().setValue(pt.horizontalScrollBar().maximum())
+    # at the end, both at the end (their viewports may differ in width)
+    assert ct.horizontalScrollBar().value() == ct.horizontalScrollBar().maximum()
+    assert _edge(ct, QtCore.Qt.Horizontal, True) == _edge(pt, QtCore.Qt.Horizontal, True)
+    pt.horizontalScrollBar().setValue(1)
     assert ct.horizontalHeader().logicalIndexAt(0) == pt.horizontalHeader().logicalIndexAt(0)
+
+
+def _pump():
+    for _ in range(3):
+        QtWidgets.QApplication.processEvents()
+
+
+def _edge(t, orient, last):
+    """The first / last row (column) ``t`` shows."""
+    if orient == QtCore.Qt.Vertical:
+        h, n = t.verticalHeader(), t.viewport().height()
+    else:
+        h, n = t.horizontalHeader(), t.viewport().width()
+    i = h.logicalIndexAt(n - 1 if last else 0)
+    return i if i >= 0 else h.count() - 1
+
+
+@pytest.mark.parametrize("orient", ["v", "h"])
+def test_comparison_scrolls_to_the_end_with_the_table_of_another_size(shift, orient):
+    """The value table and the comparison under it differ in size, so they
+    scroll different distances: scrolled to its end, either one takes the
+    other to its end (both show the last row / column); at the start both
+    are at the start; in between both keep the same top row; resizing the
+    comparison while the table is at its end keeps it at its end."""
+    pt, ct = shift.table, shift.cmpv.cmp_table
+    o = QtCore.Qt.Vertical if orient == "v" else QtCore.Qt.Horizontal
+    bar = (lambda t: t.verticalScrollBar() if o == QtCore.Qt.Vertical
+           else t.horizontalScrollBar())
+    shift.show()
+    _pump()
+    if o == QtCore.Qt.Vertical:
+        pt.setFixedHeight(320)
+        ct.setFixedHeight(130)
+    else:
+        for k in range(pt.columnCount()):
+            pt.horizontalHeader().resizeSection(k, 120)
+        pt.setFixedWidth(700)
+        ct.setFixedWidth(330)
+    _pump()
+    n = (pt.rowCount() if o == QtCore.Qt.Vertical else pt.columnCount()) - 1
+    assert 0 < bar(pt).maximum() != bar(ct).maximum() > 0
+    for src, dst in ((pt, ct), (ct, pt)):
+        bar(src).setValue(bar(src).maximum())
+        _pump()
+        assert bar(dst).value() == bar(dst).maximum()
+        assert _edge(dst, o, True) == _edge(src, o, True) == n
+        bar(src).setValue(0)
+        _pump()
+        assert bar(dst).value() == 0 and _edge(dst, o, False) == 0
+        mid = min(bar(pt).maximum(), bar(ct).maximum()) // 2
+        bar(src).setValue(mid)
+        _pump()
+        assert _edge(dst, o, False) == _edge(src, o, False)
+    bar(pt).setValue(bar(pt).maximum())
+    _pump()
+    if o == QtCore.Qt.Vertical:
+        ct.setFixedHeight(100)
+    else:
+        ct.setFixedWidth(260)
+    _pump()
+    assert _edge(ct, o, True) == n
 
 
 # ------------------------------------------------------- the dialog: copying

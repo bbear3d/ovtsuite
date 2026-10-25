@@ -169,9 +169,9 @@ variant is installed, it adds that checksum verify / correct is available.
   succeeds, opens the file again with the module.
 - Tools that need the parameter tree (**DTC / Fault-Path editor**,
   **Measuring blocks**, **Gear ratios**, **VSS pulse settings**, **Tune from
-  logs**, **VDO Cluster > Needle sweep** ...) are greyed out for that file,
-  as is a module's own sub-menu of **Tools** when the module is not
-  installed.
+  logs**, **Needle sweep** ...) are left out of the **Tools** menu for that
+  file, and a module's own tools are not in it at all while the module is
+  not installed.
 - **Tools > Verify checksums...** says which module to install for checksum
   support.
 - **Saving** keeps the version in the project without correcting its

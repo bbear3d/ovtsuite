@@ -199,8 +199,13 @@ def test_missing_text_reads_right():
 
 # ---------------------------------------------------------------- isolation
 def _run(code, disabled="all", tmp=None):
+    # no modules folder of this computer's (an installed module, or one a
+    # compiled copy superseded) may stand in for the in-tree ones
+    import tempfile
+    home = tempfile.mkdtemp(prefix="ovt-home-")
     env = dict(os.environ, OVT_DISABLE_MODULES=disabled,
-               PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
+               PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""),
+               LOCALAPPDATA=home, APPDATA=home, XDG_DATA_HOME=home)
     r = subprocess.run([sys.executable, "-c", code], env=env, cwd=tmp or ROOT,
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stdout + r.stderr

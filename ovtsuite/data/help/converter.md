@@ -35,15 +35,22 @@ The window is laid out in tabs:
     onto another software version.
   - **Source: RomRaider definition** -- which ROM of a RomRaider file (see
     [EcuFlash and RomRaider definitions](#ecuflash-and-romraider-definitions)).
+    Until a RomRaider definition is added on the Files tab the **ROM:** list
+    has nothing to choose from and says so; it is not used for any other
+    kind of file.
   - **Target: ...** -- one group per output format: TunerPro XDF (checksum
     plugin, value blocks without an axis, a patch), ASAP2 (addresses),
     WinOLS map pack, DAMOS, calibration values (DCM, CDFX), values written
     into a binary (checksums, record size), binary images (record size,
     fill byte, byte swap, checksums).
 
-  A group that does not apply to the files and the format chosen is greyed
-  out -- never hidden -- with a line saying when it applies, so you can
-  set it up beforehand; choosing a format scrolls its group into view.
+  Every option can be changed at any time, whichever format is chosen, so
+  you can set a format up before choosing it; the settings are kept and
+  used whenever that format is chosen. The group that applies to the files
+  and the format chosen has **(applies now)** after its title; each of the
+  others has a line in italics saying when it is used. Choosing a format
+  scrolls its group into view. The Translation and Tables tabs likewise
+  say whether the conversion chosen uses them, and stay editable.
 - **Translation** -- translating titles and descriptions.
 - **Tables** -- converting only some tables, with the list of the tables
   that will be written.
@@ -51,14 +58,30 @@ The window is laid out in tabs:
 The preview sits under the tabs, starting just below the Files tab's
 Output group, so it has the rest of the window; drag the bar between them
 to give either more room (the window remembers where you left it). Under
-it, **Convert** and a progress bar that fills as the preview or the
-conversion runs -- reading the files, placing the tables, writing, the
+it, **Convert** and a progress bar that fills smoothly as the preview or
+the conversion runs -- reading the files, placing the tables, writing, the
 read-back check, then each binary written out -- with the step it is on
-beside it. It is full when everything is done and empties again if the
-conversion fails. The window remembers its settings, the
-tab it was left on and which outputs were ticked for next time; it keeps its
-size while you work, greying out what does not apply rather than adding or
-removing rows.
+beside it. It moves on steadily through a long step and never goes back;
+it shows a busy bar only when the work gives no estimate at all. It is full
+when everything is done and empties again if the conversion fails.
+
+After a conversion the summary names the file written first -- for
+example *Wrote project.kp (17292 maps, folders kept)* -- then each binary
+or MPC written beside it, by name. A file left alone because it was
+already there (the Options tab's **When an output file exists**) is
+named with *left as it was*, so an older file is never taken for this
+run's result. The window remembers its settings for next time: every
+option on the Options, Translation and Tables tabs (every format's, not
+only the chosen one's), the format last chosen, the tab it was left on and
+which outputs were ticked. They are saved as you change them, so closing
+the window any way -- or the whole program -- keeps them; a converter
+window opened and closed without changes leaves the settings another one
+saved alone. What belongs to one set of files is not kept: the files, the
+binary, the output names, the original image, the patch's binary and name
+and the RomRaider ROM. If the files added do not offer the format last
+chosen (value files offer only DCM and CDFX), it is chosen again once they
+do. The window keeps its size while you work, marking what applies rather
+than adding or removing rows.
 
 ## Convert a definition
 
@@ -265,8 +288,9 @@ them: the base is found by its id in the ROM's folder or the folder above it
 base is missing. A file written here is self-contained: it needs no base.
 
 **RomRaider** keeps many ROMs in one file (`ecu_defs.xml`). When such a file
-is added, the **ROM:** list on the **Options** tab (group **Source:
-RomRaider definition**, greyed out until then) applies:
+is added on the **Files** tab, the **ROM:** list on the **Options** tab
+(group **Source: RomRaider definition**, marked *(applies now)* once one is
+added) lists its ROMs -- until then it holds only a line saying to add one:
 
 - **Found from the binary** (the default): the converter uses the ROM whose
   id string is in the binary, the way RomRaider recognises a ROM. The text

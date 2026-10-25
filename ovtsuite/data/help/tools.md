@@ -17,8 +17,8 @@ the project.
 | [End of injection](tools/end-of-injection.md) | **Tools > End of injection...** | When the injection ends on an EDC15P / EDC16 unit-injector engine, and moving it |
 | [Dyno chart](tools/dyno.md) | **Tools > Dyno chart...**, or **Dyno** on the edit bar (Ctrl+4) | The power and torque an EDC15 / EDC16 file asks for at full load, against the original or another reference |
 | [Feature switches](tools/feature-switches.md) | **Tools > Feature switches...** | Turning EDC15 / EDC16 functions on and off as one bundle: cruise, A/C, EGR, DPF, smoke limiter by MAF or MAP and more |
-| [Full-load shift points](tools/full-load-shifts.md) | **Tools > ZF 6HP / ZF 8HP > Shift map editor...**, step *Full-load optimum* | Full-throttle upshifts set from the torque of the project's engine ECU, blended into the rest of the maps |
-| [Part-load shift strategy and log replay](tools/part-load-shifts.md) | **Tools > ZF 6HP / ZF 8HP > Shift map editor...**, steps *Part-load strategy* and *Pedal axis to the ECU's full torque*, box *Replay* | Economy for D and sport for S, the gearbox pedal lined up with the engine's, and what an edit does to fuel and response on your logged drives |
+| [Full-load shift points](tools/full-load-shifts.md) | **Tools > Shift map editor...**, step *Full-load optimum* | Full-throttle upshifts set from the torque of the project's engine ECU, blended into the rest of the maps |
+| [Part-load shift strategy and log replay](tools/part-load-shifts.md) | **Tools > Shift map editor...**, steps *Part-load strategy* and *Pedal axis to the ECU's full torque*, box *Replay* | Economy for D and sport for S, the gearbox pedal lined up with the engine's, and what an edit does to fuel and response on your logged drives |
 | [Gear ratios](tools/gear-ratios.md) | **Tools > Gear ratios...** (Ctrl+G) | Gearbox ratios and gear recognition |
 | [VSS pulse settings](tools/vss.md) | **Tools > VSS pulse settings...** (Ctrl+U) | Vehicle-speed scaling, e.g. after a tyre-size change |
 
@@ -34,6 +34,7 @@ these tools show, too: ask it *"which fault codes are switched off?"* or
 codes for you to review.
 
 The [EEPROM editor](tools/eeprom.md) (**Tools > EEPROM editor...**) edits an
-EDC15 or EDC16 EEPROM. Tools that belong to one module are in that module's
-sub-menu of **Tools**, such as **Tools > VDO Cluster > Needle sweep...**; see
+EDC15 or EDC16 EEPROM. Tools that belong to one module are in **Tools**
+with the others, shown only while a tab they work on is in front, such as
+**Tools > Needle sweep...** for a VDO cluster; see
 [the Tools menu](interface.md#tools).

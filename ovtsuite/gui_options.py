@@ -98,6 +98,10 @@ def _apply(win, key: str) -> None:
         t = win.__dict__.get("_ovt_disksync_timer")
         if t is not None:
             t.setInterval(_opt.get(key) * 1000)
+    elif key == _opt.PROGRAM_AREA_KEY:
+        sync = getattr(win, "_sync_program_area", None)
+        if sync is not None:
+            sync()                          # every open ZF 6HP tab follows
     elif key == "recent/max":
         try:
             win._rebuild_recent()
@@ -236,7 +240,7 @@ class OptionsDialog(QtWidgets.QDialog):
         f.setBold(True)
         title.setFont(f)
         v.addWidget(title)
-        opts = [o for o in _opt.OPTIONS if o.page == name]
+        opts = [o for o in _opt.OPTIONS if o.page == name and _shown(o)]
         if opts:
             form = QtWidgets.QFormLayout()
             form.setFieldGrowthPolicy(
@@ -677,7 +681,7 @@ class OptionsDialog(QtWidgets.QDialog):
     def restore_page_defaults(self) -> None:
         name = self.page_names[self.pages.currentRow()]
         for o in _opt.OPTIONS:
-            if o.page == name:
+            if o.page == name and o.key in self.widgets:
                 self._set_value(o.key, o.default)
         if name == _opt.TOOLBAR:
             self._tb_fill(_opt.DEFAULT_TOOLBAR)
@@ -713,6 +717,14 @@ class OptionsDialog(QtWidgets.QDialog):
     def accept(self) -> None:
         if self.apply():
             super().accept()
+
+
+def _shown(o) -> bool:
+    """A module's option only while that module is installed."""
+    if not o.module:
+        return True
+    from .modules import registry as _registry
+    return _registry.is_installed(o.module)
 
 
 def _note(text: str) -> QtWidgets.QLabel:

@@ -3537,6 +3537,10 @@ class FlashDialog(QtWidgets.QDialog):
                                else "Open or read a file first, then write it.")
         raw = bytes(prim.binfile.data)
         if self._ecu() == "EDC15":
+            if _platforms.edc15.is_v3_sets_only(raw):
+                raise RuntimeError(
+                    "This MSA15 / EDC15V file holds only its calibration sets, "
+                    "with no program code, so it cannot be written to an ECU.")
             if _platforms.edc15.is_v3(raw):
                 raise RuntimeError(
                     "This is an MSA15 / EDC15V image (256 KB). The flasher writes "
@@ -3601,7 +3605,7 @@ class FlashDialog(QtWidgets.QDialog):
             # selecting ZF6HP -- an unrecognized layout here is not evidence of
             # the wrong platform -- but writing it uncorrected without a word was
             # worse, so the user is asked (default No) and told why.
-            # Honour Tools > "Correct ZF 6HP program-area checksums" (off by
+            # Honour the ZF 6HP program-area option (Options > Projects and saving; off by
             # default): when on, also rewrite the program/boot-area descriptor
             # self-CRCs, not just calibration. Offsets aren't needed here -- a
             # body-intact edit is auto-detected from the assembled image.

@@ -2747,6 +2747,40 @@ if HAVE_QT:
 
         advance = QtCore.Signal()          # request: move to next byte + edit
 
+        def paint(self, painter, option, index):
+            """The selection drawn over the byte's own colour (a byte in a map
+            or one that differs paints its background over the style's
+            selection fill): a translucent highlight on every selected byte,
+            and round the current one a frame in the text colour with the
+            highlight colour inside it -- clear on any fill, either theme."""
+            selected = bool(option.state & QtWidgets.QStyle.StateFlag.State_Selected)
+            opt = QtWidgets.QStyleOptionViewItem(option)
+            opt.state &= ~QtWidgets.QStyle.StateFlag.State_Selected
+            opt.state &= ~QtWidgets.QStyle.StateFlag.State_HasFocus
+            super().paint(painter, opt, index)
+            view = self.parent()
+            current = (view is not None and view.currentIndex() == index)
+            if not selected and not current:
+                return
+            pal = option.palette
+            r = option.rect
+            painter.save()
+            try:
+                if selected:
+                    fill = QtGui.QColor(pal.color(QtGui.QPalette.ColorRole.Highlight))
+                    fill.setAlpha(110)
+                    painter.fillRect(r, fill)
+                if current:
+                    painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                    painter.setPen(QtGui.QPen(
+                        pal.color(QtGui.QPalette.ColorRole.Text), 2))
+                    painter.drawRect(r.adjusted(1, 1, -1, -1))
+                    painter.setPen(QtGui.QPen(
+                        pal.color(QtGui.QPalette.ColorRole.Highlight), 2))
+                    painter.drawRect(r.adjusted(3, 3, -3, -3))
+            finally:
+                painter.restore()
+
         def createEditor(self, parent, option, index):
             ed = QtWidgets.QLineEdit(parent)
             rx = QtCore.QRegularExpression("[0-9A-Fa-f]{1,2}")
@@ -2920,6 +2954,8 @@ if HAVE_QT:
                             activated=self._copy)
             QtGui.QShortcut(QtGui.QKeySequence.Paste, self.view,
                             activated=self._paste)
+            from . import gui_hexmenu           # right-click menu
+            gui_hexmenu.install(self)
 
             self.info = QtWidgets.QLabel("Offset -")
             self.info.setStyleSheet("color: gray")
@@ -7630,12 +7666,12 @@ if HAVE_QT:
                 self.primary, self, compare=self.comparison))
 
         def open_shift_editor(self):
-            """Tools > ZF 6HP > Shift map editor... (gui_gearbox_edit)."""
+            """Tools > Shift map editor... (gui_gearbox_edit)."""
             from .gui_gearbox_edit import open_editor
             return open_editor(self)
 
         def open_tcc_editor(self):
-            """Tools > ZF 6HP > Lock-up (TCC) editor... (gui_gearbox_edit)."""
+            """Tools > Lock-up (TCC) editor... (gui_gearbox_edit)."""
             from .gui_gearbox_edit import open_editor
             return open_editor(self, "tcc")
 
@@ -8349,19 +8385,19 @@ if HAVE_QT:
     def set_swap_axes(on: bool):
         _settings().setValue(SWAP_KEY, bool(on))
 
-    PROGRAM_AREA_KEY = "zf6hp/correct_program_area"
+    from .options import PROGRAM_AREA_KEY
 
     def program_area_pref() -> bool:
-        """Tools > ZF 6HP > Correct program-area checksums -- off by default. When
-        on, a ZF 6HP save/flash also rewrites the program/boot-area descriptor
-        self-CRCs (zlib CRC-32), not just the calibration checksum."""
-        try:
-            return bool(_settings().value(PROGRAM_AREA_KEY, False, type=bool))
-        except Exception:
-            return False
+        """Options > Projects and saving > the ZF 6HP program-area checksums
+        -- off by default. When on, a ZF 6HP save/flash also rewrites the
+        program/boot-area descriptor self-CRCs (zlib CRC-32), not just the
+        calibration checksum."""
+        from . import options as _opt
+        return bool(_opt.get(PROGRAM_AREA_KEY))
 
     def set_program_area_pref(on: bool):
-        _settings().setValue(PROGRAM_AREA_KEY, bool(on))
+        from . import options as _opt
+        _opt.set(PROGRAM_AREA_KEY, bool(on))   # every window follows (_apply)
 
     class _TableTab:
         """One open table in a file tab, and what it remembers."""
@@ -9572,6 +9608,30 @@ if HAVE_QT:
                     return False
             self._act(tools, "Feature switches...", _fsw_open,
                       needs_file=True, enabled_when=_fsw_ok)
+
+            def _shiftedit_ok(kind):
+                # a gearbox whose module gives the editor its schedules
+                try:
+                    from .gui_gearbox_edit import available
+                except Exception:
+                    return False
+                p = cw().primary
+                return p is not None and available(p, kind) \
+                    and not getattr(cw(), "view_only", None)
+            self._act(tools, "Shift map editor...", self._on_ws("open_shift_editor"),
+                      needs_file=True, enabled_when=lambda: _shiftedit_ok("shift")
+                      ).setToolTip(
+                "Edit many shift schedules at once: offset, scale or slide a "
+                "shift line across a selection, with a live preview and "
+                "advisory checks; applies as one undoable step.")
+            self._act(tools, "Lock-up (TCC) editor...", self._on_ws("open_tcc_editor"),
+                      needs_file=True, enabled_when=lambda: _shiftedit_ok("tcc")
+                      ).setToolTip(
+                "Edit the converter lock-up characteristics by gear: the open / "
+                "close thresholds across every characteristic a gear uses, with "
+                "a preview; one undoable step.")
+            from . import gui_modtools as _gmt   # the modules' own tools
+            _gmt.add(self, tools, _gmt.SECTIONS[0])
             # an engine ECU's (or a cluster's) settings: not on a gearbox tab
             from . import toolrel as _tr
             self._act(tools, "Gear ratios...", self._on_ws("open_gears"), "Ctrl+G",
@@ -9580,6 +9640,7 @@ if HAVE_QT:
             self._act(tools, "VSS pulse settings...", self._on_ws("open_vss"),
                       "Ctrl+U", needs_file=True,
                       enabled_when=lambda: full() and _tr.has_vss(cw().primary))
+            _gmt.add(self, tools, _gmt.SECTIONS[1])
             self._act(tools, "Hex editor...", self._on_ws("open_hex"), "Ctrl+H",
                       needs_file=True)
             self._act(tools, "Verify checksums...", self._on_ws("verify_checksums"),
@@ -9608,80 +9669,7 @@ if HAVE_QT:
             self._act(tools, "ECU simulator (bench)...", self.open_simulator)
             self._act(tools, "Converter (definitions, values and binaries)...",
                       self.open_converter)
-            tools.addSeparator()
-            # tools of one module only: a sub-menu per module
-            def _mod_menu(mid, fallback):
-                spec = _registry.installed().get(mid)
-                sub = tools.addMenu((spec.name if spec else fallback))
-                if spec is None:
-                    sub.menuAction().setEnabled(False)
-                    sub.menuAction().setToolTip(
-                        _registry.missing_text(mid, "these tools"))
-                return sub
-            e16 = self.edc16_menu = _mod_menu("edc16", "Bosch EDC16")
-
-            def _builder():
-                import importlib            # the EDC16 module's own window
-                importlib.import_module(".edc16.gui_builder16",
-                                        __package__).open_builder(self)
-            self._act(e16, "Block builder...", lambda _c=False: _builder()
-                      ).setToolTip(
-                "Put one EDC16U31/U34 together from blocks of different files "
-                "(boot, program, calibrations, MPC, EEPROM), checked against "
-                "each other")
-            zf = self.zf6hp_menu = _mod_menu("zf6hp", "ZF 6HP")
-            self.program_area_act = self._act(
-                zf, "Correct program-area checksums",
-                lambda checked: self._toggle_program_area(checked),
-                needs_file=True,
-                enabled_when=lambda: getattr(cw().primary, "platform", "")
-                == "zf6hp" and _registry.can("zf6hp", "checksum"))
-            self.program_area_act.setCheckable(True)
-            self.program_area_act.setChecked(program_area_pref())
-            self.program_area_act.setToolTip(
-                "Also rewrite the ZF 6HP program/boot-area descriptor self-CRCs "
-                "(zlib CRC-32) on save/flash, not just the calibration checksum. "
-                "Off by default -- a calibration tune never changes them; turn "
-                "it on only when editing program/boot bytes or a descriptor's "
-                "identity.")
-            def _shiftedit_ok(kind="shift", platform="zf6hp"):
-                try:
-                    from .gui_gearbox_edit import available
-                except Exception:
-                    return False
-                p = cw().primary
-                return p is not None and getattr(p, "platform", "") == platform \
-                    and available(p, kind) and not getattr(cw(), "view_only", None)
-            self._act(zf, "Shift map editor...", self._on_ws("open_shift_editor"),
-                      needs_file=True, enabled_when=_shiftedit_ok).setToolTip(
-                "Edit many shift schedules at once: offset, scale or slide a "
-                "shift line across a selection, with a live preview and "
-                "advisory checks; applies as one undoable step.")
-            self._act(zf, "Lock-up (TCC) editor...", self._on_ws("open_tcc_editor"),
-                      needs_file=True, enabled_when=lambda: _shiftedit_ok("tcc")).setToolTip(
-                "Edit the converter lock-up characteristics by gear: RO / OR / RC "
-                "thresholds across every characteristic a gear uses, following "
-                "the upshift if wanted, with a preview; one undoable step.")
-            z8 = self.zf8hp_menu = _mod_menu("zf8hp", "ZF 8HP")
-            self._act(z8, "Shift map editor...", self._on_ws("open_shift_editor"),
-                      needs_file=True, enabled_when=lambda: _shiftedit_ok("shift", "zf8hp")
-                      ).setToolTip(
-                "Edit many 8HP shift programs at once (14 lines, 1>2..8>7): offset, "
-                "scale or slide a line across a selection, with a live preview and "
-                "advisory checks; applies as one undoable step.")
-            self._act(z8, "Lock-up (TCC) editor...", self._on_ws("open_tcc_editor"),
-                      needs_file=True, enabled_when=lambda: _shiftedit_ok("tcc", "zf8hp")
-                      ).setToolTip(
-                "Edit the 8HP converter-clutch (WK) characteristics by the gear "
-                "WT_KWK_ZTAB gives them: RO / OR / RC / COC thresholds, with a "
-                "preview; one undoable step.")
-            vdo = self.vdo_menu = _mod_menu("vdo", "VDO Cluster")
-            self._act(vdo, "Needle sweep...", self._on_ws("open_sweep"),
-                      needs_file=True,
-                      enabled_when=lambda: getattr(cw().primary, "platform", "")
-                      == "vdo" and full()).setToolTip(
-                "Apply a needle / LED sweep or DSG-needle patch to a VDO "
-                "cluster EEPROM (only patches for its exact ROM build)")
+            _gmt.add(self, tools, _gmt.SECTIONS[2])
             tools.addSeparator()
             _gui_ai.add_menu(self, tools)
             self._act(tools, "Modules...", self.open_modules).setToolTip(
@@ -9755,13 +9743,17 @@ if HAVE_QT:
                 "Needs the Bosch EDC15 or EDC16 module (Tools > Modules...)")
 
         def _toggle_program_area(self, checked):
-            # a global preference: every open tab follows it, as a file
-            # opened later does (it reads the preference at load)
             set_program_area_pref(bool(checked))
+            self._sync_program_area()
+
+        def _sync_program_area(self):
+            # a global preference (Options): every open tab follows it, as a
+            # file opened later does (it reads the preference at load)
+            on = program_area_pref()
             for ws in self.workspaces():
                 if getattr(ws, "primary", None) is not None:
                     try:
-                        ws.primary.correct_program_area = bool(checked)
+                        ws.primary.correct_program_area = on
                     except Exception:
                         pass
 

@@ -475,6 +475,13 @@ class TunerSession:
                     "EDC15V flash). It is shown in the ECU's own byte order "
                     "and saved back byte-swapped, like the original; Save As "
                     "a native .edc15 container stores the ECU's byte order.")
+            elif _e15p.is_v3_sets_only(self.binfile.data):
+                self.load_note = (
+                    "This MSA15 / EDC15V file holds only its calibration sets "
+                    "(%d KB, no program code). Its maps can be viewed, compared "
+                    "and edited, but its checksums cannot be checked or "
+                    "corrected and it cannot be flashed as it is."
+                    % (len(self.binfile.data) // 1024))
             elif _z5p.byte_swapped(self.binfile.data):
                 # A ZF 5HP flash read with the two bytes of every 16-bit word
                 # exchanged, as 16-bit bench/BDM readers save it: edit in the

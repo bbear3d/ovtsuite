@@ -73,6 +73,30 @@ selected in **Region:**, and the comparison's bytes when **Show:** is on
 the primary is editable, so with the comparison shown, or a view-only
 region, it writes nothing and the line under the bytes says why.
 
+## The right-click menu
+
+Right-click the bytes for a menu that works on the selected bytes (the byte
+under the mouse when nothing is selected). Selecting in the **ASCII**
+column stands for all 16 bytes of that row.
+
+| Item | Does |
+|---|---|
+| **Copy** | As Ctrl+C: the selected bytes as hex. |
+| **Copy as text** | The selected bytes as text, a dot for each byte that is not a printable character. |
+| **Paste** | As Ctrl+V. Shown only when the bytes on screen can be edited. |
+| **Copy selected bytes from comparison** | With a comparison open and the primary shown: the selected bytes take the comparison's values. |
+| **Copy bytes to primary** | With **Show:** on **Comparison**: the selected comparison bytes are written into the primary at the same offsets. |
+| **Revert to as-read values** | The selected bytes go back to the image as read (in a project) or as opened. |
+| **Revert to last saved values** | The selected bytes go back to how they were when the file was last saved. |
+| **Go to table: *name*** | When the byte under the mouse belongs to a parameter: shows that table in the main window. |
+| **Select all** / **Find next** | Selects every byte; finds the next match of the **Find:** text (shown when there is one). |
+
+Each copy, paste or revert is one edit: one **Edit > Undo** puts all of it
+back. An item that would change nothing — the selected bytes already match
+the comparison, or already have the values to revert to — is greyed out;
+hover over it to see why. The comparison and revert items work on the main
+flash only.
+
 > **Caution:** a byte outside every identified parameter may be code, a
 > pointer or a count. Change one only when you know what it is; checksum
 > correction on save does not make a wrong byte right.

@@ -20,6 +20,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import dyno as _dy
 from . import gearbox_edit as GE
 from .gearbox_edit import fullload as FL
+from .gui_compact import WrapCheckBox, compact_combo, fixed_width
 
 #: QSettings keys (the vehicle mass sits with the Vehicle dialog's settings)
 MASS_KEY = "zf6hp/mass"
@@ -186,8 +187,8 @@ class FullLoadPanel(QtWidgets.QWidget):
         self.ver_box = QtWidgets.QComboBox()
         self.ver_box.setToolTip("Which version of it: by default the one recorded as "
                                 "flashed (what is in the car)")
-        self.ver_box.setMinimumContentsLength(18)
-        self.ver_box.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        compact_combo(self.set_box, 8)
+        compact_combo(self.ver_box, 8)
         f.addRow("Engine ECU", self.set_box)
         f.addRow("Version", self.ver_box)
         self.curve_lbl = QtWidgets.QLabel()
@@ -198,6 +199,7 @@ class FullLoadPanel(QtWidgets.QWidget):
         self.shape = QtWidgets.QComboBox()
         for k, t in FL.SHAPES:
             self.shape.addItem(t, k)
+        compact_combo(self.shape, 8)
         self.shape.setToolTip(
             "How the rows below full load follow: keep the factory shape scales each line "
             "between the blend pedal and full load (a factory step stays, in proportion); "
@@ -207,16 +209,21 @@ class FullLoadPanel(QtWidgets.QWidget):
         self.p0 = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=99, value=80,
                                            suffix=" %")
         self.p0.setToolTip("No row below this pedal is changed by the blend")
+        # the shape and its start pedal on rows of their own: one row with both
+        # set the editor's width
+        f.addRow("Blend", self.shape)
         sh = QtWidgets.QHBoxLayout()
-        sh.addWidget(self.shape, 1)
-        sh.addWidget(QtWidgets.QLabel("from"))
         sh.addWidget(self.p0)
-        f.addRow("Blend", sh)
+        sh.addStretch(1)
+        f.addRow("from", sh)
         self.mode = QtWidgets.QComboBox()
         for k, t in FL.MODES:
             self.mode.addItem(t, k)
+        compact_combo(self.mode, 8)
         f.addRow("Rows", self.mode)
-        self.ft_chk = QtWidgets.QCheckBox("Full load from where the ECU asks for full torque")
+        # the check boxes span the form and wrap: their text never sets the
+        # editor's width
+        self.ft_chk = WrapCheckBox("Full load from where the ECU asks for full torque")
         self.ft_chk.setToolTip(
             "Where the engine's driver's wish already asks for full torque before 100 % "
             "pedal (in every gear, 1500-3500 rpm), the gearbox rows from that pedal up are "
@@ -224,17 +231,17 @@ class FullLoadPanel(QtWidgets.QWidget):
             "to line the two up is the step 'Pedal axis to the ECU's full torque', which "
             "moves the gearbox's pedal axis instead of the values.")
         self.ft_chk.toggled.connect(lambda *_: self.changed.emit())
-        f.addRow("", self.ft_chk)
-        self.skip_m = QtWidgets.QCheckBox("Leave manual (M) programs alone")
+        f.addRow(self.ft_chk)
+        self.skip_m = WrapCheckBox("Leave manual (M) programs alone")
         self.skip_m.setChecked(True)
-        f.addRow("", self.skip_m)
-        self.kd_down = QtWidgets.QCheckBox("Kickdown downshifts move with their upshift")
+        f.addRow(self.skip_m)
+        self.kd_down = WrapCheckBox("Kickdown downshifts move with their upshift")
         self.kd_down.setChecked(True)
         self.kd_down.setToolTip("On the kickdown row the downshift moves by the same amount, "
                                 "so the kickdown hysteresis is kept")
-        f.addRow("", self.kd_down)
+        f.addRow(self.kd_down)
         sm = QtWidgets.QHBoxLayout()
-        self.smooth_chk = QtWidgets.QCheckBox("Spread steps steeper than")
+        self.smooth_chk = WrapCheckBox("Spread steps steeper than")
         self.smooth_chk.setChecked(True)
         self.smooth = QtWidgets.QDoubleSpinBox(decimals=1, minimum=1.0, maximum=10, value=1.5,
                                                suffix=" × factory")
@@ -244,7 +251,7 @@ class FullLoadPanel(QtWidgets.QWidget):
             "are lifted to spread it (down to 50 % pedal at most)")
         sm.addWidget(self.smooth_chk)
         sm.addWidget(self.smooth)
-        f.addRow("", sm)
+        f.addRow(sm)
         self.min_gain = QtWidgets.QDoubleSpinBox(decimals=1, minimum=0, maximum=50, value=1.0,
                                                  suffix=" %")
         self.min_gain.setToolTip(
@@ -255,6 +262,7 @@ class FullLoadPanel(QtWidgets.QWidget):
         self.lead_box = QtWidgets.QComboBox()
         for k, t in LEADS:
             self.lead_box.addItem(t, k)
+        compact_combo(self.lead_box, 8)
         self.lead_box.setToolTip(
             "A map value is where the gearbox STARTS the shift; the engine keeps climbing "
             "until the ratio changes. Physics works the climb out from the curve and the "
@@ -293,6 +301,7 @@ class FullLoadPanel(QtWidgets.QWidget):
         self.ceiling.setToolTip("Highest engine rpm to shift at. Auto: 200 rpm below the "
                                 "engine's cut-off (where torque halves past peak power)")
         f.addRow("Ceiling", self.ceiling)
+        fixed_width(self.min_gain, self.ceiling)
 
         self.table = QtWidgets.QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Line", "Shift at", "Lead", "Map value", "Why"])

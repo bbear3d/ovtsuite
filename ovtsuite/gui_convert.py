@@ -35,6 +35,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import branding
 from . import convert as C
 from .convert import translate as T
+from .gui_smoothbar import SmoothProgressBar
 
 #: a cell that can be selected but not typed in
 _READ_ONLY = QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEnabled
@@ -71,6 +72,7 @@ class _Worker(QtCore.QThread):
     conversion, not an extraction)."""
     progress = QtCore.Signal(str)
     fraction = QtCore.Signal(float)               # share of all the jobs done, 0..1
+    expect = QtCore.Signal(float)                 # where the step under way ends, 0..1
     done = QtCore.Signal(object, object)          # result, error
     #: an output file is already there: may it be replaced? Connected
     #: blocking-queued -- the window asks on the GUI thread and sets
@@ -103,16 +105,29 @@ class _Worker(QtCore.QThread):
     def run(self):
         try:
             res = None
+            # one reporter for all the jobs (rising through them all), each
+            # job its slice; the signals reach the window queued
+            say = C.Steps(self.progress.emit, self.fraction.emit, expect=self.expect.emit)
+            self.fraction.emit(0.0)               # an estimate from the start: a bar, not busy
             for job, (lo, hi) in zip(self.jobs, self._shares()):
-                r = C.run(job, progress=self.progress.emit,
-                          fraction=lambda f, lo=lo, hi=hi: self.fraction.emit(lo + (hi - lo) * f),
-                          ask=self._ask)
+                r = C.run(job, progress=say.part(lo, hi), ask=self._ask)
                 if res is None:
                     res = r
                     # a conversion whose output was left alone shows the
                     # binaries extracted with it, if any
                     res._main = job.target != C.EXTRACT and not (r.skipped and len(self.jobs) > 1)
+                    # for the summary: the conversion's own output (or that
+                    # it was left alone), apart from the binaries beside it
+                    conv = job.target != C.EXTRACT
+                    res._main_out = r.out[0] if conv and r.out else None
+                    res._main_target = job.target if conv else None
+                    res._main_skipped = list(r.skipped) if conv else []
+                    res._main_values = len(r.values) if conv else 0
+                    res._extra_out = [] if conv else list(r.out)
+                    res._extra_skipped = [] if conv else list(r.skipped)
                     continue
+                res._extra_out += [p for p in r.out if not p.endswith(".convert.txt")]
+                res._extra_skipped += r.skipped
                 res.out += r.out
                 res.skipped += r.skipped
                 res.values += r.values
@@ -145,6 +160,7 @@ class _InfoWorker(QtCore.QThread):
 class _PreviewWorker(QtCore.QThread):
     progress = QtCore.Signal(str)
     fraction = QtCore.Signal(float)
+    expect = QtCore.Signal(float)
     done = QtCore.Signal(object, object)
 
     def __init__(self, job: C.Job, parent=None):
@@ -158,7 +174,8 @@ class _PreviewWorker(QtCore.QThread):
             job = C.Job.from_dict(self.job.to_dict())
             job.out = os.path.join(d, "preview" + C.EXT[job.target])
             kinds = C.classify(job.sources)
-            say = C.Steps(self.progress.emit, self.fraction.emit)
+            say = C.Steps(self.progress.emit, self.fraction.emit, expect=self.expect.emit)
+            self.fraction.emit(0.0)
             if job.target == C.DIFF:
                 res = C.run(job, say)
                 self.done.emit((res, None), None)
@@ -467,6 +484,8 @@ class ConverterDialog(QtWidgets.QDialog):
         self._reviewed: Optional[List[dict]] = None
         self._last: Optional[C.Result] = None
         self._kinds = {}                       # path -> ("definition"|"values"|"image", type)
+        self._want_target = None               # the target chosen, when the files offer it
+        self._emb_want = {}                    # "binary" / "mpc" -> ticked by hand
 
         # Tabs: Files (what goes
         # in and every file that comes out), then the options by subject.
@@ -519,9 +538,7 @@ class ConverterDialog(QtWidgets.QDialog):
         rb = QtWidgets.QHBoxLayout(self.rom_box)
         rb.setContentsMargins(0, 0, 0, 0)
         self.rom = QtWidgets.QComboBox()
-        self.rom.setToolTip(
-            "A RomRaider definition file describes many ROMs. Use the one whose id "
-            "string is in the binary, or pick one.")
+        self.rom.setToolTip(self._ROM_TIP)
         self.rom.setSizeAdjustPolicy(
             QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.rom.setMinimumContentsLength(30)
@@ -529,13 +546,14 @@ class ConverterDialog(QtWidgets.QDialog):
         self.rom_found = _ElidedLabel()
         rb.addWidget(self.rom_found, 1)
         self.rom_lab = QtWidgets.QLabel("ROM:")
-        # (on the Options tab, in the RomRaider group: greyed out unless a
-        # RomRaider file is among the files)
+        # (on the Options tab, in the RomRaider group: marked as applying
+        # while a RomRaider file is among the files, editable always)
         self._rom_src = None                 # the RomRaider file the list is from
         self._rom_ids = []                   # its (xmlid, id string, id address, text)
         self._rom_default = None             # its ROM when none is named / found
         self._want_rom = None                # from a preset, until the file is added
         self._bin_seen = (None, None)        # (binary key, the ROM found in it)
+        self._rom_placeholder()
         self.binary.textChanged.connect(self._update_rom_found)
         self.rom.currentIndexChanged.connect(self._update_rom_found)
         fv.addWidget(g)
@@ -601,9 +619,11 @@ class ConverterDialog(QtWidgets.QDialog):
         # -- Options ----------------------------------------------------------
         # Every option of every format, at once: the general ones, then each
         # source format's and each target format's in a group of its own,
-        # greyed out (with the reason) when it does not apply to the files
-        # and target chosen -- never shown or hidden, so nothing moves, and
-        # no option needs a trip to the Files tab. The page scrolls.
+        # every one editable at all times (set a format's options before
+        # choosing it); the groups that apply to the files and target
+        # chosen are marked "(applies now)", the others say when they are
+        # used -- never shown or hidden, so nothing moves, and no option
+        # needs a trip to the Files tab. The page scrolls.
         opts = QtWidgets.QWidget()
         ov = QtWidgets.QVBoxLayout(opts)
         self._opt_groups = {}                # key -> (group, reason label)
@@ -621,8 +641,9 @@ class ConverterDialog(QtWidgets.QDialog):
         self.dynamic = QtWidgets.QComboBox()
         self.dynamic.addItem("Write at the declared maximum", "max")
         self.dynamic.addItem("Leave them out", "skip")
-        self.dynamic.setToolTip("Tables whose size the image stores (an EDC16 map's "
-                                "count words), when no binary is given")
+        self._dynamic_tip = ("Tables whose size the image stores (an EDC16 map's "
+                             "count words), when no binary is given")
+        self.dynamic.setToolTip(self._dynamic_tip)
         # a file Convert would write is already there -- on this row, so the
         # Options tab stays no taller than the Files tab (the preview starts
         # under the Files tab's Output group)
@@ -633,7 +654,7 @@ class ConverterDialog(QtWidgets.QDialog):
         self.existing.setToolTip(
             "What Convert does when a file it would write is already there. A watch "
             "folder never asks: there it is skipped unless this says Overwrite.")
-        self.existing.currentIndexChanged.connect(lambda *_: self._save_state())
+        # (saved with the other settings as it changes: _watch_changes)
         drow = QtWidgets.QHBoxLayout()
         drow.addWidget(self.dynamic, 1)
         drow.addWidget(QtWidgets.QLabel("When an output file exists:"))
@@ -727,6 +748,8 @@ class ConverterDialog(QtWidgets.QDialog):
             sig = getattr(w, "currentIndexChanged")
             sig.connect(self._forget_review)
         tv.addWidget(self.tr_box)
+        self.tr_note = _ElidedLabel("")
+        tv.addWidget(self.tr_note)
         tv.addStretch(1)
         self.tabs.addTab(trw, "Translation")
 
@@ -755,6 +778,8 @@ class ConverterDialog(QtWidgets.QDialog):
         self.categories.setPlaceholderText("category names, separated by ;")
         fl.addRow("In categories:", self.categories)
         bv.addWidget(self.filter_box)
+        self.filter_note = _ElidedLabel("")
+        bv.addWidget(self.filter_note)
         mrow = QtWidgets.QHBoxLayout()
         self.match_count = _ElidedLabel("")
         mrow.addWidget(self.match_count, 1)
@@ -874,11 +899,10 @@ class ConverterDialog(QtWidgets.QDialog):
         srow = QtWidgets.QHBoxLayout()
         self.status = _ElidedLabel("")
         srow.addWidget(self.status, 1)
-        self.progress = QtWidgets.QProgressBar()
-        self.progress.setRange(0, self._BAR)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(self.fontMetrics().height())
+        # eased between the run's reports and creeping on through a long
+        # step (gui_smoothbar); twice the font's height
+        self.progress = SmoothProgressBar()
+        self.progress.fit_height(2.0)
         srow.addWidget(self.progress, 1)
         root.addLayout(srow)
 
@@ -888,6 +912,10 @@ class ConverterDialog(QtWidgets.QDialog):
             self.add_sources(list(sources))
         self._sync_targets()
         self._fit_window()
+        # from here on every change is saved (shortly after it is made, and
+        # on closing): nothing waits for a conversion or for the close
+        # button, and nothing set while the window was being filled counts
+        self._watch_changes()
 
     # ---------------------------------------------------------- options
     #: the target groups, in the order listed: key -> its title
@@ -900,7 +928,7 @@ class ConverterDialog(QtWidgets.QDialog):
         ("apply", "Target: values written into a binary"),
         ("image", "Target: binary image (BIN, Intel HEX, S-record)"),
     )
-    #: when each group applies, for the line saying why it is greyed out
+    #: when each group applies, for the line saying when it is used
     _GROUP_WHEN = {
         "rom": "a RomRaider definition is among the files",
         "xdf": "converting to TunerPro XDF",
@@ -913,16 +941,39 @@ class ConverterDialog(QtWidgets.QDialog):
         "image": "converting a binary to BIN, Intel HEX or S-record",
     }
 
+    #: added to the title of a group that applies to the conversion chosen
+    APPLIES = " (applies now)"
+
     def _opt_group(self, key: str, title: str):
-        """An options group whose first line says, while it is greyed out,
-        when it applies: ``(group, form layout)``."""
+        """An options group whose first line says, while it does not apply
+        to the conversion chosen, when it is used (its fields editable all
+        the same): ``(group, form layout)``."""
         g = QtWidgets.QGroupBox(title)
+        g.setProperty("baseTitle", title)
         f = QtWidgets.QFormLayout(g)
         note = _ElidedLabel("")
-        note.setStyleSheet("color: gray")
+        it = note.font()
+        it.setItalic(True)
+        note.setFont(it)
         f.addRow(note)
         self._opt_groups[key] = (g, note)
         return g, f
+
+    def _mark_group(self, key: str, on: bool, now: str = "") -> None:
+        """Mark an options group as applying now or not -- never disabled:
+        its options are kept and used once that format is chosen."""
+        g, note = self._opt_groups[key]
+        g.setProperty("applies", on)
+        g.setTitle(g.property("baseTitle") + (self.APPLIES if on else ""))
+        if on:
+            note.setText("")
+        else:
+            note.setText("Used when %s%s." % (self._GROUP_WHEN[key],
+                                              " (now: %s)" % now if now else ""))
+
+    def applying_groups(self):
+        """The keys of the options groups that apply to the conversion chosen."""
+        return [k for k, (g, _n) in self._opt_groups.items() if g.property("applies")]
 
     def _build_option_pages(self, ov):
         """A group per target format's options, added to ``ov``."""
@@ -1235,6 +1286,23 @@ class ConverterDialog(QtWidgets.QDialog):
             self._emb = {k: (src, e) for k, e in main.items()}
         folder = os.path.dirname(os.path.abspath(
             self.out.text().strip() or (srcs[0] if srcs else "."))) if srcs else ""
+        self._emb_syncing = True
+        try:
+            self._sync_embedded_rows(folder)
+        finally:
+            self._emb_syncing = False
+        self._emb_seen = set(self._emb)
+        if self._emb:
+            src = self._emb[next(iter(self._emb))][0]
+            self.emb_note.setText("From %s%s." % (
+                os.path.basename(src), " (the first project)" if len(srcs) > 1 else ""))
+        else:
+            self.emb_note.setText("")
+        self.b_others.setEnabled(bool(srcs))
+        k = len(self.extract_picks())
+        self.b_others.setText("Other binaries (%d)..." % k if k else "Other binaries...")
+
+    def _sync_embedded_rows(self, folder: str) -> None:
         for key, (chk, edit, btn) in zip(("binary", "mpc"), self._emb_rows):
             have = key in self._emb
             chk.setEnabled(have)
@@ -1254,20 +1322,20 @@ class ConverterDialog(QtWidgets.QDialog):
                 edit.setText(want)
                 self._auto_emb[key] = want
             if key not in getattr(self, "_emb_seen", set()):
-                chk.setChecked(True)        # ticked when a project brings one
+                # ticked when a project brings one, unless it was unticked
+                # by hand (this session or the last)
+                chk.setChecked(bool(self._emb_want.get(key, True)))
             edit.setEnabled(chk.isChecked())
             btn.setEnabled(chk.isChecked())
             edit.setToolTip("%s, %s" % (e.label, _size_text(e.size)))
-        self._emb_seen = set(self._emb)
-        if self._emb:
-            src = self._emb[next(iter(self._emb))][0]
-            self.emb_note.setText("From %s%s." % (
-                os.path.basename(src), " (the first project)" if len(srcs) > 1 else ""))
-        else:
-            self.emb_note.setText("")
-        self.b_others.setEnabled(bool(srcs))
-        k = len(self.extract_picks())
-        self.b_others.setText("Other binaries (%d)..." % k if k else "Other binaries...")
+
+    def _emb_toggled(self, key: str, on: bool) -> None:
+        """The Files tab's Binary / MPC tick changed: kept when it was the
+        user's (not the window's own ticking as a project comes and goes)."""
+        chk = self.bin_on if key == "binary" else self.mpc_on
+        if not getattr(self, "_emb_syncing", False) and chk.isEnabled():
+            self._emb_want[key] = bool(on)
+            self._changed()
 
     def _show_binaries(self):
         if self._binaries_dlg is None:
@@ -1396,12 +1464,26 @@ class ConverterDialog(QtWidgets.QDialog):
                                      "%s\n%s\n%s" % (m, p.desc, p.path),
                                      QtCore.Qt.ToolTipRole)
         self.cks.addItem("Another TunerPro plugin (DLL)...", "dll")
-        self._dll = ""
+        self._dll_paths = {}                 # a plugin's choice -> the DLL it came from
+
+    def _add_dll_choice(self, plug, mi: int, path: str) -> int:
+        """A plugin picked from a DLL file, in the list (once): its index.
+        The XDF names the plugin by its id and method."""
+        label = "TunerPro: %s - %s" % (plug.name, plug.methods[mi])
+        self._dll_paths[plug.choice(mi)] = path
+        i = self.cks.findData(plug.choice(mi))
+        if i < 0:
+            i = self.cks.count() - 1
+            self.cks.insertItem(i, label, plug.choice(mi))
+        return i
 
     def _cks_changed(self):
         from .convert import checksums as K
         v = self.cks.currentData()
         note = ""
+        if v == "dll" and getattr(self, "_restoring", False):
+            self.cks.setCurrentIndex(0)      # never a file dialog while restoring
+            return
         if v == "dll":
             dirs = K.plugin_dirs()
             path, _f = QtWidgets.QFileDialog.getOpenFileName(
@@ -1433,13 +1515,7 @@ class ConverterDialog(QtWidgets.QDialog):
                     self.cks.setCurrentIndex(0)
                     return
                 mi = plug.methods.index(m)
-            # the XDF names the plugin by its id and method: add it as such
-            label = "TunerPro: %s - %s" % (plug.name, plug.methods[mi])
-            i = self.cks.findData(plug.choice(mi))
-            if i < 0:
-                i = self.cks.count() - 1
-                self.cks.insertItem(i, label, plug.choice(mi))
-            self.cks.setCurrentIndex(i)
+            self.cks.setCurrentIndex(self._add_dll_choice(plug, mi, path))
             return
         elif v and str(v).startswith(K.TP):
             pid = str(v)[len(K.TP):].split(":")[0]
@@ -1494,6 +1570,23 @@ class ConverterDialog(QtWidgets.QDialog):
         self._target_changed()               # enables its fields
 
     # ---------------------------------------------------- RomRaider ROMs
+    _ROM_TIP = ("A RomRaider definition file (ecu_defs.xml) describes many ROMs; "
+                "this list is its ROMs.\nAdd the file on the Files tab, then use the "
+                "ROM whose id string is in the binary (the default), or pick one.\n"
+                "Not used for any other kind of file.")
+    #: the list's one line while no RomRaider file is among the files
+    ROM_NONE = "Add a RomRaider (EcuFlash) definition on the Files tab to choose one of its ROMs"
+
+    def _rom_placeholder(self) -> None:
+        """No RomRaider file among the files: the list says how it fills
+        (a line that names no ROM -- nothing is passed to the conversion)."""
+        self.rom.blockSignals(True)
+        self.rom.clear()
+        self.rom.addItem(self.ROM_NONE, None)
+        self.rom.setItemData(0, self._ROM_TIP, QtCore.Qt.ItemDataRole.ToolTipRole)
+        self.rom.setCurrentIndex(0)
+        self.rom.blockSignals(False)
+
     def _romraider_source(self) -> Optional[str]:
         for p in self.source_paths():
             if self._kinds.get(p, ("", ""))[1] == "romraider":
@@ -1504,17 +1597,16 @@ class ConverterDialog(QtWidgets.QDialog):
         """Show the ROM picker while a RomRaider file is among the sources."""
         from .convert import fmt_romxml
         src = self._romraider_source()
-        g, note = self._opt_groups["rom"]
-        g.setEnabled(src is not None)
-        note.setText("" if src is not None else
-                     "Applies when %s." % self._GROUP_WHEN["rom"])
+        self._mark_group("rom", src is not None)
         if src == self._rom_src:
             return
         keep = self.rom.currentData() or self._want_rom
         self._rom_src, self._rom_ids, self._rom_default = src, [], None
+        if src is None:
+            self._rom_placeholder()
         self.rom.blockSignals(True)
-        self.rom.clear()
         if src is not None:
+            self.rom.clear()
             try:
                 with open(src, "rb") as fh:
                     data = fh.read()
@@ -1688,7 +1780,12 @@ class ConverterDialog(QtWidgets.QDialog):
             label = C.NAMES[f] + ("  (experimental)" if f in C.EXPERIMENTAL else "") \
                 + suffix.get(f, "")
             self.target.addItem(label, f)
-        i = self.target.findData(prev)
+        # the target last chosen (by hand, from the saved settings or a
+        # preset) when these files offer it, else the one shown
+        want = getattr(self, "_want_target", None)
+        i = self.target.findData(want) if want else -1
+        if i < 0:
+            i = self.target.findData(prev)
         self.target.setCurrentIndex(max(0, i))
         self.target.blockSignals(False)
         self._sync_roms()
@@ -1699,9 +1796,9 @@ class ConverterDialog(QtWidgets.QDialog):
         t = self.target.currentData() or ""
         mode = self._mode()
         has_def = any(k == "definition" for k, _t in self._kinds.values())
-        # greyed out, never hidden: the window keeps its shape
-        self.port.setEnabled(has_def)
-        self.port_box.setEnabled(has_def and self.port.isChecked())
+        # editable whatever is chosen (used once it applies); the port's
+        # own fields follow its tick only
+        self.port_box.setEnabled(self.port.isChecked())
         extract = False
         if t in C.VAL:
             page = "values"
@@ -1715,22 +1812,29 @@ class ConverterDialog(QtWidgets.QDialog):
             "Every table's values are read out of the binary through the "
             "definition, with its shared axes, by name.")
         now = C.NAMES.get(t, t) if t else "nothing chosen"
-        for key, (g, note) in self._opt_groups.items():
+        for key in self._opt_groups:
             if key == "rom":
                 continue                     # (by the files: _sync_roms)
-            on = key == page
-            g.setEnabled(on)
-            note.setText("" if on else "Applies when %s (now: %s)."
-                         % (self._GROUP_WHEN[key], now))
+            self._mark_group(key, key == page, now)
         if page and page != getattr(self, "_opt_page", None):
             # the chosen target's group scrolled into view (only when the
             # target changes: the user's own scrolling is left alone)
             self.opts.ensureWidgetVisible(self._opt_groups[page][0], 0, 0)
         self._opt_page = page
         is_def = t in C.DEF_OUT
-        self.filter_box.setEnabled(is_def or t in C.VAL or mode == "apply" or t == C.DIFF)
-        self.tr_box.setEnabled(is_def or (t in C.VAL and mode != "values"))
-        self.dynamic.setEnabled(is_def)
+        # the table filter and translation stay editable too: a line says
+        # whether the conversion chosen uses them
+        use_f = is_def or t in C.VAL or mode == "apply" or t == C.DIFF
+        use_t = is_def or (t in C.VAL and mode != "values")
+        self.filter_note.setText(
+            "Applies to the conversion chosen." if use_f else
+            "Used when converting a definition (or its values); not by %s." % now)
+        self.tr_note.setText(
+            "Applies to the conversion chosen." if use_t else
+            "Used when converting a definition (or its values read from a binary); "
+            "not by %s." % now)
+        self.dynamic.setToolTip(self._dynamic_tip + (
+            "" if is_def else " Used when converting to a definition format."))
         need = self._binary_needed()
         self.binary.setPlaceholderText(
             "needed: the binary of the other software version" if need == "port" else
@@ -1916,6 +2020,7 @@ class ConverterDialog(QtWidgets.QDialog):
         w = _PreviewWorker(self.job(), self)
         w.progress.connect(lambda m: self.status.setText(m + "..."))
         w.fraction.connect(self._set_fraction)
+        w.expect.connect(self.progress.set_expect)
         w.done.connect(self._preview_done)
         w.finished.connect(lambda w=w: shutil.rmtree(w.tmp, ignore_errors=True)
                            if w.tmp else None)
@@ -1991,9 +2096,22 @@ class ConverterDialog(QtWidgets.QDialog):
                 "exactly as stored" if fmt == "raw" else
                 "as %s" % self.ex_format.currentText()))
         else:
-            self._set_summary("%s%s" % (res.values[0] if res.values else "Extracted.",
-                                        " Read-back check: %d differences." % len(res.check)
-                                        if res.check else " Read-back check passed."))
+            # a conversion left alone by the overwrite setting says so first,
+            # then each binary written (or left as it was) by name
+            bits = ["%s left as it was (already there, not converted again)"
+                    % os.path.basename(p) for p in getattr(res, "_main_skipped", [])]
+            extra = [p for p in getattr(res, "_extra_out", res.out)
+                     if not p.endswith(".convert.txt")]
+            if extra:
+                bits.append("Wrote " + ", ".join(os.path.basename(p) for p in extra))
+            skipped = getattr(res, "_extra_skipped", [])
+            if skipped:
+                bits.append("left as it was (already there): " +
+                            ", ".join(os.path.basename(p) for p in skipped))
+            bits.append(res.values[0].rstrip(".") if res.values else "Extracted")
+            bits.append("read-back check: %d differences" % len(res.check)
+                        if res.check else "read-back check passed")
+            self._set_summary("; ".join(bits) + ".")
             self._last = res
             self.b_report.setEnabled(True)
 
@@ -2044,10 +2162,13 @@ class ConverterDialog(QtWidgets.QDialog):
                      "tables", "stated": "as stated", "unverified": "unverified"}
             bits.append("ported: " + ", ".join("%d %s" % (n, words.get(g, g))
                                                for g, n in res.placement.items() if n))
-        if res.values:
-            bits.append(res.values[0].rstrip("."))
-        elif res.tables_in or res.tables_out:
+        lead = [] if preview else self._outputs_said(res)
+        main_values = res.values[:getattr(res, "_main_values", len(res.values))]
+        if main_values:
+            bits.append(main_values[0].rstrip("."))
+        elif (res.tables_in or res.tables_out) and not (lead and getattr(res, "_main_out", None)):
             bits.append("%d tables %s" % (res.tables_out, "will be written" if preview else "written"))
+        bits = lead + bits
         if res.size:
             bits.append("image 0x%X bytes, offset 0 = address 0x%X" % (res.size, res.base))
         if res.loss:
@@ -2060,9 +2181,36 @@ class ConverterDialog(QtWidgets.QDialog):
         if notes:
             bits.append(notes[0] + (" (+%d more notes)" % (len(notes) - 1)
                                     if len(notes) > 1 else ""))
-        self._set_summary("; ".join(bits) + ".")
+        self._set_summary("; ".join(bits).rstrip(".") + ".")
         self._last = res
         self.b_report.setEnabled(True)
+
+    @staticmethod
+    def _outputs_said(res) -> List[str]:
+        """The summary's first words: the file the conversion wrote (or that
+        it was left as it was), then the binaries written beside it."""
+        out = []
+        main = getattr(res, "_main_out", None)
+        if main:
+            n = res.tables_out
+            what = []
+            if n:
+                what.append("%d %s" % (n, "maps" if getattr(res, "_main_target", None) == "kp"
+                                       else "tables"))
+            if getattr(res, "passthrough", False):
+                what.append("folders kept")
+            out.append("Wrote %s%s" % (os.path.basename(main),
+                                       " (%s)" % ", ".join(what) if what else ""))
+        for p in getattr(res, "_main_skipped", []):
+            out.append("%s left as it was (already there)" % os.path.basename(p))
+        extra = getattr(res, "_extra_out", [])
+        if extra:
+            out.append("also wrote " + ", ".join(os.path.basename(p) for p in extra))
+        skipped = getattr(res, "_extra_skipped", [])
+        if skipped:
+            out.append("left as it was (already there): " +
+                       ", ".join(os.path.basename(p) for p in skipped))
+        return out
 
     # ---------------------------------------------------------- convert
     def convert(self):
@@ -2095,6 +2243,7 @@ class ConverterDialog(QtWidgets.QDialog):
         w = _Worker(jobs, self)
         w.progress.connect(lambda m: self.status.setText(m + "..."))
         w.fraction.connect(self._set_fraction)
+        w.expect.connect(self.progress.set_expect)
         w.done.connect(self._convert_done)
         w.ask.connect(self._ask_existing, QtCore.Qt.ConnectionType.BlockingQueuedConnection)
         w.asking = True
@@ -2156,39 +2305,46 @@ class ConverterDialog(QtWidgets.QDialog):
             self._last = res
             self.b_report.setEnabled(True)
             one = os.path.basename(skipped[0]) if len(skipped) == 1 else ""
-            self._set_summary("Nothing written: %s already there, left alone (see the "
-                              "Options tab: When an output file exists)." % (
+            self._set_summary("Nothing written: %s already there and left as it was -- "
+                              "not the result of this run (see the Options tab: When an "
+                              "output file exists)." % (
                                   ("%s was" % one) if one else "%d files were" % len(skipped)))
-            self.status.setText("Skipped %s (already there)" % (one or "%d files" % len(skipped)))
+            self.status.setText("Skipped %s (already there, left as it was)"
+                                % (one or "%d files" % len(skipped)))
             self._save_state()
             return
         self._show_result(res, defn, preview=False)
-        text = ("Saved %s" % os.path.basename(res.out[0]) if len(res.out) == 1
-                else "Saved %d files in %s" % (len(res.out), os.path.dirname(
-                    os.path.abspath(res.out[0]))))
+        main = getattr(res, "_main_out", None) or res.out[0]
+        more = len(res.out) - 1
+        text = "Saved %s%s in %s" % (os.path.basename(main),
+                                     " and %d more" % more if more > 0 else "",
+                                     os.path.dirname(os.path.abspath(main)))
         if skipped:
-            text += "; skipped %d already there" % len(skipped)
+            text += "; %d left as they were (already there)" % len(skipped)
         self.status.setText(text)
         self.b_folder.setEnabled(True)
         self._save_state()
 
-    _BAR = 1000                             # the bar's steps
+    _BAR = SmoothProgressBar.STEPS          # the bar's steps
 
     def _set_fraction(self, f: float) -> None:
-        """The share of the work done (the run reports it, rising)."""
-        v = int(round(max(0.0, min(1.0, f)) * self._BAR))
-        if v > self.progress.value():
-            self.progress.setValue(v)
+        """The share of the work done (the run reports it, rising; the bar
+        eases there)."""
+        self.progress.set_fraction(f)
 
     def _busy(self, on: bool, text: str, ok: bool = True):
         for b in (self.b_convert, self.b_preview):
             b.setEnabled(not on)
         self.status.setText(text)
         # filling as the run reports how far it is (the step named in the
-        # status): empty at the start, full when done, empty again after
-        # an error
-        self.progress.setRange(0, self._BAR)
-        self.progress.setValue(self._BAR if (ok and not on) else 0)
+        # status): empty at the start, eased to full when done, empty again
+        # after an error
+        if on:
+            self.progress.start()
+        elif ok:
+            self.progress.finish()
+        else:
+            self.progress.reset_to(0.0)
         if on:
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.BusyCursor)
         else:
@@ -2314,6 +2470,9 @@ class ConverterDialog(QtWidgets.QDialog):
     def apply_settings(self, d: dict):
         t = d.get("target")
         if t:
+            # chosen once the files offer it (the list is filled from the
+            # files: empty while the window is being opened)
+            self._want_target = t
             i = self.target.findData(t)
             if i >= 0:
                 self.target.setCurrentIndex(i)
@@ -2367,45 +2526,227 @@ class ConverterDialog(QtWidgets.QDialog):
                 self.rom.setCurrentIndex(i)
                 self._want_rom = None
 
+    # ------------------------------------------------- the window's settings
+    # Kept in window.json beside the translator's settings: every field
+    # below (whichever target is chosen), the target last chosen, the tab
+    # shown and the Files tab's output ticks; the job as a preset would
+    # hold it too (read by older versions). Saved shortly after any change,
+    # after a conversion, on closing (title bar, Esc) and when the
+    # application quits with the window open. Paths that belong to one set
+    # of files (the files, binary, output names, original image, patch
+    # binary and name, RomRaider ROM, project binaries ticked) are not kept.
+    _SAVE_DELAY = 400                        # ms after the last change
+
+    def _persisted(self) -> Dict[str, QtWidgets.QWidget]:
+        """The fields kept between sessions: name -> widget."""
+        return {"dynamic": self.dynamic, "existing": self.existing,
+                "port": self.port, "unverified": self.unverified,
+                "xdf_checksum": self.cks, "indexed": self.indexed,
+                "patch_split": self.patch_split, "patch_outside": self.patch_outside,
+                "a2l_addresses": self.a2l_addr,
+                "apply_checksum": self.apply_cks, "apply_record": self.apply_record,
+                "record": self.record, "fill": self.fill, "swap16": self.swap16,
+                "fix_checksum": self.fix_cks,
+                "translate": self.tr_box, "tr_backend": self.tr_backend,
+                "tr_provider": self.tr_provider, "tr_from": self.tr_from,
+                "tr_to": self.tr_to, "tr_mode": self.tr_mode,
+                "filter": self.filter_box, "pattern": self.pattern,
+                "pattern_kind": self.pattern_kind, "categories": self.categories,
+                "extract_format": self.ex_format}
+
+    @staticmethod
+    def _value_of(w):
+        if isinstance(w, QtWidgets.QComboBox):
+            return w.currentText() if w.isEditable() else w.currentData()
+        if isinstance(w, (QtWidgets.QCheckBox, QtWidgets.QGroupBox)):
+            return w.isChecked()
+        if isinstance(w, QtWidgets.QSpinBox):
+            return w.value()
+        return w.text()
+
+    @staticmethod
+    def _set_value(w, v) -> None:
+        """Set a field from a saved value (one of the wrong kind, or a
+        choice the list no longer has, is left alone)."""
+        if isinstance(w, QtWidgets.QComboBox):
+            if w.isEditable():
+                if isinstance(v, str) and v.strip():
+                    w.setCurrentText(v)
+            elif v is not None:
+                i = w.findData(v)
+                if i >= 0:
+                    w.setCurrentIndex(i)
+        elif isinstance(w, (QtWidgets.QCheckBox, QtWidgets.QGroupBox)):
+            if isinstance(v, bool):
+                w.setChecked(v)
+        elif isinstance(w, QtWidgets.QSpinBox):
+            if isinstance(v, int) and not isinstance(v, bool):
+                w.setValue(v)
+        elif isinstance(v, str):
+            w.setText(v)
+
+    def _fields(self) -> dict:
+        """Every field's value as set, whichever target is chosen."""
+        o = {k: self._value_of(w) for k, w in self._persisted().items()}
+        if o["xdf_checksum"] == "dll":                 # (the file dialog's entry)
+            o["xdf_checksum"] = "none"
+        dll = self._dll_paths.get(o["xdf_checksum"])
+        if dll:
+            o["xdf_checksum_dll"] = dll
+        # a size / offset filled in from the files is theirs, not a setting
+        o["size"] = "" if self.size.text() == self._auto_size else self.size.text()
+        o["base"] = "" if self.base.text() == self._auto_base else self.base.text()
+        return o
+
+    def _apply_fields(self, o: dict) -> None:
+        self._restoring = True
+        try:
+            ck, dll = o.get("xdf_checksum"), o.get("xdf_checksum_dll")
+            if ck and self.cks.findData(ck) < 0 and isinstance(dll, str) \
+                    and os.path.isfile(dll):
+                # a plugin picked from a DLL file last time: back in the list
+                from .convert import checksums as K
+                try:
+                    plug = K.parse_plugin(dll)
+                except OSError:
+                    plug = None
+                if plug is not None:
+                    for mi in range(len(plug.methods)):
+                        if plug.choice(mi) == ck:
+                            self._add_dll_choice(plug, mi, dll)
+            for k, w in self._persisted().items():
+                if k in o and not (w is self.cks and o[k] == "dll"):
+                    self._set_value(w, o[k])
+            for edit, k in ((self.size, "size"), (self.base, "base")):
+                if isinstance(o.get(k), str):
+                    edit.setText(o[k])
+        finally:
+            self._restoring = False
+
+    # (the earlier names: tests and older code call them)
+    def _format_options(self) -> dict:
+        return self._fields()
+
+    def _apply_format_options(self, o: dict) -> None:
+        self._apply_fields(o)
+
+    def _watch_changes(self) -> None:
+        """Save the settings shortly after any of them changes."""
+        self._dirty = False
+        self._save_timer = QtCore.QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(self._SAVE_DELAY)
+        self._save_timer.timeout.connect(self._flush_state)
+        for w in list(self._persisted().values()) + [self.size, self.base]:
+            if isinstance(w, QtWidgets.QComboBox):
+                w.currentIndexChanged.connect(self._changed)
+                if w.isEditable():
+                    w.editTextChanged.connect(self._changed)
+            elif isinstance(w, (QtWidgets.QCheckBox, QtWidgets.QGroupBox)):
+                w.toggled.connect(self._changed)
+            elif isinstance(w, QtWidgets.QSpinBox):
+                w.valueChanged.connect(self._changed)
+            else:
+                w.textChanged.connect(self._changed)
+        self.target.currentIndexChanged.connect(self._target_picked)
+        self.tabs.currentChanged.connect(self._changed)
+        self.out_on.toggled.connect(self._changed)
+        self.bin_on.toggled.connect(lambda on: self._emb_toggled("binary", on))
+        self.mpc_on.toggled.connect(lambda on: self._emb_toggled("mpc", on))
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            # the main window closed (or the app quit) with this one open:
+            # no closeEvent comes, the settings are saved all the same
+            app.aboutToQuit.connect(self._flush_state)
+
+    def _target_picked(self, *_):
+        """A target chosen (not one the files' list fell back to): wanted
+        from now on, whenever the files offer it."""
+        t = self.target.currentData()
+        if t:
+            self._want_target = t
+        self._changed()
+
+    def _changed(self, *_):
+        self._dirty = True
+        t = getattr(self, "_save_timer", None)
+        if t is not None:
+            t.start()
+
+    def _flush_state(self) -> None:
+        """Save now if anything changed since the last save."""
+        try:
+            if getattr(self, "_dirty", False):
+                self._save_state()
+            self._keep_size()
+        except RuntimeError:                 # (the window already deleted)
+            pass
+
     def _save_state(self):
+        self._dirty = False
+        t = getattr(self, "_save_timer", None)
+        if t is not None:
+            t.stop()
         try:
             d = self.job().to_dict()
-            for k in ("sources", "out", "binary"):
-                d.pop(k, None)
-            d.get("options", {}).pop("reference", None)
-            d.get("options", {}).pop("rom", None)          # belongs to one file
-            d.get("options", {}).pop("patch_with", None)
-            d.get("options", {}).pop("patch_title", None)
-            d.get("options", {}).pop("extract", None)       # picks of these files
-            if d.get("translate"):
-                d["translate"].pop("rows", None)
-            d["window"] = {"tab": self.tabs.currentIndex(),
-                           "convert": self.out_on.isChecked(),
-                           "binary": self.bin_on.isChecked() or not self.bin_on.isEnabled()
-                           and self._win.get("binary", True),
-                           "mpc": self.mpc_on.isChecked() or not self.mpc_on.isEnabled()
-                           and self._win.get("mpc", True)}
+        except Exception:                                       # noqa: BLE001
+            d = {}                           # (a field being typed: the rest is kept)
+        for k in ("sources", "out", "binary"):
+            d.pop(k, None)
+        opts = d.get("options", {})
+        for k in ("reference", "rom", "patch_with", "patch_title", "extract"):
+            opts.pop(k, None)                # belong to these files
+        if d.get("translate"):
+            d["translate"].pop("rows", None)
+        d["target"] = getattr(self, "_want_target", None) or \
+            self.target.currentData() or d.get("target")
+        # every field, not only the chosen target's (they are all editable:
+        # set for a format before choosing it)
+        d["fields"] = self._fields()
+        d["window"] = {"tab": self.tabs.currentIndex(),
+                       "convert": self.out_on.isChecked(),
+                       "binary": bool(self._emb_want.get("binary", True)),
+                       "mpc": bool(self._emb_want.get("mpc", True))}
+        path = _cfg_path(_STATE)
+        try:
             os.makedirs(T.config_dir(), exist_ok=True)
-            with open(_cfg_path(_STATE), "w", encoding="utf-8") as fh:
+            # whole or not at all: written beside, then put in its place
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(d, fh, indent=1)
-        except (OSError, ValueError):
+            os.replace(tmp, path)
+        except (OSError, ValueError, TypeError):
             pass
 
     def _restore_state(self):
         self._win = {}
+        self._emb_want = {}
         try:
             with open(_cfg_path(_STATE), encoding="utf-8") as fh:
                 d = json.load(fh)
         except (OSError, ValueError):
             return
-        self.apply_settings(d)
+        if not isinstance(d, dict):
+            return
+        self._restoring = True
+        try:
+            self.apply_settings(d)           # the job (older versions' only record)
+        finally:
+            self._restoring = False
+        # every field: "formats" from the version before "fields"
+        o = dict(d.get("formats") or {})
+        o.update(d.get("fields") or {})
+        self._apply_fields(o)
         win = d.get("window") or {}
         self._win = win
-        self.tabs.setCurrentIndex(int(win.get("tab", 0) or 0))
+        try:
+            self.tabs.setCurrentIndex(int(win.get("tab", 0) or 0))
+        except (TypeError, ValueError):
+            pass
         self.out_on.setChecked(bool(win.get("convert", True)))
         # a project's binary and MPC are ticked when it brings them, unless
         # they were unticked last time
-        self._emb_seen = {k for k in ("binary", "mpc") if win.get(k) is False}
+        self._emb_want = {k: bool(win[k]) for k in ("binary", "mpc") if k in win}
 
     # ---------------------------------------------------------- size
     _GEOM_KEY = "convert/geometry"
@@ -2465,6 +2806,8 @@ class ConverterDialog(QtWidgets.QDialog):
 
     def closeEvent(self, ev):
         self._keep_size()
+        if getattr(self, "_dirty", False):
+            self._save_state()               # (a change still waiting for its timer)
         self.closeEvent_watch()
         iw = getattr(self, "_info_worker", None)
         if iw is not None:

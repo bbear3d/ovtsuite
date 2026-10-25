@@ -326,7 +326,7 @@ def discover(verify_files: bool = True) -> Dict[str, List[Installed]]:
                     or not os.path.isdir(root):
                 continue
             inst = read_installed(root, scope, verify_files)
-            if inst is not None:
+            if inst is not None and not superseded(inst):
                 found.setdefault(inst.manifest.id, []).append(inst)
     for mid, lst in found.items():
         # at one version a compiled copy beats a source one (left in a folder
@@ -340,6 +340,29 @@ def discover(verify_files: bool = True) -> Dict[str, List[Installed]]:
 # ------------------------------------------------------------------ scrubbing
 #: What is code in an installed module's package folder.
 _CODE_SUFFIX = (".py", ".pyc", ".pyo")
+
+
+#: Left in a source copy :func:`scrub_source` emptied of its code (one a
+#: module setup installed keeps its uninstaller): the copy is no module.
+SUPERSEDED = "SUPERSEDED"
+
+
+def superseded(inst: "Installed") -> bool:
+    """A source copy whose code :func:`scrub_source` removed once a compiled
+    copy took over: no module, whatever else it still holds (its help, data
+    and the setup's uninstaller). Marked by :data:`SUPERSEDED`; a copy
+    emptied before the marker existed is known by every code file its
+    manifest lists being gone. Reporting it as a damaged install would say
+    the module needs reinstalling where it is only gone."""
+    root = inst.root
+    if os.path.isfile(os.path.join(root, SUPERSEDED)):
+        return True
+    man = inst.manifest
+    if not carries_source(man):
+        return False
+    code = [f for f in man.files if f.endswith(_CODE_SUFFIX)]
+    return bool(code) and not any(
+        os.path.exists(os.path.join(root, *f.split("/"))) for f in code)
 
 
 def carries_source(man: "_pkg.Manifest") -> bool:
@@ -386,6 +409,9 @@ def _remove_copy(inst: Installed) -> str:
                     n += 1
             if os.path.basename(d) == "__pycache__" and not os.listdir(d):
                 os.rmdir(d)
+        with open(os.path.join(root, SUPERSEDED), "w", encoding="utf-8") as fh:
+            fh.write("The code of this copy was removed: a compiled copy of "
+                     "the module replaced it.\n")
         return "source removed (%d files; its uninstaller stays)" % n
     gone = root + ".removing"
     os.replace(root, gone)
