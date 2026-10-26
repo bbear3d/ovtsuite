@@ -105,38 +105,23 @@ on its own).
   WinOLS, EcuFlash/RomRaider, DCM/CDFX, BIN, HEX and S-record, with watch
   folders and a right-click menu.
 - **Gearboxes:** full-load shift points from the engine ECU's torque,
-  part-load strategies with log replay, fault-code editors for the ZF 6HP and
-  8HP, and the comparison in the shift map and lock-up editors.
+  part-load strategies with log replay, and fault-code editors for the ZF 6HP
+  and 8HP.
 
-**Flashing**
+**Also new**
 
-- Checksums are corrected on the copy sent **before every write** (EDC16,
-  EDC15, ZF 6HP, VDO), and a correction that fails stops the write before
-  anything connects.
-- An EDC16 block the ECU refuses now stops the write with the reason, and
-  Cancel works while the flasher waits on the ECU.
-- EDC16 over CAN (TP 2.0) writes at the pace the ECU advertises and backs off
-  on its own if the ECU can't keep up; reads re-read a damaged packet instead
-  of failing or padding.
-- EDC16 erase signature chosen from what the ECU reports (fixes ECUs that
-  refused the erase, such as some 038906016K).
-- Faster and sturdier K-line over J2534 for EDC15 and EDC16; EDC15 read and
-  write over J2534.
+- Comparison shown below, beside or in the same grid as the table (Ctrl+J),
+  with cells copied either way.
+- Logger: your own presets, a live readings-a-second readout and *Log every
+  cell of this group*.
+- WinOLS map pack export is no longer experimental: the packs open in WinOLS.
+- Other usability and UI improvements throughout.
 
-**Editor, projects and logging**
+**Improvements and fixes**
 
-- Comparison shown below, beside or in the same grid as the table (Ctrl+J);
-  copy selected cells to or from the comparison; tables of any size scroll
-  together.
-- Hex editor right-click menu (copy, paste, copy from comparison, revert,
-  go to table).
-- Patches carry resized tables, and apply across a resize.
-- Logger: user presets, a live readings-a-second readout, a tab's log kept
-  when it stops, *Log every cell of this group*.
-- Project panel: remove several logs, patches or attachments at once; a read
-  opened as a new project is named after its part number and software.
-- Measuring-block, fault-code and EEPROM editors with Apply, Cancel and OK,
-  one undo step per Apply, and the same cell colours as the map editor.
+Various bug fixes and improvements to the EDC15 / EDC16 flasher (K-line, CAN
+and J2534, with checksums corrected before every write), data logging, the
+fault-code and measuring-block editors, comparisons, patches and projects.
 
 The full list of changes is in each release's notes on the
 [Releases](https://github.com/bbear3d/ovtsuite/releases) page.
@@ -280,7 +265,7 @@ has been done on **real control units**, in cars or on the bench:
 | VDO cluster EEPROM read/write | ⚠️ Not yet tested on hardware |
 | Aisin 09D read | ⚠️ Not yet tested on hardware (write is disabled) |
 | C6 ESP8 ABS and C6 CAN cluster dumps | ⚠️ Not yet tested on hardware |
-| EDC15 / EDC16 fault-code (DTC) editor | ⚠️ Alpha: switching codes off is not yet confirmed working |
+| EDC15 / EDC16 fault-code (DTC) editor: switching codes off | ✅ Tested |
 | Fault code report (status decoding worked out from the EDC15 / EDC16 firmware) | ⚠️ Not yet checked against a car's codes |
 | Injector setup: PD injectors and nozzles, VP37 pump head and nozzles (experimental) | ⚠️ Not tested on a car |
 | Feature switches, end of injection, optimised logging blocks | ⚠️ File changes only, not yet confirmed on a car |
@@ -363,8 +348,8 @@ project or binary open:
 
 - **Definitions** between TunerPro XDF, ASAP2 A2L, Bosch DAMOS, WinOLS
   projects (read) and map packs, EcuFlash / RomRaider XML and OVT-Suite's own
-  JSON and CSV. WinOLS maps keep their titles, folders, decimals and units, and WinOLS
-  map packs open in WinOLS.
+  JSON and CSV. WinOLS maps keep their titles, folders, decimals and units,
+  and WinOLS map packs open in WinOLS.
 - **Calibration values** as DCM and CDFX, read from or written into a binary.
 - **Binaries** between BIN, Intel HEX and Motorola S-record; the images and
   MPC embedded in a WinOLS project can be extracted.
@@ -606,8 +591,7 @@ text or HTML.
   <img src="ovtsuite/data/help/images/tools-dtc.png" alt="The DTC / Fault-Path editor on an EDC16 file, one code switched off against the comparison" width="700">
 </p>
 
-- **DTC / Fault-Path editor** (EDC15 / EDC16, **alpha**: switching codes off
-  is not yet confirmed working on a car):
+- **DTC / Fault-Path editor** (EDC15 / EDC16):
   - switch codes and their lamps off and on, per dataset or coding copy;
   - find a code by either VAG numbering or its P-code;
   - restore all from stock;

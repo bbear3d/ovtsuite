@@ -981,7 +981,8 @@ def to_definition(wf: WinOlsFile, title: str = "") -> Definition:
                      categories=cats,
                      x=_axis_def(rec.x, cols) if k != "constant" else None,
                      y=_axis_def(rec.y, rows) if k == "map" else None,
-                     # WinOLS's own decimal places, as WinOLS's map view shows them
+                     # WinOLS's own decimal places, as WinOLS's map
+                     # view shows them
                      decimals=rec.precision if 0 < rec.precision < 16 else None)
         # the record it came from (``wf.records[i]``): a map pack written
         # from the file passes its records through (convert.kp_passthrough)

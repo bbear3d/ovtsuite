@@ -27,8 +27,11 @@ M235 = os.path.join(REF, "WinOLS-formats", "f440_M235i_translated_axis_texts.ols
 BKC = os.path.join(REF, "A2L", "2007_VW_DAMOS_Golf_Original_03G906016B__5645_"
                    "0281011478_369564_BKC_1.9_104.7PS.bin.ols")               # 2 areas
 GQ = os.path.join(REF, "EDC15", "038906019GQ.ols")
-PAIR = os.path.join("C:\\Claude", "WinOLS samples", "Tests", "OLS-tests",
-                    "( 038906019GQ  0281010941 (Original) - 363213)")
+try:                                    # reference files outside the repository
+    from _private_refs import EXPECTED_XDF_MARK, WINOLS_SAMPLES
+except ImportError:                     # (not published: those cases skip)
+    EXPECTED_XDF_MARK, WINOLS_SAMPLES = None, ""
+PAIR = os.path.join(WINOLS_SAMPLES, "( 038906019GQ  0281010941 (Original) - 363213)")
 
 
 def _data(path):
@@ -213,8 +216,8 @@ def test_ols_categories_match_the_expected_xdf(tmp_path):
     """The sample pair: an EDC15 project and the XDF expected of it. Three code blocks (Codeblock 0-2) numbered first, each map in
     its block (CATEGORYMEM 0) and its WinOLS folder (CATEGORYMEM 1), the
     folders numbered by name. The one name that differs is the folder
-    WinOLS calls "My maps", which the expected XDF names from its maps' commonest
-    word ("LLR").
+    WinOLS calls "My maps", which the expected XDF names from its maps'
+    commonest word ("LLR").
 
     The expected XDF is whichever copy carries the expected mark in its first line: the pair's XDF, or Reference/EDC15/038906019GQ.xdf -- an
     XDF OVT-Suite exported over the pair's is not it."""
@@ -225,7 +228,7 @@ def test_ols_categories_match_the_expected_xdf(tmp_path):
         if os.path.isfile(cand):
             with open(cand, encoding="latin-1") as fh:
                 text = fh.read()
-            if "expected-mark" in text[:200]:
+            if EXPECTED_XDF_MARK and EXPECTED_XDF_MARK in text[:200]:
                 ref = text
                 break
     if ref is None:
@@ -245,7 +248,8 @@ def test_ols_categories_match_the_expected_xdf(tmp_path):
 
 def test_categories_of_a_project_with_one_code_block(tmp_path):
     """No code block category when the maps are listed once; folders by
-    name; German letters kept as character references (as TunerPro writes them), not lost as '?'."""
+    name; German letters kept as character references (as TunerPro
+    writes them), not lost as '?'."""
     from ovtsuite import convert as C
     from ovtsuite.xdf_export import _esc
     _data(M235)
@@ -265,9 +269,8 @@ def test_winols_xdf_fields_match_the_expected_xdf(tmp_path):
     axis names, WinOLS's decimals, the range, signedness, umlauts kept."""
     import re
     from ovtsuite import convert as C
-    gq = os.path.join(r"C:\Claude\WinOLS samples\Tests\OLS-tests",
-                      "( 038906019GQ  0281010941 (Original) - 363213).ols")
-    if not os.path.exists(gq):
+    gq = PAIR + ".ols"
+    if not WINOLS_SAMPLES or not os.path.exists(gq):
         pytest.skip("needs the sample WinOLS project")
     out = str(tmp_path / "o.xdf")
     C.run(C.Job(sources=[gq], target="xdf", out=out, self_check=False))

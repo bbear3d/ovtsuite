@@ -29,12 +29,16 @@ from ovtsuite.definitions import winols_write as W
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REF = os.path.join(ROOT, "Reference")
+try:                                    # reference files outside the repository
+    from _private_refs import WINOLS_SAMPLES
+except ImportError:                     # (not published: that case skips)
+    WINOLS_SAMPLES = ""
 GENUINE = [
     os.path.join(REF, "A2L", "golf5_bxe.kp"),
     os.path.join(REF, "Binaries", "ZF5HP24", "Definitions",
                  "4B0927156FB_RS6_5HP24.kp"),
     # outside the repository: used when present
-    r"C:\Claude\WinOLS samples\Tests\OLS-tests\Audi_A4_MAPPAK_360654.kp",
+    os.path.join(WINOLS_SAMPLES, "Audi_A4_MAPPAK_360654.kp"),
 ]
 GQ = os.path.join(REF, "EDC15", "038906019GQ.ols")
 

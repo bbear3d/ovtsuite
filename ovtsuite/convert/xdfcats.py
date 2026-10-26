@@ -6,8 +6,8 @@
 """An XDF's categories renumbered into a given order.
 
 The XDF writer numbers categories as the tables first use them. A WinOLS
-project's categories read best in the order WinOLS gives them
-(and TunerPro lists them by number): its code blocks first, then its folders
+project's categories read best in WinOLS's own order (and TunerPro lists
+them by number): its code blocks first, then its folders
 by name -- :func:`ovtsuite.definitions.winols.category_order`, which the
 definition carries as ``info["category_order"]``. This rewrites the
 ``CATEGORY`` list and every ``CATEGORYMEM`` reference to match; a table's

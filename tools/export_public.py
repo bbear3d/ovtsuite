@@ -89,6 +89,7 @@ BASE_TESTS_EXCLUDE = [
     "tests/test_edc15_fnw_sets.py",        # private tools/add_soi_set_edc15.py
     "tests/test_eoi16_corrections.py",     # private tools/add_soicor_edc16.py
     "tests/test_eoi16_fuel.py",            # private tools/add_fuelcor_edc16.py
+    "tests/_private_refs.py",              # where private reference files are
 ]
 
 #: Files of the VDO export outside the module's own package and data.
@@ -119,6 +120,10 @@ NEVER = [
 ALLOWED = ["%s/data/frf.key" % PKG]
 #: Text that must never appear in an exported file.
 SECRET_TEXT = re.compile(rb"-----BEGIN (?:ENCRYPTED |OPENSSH |RSA |EC )?PRIVATE KEY-----")
+
+#: Names of unreleased projects that published files must not mention
+#: (written so this file does not match itself).
+UNRELEASED_TEXT = re.compile(rb"(?i)UNRELEASED-NAME")
 
 #: Base files that are fine to publish only if their source material allows:
 #: printed as a reminder by every base export.
@@ -260,8 +265,11 @@ def _leaks(which: str, paths, owners) -> list:
         if which != "base" and owner != which:
             bad.append("%s: not part of the %s module" % (p, OPEN_MODULES[which]["name"]))
         with open(os.path.join(ROOT, p), "rb") as fh:
-            if SECRET_TEXT.search(fh.read()):
-                bad.append("%s: contains a private key" % p)
+            data = fh.read()
+        if SECRET_TEXT.search(data):
+            bad.append("%s: contains a private key" % p)
+        if UNRELEASED_TEXT.search(data):
+            bad.append("%s: names an unreleased project" % p)
     return bad
 
 

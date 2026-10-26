@@ -722,8 +722,11 @@ def test_ols_to_kp_keeps_the_projects_folders_and_names_what_it_wrote(app, tmp_p
     d.close()
 
 
-GQ_OLS = os.path.join("C:\\", "Claude", "WinOLS samples", "Tests", "OLS-tests",
-                      "( 038906019GQ  0281010941 (Original) - 363213).ols")
+try:                                    # reference files outside the repository
+    from _private_refs import WINOLS_SAMPLES
+except ImportError:                     # (not published: that case skips)
+    WINOLS_SAMPLES = ""
+GQ_OLS = os.path.join(WINOLS_SAMPLES, "( 038906019GQ  0281010941 (Original) - 363213).ols")
 
 
 def test_ols_to_kp_with_binary_and_mpc_passes_the_project_through(app, tmp_path):
@@ -732,7 +735,7 @@ def test_ols_to_kp_with_binary_and_mpc_passes_the_project_through(app, tmp_path)
     project's folders (translated) and its 17292 maps with the project's
     factors, offsets and addresses; the summary names the .kp first, then
     the binary and MPC, each by name. Written under tmp_path only."""
-    if not os.path.isfile(GQ_OLS):
+    if not WINOLS_SAMPLES or not os.path.isfile(GQ_OLS):
         pytest.skip("reference file missing")
     from ovtsuite.definitions import winols as W
     from ovtsuite.gui_convert import ConverterDialog

@@ -104,6 +104,25 @@ for rel in rels:
     finally:
         sys.stderr = err
 
+# A Python built with gcc (uv's, python.org's) names gcc-only flags in its
+# CFLAGS / LDSHARED; where cc is an older clang (clang 10 on Ubuntu 20.04)
+# every file then fails with "unknown argument". Drop them for clang.
+GCC_ONLY = ("-fstack-clash-protection", "-mno-omit-leaf-frame-pointer")
+if os.name != "nt":
+    import subprocess, sysconfig
+    from distutils import sysconfig as dsc
+    cc = (os.environ.get("CC") or sysconfig.get_config_var("CC") or "cc").split()[0]
+    try:
+        clang = "clang" in subprocess.run([cc, "--version"], capture_output=True,
+                                          text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        clang = False
+    if clang:
+        for cv in (sysconfig.get_config_vars(), dsc.get_config_vars()):
+            for k, v in list(cv.items()):
+                if isinstance(v, str) and any(f in v for f in GCC_ONLY):
+                    cv[k] = " ".join(w for w in v.split() if w not in GCC_ONLY)
+
 def build(lst):
     d = Distribution({"ext_modules": lst, "script_name": "build", "script_args": []})
     cmd = d.get_command_obj("build_ext")

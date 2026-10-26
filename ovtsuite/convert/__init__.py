@@ -560,7 +560,7 @@ def prepare(job: Job, warnings: Optional[List[str]] = None, progress=None,
 
 
 def _winols_titles(ents, tag: str) -> None:
-    """A WinOLS map in an XDF: titled
+    """A WinOLS map in an XDF, as WinOLS users expect to read it: titled
     by its description (its name when it has none), described as
     ``OLS: <name> | <description> | Z: <value label> | X: .. | Y: ..`` --
     so TunerPro's tree reads in words and the identifier is still there."""

@@ -13,7 +13,8 @@ then A2L functional category:
     <tier> / <category> / <entity>
 
 TunerPro is an ANSI application: a Latin-1 character (an umlaut, a degree
-sign) is written as a character reference (``&#228;``), as TunerPro writes them; the few others are transliterated.
+sign) is written as a character reference (``&#228;``), as TunerPro writes
+them; the few others are transliterated.
 
 Each value carries its display precision (``decimalpl`` and ``outputtype``:
 the definition's decimal places, else as many as the factor needs), its
