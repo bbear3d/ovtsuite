@@ -41,6 +41,35 @@ def tools() -> List[Tuple[object, object]]:
     return out
 
 
+def logtune_for(ws):
+    """The first module log analysis (``logtune`` hook) that applies to tab
+    ``ws``, or None."""
+    if ws is None or getattr(ws, "primary", None) is None:
+        return None
+    for spec in _registry.installed().values():
+        if not getattr(spec, "logtune", None):
+            continue
+        try:
+            items = spec.call("logtune") or ()
+        except Exception:                   # a broken module adds nothing
+            continue
+        for t in items:
+            try:
+                if not callable(getattr(t, "run", None)):
+                    continue
+                if t.applies is not None:
+                    ok = bool(t.applies(ws))
+                else:                       # as applies(): the module's own platforms
+                    p = ws.primary
+                    ok = getattr(p, "platform", "") in spec.platforms and \
+                        getattr(p, "support", "full") == "full"
+                if ok:
+                    return t
+            except Exception:               # noqa: BLE001
+                continue
+    return None
+
+
 def applies(win, spec, tool) -> bool:
     """Is ``tool`` for the tab in front of ``win`` (which has a file)?"""
     ws = win.current
@@ -74,4 +103,4 @@ def add(win, menu, section: str) -> list:
     return acts
 
 
-__all__ = ["SECTIONS", "add", "applies", "tools"]
+__all__ = ["SECTIONS", "add", "applies", "logtune_for", "tools"]

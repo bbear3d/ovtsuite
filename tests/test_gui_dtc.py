@@ -533,3 +533,134 @@ def test_selected_text_uses_the_selected_text_colour(app):
     opt.state |= QtWidgets.QStyle.StateFlag.State_Selected
     selection_text(opt)
     assert opt.palette.color(QtGui.QPalette.ColorRole.Text) == QtGui.QColor(255, 255, 255)
+
+
+def _sel_rows(tbl):
+    return sorted({ix.row() for ix in tbl.selectionModel().selectedIndexes()})
+
+
+def _click(app, tbl, r, c, mod=QtCore.Qt.KeyboardModifier.NoModifier):
+    from PySide6.QtTest import QTest
+    rect = tbl.visualRect(tbl.model().index(r, c))
+    QTest.mouseClick(tbl.viewport(), QtCore.Qt.MouseButton.LeftButton,
+                     mod, rect.center())
+    app.processEvents()
+
+
+def test_comparison_mirrors_every_selected_row(app, own_fd):
+    """Three rows selected in the primary are three rows selected in the
+    comparison (it used to select only the current one), either way round,
+    and still after a sort moves them."""
+    from ovtsuite.gui_dtc import DtcDialog
+    original = own_fd.sibling(bytes(own_fd.binfile.data), "FD - as read")
+    d = DtcDialog(own_fd, compare=original)
+    d.show()
+    app.processEvents()
+    t, ct = d.table, d.cmp_table
+    assert t.rowCount() > 6
+    ctrl = QtCore.Qt.KeyboardModifier.ControlModifier
+    desc = t.columnCount() - 1          # not the check box: no toggling
+    _click(app, t, 1, desc)
+    _click(app, t, 3, desc, ctrl)
+    _click(app, t, 5, desc, ctrl)
+    assert _sel_rows(t) == [1, 3, 5]
+    assert _sel_rows(ct) == [1, 3, 5]
+    assert ct.currentRow() == 5
+    _click(app, t, 2, desc)
+    _click(app, t, 4, desc, QtCore.Qt.KeyboardModifier.ShiftModifier)
+    assert _sel_rows(ct) == [2, 3, 4]
+    _click(app, ct, 0, desc)
+    _click(app, ct, 6, desc, ctrl)
+    assert _sel_rows(t) == [0, 6] == _sel_rows(ct)
+    keys = {t.item(r, 0).data(0x100) for r in _sel_rows(t)}
+    t.sortItems(1, QtCore.Qt.SortOrder.DescendingOrder)
+    app.processEvents()
+    assert {t.item(r, 0).data(0x100) for r in _sel_rows(t)} == keys
+    assert {ct.item(r, 0).data(0x100) for r in _sel_rows(ct)} == keys
+    d.close()
+
+
+def test_check_box_on_a_selected_row_stays_readable(app, own_fd):
+    """A selected row's "On" box is drawn unselected, with the table's own
+    palette, on a chip of the base colour -- not a pale tick on the solid
+    accent. Unselected rows and cells without a box are left to the style."""
+    from PySide6 import QtGui
+    from ovtsuite.gui_dtc import DtcDialog
+    from ovtsuite.gui_cellmarks import CellDelegate, check_on_selection
+    d = DtcDialog(own_fd)
+    d.show()
+    app.processEvents()
+    t = d.table
+    dlg = t.itemDelegate()
+    assert isinstance(dlg, CellDelegate)
+    S = QtWidgets.QStyle.StateFlag
+    r = next(r for r in range(t.rowCount())
+             if t.item(r, 0).checkState() == QtCore.Qt.CheckState.Checked)
+    t.selectRow(r)
+    app.processEvents()
+
+    def opt_for(row, col, selected):
+        o = QtWidgets.QStyleOptionViewItem()
+        t.initViewItemOption(o)
+        o.rect = t.visualRect(t.model().index(row, col))
+        if selected:
+            o.state |= S.State_Selected
+        dlg.initStyleOption(o, t.model().index(row, col))
+        return o
+    got = check_on_selection(opt_for(r, 0, True), t.model().index(r, 0))
+    assert got is not None
+    chip, ind = got
+    assert not ind.state & S.State_Selected and ind.state & S.State_On
+    assert ind.palette.color(QtGui.QPalette.ColorRole.Base) ==         t.palette().color(QtGui.QPalette.ColorRole.Base)
+    assert chip.contains(ind.rect)
+    assert check_on_selection(opt_for(r, 0, False), t.model().index(r, 0)) is None
+    assert check_on_selection(opt_for(r, 1, True), t.model().index(r, 1)) is None
+    # drawn: the chip shows the base colour around the box, not the accent
+    img = QtGui.QImage(t.viewport().size(), QtGui.QImage.Format.Format_ARGB32)
+    img.fill(0)
+    p = QtGui.QPainter(img)
+    o = opt_for(r, 0, True)
+    dlg.paint(p, o, t.model().index(r, 0))
+    p.end()
+    corner = img.pixelColor(chip.left() + 1, chip.center().y())
+    assert corner == t.palette().color(QtGui.QPalette.ColorRole.Base)
+    assert corner != o.palette.color(QtGui.QPalette.ColorRole.Highlight)
+    d.close()
+
+
+def test_comparison_table_has_copy_and_copy_to_primary(app, own_fd, monkeypatch):
+    """The read-only comparison's right-click menu: Copy to primary (the
+    selected rows' state, as Copy comparison state to primary), the
+    comparison's codes to the clipboard, Select all."""
+    _no_question(monkeypatch)
+    from ovtsuite.gui_dtc import DtcDialog
+    s = own_fd
+    original = s.sibling(bytes(s.binfile.data), "FD - as read")
+    d = DtcDialog(s, compare=original)
+    d.show()
+    ct = d.cmp_table
+    assert ct.contextMenuPolicy() == QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+    key = _enabled_keys(d, 1)[0]
+    _untick(app, d, key)
+    r = _row_of(d, key)
+    ct.selectRow(r)
+    assert [fp is d.dtc.paths[key] for fp in d._selected()] == [True]
+    got = []
+
+    class Menu(QtWidgets.QMenu):
+        def exec(self, *a):
+            got.append({x.text(): x for x in self.actions() if not x.isSeparator()})
+    monkeypatch.setattr(QtWidgets, "QMenu", Menu)
+    d._cmp_menu(ct.visualRect(ct.model().index(r, 1)).center())
+    monkeypatch.setattr(QtWidgets, "QMenu", Menu.__mro__[1])
+    acts = got[-1]
+    assert list(acts) == ["Copy to primary (1 row(s))", "Copy codes to clipboard",
+                          "Select all"]
+    acts["Copy codes to clipboard"].trigger()
+    cfp = d._cmp_of(key, d.dtc.paths[key])
+    assert QtWidgets.QApplication.clipboard().text().startswith(cfp.dfp + "\t")
+    assert not d.dtc.is_enabled(d.dtc.paths[key])
+    acts["Copy to primary (1 row(s))"].trigger()
+    app.processEvents()
+    assert d.dtc.is_enabled(d.dtc.paths[key])
+    d.cancel()

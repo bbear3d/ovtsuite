@@ -171,6 +171,86 @@ brought in such as WinOLS's `Fuel`) is kept and shown under its own name.
 Edited in File > Project information... and asked for when a new project is
 first saved.
 
+### Fitted hardware
+
+`sets[].hardware` (kept in `BinarySet.extra`, so older readers carry it) lists
+what is fitted to the car the set's control unit drives, oldest first
+(`ovtsuite/project/hardware.py`):
+
+```json
+"hardware": [{"id": "5e1f0c9a2b", "kind": "ve_pump",
+              "summary": "11 mm pump head, .216 - AXG (T4) nozzles",
+              "parts": {"plunger_mm": 11.0, "nozzle": "p1019"},
+              "since": "2026-10-24T21:40:00", "checkpoint": "c0ffee0001",
+              "pending": true, "branch": "f00dfeed01",
+              "source": "injector-setup", "note": "", "recorded": "..."}]
+```
+
+`kind` is `ve_pump` (EDC15 VE pump head and nozzles) or `pd_injectors`
+(unit injectors); `parts` is the setup tool's own description and is never
+interpreted by the base app (a record entered by hand has none, only
+`summary`). `since` is when the car got it -- logs are sorted into before
+and after with it. `checkpoint` is the version the setup was made on: with
+`pending` the calibration was in the edits not yet saved then, so it belongs
+to the versions *after* that checkpoint; without it, to that version too;
+with no checkpoint the record says only what the car has. A version is
+calibrated for the newest record (per kind) anchored on its lineage. Unknown
+keys and records a reader cannot parse are kept as they are.
+
+A record never names a version that is gone:
+
+* **Merging versions** (`Project.merge_checkpoints`) moves a record on a
+  version merged away to the newest of the run, with `pending` false. That
+  keeps its meaning exactly: the versions merged away each have one child and
+  are no branch head, so the only versions left that descend from the
+  record's version are the newest and its descendants -- what "this version
+  and later" and "the versions after it" both mean now. The merge is refused
+  only when the move would change which record a version is set up for: two
+  records of one kind in the run end up on one version, where the tie goes by
+  `recorded` instead of by place in the history. (An original file or a flash
+  record on a version inside the run still refuses the merge.)
+* **A three-way merge** with another program's save re-points them too (see
+  9.1).
+* Deleting a branch removes no version, so no record dangles; a record's
+  `branch` (where the setup was made) may then name a branch that is gone,
+  which nothing reads but the record's own display. Removing a set removes
+  its records with it.
+
+### Logging blocks
+
+`sets[].logging_blocks` (kept in `BinarySet.extra`) records what **Tools >
+Build logging blocks** wrote into the set's measuring blocks, so the data
+logger can read each preset from its optimised blocks
+(`ovtsuite/datalog/blockpack/manifest.py`, docs/LOGGING_BLOCKS_PLAN.md):
+
+```json
+"logging_blocks": {"format": 1, "platform": "edc16",
+  "identity": ["03G906016LQ 0159"], "created": "...", "app": "OVT-Suite 0.5.0",
+  "empty": [37, 0],
+  "cells": [{"group": 58, "slot": 4, "value": 7, "signal": "InjCtl_qSetUnBal",
+             "label": "...", "unit": "mg/stroke", "fid": 36, "a": 10,
+             "kind": "fill", "presets": ["boost"]}],
+  "presets": [{"key": "boost", "title": "Boost control (target + actuator pilot)",
+               "content": "9f2c...", "groups": [58], "baseline": [1, 10, 11]}]}
+```
+
+* `cells`: each cell written -- `group` and `slot` (0-based, in the order the ECU
+  sends cells), the `value` written (an ESB index on EDC16; `{dataset: index}`
+  on EDC15, one per dataset), its `signal`, the `fid` / `a` bytes the ECU sends
+  with it (`a` absent for text formulas), `kind` (`new` / `fill`) and the
+  `presets` that read it. The value before was always the empty id (255).
+* `presets`: per preset (a recipe key, or `user:<name>`), the `groups` it reads,
+  the `baseline` groups it read before, and `content`, a digest of what the
+  preset asks for -- a preset edited since no longer matches it.
+* `empty`: the formula and A byte an empty cell is sent as on this platform
+  (`25 00` KWP2000, `11 20` KW1281), for checking the ECU with no file open.
+
+The record is advisory. A cell counts only while the set's binary holds
+exactly the recorded value, so undo, redo or a hand edit need no update to
+it. Older readers carry the field as it is. In a three-way merge it is one
+value, like the set's other plain fields. The same record is also kept in
+the user's settings under each `identity`, for the logger with no file open.
+
 ### Member fields
 
 | field | meaning |
@@ -353,6 +433,24 @@ and sha256, plus its manifest and blobs as they were then (the *base*).
     both sides changed is taken from the other side, because it is advisory.
   * A checkpoint whose parent the other side merged away is re-parented to
     its nearest surviving ancestor, with its delta recomputed.
+  * Fitted-hardware records (`sets[].hardware`) merge by `id`, like the
+    lists above: added on one side -- kept; added on both -- both kept,
+    sorted by `since` (then `recorded`); changed on one side -- that change;
+    removed on one side and unchanged on the other -- removed (changed on the
+    other: kept, with a note). Fields merge one by one, except `kind` /
+    `parts` / `summary` (what is fitted) and `checkpoint` / `pending` /
+    `branch` (which calibration is for it), which each merge as one value:
+    both sides changing one of those differently is one `Conflict`, keyed
+    `("sets", <set>, "hardware", <id>, "parts")` or `(..., "checkpoint")`.
+    Entries without an id are merged as one value.
+  * A hardware record whose version the other side merged away moves to the
+    version it was merged into (that version's `merged_from`), or else to the
+    one surviving version it led to, with `pending` false -- the same exact
+    move as merging versions does. When nothing after it survives, it moves
+    to its nearest surviving ancestor with `pending` true ("the versions after
+    it": the calibration is not in the ancestor, but a sibling branch from it
+    now counts too), and a note says so; with no ancestor left it names no
+    version.
   * A field both sides changed differently is a `Conflict`, resolved by the
     caller's choices.
 * In the GUI, every save of an open project goes through `gui_disksync.write`

@@ -15,6 +15,10 @@ Run only the test files that cover what you touched, by name:
   files that exercise what you changed, not all of them).
 * `--slow` is for the specific files you name, never as a blanket flag.
 * GUI tests run offscreen: `QT_QPA_PLATFORM=offscreen`.
+* A test that drives a whole flash write over a mock CAN/TP 2.0 ECU records
+  the inter-frame waits instead of spending them (see `_skip_frame_waits` in
+  `tests/test_tp20_transport.py`, about 10 s with `--slow`); a write paced
+  for real takes minutes. Do the same in a new test of that kind.
 * If a failure is in an area you did not touch, say so and leave it; do not go
   looking for more failures by running everything.
 
@@ -49,3 +53,17 @@ Every user-facing feature has a help page: the base app's in
 module's version when they change). A page's `context:` names the dialog
 classes F1 opens it for. See `docs/HELP.md`; `tests/test_helpdocs.py` checks
 links and contexts.
+
+## Table and cell colours: match the app standard
+
+Every new window or dialog with a table must draw cells and selection the
+way the main map editor does, using the shared helpers in
+`ovtsuite/gui_cellmarks.py` (read its docstring): alternating row colours so
+the selection is the solid accent colour, `CellDelegate` / `selection_text`
+so a selected cell's text stays legible with and without focus, in both
+themes, `DIFF_BG` orange for "differs from the
+comparison", `PENDING_BG` for changed-not-applied. Checkboxes and other
+indicators must stay clearly visible on a selected row in both themes.
+Where a window shows a comparison table beside the primary, selecting cells
+in the primary selects the same cells in the comparison -- all of them, not
+only the current one. Do not invent a window-local selection style.

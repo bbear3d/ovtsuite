@@ -433,3 +433,65 @@ def test_edc15_fd_offers_the_edc15_presets(app):
         assert any(ch.label.startswith("Torque limitation") for ch in p._channels)
     finally:
         d.close()
+
+
+# ------------------------------- 2026-10-25: empty read, window size, Hz
+@pytest.mark.slow
+def test_fault_codes_window_says_when_no_codes_are_stored(app, monkeypatch):
+    """2026-10-25: the "no codes" message box became the fault code report,
+    which says so itself (and is shown for every read)."""
+    from PySide6 import QtWidgets
+    from ovtsuite.datalog import gui_log as GL
+    from ovtsuite import gui_dtc_report as GR
+    from ovtsuite.flash.diag import Dtc
+    said, shown = [], []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information",
+                        lambda *a, **k: said.append(a[2]))
+    monkeypatch.setattr(GR.FaultCodeReport, "show",
+                        lambda self: shown.append((self.empty.text(), self.read)))
+    monkeypatch.setattr(GL, "retire_thread", lambda *_: None)
+    win = _window(_Sess("edc15", "x.edc15"))
+    d = GL.EcuCodesDialog(win)
+    d._done([])
+    assert d.codes == [] and said == []
+    assert shown[-1][0] == "No fault codes stored"
+    d = GL.EcuCodesDialog(win)
+    d._what = "clear"
+    d._done([])
+    assert "cleared" in shown[-1][0] and shown[-1][1].action == "clear"
+    d = GL.EcuCodesDialog(win)
+    d._done([Dtc(16485, 0x87)])
+    assert said == [] and shown[-1][0] == ""             # codes: the table
+    assert shown[-1][1].codes[0].fault_type == "07 - signal too low"
+
+
+@pytest.mark.slow
+def test_logger_opens_within_the_screen_and_keeps_its_size(app, monkeypatch):
+    from ovtsuite.datalog import gui_log as GL
+    from ovtsuite import gui_fit
+    from PySide6 import QtCore
+    monkeypatch.setattr(gui_fit, "available", lambda w: QtCore.QRect(0, 0, 1366, 680))
+    win = _window(_Sess("edc15", "x.edc15"))
+    d = GL.DataLogDialog(win)
+    try:
+        assert d.height() <= int(680 * 0.88)            # 760 did not fit
+    finally:
+        d.close()
+    assert GL._prefs().value(GL.GEOM_KEY) is not None
+
+
+def test_rate_meter_is_the_rate_over_the_last_seconds():
+    from ovtsuite.datalog.gui_log import RateMeter
+    t = [0.0]
+    m = RateMeter(clock=lambda: t[0])
+    assert m.tick() is None
+    for _ in range(10):
+        t[0] += 0.1
+        hz = m.tick()
+    assert abs(hz - 10.0) < 1e-6
+    for _ in range(40):                                 # slows to 5 Hz
+        t[0] += 0.2
+        hz = m.tick()
+    assert abs(hz - 5.0) < 1e-6                         # the old rate has aged out
+    m.reset()
+    assert m.tick() is None

@@ -23,7 +23,13 @@ EDC16: ``ovtsuite.edc16.eeprom_layout``). The layout protocol, duck-typed:
                     the checksums corrected (ValueError with the reason)
 ``checksum_text(data)``   one line on the checksum state
 ``actions``         ``[(label, tooltip, question, fn(data) -> bytes)]`` --
-                    e.g. EDC15 Virginize, EDC16 Immobiliser off
+                    e.g. EDC15 Virginize, EDC16 Correct checksums
+``immo_state(data)``  optional: "on", "off", or None (a state that is neither)
+``immo_set(data, on)``  optional: new bytes with the immobiliser switched on
+                    or off (every copy, checksums corrected). A layout with
+                    both gets the **Immobiliser** On / Off radio buttons;
+                    clicking the state already shown leaves the image alone
+                    (unless the copies of its ``kind == "immo"`` field differ).
 
 A 512-byte image opens as EDC15 and a 4 KB one as EDC16 when their modules
 are installed; when two layouts fit, the one whose checksums agree wins and
@@ -116,6 +122,26 @@ class EepromEditor(QtWidgets.QDialog):
         top.addStretch(1)
         v.addLayout(top)
 
+        self.immo_box = QtWidgets.QGroupBox("Immobiliser")
+        ih = QtWidgets.QHBoxLayout(self.immo_box)
+        self.immo_on = QtWidgets.QRadioButton("On")
+        self.immo_off = QtWidgets.QRadioButton("Off")
+        self.immo_on.setToolTip("Switch the immobiliser on (every copy; "
+                                "checksums corrected)")
+        self.immo_off.setToolTip("Switch the immobiliser off (every copy; "
+                                 "checksums corrected)")
+        self.immo_state_lbl = QtWidgets.QLabel()
+        self.immo_state_lbl.setStyleSheet("color:gray")
+        # "neither" (an unusual state) needs both unchecked, so the pair is
+        # not auto-exclusive; a click sets the state and _populate re-ticks
+        for rb in (self.immo_on, self.immo_off):
+            rb.setAutoExclusive(False)
+            rb.clicked.connect(self._immo_clicked)
+            ih.addWidget(rb)
+        ih.addWidget(self.immo_state_lbl)
+        ih.addStretch(1)
+        v.addWidget(self.immo_box)
+
         self.table = QtWidgets.QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Field", "Value", "Address", "Note"])
         self.table.verticalHeader().setVisible(False)
@@ -204,6 +230,8 @@ class EepromEditor(QtWidgets.QDialog):
             self._action_row.insertWidget(4 + i, b)
             self._action_btns.append(b)
         self.write_btn.setVisible(bool(getattr(lay, "flasher_ecu", None)))
+        self.immo_box.setVisible(hasattr(lay, "immo_state")
+                                 and hasattr(lay, "immo_set"))
         self.table.setRowCount(len(lay.fields))
         self._populate()
 
@@ -251,6 +279,7 @@ class EepromEditor(QtWidgets.QDialog):
                 self.table.setItem(row, 3, n)
         finally:
             self._updating = False
+        self._sync_immo()
         self._render_hex()
         self._title()
         nchg = sum(1 for a, b in zip(self.data, self.original) if a != b)
@@ -260,6 +289,50 @@ class EepromEditor(QtWidgets.QDialog):
             cks = "checksums could not be checked (%s)" % ex
         self.status.setText("%d byte(s) changed. %s Edits update every copy of a "
                             "field and the checksums." % (nchg, cks))
+
+    def _sync_immo(self):
+        """Point the On / Off radio buttons at the image's immobiliser state."""
+        lay = self.layout
+        if not hasattr(lay, "immo_state"):
+            return
+        try:
+            st = lay.immo_state(self.data)
+        except Exception:
+            st = None
+        for rb, want in ((self.immo_on, "on"), (self.immo_off, "off")):
+            rb.blockSignals(True)
+            rb.setChecked(st == want)
+            rb.blockSignals(False)
+        changed = False
+        try:
+            changed = lay.immo_state(self.data) != lay.immo_state(self.original)
+        except Exception:
+            pass
+        self.immo_state_lbl.setText(
+            "" if st else "(neither: an unusual state -- see the status field)")
+        self.immo_box.setStyleSheet(
+            "QGroupBox{background:%s}" % _CHANGED_BG.name() if changed else "")
+
+    def _immo_clicked(self, _checked=False):
+        if self._updating:
+            return
+        on = self.sender() is self.immo_on
+        lay = self.layout
+        try:
+            # clicking the state already shown changes nothing: rewriting it
+            # would turn e.g. an adapted EDC15 0x73 into 0x63 (still "on").
+            # Copies that disagree are still made to agree.
+            same = lay.immo_state(self.data) == ("on" if on else "off") and all(
+                lay.mirrors_agree(self.data, f) for f in lay.fields
+                if getattr(f, "kind", None) == "immo")
+        except Exception:
+            same = False
+        try:
+            if not same:
+                self.data = bytes(lay.immo_set(self.data, on))
+        except (ValueError, TypeError) as ex:
+            QtWidgets.QMessageBox.warning(self, "Immobiliser", str(ex))
+        self._populate()
 
     def _render_hex(self):
         fg = self.palette().color(QtGui.QPalette.ColorRole.Text).name()

@@ -35,6 +35,7 @@ from PySide6 import QtCore, QtWidgets
 from .dtc import DtcTable
 from .gui_cellmarks import (OFF_FG, PENDING_BG, STORED_BG,  # noqa: F401
                             CellDelegate, cmp_fg, mark_differs, mark_pending,
+                            copy_selection, follow_current, link_selection,
                             mark_stored)
 from .session import TunerSession
 from .undo_mark import UndoMark
@@ -71,6 +72,12 @@ _READ_ONLY = QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelecta
 
 def _check(on):
     return QtCore.Qt.CheckState.Checked if on else QtCore.Qt.CheckState.Unchecked
+
+
+def _dtc_text(dtc, encoding: str) -> str:
+    """A code the ECU reported, written for this file's code encoding."""
+    from .dtc_report import dtc_text
+    return dtc_text(dtc, encoding)
 
 
 class _Item(QtWidgets.QTableWidgetItem):
@@ -236,6 +243,9 @@ class DtcDialog(QtWidgets.QDialog):
             # and selected with it (as the measuring-block window does)
             self.cmp_table = QtWidgets.QTableWidget(0, len(cols))
             self._setup_table(self.cmp_table, cols)
+            self.cmp_table.setContextMenuPolicy(
+                QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            self.cmp_table.customContextMenuRequested.connect(self._cmp_menu)
             hh, ch = self.table.horizontalHeader(), self.cmp_table.horizontalHeader()
             hh.sectionResized.connect(lambda i, _o, w: ch.resizeSection(i, w))
             ch.sectionClicked.connect(self._sort_from_cmp)
@@ -249,6 +259,8 @@ class DtcDialog(QtWidgets.QDialog):
                 lambda r, c, *_: self._follow(self.cmp_table, r, c))
             self.cmp_table.currentCellChanged.connect(
                 lambda r, c, *_: self._follow(self.table, r, c))
+            # the whole selection, not just the current cell
+            link_selection(self.table, self.cmp_table)
             self.cmp_box = QtWidgets.QWidget()
             cl = QtWidgets.QVBoxLayout(self.cmp_box)
             cl.setContentsMargins(0, 4, 0, 0)
@@ -444,7 +456,7 @@ class DtcDialog(QtWidgets.QDialog):
             if t in hay:
                 continue
             # a number matches its zero-padded scan-tool form and back
-            if t.isdigit() and ("%05d" % int(t)) in hay:
+            if t.isdigit() and (("%05d" % int(t)) in hay or ("%06d" % int(t)) in hay):
                 continue
             return False
         return True
@@ -651,6 +663,8 @@ class DtcDialog(QtWidgets.QDialog):
         hh, ch = self.table.horizontalHeader(), self.cmp_table.horizontalHeader()
         for i in range(len(self._ids)):
             ch.resizeSection(i, hh.sectionSize(i))
+        # a sort moved the primary's selected rows: the comparison's follow
+        copy_selection(self.table, self.cmp_table)
 
     def _refresh_rows(self, fps):
         """Redraw just the rows of ``fps`` (an edit made here), not the
@@ -694,13 +708,9 @@ class DtcDialog(QtWidgets.QDialog):
 
     @staticmethod
     def _follow(other, r, c):
-        """The other table's current cell follows this one's."""
-        if other is None or r < 0 or c < 0:
-            return
-        if (other.currentRow(), other.currentColumn()) != (r, c):
-            other.blockSignals(True)
-            other.setCurrentCell(r, c)
-            other.blockSignals(False)
+        """The other table's current cell follows this one's (its selection
+        is :func:`link_selection`'s: every selected row, not just this)."""
+        follow_current(other, r, c)
 
     def refresh_from_session(self):
         """Show edits made outside this window (the grid, undo, a patch,
@@ -983,12 +993,41 @@ class DtcDialog(QtWidgets.QDialog):
                        lambda: self._copy_text(fps))
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
+    def _cmp_menu(self, pos):
+        """The read-only comparison's menu: its codes to the clipboard, or
+        its fault states onto the primary's rows (the Copy differences from
+        comparison path, for the selected rows)."""
+        fps = self._selected()          # the two tables select the same rows
+        if not fps:
+            return
+        menu = QtWidgets.QMenu(self)
+        menu.addAction("Copy to primary (%d row(s))" % len(fps),
+                       lambda: self._copy_from_cmp(fps))
+        menu.addSeparator()
+        cfps = self._cmp_paths(fps)
+        a = menu.addAction("Copy codes to clipboard",
+                           lambda: self._copy_text(cfps))
+        a.setEnabled(bool(cfps))
+        menu.addAction("Select all", self.cmp_table.selectAll)
+        menu.exec(self.cmp_table.viewport().mapToGlobal(pos))
+
+    def _cmp_paths(self, fps):
+        """The comparison's fault paths for the primary's ``fps`` (the
+        ones it has)."""
+        out = []
+        for fp in fps:
+            cfp = self._cmp_of(self._key(fp), fp)
+            if cfp is not None and all(cfp is not x for x in out):
+                out.append(cfp)
+        return out
+
     def _copy_text(self, fps):
         out = []
         for fp in fps:
             out.append("%s\t%s\t%s\t%s" % (fp.dfp, fp.vag_str, fp.pcode_str,
                                            fp.code_desc()))
         QtWidgets.QApplication.clipboard().setText("\n".join(out))
+        return "\n".join(out)
 
     def _copy_from_cmp(self, fps):
         if self.cmp_dtc is None:
@@ -1027,7 +1066,7 @@ class DtcDialog(QtWidgets.QDialog):
         except Exception as ex:
             QtWidgets.QMessageBox.critical(self, "Fault codes", str(ex))
             return
-        dlg = EcuCodesDialog(self.parent() or self, self)
+        dlg = EcuCodesDialog(self.parent() or self, self, report=self._report_context())
         dlg.exec()
         if dlg.codes is None:
             return
@@ -1043,13 +1082,74 @@ class DtcDialog(QtWidgets.QDialog):
                 "ECU: %d code(s) stored - highlighted below%s." % (
                     len(dlg.codes),
                     ("; not in this binary's fault paths: %s" % ", ".join(
-                        c.text for c in unmatched)) if unmatched else ""))
-            if self.show_box.findText(SHOW_ECU) < 0:
-                self.show_box.addItem(SHOW_ECU)
-            self.show_box.blockSignals(True)
-            self.show_box.setCurrentText(SHOW_ECU)
-            self.show_box.blockSignals(False)
+                        _dtc_text(c, self._code_encoding()) for c in unmatched))
+                     if unmatched else ""))
+            if getattr(dlg, "show_paths", True):
+                self._show_ecu_view()
+                return
+        # the report stays open (it does not block): its "Show in fault
+        # paths" switches the view later (_show_ecu_view); its Close leaves
+        # the codes highlighted without it
         self._populate()
+
+    def _show_ecu_view(self):
+        """Show just the faults that set a code read from the ECU (the
+        report's "Show in fault paths"), and bring this window forward --
+        its tab made the current one, restored if minimised."""
+        if not self._ecu_codes:
+            return
+        if self.show_box.findText(SHOW_ECU) < 0:
+            self.show_box.addItem(SHOW_ECU)
+        self.show_box.blockSignals(True)
+        self.show_box.setCurrentText(SHOW_ECU)
+        self.show_box.blockSignals(False)
+        self._populate()
+        try:
+            from .gui_dtc_report import bring_to_front
+        except Exception:
+            return
+        bring_to_front(self, self._mainwin)     # its tab in front, not minimised
+
+    def _report_context(self):
+        """What the fault code report needs from this window: the fault
+        paths that set a code (with whether each is enabled), and the
+        same code lookups as the VAG code / OBD-II / Description columns."""
+        try:
+            from .gui_dtc_report import ReportContext, file_part
+            from .dtc_report import PathRef
+        except Exception:
+            return None
+
+        def paths_for(code):
+            out, seen = [], set()
+            for fp in self.dtc.paths.values():
+                if code in (getattr(fp, "stored_codes", ()) or ()) and fp.dfp not in seen:
+                    seen.add(fp.dfp)
+                    out.append((fp, PathRef(fp.dfp, self.dtc.is_enabled(fp))))
+            self._report_fps[code] = [fp for fp, _r in out]
+            return [r for _fp, r in out]
+
+        def describe(code, _paths):
+            for fp in self._report_fps.get(code, ()):
+                pc = fp.pcode_str if fp.pcode_str != "-" else ""
+                return pc, fp.code_desc()
+            return "", ""
+        self._report_fps = {}
+        return ReportContext(ws=self._mainwin, paths_for=paths_for, describe=describe,
+                             part=file_part(self.session), engine=True,
+                             file=getattr(self.session.binfile, "name", "") or "",
+                             encoding=self._code_encoding(),
+                             on_show_paths=self._show_ecu_view)
+
+    def _code_encoding(self) -> str:
+        """How this file's fault paths store their codes -- the words the
+        ECU reports: the EDC16 layout's ``encoding`` ("sae" on P447/P475,
+        "vag" otherwise), "vag" for an EDC15, "" when not known."""
+        lay = getattr(self.dtc, "layout", None)
+        enc = getattr(lay, "encoding", "") if lay is not None else ""
+        if not enc and getattr(self.session, "is_edc15", False):
+            enc = "vag"
+        return enc or ""
 
     # -- stock ---------------------------------------------------------
     def _restore_stock(self):

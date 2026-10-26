@@ -15,7 +15,8 @@ measuring-block reads until a session is open) -> optional link-speed raise
 silence; CH340 cables are capped at 124800) -> measuring blocks via
 ``readDataByLocalIdentifier 21 <group>`` whose body is the KW1281 3-byte
 (formula, A, B) cell stream padded to 8 cells with ``25 00 00`` -> fault codes
-``18 02 FF 00`` (count, then DTC-hi/DTC-lo/status; the DTC word is the
+``18 02 FF 00``, else ``18 00 FF 00`` (P475 takes only status 00) (count,
+then DTC-hi/DTC-lo/status; the DTC word is the
 5-digit VAG code) / ``14 FF 00`` to clear -> ``3E`` testerPresent keep-alive.
 
 EDC15 (KW1281): 5-baud init to 0x01 (odd parity) at 9600 -> identification
@@ -63,6 +64,11 @@ CH34X_VID = 0x1A86
 class StopRequested(Exception):
     pass
 
+
+#: readDiagnosticTroubleCodesByStatus parameters, tried in turn: statusOfDTC
+#: 02 (KWHack's) then 00 -- the only one P475 software takes: its 0x18
+#: descriptor lists status 00 and groups FF00/0000, and 02 draws NRC 0x12.
+DTC_REQUESTS = (bytes([0x02, 0xFF, 0x00]), bytes([0x00, 0xFF, 0x00]))
 
 #: Read timeout while a session closes: stopCommunication is one frame, and a
 #: Disconnect must not sit out the 8 s connect timeout waiting for its echo.
@@ -288,14 +294,32 @@ def parse_cells(body: bytes, drop_echo: bool = True) -> List[Cell]:
     return cells
 
 
+#: how a :class:`Dtc`'s status byte is built (``dtc_report.PROTO_*``)
+DTC_KW1281 = "kw1281"
+DTC_KWP2000 = "kwp2000"
+
+
 @dataclass
 class Dtc:
-    code: int                 # 5-digit VAG code (KWP2000 DTC word / KW1281 record)
+    """One stored code. ``status`` depends on ``proto``: KW1281 records
+    (EDC15) carry the VAG fault type in bits 0-6 and the sporadic flag in
+    bit 7 (a scan tool's "07-10"); KWP2000 ``18`` answers (EDC16, the
+    gearboxes) carry a statusOfDTC bit field -- symptom in bits 0-3, test
+    not complete / stored / present / lamp in bits 4-7 -- which has no
+    "07-10" form. ``dtc_report.decode_status`` has the words."""
+    code: int                 # the reported word (KWP2000 DTC word / KW1281 record)
     status: int
+    proto: str = DTC_KW1281
+    #: how ``code`` is encoded, when the caller knows (the open file's
+    #: ``dtc_report.ENC_SAE`` / ``ENC_VAG``); "" = the VAG 5-digit number
+    encoding: str = ""
 
     @property
     def text(self):
-        return "%05d - %02d-%02d" % (self.code, self.status & 0x7F, (self.status >> 7) * 10)
+        """``"16485 - 07-10"`` (KW1281), ``"16610 - status 0x40"``,
+        ``"000259 P0103 - status 0x60"`` (KWP2000, SAE-word encoding)."""
+        from ..dtc_report import dtc_text
+        return dtc_text(self, self.encoding)
 
 
 def cable_is_ch34x(port_name: str) -> bool:
@@ -365,6 +389,8 @@ class DiagSession:
         #: KW1281 fast timing (1 ms R6, no block lead) -- the logger's choice,
         #: as KWHack's live data always uses it
         self.fast_kw1281 = bool(fast_kw1281)
+        #: the 0x18 parameters this ECU accepted (see DTC_REQUESTS)
+        self._dtc_form: Optional[bytes] = None
 
     def log(self, msg):
         self._log(msg)
@@ -671,8 +697,19 @@ class DiagSession:
     # ---- fault codes ----
     def read_dtcs(self) -> List[Dtc]:
         if self.kwp is not None:
-            body = self.kwp.send_receive(0x18, b"\x02\xFF\x00").body
-            return _parse_dtcs(body, counted=True)
+            forms = DTC_REQUESTS
+            if self._dtc_form in forms:
+                forms = (self._dtc_form,) + tuple(f for f in forms if f != self._dtc_form)
+            for i, form in enumerate(forms):
+                try:
+                    body = self.kwp.send_receive(0x18, form).body
+                except _kwp.NegativeResponse as ex:
+                    # 12 / 31: not a statusOfDTC this ECU takes -- try the next
+                    if ex.nrc in (0x12, 0x31) and i < len(forms) - 1:
+                        continue
+                    raise
+                self._dtc_form = form
+                return _parse_dtcs(body, counted=True)
         kw = self.kw
         kw.send_block([0x07])
         out = []
@@ -736,7 +773,8 @@ def _parse_dtcs(body: bytes, counted: bool) -> List[Dtc]:
             continue
         if code == 0:
             continue
-        out.append(Dtc(code, status))
+        # a counted list is a KWP2000 18 answer, an uncounted one KW1281 0xFC
+        out.append(Dtc(code, status, DTC_KWP2000 if counted else DTC_KW1281))
     return out
 
 

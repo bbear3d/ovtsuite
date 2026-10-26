@@ -166,3 +166,20 @@ def byte_swapped(data: bytes) -> bool:
     if a or s:
         return s > a
     return _headers(sw, bases) > 2 * _headers(data, bases)
+
+
+# The ident at the head of a dataset: VAG part number, engine, gearbox, SW
+# version ("038906012BD 1,9l R4 EDC  SG  2507"; MSA15 alike).
+_IDENT_RE = re.compile(rb"(0[0-9A-Z]{2}9\d{5}[A-Z]{0,3}) +(\d[,.]\dl R\d (?:EDC|TDI))"
+                       rb"(?: +([A-Z]G))? +(\d{4})")
+
+
+def ident(data: bytes) -> dict:
+    """``{"part", "system", "software"}`` from the first dataset ident, or
+    ``{}`` when there is none."""
+    m = _IDENT_RE.search(bytes(data))
+    if m is None:
+        return {}
+    return {"part": m.group(1).decode("latin-1"),
+            "system": m.group(2).decode("latin-1"),
+            "software": m.group(4).decode("latin-1")}

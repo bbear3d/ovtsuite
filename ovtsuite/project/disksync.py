@@ -44,7 +44,14 @@ _NOT_MERGED = {"format", "version", "id", "requires", "app", "created",
 _SET_LISTS = ("members", "checkpoints", "branches", "originals")
 _ATT_LISTS = ("logs", "attachments", "patches")
 _KIND = {"members": "member", "checkpoints": "version", "branches": "branch",
-         "originals": "original"}
+         "originals": "original", "hardware": "hardware record"}
+#: a set's fitted-hardware records (``ovtsuite.project.hardware``), merged
+#: record by record like the lists above, though kept in the set's ``extra``
+_HW = "hardware"
+#: fields of a hardware record that only mean something together, merged
+#: as one: what is fitted, and which calibration is for it
+_HW_GROUPS = (("parts", ("kind", "parts", "summary")),
+              ("checkpoint", ("checkpoint", "pending", "branch")))
 #: suffix of a name given to our side of something both sides have
 MINE = " (mine)"
 
@@ -247,7 +254,7 @@ class _Merger:
             sid = path[1]
             out = "Set %s" % n.get(("set", sid), sid)
             rest = path[2:]
-            if len(rest) >= 2 and rest[0] in _SET_LISTS:
+            if len(rest) >= 2 and rest[0] in _KIND:
                 kind = _KIND[rest[0]]
                 out += " ▸ %s %s" % (kind, n.get((kind, sid, rest[1]), rest[1]))
                 rest = rest[2:]
@@ -359,7 +366,9 @@ class _Merger:
             return rec
         path = ("sets", sid)
         bd = b if isinstance(b, dict) else {}
-        out = self.fields(path, b, m, t, skip=_SET_LISTS)
+        out = self.fields(path, b, m, t, skip=_SET_LISTS + (_HW,))
+        if any(_HW in r for r in (bd, m, t)):
+            out[_HW] = self.hardware(sid, bd.get(_HW), m.get(_HW), t.get(_HW))
         keep_b = {bid for (s, bid) in self.keep_branches if s == sid}
         out["members"] = self.records(path + ("members",), bd.get("members"),
                                       m.get("members"), t.get("members"),
@@ -403,6 +412,56 @@ class _Merger:
         else:
             rec["label"] = label
         return rec
+
+    def hardware(self, sid, B, M, T) -> list:
+        """A set's fitted-hardware records, by id: one side's additions,
+        changes and deletions are taken; both sides' additions are all kept,
+        in fitting (``since``) order; a field both changed differently is a
+        conflict -- ``kind`` / ``parts`` / ``summary`` as one, and
+        ``checkpoint`` / ``pending`` / ``branch`` as one, so a merged record
+        never pairs one side's parts with the other's words or one side's
+        version with the other's "pending". A record whose version is gone
+        afterwards is re-pointed by :func:`_repair`. Entries without an id
+        (a reader could not parse them) are merged as one value."""
+        path = ("sets", sid, _HW)
+
+        def split(v):
+            v = v if isinstance(v, list) else []
+            ok = [r for r in v if isinstance(r, dict)
+                  and isinstance(r.get("id"), str) and r.get("id")]
+            return ok, [r for r in v if not any(r is o for o in ok)]
+        (bi, bo), (mi, mo), (ti, to) = split(B), split(M), split(T)
+        out = self.records(path, bi, mi, ti,
+                           lambda *a: self.hw_record(sid, *a))
+        seen = {r.get("id") for r in bi} | {r.get("id") for r in ti}
+        if any(r.get("id") not in seen for r in mi):    # ours added: by date
+            out.sort(key=lambda r: (str(r.get("since") or r.get("recorded") or ""),
+                                    str(r.get("recorded") or "")))
+        if mo or to or bo:
+            rest = self.value(path + ("unreadable",), bo, mo, to)
+            out += rest if isinstance(rest, list) else []
+        if isinstance(T, list) and len(out) == len(T) and all(
+                any(r == x for x in T) for r in out):
+            return T                                    # theirs, as it is
+        return out
+
+    def hw_record(self, sid, rid, b, m, t):
+        if m is MISSING or t is MISSING:
+            return t if m is MISSING else m
+        path = ("sets", sid, _HW, rid)
+        grouped = [k for _n, ks in _HW_GROUPS for k in ks]
+        out = self.fields(path, b, m, t, skip=grouped)
+        bd = b if isinstance(b, dict) else {}
+        for name, ks in _HW_GROUPS:
+            gb, gm, gt = ({k: r[k] for k in ks if k in r} for r in (bd, m, t))
+            if gm == gt or gm == gb:
+                v = gt
+            elif gt == gb:
+                v = gm
+            else:
+                v = self.conflict(path + (name,), gm, gt)
+            out.update(v)
+        return out
 
     def branch(self, sid, bid, b, m, t):
         """A branch both sides moved keeps the other program's head; ours
@@ -546,6 +605,10 @@ def _names(*manifests) -> dict:
                              mm.get("name") or mm.get("id"))
             for o in s.get("originals") or []:
                 n.setdefault(("original", sid, o.get("id")), o.get("filename"))
+            for r in s.get(_HW) or []:
+                if isinstance(r, dict):
+                    n.setdefault(("hardware record", sid, r.get("id")),
+                                 "\"%s\"" % (r.get("summary") or r.get("kind")))
         for k in _ATT_LISTS:
             for a in man.get(k) or []:
                 n.setdefault(("att", a.get("id")), a.get("filename"))
@@ -654,10 +717,85 @@ def _repair(res, mine, theirs, mg: _Merger) -> None:
             else:
                 if s.checkpoints:
                     br.head = s.checkpoints[-1].id
+        _repoint_hardware(s, mine, theirs, mg)
         _unique(s.branches, lambda b: b.name, lambda b, n: setattr(b, "name", n))
         if s.active is None or s.branch(s.active_branch) is None:
             s.active_branch = s.branches[0].id if s.branches else None
     _unique(res.sets, lambda s: s.name, lambda s, n: setattr(s, "name", n))
+
+
+def _repoint_hardware(s, mine, theirs, mg: _Merger) -> None:
+    """A fitted-hardware record on a version the other side merged away (or
+    that is otherwise gone) moves to where that version's content now is:
+
+    * the version it was merged into (``merged_from``), or else the one
+      version it leads to that is still there -- that version holds its
+      changes, so the record is on it *not* pending ("C and later" and
+      "after C" both mean "it and later" now): exact;
+    * else (nothing after it is left) its nearest ancestor still there,
+      pending: "the versions after it" -- the calibration is not in the
+      ancestor, though a sibling branch now counts too (noted);
+    * else no version: it says only what the car has (noted)."""
+    raw = s.extra.get(_HW)
+    if not isinstance(raw, list):
+        return
+    have = {c.id for c in s.checkpoints}
+    srcs = []
+    for p in (mine, theirs):
+        try:
+            srcs.append(p.set(s.id))
+        except KeyError:
+            pass
+    out, changed = [], False
+    for d in raw:
+        cid = d.get("checkpoint") if isinstance(d, dict) else None
+        if not cid or cid in have:
+            out.append(d)
+            continue
+        to, pend, exact = _where_now(s, cid, have, srcs)
+        if not exact:
+            mg.notes.append(
+                "Hardware record \"%s\" of set %s was set up on a version that "
+                "is no longer in the history; %s" % (
+                    d.get("summary") or d.get("kind"), s.name,
+                    "it is now on the versions after \"%s\"."
+                    % (s.checkpoint(to).label or to) if to else
+                    "it no longer names a version."))
+        out.append(dict(d, checkpoint=to, pending=pend))
+        changed = True
+    if changed:
+        s.extra[_HW] = out
+
+
+def _where_now(s, cid, have, srcs):
+    """``(checkpoint, pending, exact)`` for a record on ``cid``, which is
+    gone from set ``s`` (see :func:`_repoint_hardware`)."""
+    into = [c.id for c in s.checkpoints
+            if cid in (c.extra.get("merged_from") or [])]
+    if len(into) == 1:
+        return into[0], False, True
+    for src in srcs:
+        if src.checkpoint(cid) is None:
+            continue
+        found, todo, seen = set(), [cid], set()
+        while todo:                     # the first versions after it still here
+            for k in src.children(todo.pop()):
+                if k.id in seen:
+                    continue
+                seen.add(k.id)
+                if k.id in have:
+                    found.add(k.id)
+                else:
+                    todo.append(k.id)
+        if len(found) == 1:
+            return found.pop(), False, True
+    for src in srcs:
+        if src.checkpoint(cid) is None:
+            continue
+        anc = next((a.id for a in src.lineage(cid)[1:] if a.id in have), None)
+        if anc is not None:
+            return anc, True, False
+    return None, False, False
 
 
 def _unique(items, get, put) -> None:

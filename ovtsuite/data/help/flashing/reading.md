@@ -26,6 +26,16 @@ If a read fails part-way, nothing is lost and nothing in the unit changed:
 the dialog shows the reason, and you can simply read again — at a lower speed
 if the connection was dropping.
 
+An EDC16 packet that arrives damaged (a KKL cable at Medium drops the odd
+byte) does not stop the read: the log says **Corrupt packet at ...**, and once
+the stream is done the 64 KB around each damaged packet is read again
+(**Re-reading ...**, up to three times). Only damage that persists, or more
+than 32 damaged packets in one go, fails the read -- then use a lower speed.
+
+On a J2534 device an EDC15 is woken with the device's own 5-baud init at
+9600 for its KW1281 identification and then at 10400 for KWP2000, on a
+byte-stream channel -- the same sequence a KKL cable runs.
+
 ## Where the read goes
 
 Every read goes into an **OVT project**, with the read itself as the
@@ -36,7 +46,10 @@ asked what to do with it:
 - **Add to <project>** (only when a project tab is in front): as a new branch
   of a set of the same kind, or else a new set.
 - **New project** (**Open as a new project** when no project is open): it
-  opens as a new, untitled project tab.
+  opens as a new, untitled project tab, named after what was read --
+  control unit, part number and software (*EDC16 03G906016GC P475AAXQ*,
+  *EDC15 038906012BD 2507*) -- with **Control unit** and **Notes** of its
+  [project information](../projects.md) filled in from the binary.
 - **Export to file...**: save it without opening it, as an `.ovt` project
   (the default) or the raw image exactly as read (`.bin`). Cancelling the
   file picker brings the question back.
@@ -44,7 +57,7 @@ asked what to do with it:
 
 The OVT Flasher has no tabs, so it always saves the read: as an `.ovt`
 project by default, or the raw image (`.bin`). A raw `.bin` holds only the
-main flash: the EEPROM of an EDC15 **Full backup** is saved beside it as
+main flash: the EEPROM of an EDC15 **Read flash + EEPROM** is saved beside it as
 `<name>_EEPROM.bin`, and the MPC flash of an EDC16 **Full read...** is kept
 only in an `.ovt`.
 
@@ -54,7 +67,7 @@ only in an `.ovt`.
 | **EDC16** (**Full read...**) | The whole external flash and the internal (MPC) flash, as one set |
 | **EDC15** (**Read flash**) | The whole 512 KB flash |
 | **EDC15** (**Read EEPROM**) | The 512-byte EEPROM -- with an EDC15 project in front, you are asked **Add to <project>** (a new branch of its ECU set, *EEPROM read <date>*: the flash of the version in front plus the read EEPROM) or **New project** (or **Export to file...**, as above). Either way the [EEPROM editor](../tools/eeprom.md) then opens on it (with the EDC15 module). |
-| **EDC15** (**Full backup**) | Flash, then EEPROM, as one set (flash + EEPROM) |
+| **EDC15** (**Read flash + EEPROM**) | Flash, then EEPROM, as one set (flash + EEPROM) |
 | **ZF6HP** — 6HP19 / 6HP26 (TP 2.0) | The calibration window, in a 1 MB image filled with 0x00 outside it |
 | **ZF6HP** — 6HP28 (UDS) | The 512 KB calibration window, in a 2 MB image at its flash address, 0xFF below it (see [Transmissions](transmissions.md#6hp28-uds)) |
 | **Aisin TRx** | The whole 1 MB flash |

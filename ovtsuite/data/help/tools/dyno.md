@@ -82,6 +82,15 @@ the **reference's** maps:
 2. That quantity becomes torque through the reference's torque-to-fuel map
    and friction (EDC16), or fuel energy (EDC15).
 
+Step 1 assumes the same injectors. A run that **Fitted hardware** records
+as set up for other unit injectors or nozzles than the reference (see
+[Injector setup](injector-setup-pd.md)) -- or, with no record, whose duration
+maps are exactly another injector preset's than the reference's -- is not
+read through the reference's duration maps: its own maps are right for its
+own injectors, so its quantity is taken as it asks for it, and the notes
+under the chart say so. A close match of the maps is not enough for that
+(see [Fitted hardware](#fitted-hardware)).
+
 Choose the reference in **Reference** on the panel or **Compare with** in the
 window:
 
@@ -215,6 +224,55 @@ In a project tab the conditions, the engine, the runs you added (except pins
 and other tabs, which do not last), the reference and the road-speed settings
 belong to the set and are kept in the project -- a change to them is a change
 to the project, saved with it. A plain file's conditions are the app's.
+
+### Fitted hardware
+
+The dyno works out what each run was made on: from the **fitted hardware**
+a project records for it (unit injectors, or a VE pump head and nozzles --
+see [Injector setup](injector-setup-pd.md)), from the project the run comes
+from:
+
+| Run | Its hardware |
+|---|---|
+| This file | What its branch is set up for, with the tab's unsaved edits |
+| The original, a version of this file, a version of this set | What that version is set up for |
+| Another tab of a project (this one or another) | What that tab's branch is set up for in its own project, with its unsaved edits |
+| A branch or version of another project | What that version is set up for in that project (an open project as it is now, saved or not; one not open, as its file says) |
+| A file on disk that is a project (.ovt) | What its set's branch head is set up for, as the file says (it is read, not opened or locked) |
+| A pinned run | What this file had when it was pinned (a record made later does not change it) |
+| A data log kept in a project | What the car had when it was **recorded** (the log's own date; when the log has none, the day it was added to the project) |
+| A log file not kept in a project | When the log carries the ECU's ident (a VCDS-layout log) and one open project set has that part number: what that car had on the log's own date; otherwise not known |
+
+A run no project records hardware for -- a plain file, a tab that is not
+in a project, a set with no hardware recorded -- is identified **from its
+maps**: a unit-injector file's duration maps against the injector presets,
+an EDC15 VE file's pump voltage map against the factory maps. It is shown
+as, for example, "looks set up for PD150 injectors (from the maps)", and
+"not an exact match" is added when the maps are only close to the preset
+(within 1 % on average) or are a factory map with the pump head changed.
+Hardware from the maps is a guess at what the calibration is for, not a
+record of what is on the car:
+
+* It counts in the "Not the same hardware" note, where it is always marked
+  "(from the maps)". Against a record it is compared by what both say (the
+  preset; the pump head and the nozzle); a run with nothing recorded ("as
+  it came") is not told apart from it.
+* It stops the quantity being carried across the reference's duration maps
+  (step 1 above) only when the match is **exact** -- the maps are the
+  preset's own. A close match leaves the duration basis as it is.
+* It is worked out once per file content: the chart does not identify a
+  file again until its bytes change.
+
+A file whose datasets are set up for different hardware is identified by
+the dataset the chart shows. Logs have no maps, so a log no project records
+is not marked.
+
+Hover over a run in the list, or its name in the chart's legend, to see its
+hardware ("as it came" when no change is recorded for it). When the runs
+shown were made on different hardware, the notes under the chart say which
+parts differ and what each run had of them; a change recorded in Injector
+setup (in this project, another tab's or another open project's) redraws
+the chart.
 
 `mrwBDB2_KL` is not used: the ECU reads it only in the ECO mode of the
 automated gearbox (ASG), and the full-load limit is 100 mg otherwise.

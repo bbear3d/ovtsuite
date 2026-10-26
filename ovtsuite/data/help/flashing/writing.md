@@ -26,9 +26,11 @@ the unit's flash (or EEPROM) and programs them again from your binary.
    **Save, then write** (the version written is then in the project's
    history), **Write without saving** (the changes are sent as they are on
    screen) or **Cancel**.
-6. If the checksum cannot be corrected (the module that does it is not
-   installed, or it cannot read this file's checksum layout), you are asked
-   whether to write the file uncorrected — see [Checksums](#checksums).
+6. The checksums are corrected before anything connects to the unit. If
+   they cannot be corrected (the module that does it is not installed, or it
+   cannot read this file's checksum layout), you are asked whether to write
+   the file uncorrected; if the correction fails, the write does not start
+   and the message says why — see [Checksums](#checksums).
 7. Read the confirmation. It says what will be erased and reprogrammed, for
    example *This will ERASE and REPROGRAM the ECU's calibration flash. An
    interrupted or wrong write can brick the ECU.* Answer **Yes** only if that
@@ -116,9 +118,12 @@ None of these checks prove the file was made for this exact unit — see
 ## Checksums
 
 An edited file must carry a correct checksum, or the unit may reject it — or
-stay in its boot mode until a correct file is written. Before a write, the
-flasher corrects the checksum in the copy it sends **when the module for that
-unit is installed** (the tab and the project are not changed by this):
+stay in its boot mode until a correct file is written. Before a write, and
+before anything connects to the unit, the flasher corrects the checksums in
+the copy it sends **when the module for that unit is installed**, exactly as
+**Save** does (on an EDC16 the KWP2000 content digest too). The tab and the
+project are not changed by this. If the correction fails, the write does not
+start: the message says why.
 
 | ECU | Corrected by | Notes |
 |---|---|---|
@@ -126,7 +131,7 @@ unit is installed** (the tab and the project are not changed by this):
 | **EDC15** | EDC15 module | The write is refused rather than written with guessed checksum ranges. |
 | **ZF6HP** — 6HP19 / 6HP26 (TP 2.0) | ZF 6HP module | The calibration checksum; also the program-area checksums when **Tools > Options... > Projects and saving > ZF 6HP: also correct the program-area checksums** is on. For a layout the module cannot read you are asked first (**Checksum cannot be corrected**); **No** cancels. |
 | **Cluster (VDO K-line)** | VDO Cluster module | |
-| **ZF6HP** — 6HP28 (UDS) | Not corrected | The file is sent exactly as it is. With the ZF 6HP module installed the confirmation warns when the calibration checksum does not match. Correct it before writing. |
+| **ZF6HP** — 6HP28 (UDS) | ZF 6HP module, where it can read the layout | Corrected when the module can read this file's checksum layout; the confirmation says which. Otherwise the file is sent exactly as it is and the confirmation says the checksum is neither checked nor corrected. |
 | **Climatronic** | 4F/4L HVAC module | The internal flash checksum, as **Save** does. For a firmware whose checksum the module has not mapped you are asked first. |
 
 When the module is missing you see **Checksum will not be corrected**; when
@@ -136,6 +141,12 @@ corrected**. Both explain that the file will be written exactly as it is. **No**
 cancels; **Yes** writes it uncorrected. Answer **Yes** only for a file you
 know is already correct — an unmodified read, for example. See
 [Modules](../modules.md) to install one.
+
+If an EDC16 still refuses a written block — its checksum routine answers
+"conditions not correct" for 20 seconds after the block was written — the
+write stops with that message rather than going on to the next block.
+Correct the checksums (**Tools > Verify checksums**, or **Save**) and write
+again; the ECU stays in programming mode until a correct file is written.
 
 ## Cancel during a write
 

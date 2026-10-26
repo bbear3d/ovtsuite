@@ -21,19 +21,27 @@ paths.
    K-line cable or J2534 device, or **CAN** with a J2534 device, and the
    **ECU** (**EDC16** or **EDC15**; EDC15 is K-line only).
 4. Press **Read codes**. The window connects, reads the codes, disconnects
-   and closes.
-5. Back in the fault-path editor, the codes the ECU reported are highlighted
-   in the list, and the note above the buttons says how many there were — for
-   example "ECU: 2 code(s) stored - highlighted below." Codes that match none
-   of the file's fault paths are listed in that note by number.
+   and shows the [Fault code report](../tools/fault-code-report.md): each
+   code with its P-code, description, fault type, whether it is
+   intermittent, and the file's fault paths that set it. When the ECU has no
+   codes stored, the report says **No fault codes stored**. The read is kept
+   in the project, so the report can show earlier reads too.
+5. Press **Show in fault paths** in the report. Back in the fault-path
+   editor, the codes the ECU reported are highlighted in the list, and the
+   note above the buttons says how many there were — for example "ECU: 2
+   code(s) stored - highlighted below." Codes that match none of the file's
+   fault paths are listed in that note by number.
 
 ## Clear the stored codes
 
 1. Open the window as above and set the connection.
 2. Press **Clear codes on ECU** and answer **Yes** to "Clear all stored fault
    codes on the ECU?".
-3. The codes are cleared, then read back, so the editor shows what is still
-   stored afterwards — a fault that is still present comes straight back.
+3. The window reads the codes first, clears them, then reads them back. The
+   [Fault code report](../tools/fault-code-report.md) says how many were
+   cleared and which came straight back — a fault that is still present is
+   stored again at once. When none came back, it says the ECU now reports no
+   stored codes.
 
 Clearing codes only empties the ECU's fault memory. It does not change the
 file, and it does not switch a fault path off; that is done in the editor

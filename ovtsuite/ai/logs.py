@@ -202,6 +202,20 @@ def window(log, channels=None, start_s=None, end_s=None,
             "every_nth_row": step, "rows_in_range": len(rows)}
 
 
+def readable(paths: Sequence[str]):
+    """``(the paths that read as data logs, [(file name, why not)])`` -- for
+    logs a tool picked itself (the project's logs from before a change),
+    where one that is not a log should be left out, not stop the analysis."""
+    ok, bad = [], []
+    for p in paths:
+        try:
+            load_path(p)
+            ok.append(p)
+        except ToolError as ex:
+            bad.append((os.path.basename(p), str(ex)))
+    return ok, bad
+
+
 def paths_for(ctx, handle=None, logs=None, paths=None) -> List[str]:
     """Files on disk for the logs a tool was given: project logs (by id or
     file name, from the project of ``handle``) are written to a private temp

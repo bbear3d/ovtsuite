@@ -23,7 +23,7 @@ EEPROM a module knows:
 
 ## Opening an EEPROM
 
-- **From the project.** A set that holds an EEPROM -- an EDC15 full backup
+- **From the project.** A set that holds an EEPROM -- an EDC15 **Read flash + EEPROM**
   or EEPROM read from the flasher, or an imported `.dim`, `.edc15`, `.edc16`
   or KWHack `.edc15bak` that carries one -- has it in its tab, and the menu
   item opens it, titled *... [EEPROM]*.
@@ -62,6 +62,10 @@ unsaved changes.
 | **Address** | Where the field is, with its copies in brackets, e.g. **0x145 (+0x165)**. **copies differ** in red means the copies do not agree -- something other than this editor wrote one of them. |
 | **Note** | What the value means and how to enter it. |
 
+## Immobiliser On / Off
+
+Both layouts show an **Immobiliser** box above the fields with **On** and **Off** radio buttons. Clicking one writes the state into every copy and corrects the checksums, the same as editing the immobiliser field (clicking the one already ticked changes nothing); the box turns amber while it differs from the opened image. If the image holds a state that is neither (EDC15: record invalid, or an unknown byte), neither button is ticked and the status field shows the byte.
+
 ## Buttons
 
 | Button | What it does |
@@ -71,6 +75,6 @@ unsaved changes.
 | **Save** | Instead of **Apply**, for an EEPROM image opened from disk: writes that file. |
 | **Save As...** | Writes the EEPROM alone as a `.bin`. A project is not changed by it. |
 | **Revert** | Goes back to the EEPROM as it was opened or last applied or saved. |
-| The layout's own | EDC15: **Virginize...**. EDC16: **Immobiliser off**, **Immobiliser on**, **Correct checksums**. See each module's page. |
+| The layout's own | EDC15: **Virginize...**. EDC16: **Correct checksums**. See each module's page. |
 | **Write to ECU...** | Opens the flasher with this EEPROM ready to write (EDC15; the flasher does not write an EDC16 EEPROM). |
 | **Close** | Closes the editor. Changes to a project's EEPROM go into its tab even without **Apply**. |

@@ -12,11 +12,12 @@ held -- shown in bold -- until **Apply** (or **OK**, which also closes the
 window) writes them as one undo step; **Cancel** forgets them and closes.
 The title bar's X and Esc ask first when there are changes not applied.
 """
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from .gui_cellmarks import (OFF_FG, PENDING_BG, CellDelegate,  # noqa: F401
                             cmp_fg, mark_differs, mark_pending,
-                            selection_text)
+                            follow_current, link_selection,
+                            selection_text, selection_tsv)
 from .msblock import MeasuringBlocks
 from .session import TunerSession
 from .signal_names import sentence_case
@@ -62,6 +63,8 @@ class MsBlockDialog(QtWidgets.QDialog):
         self._compare = compare
         self._mainwin = parent
         self._edc15 = bool(getattr(session, "is_edc15", False))
+        self._logtags = {}              # (group, slot) -> presets it was built for
+        self._load_logtags()
         self.cmp_mb = None
         self.cmp_catalog = None
         self._cmp_by_num = {}
@@ -171,7 +174,9 @@ class MsBlockDialog(QtWidgets.QDialog):
             self.all_ds.setToolTip(
                 "When ticked, changing a block cell or a descriptor writes the "
                 "same value into the same block / descriptor of every dataset, "
-                "as one undo step.")
+                "as one undo step -- whichever one the car's coding selects then "
+                "has it. On when the window opens.")
+            self.all_ds.setChecked(True)
             v.addWidget(self.all_ds)
 
         self.catalog = SignalCatalog(session.family, session)
@@ -232,6 +237,7 @@ class MsBlockDialog(QtWidgets.QDialog):
         self.table.setContextMenuPolicy(
             QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._mb_menu)
+        self._copy_shortcut(self.table)
 
         blocks = self.table
         self.cmp_table = None
@@ -246,6 +252,10 @@ class MsBlockDialog(QtWidgets.QDialog):
             self.cmp_table.setItemDelegate(CellDelegate(self.cmp_table))
             self.cmp_table.setEditTriggers(
                 QtWidgets.QAbstractItemView.NoEditTriggers)
+            self.cmp_table.setContextMenuPolicy(
+                QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            self.cmp_table.customContextMenuRequested.connect(self._cmp_menu)
+            self._copy_shortcut(self.cmp_table)
             ch = self.cmp_table.horizontalHeader()
             for _c in range(len(_mcols)):
                 ch.setSectionResizeMode(_c, QtWidgets.QHeaderView.Interactive)
@@ -261,6 +271,8 @@ class MsBlockDialog(QtWidgets.QDialog):
                 lambda r, c, *_: self._follow(self.cmp_table, r, c))
             self.cmp_table.currentCellChanged.connect(
                 lambda r, c, *_: self._follow(self.table, r, c))
+            # the whole selection, not just the current cell
+            link_selection(self.table, self.cmp_table)
             self.cmp_table.itemSelectionChanged.connect(
                 lambda: self._show_detail(self.cmp_table))
             # a heading, not a frame: the two tables' columns line up
@@ -317,9 +329,10 @@ class MsBlockDialog(QtWidgets.QDialog):
             copyb.setToolTip(
                 "Set the selected blocks' cells to what the comparison binary "
                 "shows in the same block. Signals are matched by meaning, so "
-                "this works between different software versions. One undoable "
-                "step.")
-            copyb.clicked.connect(self._copy_mb_sel_from_cmp)
+                "this works between different software versions. With \"Apply "
+                "edits to every dataset\" ticked the same block of every "
+                "dataset gets them too. Held until Apply, one undoable step.")
+            copyb.clicked.connect(lambda: self._copy_mb_sel_from_cmp())
             btns.addWidget(copyb)
         btns.addStretch(1)
         self.pending_lbl = QtWidgets.QLabel("")
@@ -377,13 +390,9 @@ class MsBlockDialog(QtWidgets.QDialog):
 
     def _follow(self, other, r, c):
         """The other table's current cell follows this one's (no loop: it is
-        already there the second time)."""
-        if other is None or r < 0 or c < 0:
-            return
-        if (other.currentRow(), other.currentColumn()) != (r, c):
-            other.blockSignals(True)
-            other.setCurrentCell(r, c)
-            other.blockSignals(False)
+        already there the second time); the selection, every selected cell,
+        is :func:`link_selection`'s."""
+        follow_current(other, r, c)
 
     # ---------------------------------------------------- held changes
     def _key(self, g, slot):
@@ -601,6 +610,11 @@ class MsBlockDialog(QtWidgets.QDialog):
             num.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
             num.setData(QtCore.Qt.UserRole, g)
             self.table.setItem(r, 0, num)
+            gnum = getattr(g, "block", g.number)
+            gtags = sorted({t for (gg, _s), ts in self._logtags.items() if gg == gnum
+                            for t in ts})
+            if gtags:
+                num.setToolTip("Cells built for logging: %s" % ", ".join(gtags))
             chans = g.channels()
             shown = list(chans)
             for c in range(n):
@@ -630,6 +644,15 @@ class MsBlockDialog(QtWidgets.QDialog):
                     it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "")
                                   + "Not applied yet (the file has %s)"
                                   % self._cell_text(ch, g))
+                tag = self._logtags.get((gnum, c))
+                if tag:
+                    it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "")
+                                  + "Built for logging: %s. Changing it takes it out of "
+                                  "those presets' optimised blocks." % ", ".join(tag))
+                    if held is None:
+                        f = it.font()
+                        f.setItalic(True)
+                        it.setFont(f)
                 self.table.setItem(r, c + 1, it)
             if not self._has_cmp:
                 continue
@@ -665,11 +688,24 @@ class MsBlockDialog(QtWidgets.QDialog):
         self._loading = False
         self._refresh_summary()
 
+    def _load_logtags(self):
+        """Which cells Tools > Build logging blocks built, for which presets
+        (only those the file still holds)."""
+        try:
+            from . import branding
+            from .datalog.blockpack.service import logging_tags
+            ref = getattr(self._mainwin, "project_ref", None)
+            self._logtags = logging_tags(self.session, ref.set if ref is not None else None,
+                                         QtCore.QSettings(*branding.QSETTINGS))
+        except Exception:
+            self._logtags = {}
+
     def refresh_from_session(self):
         """Show edits made outside this window (the grid, undo, a patch,
         another tool) -- called by the tab while this window is open."""
         if not self.mb.available:
             return
+        self._load_logtags()
         if self._edc15:
             self.mb.refresh_descriptors()
             self._populate_descriptors()
@@ -839,33 +875,177 @@ class MsBlockDialog(QtWidgets.QDialog):
         if self._has_cmp:
             act = menu.addAction(
                 "Copy cells from comparison (%d block(s))" % len(groups))
-            act.triggered.connect(self._copy_mb_sel_from_cmp)
+            act.triggered.connect(lambda: self._copy_mb_sel_from_cmp())
+        menu.addSeparator()
+        self._add_copy_actions(menu, self.table)
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
-    def _copy_mb_sel_from_cmp(self):
-        if not self._has_cmp:
+    def _cmp_menu(self, pos):
+        """The read-only comparison's menu: copy its cells, or copy them
+        into the primary's (held until Apply, as the button's copy)."""
+        if self.cmp_table is None or not self.cmp_table.selectedIndexes():
             return
-        edits, lost = [], 0
-        for g in self._selected_groups():
+        menu = QtWidgets.QMenu(self)
+        n = len(self._cmp_edits(self._cmp_pick())[0])
+        act = menu.addAction("Copy to primary (%d cell(s)%s)" % (
+            n, ", every dataset" if self._every_ds() else ""))
+        act.setToolTip("Set the primary's matching cells to these signals "
+                       "(held until Apply)")
+        act.setEnabled(bool(n))
+        act.triggered.connect(lambda: self._copy_cmp_cells_to_primary())
+        menu.addSeparator()
+        self._add_copy_actions(menu, self.cmp_table)
+        menu.exec(self.cmp_table.viewport().mapToGlobal(pos))
+
+    def _add_copy_actions(self, menu, table):
+        cp = menu.addAction("Copy")
+        cp.setShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Copy))
+        cp.triggered.connect(lambda: self._copy_cells(table))
+        sa = menu.addAction("Select all")
+        sa.setShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.SelectAll))
+        sa.triggered.connect(table.selectAll)
+
+    def _copy_shortcut(self, table):
+        """Ctrl+C on ``table`` copies its whole selection (Qt's own copies
+        the current cell only)."""
+        a = QtGui.QAction(table)
+        a.setShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Copy))
+        a.setShortcutContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        a.triggered.connect(lambda: self._copy_cells(table))
+        table.addAction(a)
+
+    def _copy_cells(self, table) -> str:
+        """The selected cells of ``table`` to the clipboard, tab separated
+        (the table editor's Copy)."""
+        text = selection_tsv(table)
+        if text:
+            QtWidgets.QApplication.clipboard().setText(text)
+        return text
+
+    def _cmp_selected_slots(self):
+        """``{row: [slot, ...]}`` of the comparison's selected cells (a
+        selected Block cell stands for every cell of its block)."""
+        out = {}
+        if self.cmp_table is None:
+            return out
+        for ix in self.cmp_table.selectedIndexes():
+            r, c = ix.row(), ix.column()
+            head = self.table.item(r, 0)
+            if head is None:
+                continue
+            g = head.data(QtCore.Qt.UserRole)
+            if g is None:
+                continue
+            slots = out.setdefault(r, set())
+            if c == 0:
+                slots.update(range(g.slots))
+            elif 1 <= c <= min(self._nslots, g.slots):
+                slots.add(c - 1)
+        return {r: sorted(v) for r, v in out.items() if v}
+
+    def _cmp_pick(self):
+        """``[(group, slots)]`` of the comparison's selected cells."""
+        return [(self.table.item(r, 0).data(QtCore.Qt.UserRole), slots)
+                for r, slots in sorted(self._cmp_selected_slots().items())]
+
+    def _copy_cmp_cells_to_primary(self):
+        """The comparison's selected cells into the primary's matching
+        cells (the Copy block(s) from comparison path, cell by cell)."""
+        return self._copy_mb_sel_from_cmp(self._cmp_pick())
+
+    def _every_ds(self) -> bool:
+        """Is "Apply edits to every dataset" ticked (EDC15, several)?"""
+        return self.all_ds is not None and self.all_ds.isChecked()
+
+    def _same_in(self, g, idx, sg):
+        """The primary's descriptor in ``sg``'s dataset that shows what
+        ``idx`` shows in ``g``'s: the same message number, preferring the
+        same display type and norm (as the comparison is matched); None when
+        that dataset has no descriptor for the message."""
+        if idx in EMPTY_IDS:
+            return idx
+        descs = getattr(self.mb, "descriptors", {}) or {}
+        mine = descs.get(getattr(g, "group", None), {}).get(idx)
+        theirs = descs.get(getattr(sg, "group", None), {})
+        if mine is None or not getattr(mine, "message", None):
+            return None
+        key = (mine.message, mine.display, mine.norm)
+        d = theirs.get(idx)
+        if d is not None and (d.message, d.display, d.norm) == key:
+            return idx
+        exact = [i for i, x in sorted(theirs.items())
+                 if (x.message, x.display, x.norm) == key]
+        same = [i for i, x in sorted(theirs.items()) if x.message == mine.message]
+        pick = exact or same
+        return pick[0] if pick else None
+
+    def _cmp_edits(self, pick):
+        """``(edits, lost)`` for copying the comparison's signals into
+        ``pick`` (``[(group, slots or None)]``): ``edits`` the cells that
+        change (``[(group, slot, id)]``), ``lost`` the cells left as they are
+        because the primary has no definition for that signal. With "Apply
+        edits to every dataset" ticked each cell also goes into the same
+        block of every other dataset, matched by meaning there (as a cell
+        edit does), unless that dataset's block is picked itself."""
+        picked = {}
+        for g, slots in pick:
+            picked[self._key(g, 0)[:2]] = slots
+        edits, lost, seen = [], 0, set()
+
+        def add(t, slot, val):
+            k = self._key(t, slot)
+            if k in seen:
+                return
+            chans = t.channels()
+            cur = self._pending.get(k, chans[slot] if slot < len(chans) else None)
+            if val != cur:
+                seen.add(k)
+                edits.append((t, slot, val))
+        for g, slots in pick:
             cg = self._cmp_by_num.get(g.number)
             if cg is None:
                 continue
             cch = cg.channels()
             for slot in range(min(len(cch), g.slots)):
+                if slots is not None and slot not in slots:
+                    continue
                 if hasattr(g, "editable") and not g.editable(slot):
                     continue
                 want = self._translated(g, cch[slot])
                 if want is None:
                     lost += 1
                     continue
-                edits.append((g, slot, want))
+                add(g, slot, want)
+                if not self._every_ds():
+                    continue
+                for sg in self.mb.siblings(g):
+                    own = picked.get(self._key(sg, 0)[:2], False)
+                    if own is None or (own is not False and slot in own):
+                        continue        # copied from its own comparison row
+                    if slot >= sg.slots:
+                        continue
+                    val = self._same_in(g, want, sg)
+                    if val is not None and self.mb.valid_id(val, sg.group):
+                        add(sg, slot, val)
+        return edits, lost
+
+    def _copy_mb_sel_from_cmp(self, pick=None):
+        """Hold the comparison's signals for ``pick`` (``[(group, slots or
+        None)]``; the selected blocks, every cell, by default) until Apply
+        (every dataset's block too when that box is ticked)."""
+        if not self._has_cmp:
+            return 0
+        if pick is None:
+            pick = [(g, None) for g in self._selected_groups()]
+        edits, lost = self._cmp_edits(pick)
         self._stage(edits)                 # held until Apply
-        msg = ("Copied %d cell(s) from the comparison; Apply writes them."
-               % len(edits))
+        msg = ("Copied %d cell(s) from the comparison%s; Apply writes them."
+               % (len(edits), " (every dataset)" if self._every_ds() else ""))
         if lost:
             msg += (" %d cell(s) were left as they are: the primary binary has "
                     "no definition for that signal." % lost)
         self.detail.setText(msg)
+        return len(edits)
 
     def _open_ref(self):
         e = self.ref_box.currentData()

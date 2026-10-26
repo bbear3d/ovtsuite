@@ -20,6 +20,25 @@ from .transport import KLineError, KLineTimeout, check_stop
 
 TESTER = 0xF1
 
+
+def _pause(seconds):
+    """``time.sleep``, skipped for nothing to wait (a zero R6)."""
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def _write_then_read(link):
+    """The link's write for a byte the caller reads straight after: one
+    device call with that read where the link can (the J2534 byte-stream
+    link's ``write_before_read``); otherwise its ``write_byte`` for one byte
+    and ``write_bytes`` for a frame, as before."""
+    w = getattr(link, "write_before_read", None)
+    if w is not None:
+        return w
+    return lambda data: (link.write_byte(data[0]) if len(data) == 1
+                         else link.write_bytes(data))
+
+
 # service ids
 SVC_START_DIAG = 0x10
 SVC_SECURITY = 0x27
@@ -92,11 +111,11 @@ class Kwp2000:
         #: optional callable()->bool; a responsePending wait gives up when true
         self.is_stop = None
 
-    def send(self, service, body=b"", exclude_addresses=False):
+    def send(self, service, body=b"", exclude_addresses=False, _then_read=False):
         frame = build_frame(service, body, exclude_addresses, dest=self.controller)
         time.sleep(self.P3)
         if self.fast:
-            self.k.write_bytes(frame)
+            (_write_then_read(self.k) if _then_read else self.k.write_bytes)(frame)
             return
         for b in frame[:-1]:
             self.k.write_byte(b)
@@ -118,7 +137,7 @@ class Kwp2000:
         return Message(fmt, dest, src, length, service, body)
 
     def send_receive(self, service, body=b"", exclude_addresses=False):
-        self.send(service, body, exclude_addresses)
+        self.send(service, body, exclude_addresses, _then_read=True)
         msg = self.receive()
         pending = 0
         while True:
@@ -172,7 +191,13 @@ class Kw1281:
 
     @property
     def _r6(self):
-        return R6_FAST if self.fast else R6
+        """The wait before answering a byte. Fast timing: R6 at its 1 ms
+        minimum, less the line silence the link already waited before
+        handing the byte over (its ``rx_settle_s``: the J2534 byte-stream
+        link's P1_MAX), so it is not waited twice. Otherwise R6 as always."""
+        if not self.fast:
+            return R6
+        return max(0.0, R6_FAST - float(getattr(self.k, "rx_settle_s", 0.0) or 0.0))
 
     def connect(self):
         """Receive the ECU's identification blocks (ACKing each) until it
@@ -192,11 +217,12 @@ class Kw1281:
         block = bytearray([len(payload) + 2, self._counter & 0xFF]) + bytearray(payload)
         self._counter = (self._counter + 1) & 0xFF
         r6 = self._r6
-        time.sleep(r6)
+        _pause(r6)
+        put = _write_then_read(self.k)
         for b in block:
-            self.k.write_byte(b)
+            put(bytes([b]))                             # with its complement's read
             self.k.read_complement(b)
-            time.sleep(r6)
+            _pause(r6)
         self.k.write_byte(0x03)                         # block end, not ACKed
 
     def _receive_blocks(self):
@@ -211,8 +237,8 @@ class Kw1281:
 
     def _read_and_ack(self):
         b = self.k.read_byte()
-        time.sleep(self._r6)
-        self.k.write_byte((~b) & 0xFF)
+        _pause(self._r6)
+        _write_then_read(self.k)(bytes([(~b) & 0xFF]))  # a read always follows
         return b
 
     def _read_and_ack_first(self, count=0):
@@ -223,10 +249,10 @@ class Kw1281:
             self.k.read_byte()
             msb = self.k.read_byte()
             time.sleep(0.025)
-            self.k.write_byte((~msb) & 0xFF)
+            _write_then_read(self.k)(bytes([(~msb) & 0xFF]))
             return self._read_and_ack_first(count + 1)
-        time.sleep(self._r6)
-        self.k.write_byte((~b) & 0xFF)
+        _pause(self._r6)
+        _write_then_read(self.k)(bytes([(~b) & 0xFF]))
         return b
 
     def receive_block(self):

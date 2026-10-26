@@ -42,7 +42,12 @@ def unserved_for(namer) -> List[int]:
     """
     if namer is None or not getattr(namer, "available", False):
         return []
-    if type(namer).__name__ not in ("ChannelNamer", "CatalogueNamer"):
+    # an overlay (blockpack's StockNamer / LayoutNamer) answers for the
+    # engine namer it wraps: judge by that one, list through the overlay
+    root, seen = namer, 0
+    while getattr(root, "base", None) is not None and seen < 8:
+        root, seen = root.base, seen + 1
+    if type(root).__name__ not in ("ChannelNamer", "CatalogueNamer"):
         return []
     try:
         return sorted({int(g) for g in namer.populated_groups()

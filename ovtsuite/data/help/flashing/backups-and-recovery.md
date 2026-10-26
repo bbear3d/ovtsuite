@@ -13,7 +13,7 @@ the unit before you changed anything.
 ## Make the backup first
 
 Before any write, read the unit with the same flasher and save the read.
-For an EDC15 use **Full backup** (flash and EEPROM together). A read goes
+For an EDC15 use **Read flash + EEPROM** (flash and EEPROM together). A read goes
 into a project as its **original as read**, which is never changed — edit a
 branch, and if a write goes wrong, the original is what you write back. In
 the main window, right-click it in the Project panel > **New branch from

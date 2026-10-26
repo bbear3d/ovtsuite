@@ -5016,9 +5016,12 @@ if HAVE_QT:
         NAME = 1
 
         def __init__(self, target, parent=None, on_compare=None,
-                     on_merge=None):
+                     on_merge=None, version_note=None):
             super().__init__(parent)
             from . import history as _history
+            #: ``version_note(ver) -> (badge, tip line)`` or None: a project
+            #: tab's fitted hardware (gui_project.version_note)
+            self._version_note = version_note
             self._history = _history
             self.target = target
             #: ``on_merge(ids, name) -> id``: merge somewhere else (a
@@ -5112,6 +5115,10 @@ if HAVE_QT:
                         sorted(ver["regions"])))
                 if ver.get("merged_from"):
                     tip.append("Merged from %d saves" % len(ver["merged_from"]))
+                note = self._version_note(ver) if self._version_note else None
+                if note:
+                    cells[3] += ("  ·  %s" % note[0]) if note[0] else ""
+                    tip.append(note[1])
                 for j, txt in enumerate(cells):
                     it = QtWidgets.QTableWidgetItem(txt)
                     flags = it.flags()
@@ -7641,7 +7648,8 @@ if HAVE_QT:
                     self.win, _r.doc, _r.sid, ids, name))
             dlg = VersionHistoryDialog(self.primary, self,
                                        on_compare=self.compare_with_version,
-                                       on_merge=on_merge)
+                                       on_merge=on_merge,
+                                       version_note=_gp.version_note(self))
             if self.project_ref is not None:
                 dlg.hint.setText(
                     "Double-click a name (or press F2) to rename a version. "
@@ -7954,6 +7962,17 @@ if HAVE_QT:
         def open_logtune(self):
             if self.primary is None:
                 return
+            if getattr(self.primary, "platform", "") != "edc16":
+                # a module's own analysis (EDC15 VE pump: Injector setup's
+                # From logs), where the base app's engine analysis does not run
+                try:
+                    from . import gui_modtools as _mt
+                    t = _mt.logtune_for(self)
+                except Exception:               # noqa: BLE001
+                    t = None
+                if t is not None:
+                    t.run(self)
+                    return
             try:
                 from .logtune.gui_logtune import LogTuneDialog
             except Exception as ex:
@@ -9566,6 +9585,24 @@ if HAVE_QT:
             self._act(tools, "Measuring blocks...", self._on_ws("open_msblock"),
                       "Ctrl+M", needs_file=True, enabled_when=_msb_ok)
 
+            def _bp_open(_c=False):
+                from . import gui_blockpack as _gbp   # optimised logging blocks
+                if cw() is not None:
+                    _gbp.open_for(cw())
+
+            def _bp_ok():
+                try:
+                    from . import gui_blockpack as _gbp
+                    return _gbp.availability(cw()) is None
+                except Exception:
+                    return False
+            # beside Measuring blocks: it lays the same blocks out for the logger
+            self._act(tools, "Build logging blocks...", _bp_open,
+                      needs_file=True, enabled_when=_bp_ok).setToolTip(
+                "Lay this file's measuring blocks out so each logging preset reads "
+                "fewer blocks per row -- more rows a second. The logger uses them "
+                "once the ECU has the file.")
+
             def _eoi_open(_c=False):
                 from . import gui_eoi as _ge   # End of injection (eoi.py)
                 if cw() is not None:
@@ -9580,6 +9617,24 @@ if HAVE_QT:
             # with the other tools that read the parameter tree
             self._act(tools, "End of injection...", _eoi_open,
                       needs_file=True, enabled_when=_eoi_ok)
+
+            def _inj_open(_c=False):
+                from . import gui_injectors as _gi   # unit-injector hardware (injectors.py)
+                if cw() is not None:
+                    _gi.open_for(cw())
+
+            def _inj_ok():
+                try:
+                    from . import gui_injectors as _gi
+                    return _gi.availability(cw()) is None
+                except Exception:
+                    return False
+            # PD files only: on a VE (VP37) tab the EDC15 module's own
+            # "Injector setup..." (gui_vepump15) is the one shown
+            self._act(tools, "Injector setup...", _inj_open,
+                      needs_file=True, enabled_when=_inj_ok).setToolTip(
+                "Fit other unit injectors or nozzles: the duration maps, the start "
+                "of injection and the solenoid calibration (PD engines)")
 
             def _dyno_open(_c=False):
                 from . import gui_dyno as _gdy  # calculated dyno chart (dyno.py)
@@ -9658,6 +9713,12 @@ if HAVE_QT:
                 p = cw().primary
                 if getattr(p, "platform", "") == "edc16" and full():
                     return True
+                try:                            # a module's own (EDC15 VE pump)
+                    from . import gui_modtools as _mt
+                    if _mt.logtune_for(cw()) is not None:
+                        return True
+                except Exception:               # noqa: BLE001
+                    pass
                 try:
                     from .logtune.shifttrq import available
                 except Exception:

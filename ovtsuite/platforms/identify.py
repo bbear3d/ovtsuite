@@ -101,9 +101,13 @@ def _facts(pid: str, data: bytes) -> Dict[str, str]:
                 out["part"] = i["part"]
             if i.get("dataset_id"):
                 out["software"] = i["dataset_id"]
+            if i.get("system"):
+                out["system"] = i["system"]
             return out
         if pid == "edc15":
-            return {"variant": "%d dataset(s)" % len(_edc15.datasets(data))}
+            out = _edc15.ident(data)
+            out["variant"] = "%d dataset(s)" % len(_edc15.datasets(data))
+            return out
         if pid == "vdo":
             lay = _vdo.layout_of(bytes(data))
             return {"family": lay + " layout"} if lay else {}
@@ -137,6 +141,52 @@ def identify(data: bytes, container_kind: Optional[str] = None,
         if test(data):
             return Identity(pid, "structure", _facts(pid, data))
     return Identity(UNKNOWN, "none")
+
+
+def identify_read(data: bytes) -> Identity:
+    """A read as a reader hands it over: a flat image, or a native container
+    (an EDC16 full read, a cluster read)."""
+    from .. import container as _cont
+    data = bytes(data)
+    if _cont.format_for_magic(data[:0x30]) is not None:
+        try:
+            c = _cont.Container.from_bytes(data)
+            return identify(c.external() or b"", container_kind=c.kind)
+        except Exception:
+            return Identity(UNKNOWN, "none")
+    return identify(data)
+
+
+def read_name(ident: Identity, fallback: str) -> str:
+    """A read's name from what it is: platform, part number, software
+    ("EDC16 03G906016GC P475AAXQ"), or ``fallback`` when the binary names no
+    part."""
+    f = ident.facts
+    part = f.get("part") or f.get("ident")
+    if not ident.known or not part:
+        return fallback
+    head = _platform(ident.platform).short + f.get("family", "")
+    return " ".join(x for x in (head, part, f.get("software", "")) if x)
+
+
+def read_info(ident: Identity) -> Dict[str, str]:
+    """Project information a read can fill in by itself: the control unit
+    and, in the notes, what the binary says of the engine."""
+    if not ident.known:
+        return {}
+    f = ident.facts
+    ecu = ident.name + f.get("family", "")
+    if f.get("part"):
+        ecu += " " + f["part"]
+    out = {"ecu": ecu}
+    bits = []
+    if f.get("software"):
+        bits.append("software %s" % f["software"])
+    if f.get("system"):
+        bits.append(f["system"])
+    if bits:
+        out["notes"] = "From the read: %s." % ", ".join(bits)
+    return out
 
 
 def identify_file(path: str) -> Identity:

@@ -989,3 +989,86 @@ def test_logs_kept_in_a_project_can_be_viewed(G, win, car, tmp_path, monkeypatch
             "title": "A6", "path": car})()})()})())
     assert [k.filename for k in pl.kept_logs(host)] == ["pull.csv"]
     assert open(pl.working_copy(pl.kept_logs(host)[0]), "rb").read() == data
+
+
+def test_several_selected_items_are_removed_at_once(G, win, car, monkeypatch):
+    """Selecting several fault-code reads (or logs, attachments) in the
+    Project panel and pressing Remove -- or Delete -- removes all of them,
+    after one confirmation; an item right-clicked outside the selection is
+    removed alone."""
+    from ovtsuite import gui_project as gp
+    from ovtsuite.project import Project
+    proj = Project.load(car)
+    ecu = next(s for s in proj.sets if s.name == ECU)
+    for n in range(3):
+        proj.add_attachment("read%d.json" % n, b"{}", set_id=ecu.id)
+    proj.add_log("pull.csv", b"t,rpm\n0,800\n", set_id=ecu.id)
+    proj.save(car)
+    assert gp.open_project(win, car)
+    doc = win.current.project_ref.doc
+    panel = gp.panel(win)
+    panel.refresh()
+    asked = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asked.append(a[2]) or
+                                     QtWidgets.QMessageBox.StandardButton.Yes))
+
+    def items(kind):
+        out = []
+        it = QtWidgets.QTreeWidgetItemIterator(panel.tree)
+        while it.value():
+            x = it.value().data(0, gp._ROLE)
+            if x and x[0] == kind:
+                out.append(it.value())
+            it += 1
+        return out
+
+    atts = items("attachment")
+    assert len(atts) == 3
+    panel.tree.clearSelection()
+    for it in atts[:2]:
+        it.setSelected(True)
+    picked = panel._picked_items(atts[0], doc)
+    assert len(picked) == 2
+    panel._remove_items(doc, picked)
+    assert len(doc.project.attachments) == 1 and asked and "2 attachments" in asked[0]
+    # Delete on a selection of an attachment and a log: both go, one question
+    asked.clear()
+    panel.tree.clearSelection()
+    left = items("attachment") + items("log")
+    for it in left:
+        it.setSelected(True)
+    panel.tree.setCurrentItem(left[0], 0, QtCore.QItemSelectionModel.SelectionFlag.NoUpdate)
+    panel._delete_key()
+    assert not doc.project.attachments and not doc.project.logs
+    assert asked and "2 items" in asked[0]
+
+
+
+def test_save_corrects_checksums_even_with_no_edits(G, win, car):
+    """A tab whose checksums are wrong is saved -- and corrected -- by Save
+    even when nothing was edited (a file read or imported with bad
+    checksums): Save always leaves correct checksums."""
+    from ovtsuite import gui_project as gp
+    assert gp.open_project(win, car)
+    ws = next(t for t in win.workspaces() if t.project_ref is not None
+              and t.primary is not None and t.primary.platform == "edc16")
+    win.tabs.setCurrentWidget(ws)
+    s = ws.primary
+    cs = s.checksum_provider()
+    if cs is None:
+        pytest.skip("EDC16 module not installed")
+    data = s.binfile.data
+    # a calibration byte changed behind the editor: no edit recorded
+    i = len(data) - 0x40000
+    data[i] ^= 0xFF
+    assert not ws.is_dirty()
+    assert gp.checksums_wrong(ws)
+    before = len(ws.project_ref.set.checkpoints)
+    assert gp.save(ws)
+    opts = s._checksum_opts()
+    assert bytes(cs.correct(bytes(s.binfile.data), **opts)) == bytes(s.binfile.data)
+    st = ws.project_ref.set
+    assert len(st.checkpoints) == before + 1
+    assert st.checkpoint(ws.project_ref.branch.head).label == "checksums corrected"
+    assert not gp.checksums_wrong(ws)

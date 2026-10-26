@@ -300,7 +300,8 @@ def test_zf6hp_uds_confirmation_matches_what_is_offered(app, monkeypatch, no_wor
     text = q.texts[-1][1]
     assert q.texts[-1][0] == "6HP28 write"
     assert "Force full" not in text and "SKIPPED" not in text
-    assert "not corrected" in text
+    # the module cannot read this image's checksum layout: said so
+    assert "neither checked nor corrected" in text
 
 
 # ---- ABS: its note, and the debug options work (bug 16) ----------------------
@@ -472,3 +473,86 @@ def test_an_edc16_full_read_is_handed_to_the_window(app, monkeypatch):
     got = _c.Container.from_bytes(data)
     assert got.external() == ext
     assert [b.data for b in got.blocks if b.type == _c.BLOCK_MPC] == [mpc]
+
+
+
+# ---- every write: checksums corrected as Save does, and checked ------------
+class _FakeCs:
+    """A checksum provider that records the options it was given."""
+
+    def __init__(self, ok=True, fail=None):
+        self.ok, self.fail, self.opts = ok, fail, []
+
+    def is_supported(self, data):
+        return True
+
+    def correct(self, data, **opts):
+        self.opts.append(dict(opts))
+        if self.fail:
+            raise ValueError(self.fail)
+        return bytes(data[:-1]) + b"\x5A"
+
+    def verify(self, data, **opts):
+        ok = self.ok
+        return types.SimpleNamespace(ok=ok, describe=lambda: "block 7: bad")
+
+
+LQ_REF = os.path.join(ROOT, "Reference", "Binaries", "03G906016LQ.bin")
+
+
+def _edc16_primary(digest=True):
+    if not os.path.exists(LQ_REF):
+        pytest.skip("reference 03G906016LQ.bin not present")
+    with open(LQ_REF, "rb") as fh:
+        data = fh.read()
+    p = types.SimpleNamespace(platform="edc16", binfile=types.SimpleNamespace(
+        data=bytearray(data)), correct_program_area=False)
+    p._checksum_opts = lambda: {"digest": digest, "program_area": False}
+    return p
+
+
+def test_edc16_write_corrects_with_the_files_own_options(app, monkeypatch):
+    """The EDC16 write corrects the checksums with the file's options -- the
+    content digest included -- as Save does, and checks the result: without
+    the digest the ECU refused every block (EDC16Checksumfailwritefail.txt)."""
+    cs = _FakeCs()
+    monkeypatch.setattr(gui_flash._registry, "checksum", lambda pid, *a, **k: cs)
+    d = _dialog(_edc16_primary(), ecu="EDC16")
+    out = d._prepare_write_image()
+    assert cs.opts and cs.opts[0].get("digest") is True
+    assert out[-1:] == b"\x5A"                       # the corrected copy is written
+
+
+def test_a_write_whose_checksums_cannot_be_made_right_does_not_start(app, monkeypatch):
+    d = _dialog(_edc16_primary(), ecu="EDC16")
+    monkeypatch.setattr(gui_flash._registry, "checksum",
+                        lambda pid, *a, **k: _FakeCs(fail="no checksum layout"))
+    with pytest.raises(RuntimeError) as ei:
+        d._prepare_write_image()
+    assert "could not be corrected" in str(ei.value) and "no checksum layout" in str(ei.value)
+    class _Unsettled(_FakeCs):
+        n = 0
+
+        def correct(self, data, **opts):
+            _Unsettled.n += 1
+            return bytes(data[:-1]) + bytes([_Unsettled.n & 0xFF])
+    monkeypatch.setattr(gui_flash._registry, "checksum",
+                        lambda pid, *a, **k: _Unsettled())
+    with pytest.raises(RuntimeError) as ei:
+        d._prepare_write_image()
+    assert "corrected twice" in str(ei.value)
+    # a report that never reads "all valid" (an edited EDC16's Bosch RSA
+    # signature) does not stop the write: the correction settled
+    monkeypatch.setattr(gui_flash._registry, "checksum",
+                        lambda pid, *a, **k: _FakeCs(ok=False))
+    assert d._prepare_write_image()[-1:] == bytes([0x5A])
+
+
+def test_without_the_module_the_write_asks_before_anything_connects(app, monkeypatch):
+    monkeypatch.setattr(gui_flash._registry, "checksum", lambda pid, *a, **k: None)
+    d = _dialog(_edc16_primary(), ecu="EDC16")
+    q = _Questions(False)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", q)
+    with pytest.raises(gui_flash._WriteCancelled):
+        d._prepare_write_image()
+    assert len(q.texts) == 1 and "NOT be corrected" in q.texts[0][1]

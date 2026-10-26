@@ -176,6 +176,18 @@ def test_edc15_call_mapping_agrees_with_pd_records():
     assert same > 150 and same > 3 * diff
 
 
+def test_sae_build_shows_six_digit_vag_codes(lq):
+    """LQ stores SAE code words: the VAG column reads as VCDS prints them
+    (P0103's word 0x0103 -> 000259), and both that and the old 5-digit
+    form still find the path."""
+    assert lq.layout.encoding == "sae"
+    fp = lq.paths["AFSCD_SRCAirm"]
+    assert fp.encoding == "sae"
+    assert "000259" in fp.vag_str.split(", ")
+    hay = fp.search_text()
+    assert "000259" in hay and "00259" in hay
+
+
 # ---- the window ----------------------------------------------------------------
 def test_dialog_search_and_bulk_toggle(lq):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -183,7 +195,7 @@ def test_dialog_search_and_bulk_toggle(lq):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     from ovtsuite.gui_dtc import DtcDialog
     d = DtcDialog(lq.session)
-    d.filter.setText("00259")                 # a VAG code as a scan tool shows it
+    d.filter.setText("000259")                # a VAG code as VCDS shows it
     app.processEvents()
     keys = {d.table.item(r, 0).data(0x100) for r in range(d.table.rowCount())}
     assert "AFSCD_SRCAirm" in keys
@@ -354,10 +366,50 @@ def test_ecu_codes_are_found_and_highlighted(lq, monkeypatch):
     assert "AFSCD_SRCAirm" in keys
     assert set(keys) == {k for k, fp in d.dtc.paths.items()
                          if 0x0103 in fp.stored_codes}
-    from ovtsuite.gui import DIFF_BG
-    assert d.table.item(0, 1).background().color() == DIFF_BG
+    # a stored fault is light violet (gui_cellmarks), not the comparison's
+    # orange: that one means "differs from the comparison"
+    from ovtsuite.gui_cellmarks import STORED_BG
+    assert d.table.item(0, 1).background().color() == STORED_BG
     assert not d.dtc.find_code(31420)
-    assert "31420" in d.ecu_note.text()
+    # LQ reports SAE words: the unmatched code is written as VCDS does,
+    # six digits and the code it decodes to
+    assert d._code_encoding() == "sae"
+    assert "031420 C3ABC" in d.ecu_note.text()
+    d.close()
+
+
+def test_report_left_open_shows_the_codes_in_fault_paths_later(lq, monkeypatch):
+    """The fault code report does not block: when the read window closes the
+    editor already has the codes (shaded, the note), not yet the ECU view;
+    the report's Show in fault paths, pressed later, switches to it."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from ovtsuite import gui as _g  # noqa: F401  (colours)
+    from ovtsuite.flash.diag import Dtc
+    from ovtsuite.datalog import gui_log
+    from ovtsuite.gui_dtc import DtcDialog, SHOW_ECU
+    seen = {}
+
+    class FakeRead:
+        def __init__(self, *a, report=None, **k):
+            seen["ctx"] = report
+            self.codes = [Dtc(0x0103, 0x24)]
+            self.show_paths = False          # the report is still open
+
+        def exec(self):
+            return 1
+    monkeypatch.setattr(gui_log, "EcuCodesDialog", FakeRead)
+    d = DtcDialog(lq.session)
+    d._read_ecu_codes()
+    app.processEvents()
+    assert d.show_box.currentText() != SHOW_ECU
+    assert 0x0103 in d._ecu_codes and "1 code(s) stored" in d.ecu_note.text()
+    seen["ctx"].on_show_paths()              # the report's Show in fault paths
+    app.processEvents()
+    assert d.show_box.currentText() == SHOW_ECU
+    keys = [d.table.item(r, 0).data(0x100) for r in range(d.table.rowCount())]
+    assert keys and all(0x0103 in d.dtc.paths[k].stored_codes for k in keys)
     d.close()
 
 
@@ -389,3 +441,27 @@ def test_every_older_vag_number_finds_its_fault_on_a_newer_ecu(lq):
     missing = [(n, pc) for n, pc in pairs
                if not any(vag_text(n) in fp.search_text() for fp in where[pc])]
     assert missing == []
+
+
+def test_fault_code_report_gets_the_editors_paths_and_lookups(lq):
+    """The report's rows come from the same lookups as the editor's VAG code
+    / OBD-II / Description columns, with each matching path's state."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from ovtsuite import dtc_report as R
+    from ovtsuite.flash.diag import Dtc
+    from ovtsuite.gui_dtc import DtcDialog
+    d = DtcDialog(lq.session)
+    ctx = d._report_context()
+    assert ctx.encoding == R.ENC_SAE
+    r = R.build_read([Dtc(0x0103, 0x24), Dtc(31420, 0x24)], paths_for=ctx.paths_for,
+                     describe=ctx.describe, encoding=ctx.encoding)
+    hit, miss = r.codes
+    assert (hit.vag, miss.vag, miss.pcode) == ("000259", "031420", "C3ABC")
+    fps = [fp for fp in d.dtc.paths.values() if 0x0103 in fp.stored_codes]
+    assert sorted(p.name for p in hit.paths) == sorted({fp.dfp for fp in fps})
+    assert hit.desc == fps[0].code_desc() and hit.pcode == fps[0].pcode_str
+    assert all(p.enabled == d.dtc.is_enabled(fp) for p, fp in zip(hit.paths, fps))
+    assert miss.paths == [] and miss.paths_text() == "none in this file"
+    d.close()

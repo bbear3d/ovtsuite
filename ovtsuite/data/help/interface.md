@@ -149,7 +149,7 @@ The status bar describes the file in the active tab, for example:
 | Name, with `*` | The tab's binary. A `*` means it has unsaved changes. |
 | `[...]` | The definition (family) the module identified, and how many parameters it found. An EDC15 file also shows how many datasets it has. |
 | `compare: ...` | The comparison file. `(live from tab)` means it is another tab's file and follows that tab's edits; `(tab closed)` means that tab has since been closed and the comparison is frozen as it last was. |
-| `EEPROM loaded` | The set holds an EEPROM with the flash (an EDC15 full backup, or an imported `.edc15bak`); `*` when it has unsaved changes. **Save** keeps it in the project. |
+| `EEPROM loaded` | The set holds an EEPROM with the flash (an EDC15 **Read flash + EEPROM**, or an imported `.edc15bak`); `*` when it has unsaved changes. **Save** keeps it in the project. |
 | `checksums: valid` | The file's checksums are correct. |
 | `checksums: NEED FIX (auto on save)` | The checksums do not match the data — normal after an edit, and also common in files read with other tools. Saving corrects them; nothing needs doing by hand. |
 | `checksums: CANNOT VERIFY` | The checksum layout of this image could not be worked out, so the app cannot say whether they are right and will not write them. |
@@ -256,9 +256,12 @@ module's tabs (and only while the module is installed).
 |---|---|---|
 | **DTC / Fault-Path editor...** | Ctrl+D | [Parameter tools](tools.md); the engine module's pages, e.g. [EDC16](modules/edc16/index.md); ZF 6HP fault codes in [ZF 6HP](modules/zf6hp/index.md). |
 | **Measuring blocks...** | Ctrl+M | [Parameter tools](tools.md) |
+| **Build logging blocks...** | | [Optimised logging blocks](logging/optimised-blocks.md) (EDC15 / EDC16) |
 | **End of injection...** | | [End of injection](tools/end-of-injection.md) (EDC15P / EDC16 unit-injector engines) |
+| **Injector setup...** | | [Injector setup (unit injectors)](tools/injector-setup-pd.md) (EDC15P / EDC16 unit-injector engines); on a VE pump file, the EDC15 module's pump tool |
 | **Dyno chart...** | | [Dyno chart](tools/dyno.md) (EDC15 / EDC16) |
 | **Feature switches...** | | [Feature switches](tools/feature-switches.md) (EDC15 / EDC16) |
+| **Injector setup...** | | [Injector setup](modules/edc15/injector-setup.md) (EDC15 VE pump engines) |
 | **Shift map editor...** | | [Shift map and lock-up editors](tools/shift-editor.md) (ZF 6HP / ZF 8HP) |
 | **Lock-up (TCC) editor...** | | [Shift map and lock-up editors](tools/shift-editor.md) (ZF 6HP / ZF 8HP) |
 | **Gear ratios...** | Ctrl+G | [Parameter tools](tools.md) |
@@ -269,7 +272,7 @@ module's tabs (and only while the module is installed).
 | **EEPROM editor...** | | [EEPROM editor](tools/eeprom.md) -- one editor for EDC15 and EDC16 EEPROMs. Needs the Bosch EDC15 or EDC16 module, but no open tab. |
 | **ECU read / write...** | Ctrl+E | [ECU read / write](flashing.md) |
 | **Data logging...** | Ctrl+L | [Data logging](logging.md) |
-| **Tune from logs...** | | [Tune from logs](modules/edc16/logtune.md) (EDC16; the shift torque report on a ZF 6HP) |
+| **Tune from logs...** | | [Tune from logs](modules/edc16/logtune.md) (EDC16; the shift torque report on a ZF 6HP; on an EDC15 VE pump file, [Injector setup](modules/edc15/injector-setup.md)'s From logs) |
 | **Bus sniffer (J2534)...** | | [Bus sniffer](sniffer.md) |
 | **ECU simulator (bench)...** | | [ECU simulator](simulator.md) |
 | **Converter (definitions, values and binaries)...** | | [Converter](converter.md) |

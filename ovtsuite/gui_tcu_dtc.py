@@ -548,7 +548,7 @@ class TcuDtcDialog(QtWidgets.QDialog):
         except Exception as ex:
             QtWidgets.QMessageBox.critical(self, self.windowTitle(), str(ex))
             return
-        dlg = EcuCodesDialog(self.parent() or self, self)
+        dlg = EcuCodesDialog(self.parent() or self, self, report=self._report_context())
         dlg.exec()
         if dlg.codes is None:
             return
@@ -565,10 +565,58 @@ class TcuDtcDialog(QtWidgets.QDialog):
                     len(dlg.codes),
                     ("; not in this file's table: %s" % ", ".join(
                         c.text for c in unmatched)) if unmatched else ""))
-            if self.show_box.findText(SHOW_ECU) < 0:
-                self.show_box.addItem(SHOW_ECU)
-            self.show_box.setCurrentText(SHOW_ECU)
+            if getattr(dlg, "show_paths", True):
+                self._show_ecu_view()
+                return
+        # the report stays open (it does not block): its "Show in fault
+        # paths" switches the view later (_show_ecu_view)
         self._populate()
+
+    def _show_ecu_view(self):
+        """Show just the faults that set a code read from the ECU (the
+        report's "Show in fault paths"), and bring this window forward --
+        its tab made the current one, restored if minimised."""
+        if not self._ecu_codes:
+            return
+        if self.show_box.findText(SHOW_ECU) < 0:
+            self.show_box.addItem(SHOW_ECU)
+        if self.show_box.currentText() != SHOW_ECU:
+            self.show_box.setCurrentText(SHOW_ECU)      # repopulates
+        else:
+            self._populate()
+        try:
+            from .gui_dtc_report import bring_to_front
+        except Exception:
+            return
+        bring_to_front(self, self._mainwin)     # its tab in front, not minimised
+
+    def _report_context(self):
+        """The fault code report's view of this window: the faults of the
+        table that set a code (by their own number) and whether each is on."""
+        try:
+            from .gui_dtc_report import ReportContext, file_part
+            from .dtc_report import PathRef
+        except Exception:
+            return None
+        if self.model is None:
+            return ReportContext(ws=self._mainwin, engine=False,
+                                 on_show_paths=self._show_ecu_view)
+
+        def rows_of(code):
+            return [r for r in self._rows.values() if code in r.vag_numbers]
+
+        def paths_for(code):
+            return [PathRef(("%s %s" % (r.ident, r.group)).strip(), bool(r.on))
+                    for r in rows_of(code)]
+
+        def describe(code, _paths):
+            for r in rows_of(code):
+                return (", ".join(r.pcodes), r.desc)
+            return "", ""
+        return ReportContext(ws=self._mainwin, paths_for=paths_for, describe=describe,
+                             part=file_part(self.session), engine=False,
+                             file=getattr(self.session.binfile, "name", "") or "",
+                             on_show_paths=self._show_ecu_view)
 
     # -- stock -----------------------------------------------------------
     def _restore_stock(self):

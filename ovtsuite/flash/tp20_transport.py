@@ -99,6 +99,14 @@ def _timing_ms(b: int) -> float:
     return (b & 0x3F) * (0.1, 1.0, 10.0, 100.0)[b >> 6]
 
 
+_clock = time.perf_counter       # send pacing clock (a seam for the tests)
+
+#: Tp20Params.send_ms may undercut the ECU's advertised T3 by at most this
+#: much: 0.8 ms against a programming channel's 1 ms, but 8 ms -- not 0.8 --
+#: against a default-session channel that declares 10 ms.
+SEND_MS_MIN_FRACTION = 0.8
+
+
 def _precise_wait(seconds: float):
     """Wait ``seconds``, accurately, even for sub-millisecond durations.
 
@@ -180,6 +188,19 @@ class Tp20Params:
                                     # the A1 is parsed (ecu_interframe_ms>0). Used for
                                     # Climatronic (module advertises ~1 ms; the 5 ms
                                     # clamp made our TransferData ~5x too slow).
+    send_ms: float = 0.0            # >0: pace sends at this gap, below the ECU's
+                                    # advertised T3 if smaller (the ZF6HP-style "ignore the
+                                    # floor" without also changing the T3 we ADVERTISE) --
+                                    # but never below SEND_MS_MIN_FRACTION of that T3.
+    pace_from_start: bool = False   # measure the gap from the START of the previous frame's
+                                    # write, not from when the write call returned: the
+                                    # device call (~0.6 ms on a Scanmatik) then counts
+                                    # toward the gap instead of adding to it.
+    backoff_on_flow: bool = False   # safety net for the faster levels: the first 9x
+                                    # not-ready / resend request / unanswered ACK during
+                                    # a send drops pacing back to the ECU's advertised T3
+                                    # (measured after the write returns) for the rest of
+                                    # this channel's life, reopens included, and logs it.
 
     def a0(self) -> bytes:
         return bytes([OP_PARAM_REQ, self.block_size & 0xFF,
@@ -207,6 +228,11 @@ class Tp20Channel:
         self.opened = False
         self._hw_filtered = False           # device-side id filter installed?
         self.is_stop = None                 # optional callable()->bool; abort waits when true
+        # backoff_on_flow: kept across open()/_reset() -- once the ECU has pushed
+        # back, the faster pacing stays off for the rest of the session
+        self.backed_off = False
+        self.flow_events = 0                # 9x / resend requests / ACK timeouts seen
+        self.notes = []                     # log lines for a caller without a log (bridge)
 
     # ---- low-level CAN ----
     def _tx(self, data: bytes, timeout_ms: int = 100):
@@ -434,12 +460,6 @@ class Tp20Channel:
         payload = bytes(payload)
         body = len(payload).to_bytes(2, "big") + payload        # 16-bit length prefix
         chunks = [body[i:i + 7] for i in range(0, len(body), 7)] or [b""]
-        if self.params.pace_ecu and self.ecu_interframe_ms > 0:
-            gap = self.ecu_interframe_ms / 1000.0          # the module's own advertised pace
-        elif self.params.ignore_ecu_floor:
-            gap = self.params.t3_ms / 1000.0
-        else:
-            gap = max(self.ecu_interframe_ms, self.params.t3_ms) / 1000.0
         # Build every frame with its sequence number up front, so a boundary ACK
         # can resend any earlier frame the ECU asks for (see _await_ack).
         n = len(chunks)
@@ -454,11 +474,45 @@ class Tp20Channel:
             built.append((seq, bytes([(op << 4) | seq]) + chunk, boundary))
         self.tx_seq = (self.tx_seq + n) & 0x0F
         for i, (seq, frame, boundary) in enumerate(built):
+            gap, from_start = self._send_gap()      # per frame: a back-off applies at once
+            t0 = _clock()
             self._tx(frame, timeout_ms=100 if boundary else 0)
             if boundary:
                 self._await_ack(built, i)
             elif gap:
-                _precise_wait(gap)
+                _precise_wait(gap - (_clock() - t0) if from_start else gap)
+
+    def _send_gap(self):
+        """(seconds between our frames, measured from the write's start?)."""
+        p = self.params
+        ecu = self.ecu_interframe_ms
+        if self.backed_off:                         # the ECU pushed back: its own pace
+            return (ecu if ecu > 0 else max(ecu, p.t3_ms)) / 1000.0, False
+        if p.send_ms > 0 and ecu > 0:
+            gap = max(p.send_ms, ecu * SEND_MS_MIN_FRACTION)
+        elif p.pace_ecu and ecu > 0:
+            gap = ecu                               # the module's own advertised pace
+        elif p.ignore_ecu_floor:
+            gap = p.t3_ms
+        else:
+            gap = max(ecu, p.t3_ms)
+        return gap / 1000.0, p.pace_from_start
+
+    def _flow_event(self, what: str):
+        """The ECU pushed back during a send (9x, a resend request, no ACK).
+        With ``backoff_on_flow`` the first one ends the faster pacing."""
+        self.flow_events += 1
+        if not self.params.backoff_on_flow or self.backed_off:
+            return
+        self.backed_off = True
+        msg = ("TP2.0: ECU %s -- pacing backed off to its advertised %.1f ms for the "
+               "rest of the session" % (what, self.ecu_interframe_ms))
+        self.notes.append(msg)
+        self._log(msg)
+
+    def take_notes(self):
+        out, self.notes = self.notes, []
+        return out
 
     def _await_ack(self, built, boundary_idx: int):
         # Wait for the ECU to ACCEPT the block ending at ``built[boundary_idx]``.
@@ -491,6 +545,7 @@ class Tp20Channel:
             if now >= overall:
                 raise KLineTimeout("TP2.0: frame not accepted (no advancing ACK)")
             if now >= next_retx:
+                self._flow_event("left a block unacknowledged")
                 self._tx(built[boundary_idx][1])    # nudge with the boundary frame
                 next_retx = now + RETX_MS / 1000.0
             budget = int((min(next_retx, overall) - now) * 1000)
@@ -502,10 +557,12 @@ class Tp20Channel:
             if op == OP_ACK_READY:
                 if seqn == want:
                     return                          # block accepted, ready for next
+                self._flow_event("asked for a resend")
                 resend_from(seqn)                   # ECU wants this seq (re)sent
                 next_retx = time.monotonic() + RETX_MS / 1000.0
                 continue
             if op == OP_ACK_NOTREADY:
+                self._flow_event("answered not-ready (9x)")
                 # ECU got the block but isn't ready to ack yet, and won't emit a
                 # ready unprompted -- re-nudge SOON (not after the full RETX_MS).
                 next_retx = min(next_retx,
@@ -620,6 +677,8 @@ class CanKLine:
         # that runs the whole receive/ACK loop inside the 32-bit bridge (no
         # per-frame IPC), instead of a local Tp20Channel over the CAN channel.
         self.tp = tp if tp is not None else Tp20Channel(can, dest=dest, params=params, log=log)
+        if tp is not None and log is not None and getattr(tp, "log", False) is None:
+            tp.log = log                # a BridgeTp20 relays the bridge's notes (back-off) here
         self._log = log or (lambda s: None)
         self.direct = True
         self._timeout = 8.0

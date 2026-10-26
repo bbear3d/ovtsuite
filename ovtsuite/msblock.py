@@ -274,6 +274,19 @@ class MeasuringBlocks:
                          for i in range(n)]
         return self._esb
 
+    def use_tables(self, entities) -> None:
+        """Take tables the definition leaves out from ``entities`` (name ->
+        Entity), e.g. ESB tables a platform module found by structure. A
+        table the definition places is never replaced."""
+        added = False
+        for name, ent in dict(entities or {}).items():
+            if name not in self._by_name and ent is not None:
+                self._by_name[name] = ent
+                added = True
+        if added:
+            self.related = [self._by_name[n] for n in RELATED_TABLES if n in self._by_name]
+            self._esb = None
+
     def forget_cache(self):
         """Drop the cached ESB tables (after an edit made elsewhere)."""
         self._esb = None

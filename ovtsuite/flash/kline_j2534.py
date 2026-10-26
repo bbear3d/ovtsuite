@@ -108,20 +108,10 @@ def _cks(frame: bytes) -> int:
     return sum(frame) & 0xFF
 
 
-def _complete_frame_len(buf: bytes):
-    """Length of a complete K-line KWP frame at the front of buf, or None."""
-    if not buf:
-        return None
-    fmt = buf[0]
-    i = 3 if fmt & 0x80 else 1
-    n = fmt & 0x3F
-    if n == 0:
-        if len(buf) <= i:
-            return None
-        n = buf[i]
-        i += 1
-    total = i + n + 1                               # + checksum
-    return total if len(buf) >= total else None
+#: Length of a complete K-line KWP frame at the front of a buffer, or None
+#: (shared with the bridge, which assembles replies the same way).
+_complete_frame_len = J.kline_frame_len
+kline_split = J.kline_split
 
 
 def _kwp_payload(frame: bytes) -> bytes:
@@ -160,6 +150,20 @@ def _version_from_keyword(resp: bytes) -> int:
     return 0x2000
 
 
+def _version_from_keybytes(resp: bytes) -> int:
+    """Protocol version from a 5-baud init's key bytes. They come first (a
+    device may pad the buffer after them, or put the 0x55 sync before), and
+    KW1281 (01 8A) is reported as itself: it is no KWP2000 controller, and
+    flooring it to 2000 sends the caller down the wrong path."""
+    kb = bytes(resp)
+    first = 1 if len(kb) >= 3 and kb[0] == 0x55 else 0
+    if len(kb) - first >= 2:
+        version = ((kb[first + 1] & 0x7F) << 7) + (kb[first] & 0x7F)
+        if version == 1281 or version >= 2000:
+            return version
+    return _version_from_keyword(kb)
+
+
 class J2534KLine:
     """K-line look-alike (the subset edc16.py / diag.py use) over a J2534
     ISO 14230 channel, connecting with hardware fast init."""
@@ -180,9 +184,11 @@ class J2534KLine:
         self._timeout = 8.0
         self._tx = bytearray()          # bytes written, not yet a whole frame
         self._rx = bytearray()          # bytes ready to be read back
+        self._carry = bytearray()       # received after a reply frame: the next one's
         self.last_sync = 0x55
         self._ch_proto = None           # protocol the current channel is open on
         self.is_stop = None             # optional callable()->bool; init retries give up
+        self.init_is_stop = None        # the same, for the init retries only (the flasher)
 
     # -- channel --------------------------------------------------------------
     def _connect_channel(self):
@@ -228,6 +234,7 @@ class J2534KLine:
     def wake_up(self, address: int = 0x01, even_parity: bool = False, tries: int = 3) -> int:
         self._tx.clear()
         self._rx.clear()
+        self._carry.clear()
         # (Re)open the channel on the protocol this init mode needs -- if the mode
         # was toggled (fast<->slow) after an earlier connect, the old channel is on
         # the wrong protocol and must be dropped first.
@@ -246,7 +253,7 @@ class J2534KLine:
         req = START_COMM + bytes([_cks(START_COMM)])
         last = None
         for attempt in range(1, tries + 1):
-            if self.is_stop is not None and self.is_stop():
+            if any(f is not None and f() for f in (self.is_stop, self.init_is_stop)):
                 raise KLineError("J2534 K-line init: stop requested")
             try:
                 self._ch.clear_rx()
@@ -260,6 +267,7 @@ class J2534KLine:
                 else:
                     resp = self._ch.five_baud_init(address)
                     self._log("J2534 K-line 5-baud init -> %s" % (bytes(resp).hex() or "(no data)"))
+                    return _version_from_keybytes(bytes(resp))
                 return _version_from_keyword(bytes(resp))
             except Exception as ex:                             # noqa: BLE001
                 last = ex
@@ -279,7 +287,7 @@ class J2534KLine:
                         resp = self._ch.five_baud_init(SLOW_INIT_ADDR)
                         self._log("J2534 K-line fast init failed; 5-baud (ISO9141) "
                                   "fallback ok -> %s" % (bytes(resp).hex() or "(no data)"))
-                        return _version_from_keyword(bytes(resp))
+                        return _version_from_keybytes(bytes(resp))
                     except Exception as ex2:                   # noqa: BLE001
                         last = ex2
                         self._fast = True                       # restore for retry
@@ -313,6 +321,8 @@ class J2534KLine:
     def set_baud(self, baud: int):
         if self._ch is not None:
             self._ch.set_baud(baud)                            # device switches K-line baud
+        else:
+            self._baud0 = int(baud)                            # the next channel opens at it
 
     def set_tx_interbyte(self, p4_min: int):
         """Set the tester TX inter-byte time (P4_MIN). The 5-baud slow-init config
@@ -327,6 +337,22 @@ class J2534KLine:
             self._ch.set_config(P4_MIN=int(p4_min))
         except Exception:
             pass
+
+    def set_session_timing(self):
+        """Once the session is up: no inter-byte gap on sends (P4_MIN 0), no
+        wait after the ECU's reply before the next send (P3_MIN 0 -- the
+        ISO9141 default 55 ms held every TransferData that long), and a reply
+        ends after 1 ms of silence (P1_MAX 2 -- ISO9141 does not frame by
+        length, so the 20 ms default delayed every ack by 20 ms). A reply the
+        short P1_MAX splits is put back together in :meth:`_recv_message`.
+        Each setting is best-effort."""
+        if self._ch is None:
+            return
+        for cfg in ({"P4_MIN": 0}, {"P3_MIN": 0}, {"P1_MAX": 2}):
+            try:
+                self._ch.set_config(**cfg)
+            except Exception:
+                pass
 
     # -- high-baud discovery support (driven by edc16._find_high_baud) --------
     def high_baud_candidates(self):
@@ -355,12 +381,14 @@ class J2534KLine:
             self._ch = None
         self._tx.clear()
         self._rx.clear()
+        self._carry.clear()
 
     def set_break(self, on: bool):
         pass                                                   # init pulse is the device's job
 
     def clear_rx(self):
         self._rx.clear()
+        self._carry.clear()
         if self._ch is not None:
             try:
                 self._ch.clear_rx()
@@ -399,44 +427,67 @@ class J2534KLine:
         # 100 ms, which timed out with sent=0 and aborted the write. Scale the
         # timeout to the frame size (~1 ms/byte at 10400) with generous headroom.
         write_to = max(1000, len(frame) * 4)
-        self._ch.write(frame, timeout_ms=write_to)             # device sends on K-line
         if echo:
             self._rx += frame                                  # half-duplex echo (synthesized)
-        resp = self._recv_message()
+        resp = self._recv_message(frame, write_to)             # device sends on K-line
         if self._trace:
             self._trace("rx", resp)
         self._rx += resp
 
-    def _recv_message(self) -> bytes:
-        """One ECU reply frame, absorbing responsePending (7F <svc> 78) and any
-        TX echo the device reflects."""
+    def _recv_message(self, frame: bytes = None, write_to: int = 1000) -> bytes:
+        """Send ``frame`` (if any) and return one ECU reply frame, absorbing
+        responsePending (7F <svc> 78) and any TX echo the device reflects. A
+        channel with ``kline_exchange`` (the 32-bit bridge's, or the direct
+        one) sends and collects the reply in one call: through the bridge that
+        is one round trip per frame instead of one per read.
+
+        The reply is found as :func:`j2534.kline_split` finds it: an unflagged
+        echo of ``frame`` and stray bytes ahead of the reply are dropped, and
+        bytes after it (a second frame in the same buffer) are kept for the
+        next call, as a serial port would keep them, until :meth:`clear_rx`."""
         deadline = time.monotonic() + self._timeout
         pending = 0
+        buf = bytearray(self._carry)
+        self._carry.clear()
+        xchg = getattr(self._ch, "kline_exchange", None)
+        tx = frame                                             # sent once, on the first pass
+        req = frame                                            # what the reply answers
         while True:
-            left = int(max(1, (deadline - time.monotonic()) * 1000))
-            msgs = self._ch.read(1, left)
-            frame = None
-            for m in msgs:
-                if getattr(m, "is_tx_echo", False):
-                    continue                                   # device's own TX reflection
-                data = bytes(m.payload)
-                if not data:
-                    continue                                   # zero-length indication (START_OF_MESSAGE / break)
-                frame = data
-                break
-            if frame is None:
+            if tx is not None or kline_split(buf, req) is None:
+                left = int(max(1, (deadline - time.monotonic()) * 1000))
+                if xchg is not None:
+                    msgs = xchg(tx, write_to, left, expect=req)
+                else:
+                    if tx is not None:
+                        self._ch.write(tx, timeout_ms=write_to)
+                    msgs = self._ch.read(1, left)
+                tx = None
+                for m in msgs:
+                    if getattr(m, "is_tx_echo", False):
+                        continue                               # device's own TX reflection
+                    data = bytes(m.payload)
+                    if data:                                   # not a zero-length indication
+                        buf += data
+            # a short P1_MAX can hand one frame over in pieces: wait for all of it
+            at = kline_split(buf, req, final=time.monotonic() >= deadline)
+            if at is None:
                 if time.monotonic() >= deadline:
+                    if buf:
+                        return bytes(buf)                      # what came, as before
                     raise KLineTimeout("J2534 K-line: no response")
                 continue
-            if _is_response_pending(frame):
+            got = bytes(buf[at[0]:at[1]])
+            del buf[:at[1]]                                    # the rest: the next frame
+            if _is_response_pending(got):
                 if self._trace:
-                    self._trace("rx", frame)                   # log absorbed responsePending frames
+                    self._trace("rx", got)                     # log absorbed responsePending frames
                 pending += 1
                 if pending > 64:
                     raise KLineTimeout("J2534 K-line: stuck in responsePending")
                 deadline = time.monotonic() + self._timeout    # 0x78 extends the wait
                 continue
-            return frame
+            self._carry += buf
+            return got
 
     # -- reads: serve from the reassembled byte stream ------------------------
     def read_byte(self) -> int:

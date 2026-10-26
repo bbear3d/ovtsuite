@@ -18,7 +18,7 @@ could not be done.
    into a project as its **original as read**, which is never changed. Save
    the project (the OVT Flasher saves it as an `.ovt` straight away) where you
    will find it again, and make your edits on a branch. For an EDC15, use
-   **Full backup** (flash and EEPROM together). (The Climatronic cannot be
+   **Read flash + EEPROM** (flash and EEPROM together). (The Climatronic cannot be
    read over OBD: keep its factory `.sgo` instead.)
 2. **Battery support.** Connect a battery charger or power supply that holds
    a steady voltage for the whole job. A write can take many minutes with the

@@ -455,6 +455,10 @@ class _Worker(QtCore.QThread):
             # gap vs ODIS. Now paced by inter_send_ms, not by forced early acks.
             clim_params = ({"pace_ecu": True, "tx_ack_every": 0, "inter_send_ms": 4.0}
                            if self._ecu == "Climatronic" else {})
+            # EDC16: send pacing level and, for a read, the T3 we advertise --
+            # see edc16.EDC16_TP20_LEVEL; EDC16_TP20_FAST_TIMING reverts it.
+            edc16_params = (_edc16.edc16_tp20_params(self._op)
+                            if self._ecu == "EDC16" else {})
             # Through the 32-bit bridge, run the whole TP 2.0 loop IN the bridge
             # (one IPC per KWP message, tight ACK loop in-process) instead of
             # proxying every CAN frame -- avoids the ACK-latency retransmits.
@@ -464,13 +468,13 @@ class _Worker(QtCore.QThread):
                 # logging works on the in-bridge TP path too.
                 tp = self._can.open_tp20(dest=self._can_dest, baud=self._can_rate,
                                          params={"block_size": 0x0F, **zf6hp_params,
-                                                 **clim_params},
+                                                 **clim_params, **edc16_params},
                                          log_path=self._can_log)
                 return CanKLine(tp=tp, dest=self._can_dest, log=log)
             ch = self._can.connect(_j.CAN, self._can_rate)
             ch.pass_all()
             ch.clear_rx()
-            _tp_params = {**zf6hp_params, **clim_params}
+            _tp_params = {**zf6hp_params, **clim_params, **edc16_params}
             if _tp_params:
                 from .tp20_transport import Tp20Params
                 return CanKLine(ch, dest=self._can_dest, log=log,
@@ -480,6 +484,15 @@ class _Worker(QtCore.QThread):
         if is_j2534(self._port):
             from .kline_j2534 import J2534KLine
             self._can = open_j2534(self._port)  # reused for cleanup
+            if self._ecu == "EDC15":
+                # EDC15 starts with a KW1281 identification at 9600, whose
+                # byte-by-byte complements never form a frame the message link
+                # could flush: it needs the byte-stream link, which the KWP2000
+                # half of the session then runs on unchanged.
+                from .kline_j2534_raw import J2534RawKLine
+                self.stage.emit("K-line via %s (5-baud init)..."
+                                % getattr(self._port, "name", "J2534"))
+                return J2534RawKLine(self._can, baud=9600, log=log)
             self.stage.emit("K-line via %s (%s init)..." % (
                 getattr(self._port, "name", "J2534"), "fast" if self._fast_init else "5-baud"))
             return J2534KLine(self._can, log=log, fast_init=self._fast_init)
@@ -519,6 +532,13 @@ class _Worker(QtCore.QThread):
                         self._run_zf6hp_write()
                     return
                 link = self._open_link()
+                # Cancel while connecting: the links' init retries (three
+                # 5-baud inits per wake-up, a second apart) give up on it.
+                # Only those: a read in the middle of a write is not cut.
+                try:
+                    link.init_is_stop = self._stop.is_set
+                except Exception:                   # noqa: BLE001 - a link without it
+                    pass
                 if self._ecu == "EDC16":
                     self._run_edc16(link)
                 elif self._ecu == "Climatronic":
@@ -560,7 +580,8 @@ class _Worker(QtCore.QThread):
             except (_edc16.StopRequested, _edc15.StopRequested, _boot.StopRequested):
                 self.failed.emit("Stopped.")
             except (KLineError, Exception) as ex:      # noqa: BLE001 - surfaced to UI
-                self.failed.emit(str(ex))
+                # a link that gave up on Cancel (LinkStopped, "stop requested")
+                self.failed.emit("Stopped." if self._stop.is_set() else str(ex))
             finally:
                 if link is not None:
                     try:
@@ -1969,7 +1990,7 @@ class FlashDialog(QtWidgets.QDialog):
             "The dump is checked for the silent every-other-byte-doubled read before saving.")
         self.irom_btn.clicked.connect(lambda: self._start("irom_read"))
         self._irom_tip = self.irom_btn.toolTip()     # restored when boot mode is off
-        self.backup_btn = QtWidgets.QPushButton("Full backup")
+        self.backup_btn = QtWidgets.QPushButton("Read flash + EEPROM")
         self.backup_btn.setToolTip("Read the flash and the EEPROM into a project (one set holding both)")
         self.backup_btn.clicked.connect(lambda: self._start("backup"))
         btns.addWidget(self.backup_btn)
@@ -2545,7 +2566,7 @@ class FlashDialog(QtWidgets.QDialog):
             return False, "Only an EDC15 has an EEPROM behind this cable."
 
         if self._op in ("backup", "restore") and self._ecu() != "EDC15":
-            return False, "A full backup is an EDC15 flash and its EEPROM."
+            return False, "Read flash + EEPROM is for an EDC15: its flash and its EEPROM."
 
         if self._op not in (None, "read", "write", "ee_read", "ee_write",
                             "backup", "restore"):
@@ -3513,7 +3534,11 @@ class FlashDialog(QtWidgets.QDialog):
         # routine is a post-download check only), so every candidate block is
         # erased and rewritten; Force full write is not offered over UDS.
         _ff = ("\n\nEvery listed block is erased and rewritten, then checked by "
-               "the TCU. The file is sent as it is: its checksum is not corrected.")
+               "the TCU. %s" % ("Its checksums were corrected and checked first."
+                                if getattr(self, "_uds_corrected", False) else
+                                "The file is sent as it is: the ZF 6HP module cannot "
+                                "read its checksum layout, so the checksum is neither "
+                                "checked nor corrected."))
         if QtWidgets.QMessageBox.question(
                 self, "6HP28 write",
                 "DESTRUCTIVE: writes this image to the TCU over OBD/UDS.\n\n"
@@ -3565,21 +3590,23 @@ class FlashDialog(QtWidgets.QDialog):
                         "the first EDC15P software, \"P2\" datasets"
                         if _platforms.edc15.datasets_p2(raw) else "unknown checksum routine"))
             if cs is not None and cs.is_supported(raw):
-                try:
-                    raw = cs.correct(raw)
-                except ValueError as exc:
-                    # Refusing is the point: an image whose real checksum ranges
-                    # cannot be read must not be flashed with guessed ones.
-                    raise RuntimeError(str(exc))
+                # Refusing is the point: an image whose real checksum ranges
+                # cannot be read must not be flashed with guessed ones.
+                raw = self._correct_and_check("EDC15", cs, raw)
             return raw
         if self._ecu() == "ZF6HP" and zf_transport is None:
             _c = self._zf_write_choice()
             zf_transport = _c.transport if _c is not None else "tp20"
         if self._ecu() == "ZF6HP" and zf_transport == "uds":
-            # 6HP28 OBD/UDS write takes the loaded image verbatim: a 2 MB full
-            # image or a 512 KB calibration dump. classify_image decides what is
-            # present and valid, and the write path transfers bytes as-is; cal
-            # checksum validity is surfaced as a plan warning, not rewritten here.
+            # 6HP28 OBD/UDS write: a 2 MB full image or a 512 KB calibration
+            # dump. Its checksums are corrected (and checked) wherever the ZF 6HP
+            # module can read their layout; where it cannot, the image goes as
+            # it is and classify_image's plan warns about the checksum.
+            self._uds_corrected = False
+            cs = self._checksum_or_confirm("zf6hp")
+            if cs is not None and cs.is_supported(raw):
+                raw = self._correct_and_check("ZF 6HP", cs, raw)
+                self._uds_corrected = True
             return raw
         if self._ecu() == "ZF6HP":
             # Bug fix (2026-09-21): this used to fall through to the EDC16-only
@@ -3634,16 +3661,57 @@ class FlashDialog(QtWidgets.QDialog):
                 if _desc:
                     raw = cs.correct(raw, program_area=_pa)
             elif cs is not None:
-                raw = cs.correct(raw, program_area=_pa)
+                raw = self._correct_and_check("ZF 6HP", cs, raw, {"program_area": _pa})
             return raw
-        img = bytearray(_image.normalize(raw))
+        img = bytes(_image.normalize(raw))
         cs = self._checksum_or_confirm("edc16")
         if cs is not None:
+            # with the file's own options, as Save corrects: the KWP2000 content
+            # digest included. Corrected without it (as this once did, and an
+            # error here was swallowed), the block checksums were right but the
+            # digest stale, and the ECU refused every written block
+            # (Reference/Logs/EDC16Checksumfailwritefail.txt: 33 C5 -> 7F 33 22).
+            img = self._correct_and_check("EDC16", cs, img)
+        return bytes(img)
+
+    def _checksum_opts(self, extra=None):
+        """The checksum options the open file is saved with (EDC16 content
+        digest, ZF 6HP program area), so a write corrects exactly as Save."""
+        prim = getattr(self._window, "primary", None)
+        fn = getattr(prim, "_checksum_opts", None)
+        opts = {"digest": True}
+        if callable(fn):
             try:
-                img = bytearray(cs.correct(bytes(img)))
+                opts = dict(fn())
             except Exception:
                 pass
-        return bytes(img)
+        opts.update(extra or {})
+        return opts
+
+    def _correct_and_check(self, name, cs, raw, extra=None):
+        """``raw`` with its checksums corrected by ``cs`` -- before anything
+        connects to the unit, with the options Save uses. Raises (the write
+        does not start) when the correction fails, or when correcting the
+        result again still changes it (the correction does not settle).
+
+        A verify report is not the test: an edited EDC16 file keeps an RSA
+        signature that only Bosch can make (the ECU takes the digest the
+        correction writes instead), so its report never reads "all valid"
+        though the write is accepted."""
+        opts = self._checksum_opts(extra)
+        try:
+            fixed = bytes(cs.correct(bytes(raw), **opts))
+            again = bytes(cs.correct(fixed, **opts))
+        except Exception as ex:                       # noqa: BLE001 - said, not swallowed
+            raise RuntimeError(
+                "The %s checksums of this image could not be corrected (%s), so it "
+                "is not written: the unit would reject it, or not start." % (name, ex))
+        if again != fixed:
+            raise RuntimeError(
+                "The %s checksums of this image do not come out the same when "
+                "corrected twice, so it is not written: the correction cannot be "
+                "trusted for this file." % name)
+        return fixed
 
     def _checksum_or_confirm(self, pid):
         """The checksum provider for platform ``pid`` -- or, when its module
@@ -4076,7 +4144,8 @@ class FlashDialog(QtWidgets.QDialog):
         cs = (_registry.checksum("vdo", prim)
               if getattr(prim, "support", "full") == "full"
               else self._checksum_or_confirm("vdo"))
-        return (cs.correct(data) if cs is not None else data), prim
+        return (self._correct_and_check("VDO cluster", cs, data)
+                if cs is not None else data), prim
 
     def _start_vdo(self, op, port, can):
         if can:

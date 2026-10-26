@@ -47,6 +47,28 @@ def check_stop(is_stop):
         raise LinkStopped("stop requested")
 
 
+def check_init_stop(link):
+    """:func:`check_stop` for a link's init retries: its ``is_stop``, or its
+    ``init_is_stop`` -- a stop the flasher gives only the init, so Cancel
+    while connecting lands without letting it cut a read mid-write."""
+    check_stop(getattr(link, "is_stop", None))
+    check_stop(getattr(link, "init_is_stop", None))
+
+
+def _wait_init(link, seconds: float) -> None:
+    """Sleep between init tries, giving up early on Cancel."""
+    if getattr(link, "is_stop", None) is None and getattr(link, "init_is_stop", None) is None:
+        time.sleep(seconds)
+        return
+    end = time.monotonic() + seconds
+    while True:
+        check_init_stop(link)
+        left = end - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(left, 0.05))
+
+
 def adjust_parity(b: int, even_parity: bool) -> int:
     """KWHack Utils.AdjustParity: set bit7 so the byte carries the requested
     parity across bits 0..6 (odd parity when even_parity is False)."""
@@ -239,7 +261,7 @@ class KLine:
         to the 5-baud slow init, retrying a few times like KWHack."""
         if self.prefer_fast_init:
             for attempt in range(1, _FAST_INIT_TRIES + 1):
-                check_stop(getattr(self, "is_stop", None))
+                check_init_stop(self)
                 try:
                     return self._fast_init(address)
                 except KLineError:
@@ -248,13 +270,13 @@ class KLine:
             # every fast-init attempt missed; fall back to the 5-baud slow init
         last = None
         for attempt in range(1, tries + 1):
-            check_stop(getattr(self, "is_stop", None))
+            check_init_stop(self)
             try:
                 return self._wake_up_once(address, even_parity)
             except KLineError as ex:
                 last = ex
                 if attempt < tries:
-                    time.sleep(1.0)
+                    _wait_init(self, 1.0)
         raise last or KLineError("Controller did not wake up")
 
     def _read_burst(self, max_bytes: int = 48, first: float = 0.4, gap: float = 0.03) -> bytes:

@@ -37,6 +37,7 @@ from . import derived as _derived
 from . import logfile as _lf
 from .channels import ChannelNamer
 from . import msbcatalogue as _msbcat
+from .gui_presets import UserPresetDialog
 from . import logview as _lv
 from .. import branding
 
@@ -278,6 +279,9 @@ class LogWorker(QtCore.QThread):
     ended = QtCore.Signal()
     #: (works, explanation) -- whether 0x23 answered, settled once on connect
     mem_probed = QtCore.Signal(bool, str)
+    #: (token, {group: cells | None}) -- a request_probe answered: the
+    #: optimised logging blocks read once (datalog.blockpack.probe)
+    probed = QtCore.Signal(int, object)
 
     def __init__(self, port, ecu, speed, cap_high, transport="kline", can_rate=500000, can_dest=0x01,
                  fast_init=False):
@@ -296,12 +300,20 @@ class LogWorker(QtCore.QThread):
         self._stop = False
         self._gen = 0                   # recording generation (see ``logged``)
         self._link = None               # for abort_transport
+        self._probe_req = None          # (token, groups) -- see request_probe
         self.rows = 0
 
     # -- controls (any thread) --
     def set_browse_group(self, g):
         with self._lock:
             self._browse_group = int(g)
+
+    def request_probe(self, token, groups):
+        """Read ``groups`` once, before the next browse read, and answer with
+        ``probed``: how the logger checks that the ECU has the optimised
+        blocks a preset is about to use (never while recording)."""
+        with self._lock:
+            self._probe_req = (int(token), [int(g) for g in groups])
 
     def start_logging(self, channels, path):
         """Open ``path`` and start writing rows; returns the recording's
@@ -434,6 +446,7 @@ class LogWorker(QtCore.QThread):
             # round of requests for nothing.
             if any(getattr(c, "is_memory", False) for c in self._channels):
                 self._probe_memory(sess)
+            inflight = None                 # a request_probe being read
             while not self._stop:
                 try:
                     with self._lock:
@@ -445,6 +458,14 @@ class LogWorker(QtCore.QThread):
                     if paused:
                         sess.keepalive()
                         time.sleep(0.7)
+                        continue
+                    with self._lock:
+                        req, self._probe_req = self._probe_req, None
+                    if req is not None and not logging_:
+                        inflight = req
+                        got = sess.read_groups(req[1], is_stop=lambda: self._stop)
+                        inflight = None
+                        self.probed.emit(req[0], got)
                         continue
                     if logging_:
                         groups = sorted({c.group for c in chans
@@ -501,6 +522,14 @@ class LogWorker(QtCore.QThread):
                             self.failed.emit("Could not reconnect within 10 seconds.")
                         break
                     self._live_timeout(link)
+                    if inflight is not None:
+                        # the link dropped in the middle of a probe: ask again
+                        # (the pane holds Start until it is answered), unless
+                        # a newer one was asked for meanwhile
+                        with self._lock:
+                            if self._probe_req is None:
+                                self._probe_req = inflight
+                        inflight = None
         finally:
             self._teardown(sess, link)
 
@@ -1216,12 +1245,21 @@ class ConnPane(QtWidgets.QWidget):
         self._rec_gen = 0               # LogWorker generation of that recording
         self._t0 = None
         self._live = _lf.DataLog()
+        self._hz = RateMeter()          # readings per second, while connected
         self._logging = False           # real state, not read back off a button
         self._mem_state = None          # what the 0x23 probe said, once connected
         #: controller -> the identity it reported on its last connect. Kept
         #: after Disconnect so the cells stay named; with no binary open, it
         #: is what the measuring-block catalogue is looked up by.
         self._ecu_ident: dict = {}
+        # Optimised logging blocks (Tools > Build logging blocks, see
+        # datalog.blockpack): the layout the chosen preset reads, and what the
+        # ECU answered when those blocks were read once on this connection.
+        self._opt = None                # (preset key, blockpack Optimised) in use
+        self._probe_state: dict = {}    # (key, groups) -> (ok, why)
+        self._probe_token = 0
+        self._probing = None            # (token, state key) awaiting the answer
+        self._probe_unserved: set = set()   # groups that failed, this connection
 
         v = QtWidgets.QVBoxLayout(self)
         v.setContentsMargins(4, 4, 4, 4)
@@ -1438,6 +1476,14 @@ class ConnPane(QtWidgets.QWidget):
         self.group_spin.setToolTip("Any group number, including ones the binary lists as empty")
         gr.addWidget(self.group_spin)
         lv.addLayout(gr)
+        # Tick or untick every cell of the group in one go -- a check box
+        # above the table, as the app's other table options are. Shows a
+        # partial tick while only some of the group's cells are logged.
+        self.browse_all = QtWidgets.QCheckBox("Log every cell of this group")
+        self.browse_all.setToolTip("Tick every cell of the group shown; untick to "
+                                   "take them all out again")
+        self.browse_all.clicked.connect(self._browse_all_clicked)
+        lv.addWidget(self.browse_all)
         self.browse = QtWidgets.QTableWidget(0, 3)
         self.browse.setHorizontalHeaderLabels(["Log", "Cell", "Value"])
         self.browse.verticalHeader().setVisible(False)
@@ -1471,12 +1517,63 @@ class ConnPane(QtWidgets.QWidget):
         pr = QtWidgets.QHBoxLayout()
         pr.addWidget(QtWidgets.QLabel("Preset:"))
         self.preset_box = QtWidgets.QComboBox()
+        # your own presets' buttons, as Injector setup's (built before the
+        # fill, which enables them)
+        self.preset_save = QtWidgets.QToolButton()
+        self.preset_save.setText("Save as...")
+        self.preset_save.setToolTip("Keep the cells selected now as a preset of your own "
+                                    "for this controller (also how to change a copy of a "
+                                    "built-in preset)")
+        self.preset_save.clicked.connect(self._save_user_preset)
+        self.preset_edit = QtWidgets.QToolButton()
+        self.preset_edit.setText("Edit...")
+        self.preset_edit.setToolTip("Change the preset chosen: its name, or its cells to the "
+                                    "cells selected now (your own only)")
+        self.preset_edit.clicked.connect(self._edit_user_preset)
+        self.preset_rename = QtWidgets.QToolButton()
+        self.preset_rename.setText("Rename...")
+        self.preset_rename.setToolTip("Rename the preset chosen (your own only)")
+        self.preset_rename.clicked.connect(self._rename_user_preset)
+        self.preset_del = QtWidgets.QToolButton()
+        self.preset_del.setText("Delete")
+        self.preset_del.setToolTip("Delete the preset chosen (your own only)")
+        self.preset_del.clicked.connect(self._delete_user_preset)
         self._fill_presets()
         self.preset_box.setToolTip("Tick the fewest measuring blocks in THIS calibration that "
-                                   "carry what Tools > Tune from logs needs for that analysis.")
+                                   "carry what Tools > Tune from logs needs for that analysis, "
+                                   "or the cells of a preset of your own.")
         self.preset_box.activated.connect(self._apply_preset)
+        self.preset_box.currentIndexChanged.connect(lambda *_: self._sync_preset_buttons())
         pr.addWidget(self.preset_box, 1)
+        for b in (self.preset_save, self.preset_edit, self.preset_rename, self.preset_del):
+            pr.addWidget(b)
         rv.addLayout(pr)
+        # optimised logging blocks: a preset reads the blocks built for it in
+        # the file (Tools > Build logging blocks) once the ECU is seen to have them
+        orow = QtWidgets.QHBoxLayout()
+        self.opt_cb = QtWidgets.QCheckBox("Use optimised blocks when the ECU has them")
+        self.opt_cb.setToolTip(
+            "Read a preset from the blocks Tools > Build logging blocks laid out for it "
+            "(fewer blocks, more rows a second). They are read once from the ECU first; "
+            "if the ECU does not have them, the preset falls back to its usual blocks.")
+        self.opt_cb.setChecked(_use_optimised_setting())
+        self.opt_cb.toggled.connect(self._opt_toggled)
+        orow.addWidget(self.opt_cb)
+        orow.addStretch(1)
+        self.opt_btn = QtWidgets.QToolButton()
+        self.opt_btn.setText("Optimise...")
+        try:
+            from ..icons import icon as _icon
+            self.opt_btn.setIcon(_icon("logging-blocks"))
+            self.opt_btn.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        except Exception:
+            pass
+        self.opt_btn.setToolTip("Lay this controller's file out so each preset reads fewer "
+                                "blocks (Tools > Build logging blocks)")
+        self.opt_btn.clicked.connect(self._open_optimiser)
+        orow.addWidget(self.opt_btn)
+        rv.addLayout(orow)
+        self._sync_opt_btn()
         self.preset_hint = QtWidgets.QLabel("")
         self.preset_hint.setWordWrap(True)
         self.preset_hint.setStyleSheet("color: gray")
@@ -1520,14 +1617,18 @@ class ConnPane(QtWidgets.QWidget):
         rv.addLayout(fr)
         cb = QtWidgets.QHBoxLayout()
         self.start_btn = QtWidgets.QPushButton("Start logging")
-        self.start_btn.clicked.connect(self._start)
+        # Through slots that take no argument: ``clicked`` sends ``checked``
+        # (False) to a slot that accepts one, which landed in ``_stop_logging``
+        # as ``finish=False`` -- the master Stop's "hand me (path, rows)" --
+        # so the tab's own Stop closed the file and nobody kept the log.
+        self.start_btn.clicked.connect(self._start_clicked)
         cb.addWidget(self.start_btn)
         self.pause_btn = QtWidgets.QPushButton("Pause")
         self.pause_btn.setCheckable(True)
         self.pause_btn.toggled.connect(self._pause)
         cb.addWidget(self.pause_btn)
         self.stop_btn = QtWidgets.QPushButton("Stop")
-        self.stop_btn.clicked.connect(self._stop_logging)
+        self.stop_btn.clicked.connect(self._stop_clicked)
         cb.addWidget(self.stop_btn)
         cb.addStretch(1)
         self.rate = QtWidgets.QLabel("")
@@ -1545,28 +1646,319 @@ class ConnPane(QtWidgets.QWidget):
         self._set_default_path()
         return w
 
-    def _fill_presets(self):
-        keep = self.preset_box.currentData()
+    def _fill_presets(self, select=None):
+        """The built-in presets for this controller, then yours under a
+        "Your presets" heading; ``select`` (else the one chosen now, if it is
+        still there) stays chosen."""
+        keep = select if select is not None else self.preset_box.currentData()
+        src = self._layout_source()
         self.preset_box.blockSignals(True)
         self.preset_box.clear()
         self.preset_box.addItem("(choose cells by hand)", None)
         try:
             for rec in self._recipes():
-                self.preset_box.addItem(rec.title, rec.key)
+                self.preset_box.addItem(self._opt_title(rec.title, rec.key, rec, src), rec.key)
         except Exception:
             pass
+        mine = self._user_presets()
+        if mine:
+            self.preset_box.addItem("Your presets")
+            it = self.preset_box.model().item(self.preset_box.count() - 1)
+            it.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)       # a heading, not a choice
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            for p in mine:
+                self.preset_box.addItem("    " + self._opt_title(p.name, p.data, p, src),
+                                        p.data)
+                self.preset_box.setItemData(
+                    self.preset_box.count() - 1,
+                    "Your own preset: %d cell%s" % (len(p.cells), "" if len(p.cells) == 1
+                                                    else "s"),
+                    QtCore.Qt.ItemDataRole.ToolTipRole)
         idx = next((i for i in range(self.preset_box.count())
-                    if self.preset_box.itemData(i) == keep), 0)
+                    if keep is not None and self.preset_box.itemData(i) == keep), 0)
         self.preset_box.setCurrentIndex(idx)
         self.preset_box.blockSignals(False)
-        self.preset_box.setEnabled(not self._no_presets_why())
+        self.preset_box.setEnabled(not self._no_presets_why() or bool(mine))
+        self._sync_preset_buttons()
+        self._sync_opt_btn()
 
     def _say_presets(self):
         """After a controller change: say why there are no presets, or drop
         a stale hint when nothing is chosen."""
         why = self._no_presets_why()
+        tail = " Tick the cells to log by hand."
+        if why.endswith(tail) and self._user_presets():
+            why = why[:-len(tail)] + " Pick one of your own, or tick the cells by hand."
         if why or self.preset_box.currentIndex() == 0:
             self.preset_hint.setText(why)
+
+    # ---- presets of your own ------------------------------------------
+    def _user_presets(self):
+        """Your presets for the selected controller (they are kept per
+        controller, as the built-in lists are)."""
+        from . import userpresets as _up
+        try:
+            return _up.load(_prefs(), self.conn.ecu())
+        except Exception:
+            return []
+
+    def _own_preset(self):
+        """The preset of yours chosen in the box, or None (a built-in, or
+        none)."""
+        from . import userpresets as _up
+        data = self.preset_box.currentData()
+        if not _up.is_user_data(data):
+            return None
+        name = _up.name_of_data(data)
+        return next((p for p in self._user_presets() if p.name == name), None)
+
+    def _cell_count(self) -> int:
+        """The block cells selected (not the calculated columns)."""
+        return sum(1 for c in self._channels if not c.is_derived)
+
+    def _sync_preset_buttons(self):
+        own = self._own_preset() is not None
+        builtin = bool(self.preset_box.currentData()) and not own
+        for b in (self.preset_edit, self.preset_rename, self.preset_del):
+            b.setEnabled(own)
+            b.setToolTip(b.toolTip().split("\n")[0] + (
+                "\nBuilt-in presets cannot be changed: Save as... keeps a copy of "
+                "your own." if builtin else ""))
+        self.preset_save.setEnabled(self._cell_count() > 0)
+
+    def _store_user_presets(self, presets, title, select) -> bool:
+        from . import userpresets as _up
+        try:
+            _up.save(_prefs(), self.conn.ecu(), presets)
+        except Exception as ex:                                # noqa: BLE001
+            QtWidgets.QMessageBox.warning(self, title, str(ex))
+            return False
+        self._fill_presets(select)
+        return True
+
+    def _preset_name_taken(self, title, name, but="") -> bool:
+        from . import userpresets as _up
+        other = _up.find(self._user_presets(), name, but=but)
+        if other is not None:
+            QtWidgets.QMessageBox.information(
+                self, title, "You already have a %s preset named %s. Choose another name."
+                % (self.conn.ecu(), other.name))
+            return True
+        return False
+
+    def _default_preset_name(self) -> str:
+        data = self.preset_box.currentData()
+        if data:
+            own = self._own_preset()
+            base = own.name if own is not None else self.preset_box.currentText().strip()
+            base = base.split(" (")[0].strip()   # "  (optimised: ...)" too
+            return base + " (mine)" if own is None else base + " (copy)"
+        return "My %s cells" % (self.conn.ecu() or "logger")
+
+    def _save_user_preset(self):
+        """Save as...: the cells selected now as a preset of yours for this
+        controller. Built-ins are never changed: this is also how one is
+        copied and then edited."""
+        from . import userpresets as _up
+        title = "Save as preset"
+        if not any(not c.is_derived for c in self._channels):
+            QtWidgets.QMessageBox.information(self, title, "Tick the cells to keep first.")
+            return
+        dlg = UserPresetDialog(self, title, self.conn.ecu(), self._cell_count(),
+                               name=self._default_preset_name())
+        if not dlg.exec():
+            return
+        name = dlg.name_text()
+        if not name:
+            return
+        presets = self._user_presets()
+        old = _up.find(presets, name)
+        if old is not None:
+            if QtWidgets.QMessageBox.question(
+                    self, title, "You already have a %s preset named %s. Replace it?"
+                    % (self.conn.ecu(), old.name),
+                    QtWidgets.QMessageBox.StandardButton.Yes
+                    | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No
+            ) != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        new = _up.from_channels(name, self._channels)
+        presets = [new if p is old else p for p in presets] if old is not None \
+            else presets + [new]
+        if self._store_user_presets(presets, title, new.data):
+            self.preset_hint.setText("Saved your preset %s: %d cells." % (new.name, len(new.cells)))
+
+    def _edit_user_preset(self):
+        """Edit...: the name, and (ticked) the cells -- to the cells selected
+        now."""
+        from . import userpresets as _up
+        p = self._own_preset()
+        if p is None:
+            return
+        title = "Edit preset"
+        dlg = UserPresetDialog(self, title, self.conn.ecu(), self._cell_count(), preset=p)
+        if not dlg.exec():
+            return
+        name = dlg.name_text()
+        if not name or self._preset_name_taken(title, name, but=p.name):
+            return
+        retake = dlg.retake_cells()
+        if retake and not any(not c.is_derived for c in self._channels):
+            QtWidgets.QMessageBox.information(
+                self, title, "No cells are selected, so the preset keeps its cells.")
+            retake = False
+        new = _up.from_channels(name, self._channels) if retake else \
+            _up.UserPreset(name, list(p.cells), p.eoi)
+        if new.data != p.data:
+            self._rename_layout(p.data, new.data, new.name)
+        self._store_user_presets([new if u.name == p.name else u for u in self._user_presets()],
+                                 title, new.data)
+
+    def _rename_user_preset(self):
+        from . import userpresets as _up
+        p = self._own_preset()
+        if p is None:
+            return
+        title = "Rename preset"
+        name, ok = QtWidgets.QInputDialog.getText(self, title, "Name:", text=p.name)
+        if not ok:
+            return
+        name = (name or "").strip()
+        if not name:
+            QtWidgets.QMessageBox.information(self, title, "A preset needs a name.")
+            return
+        if name == p.name or self._preset_name_taken(title, name, but=p.name):
+            return
+        new = _up.UserPreset(name, list(p.cells), p.eoi)
+        self._rename_layout(p.data, new.data, new.name)
+        self._store_user_presets([new if u.name == p.name else u for u in self._user_presets()],
+                                 title, new.data)
+
+    def _rename_layout(self, old, new, title):
+        """Your preset's key is its name: carry the optimised blocks built for
+        it (Tools > Build logging blocks) over to the new name, in every open
+        project and in your settings."""
+        try:
+            from .blockpack import manifest as _m, service as _svc
+            plat = _svc.PLATFORM_OF_ECU.get(self.conn.ecu())
+            if not plat:
+                return
+            try:
+                spaces = list(self._window.workspaces())
+            except Exception:
+                spaces = []
+            sets, seen = [], set()
+            for ws in spaces:
+                ref = getattr(ws, "project_ref", None)
+                st = getattr(ref, "set", None) if ref is not None else None
+                if st is None or id(st) in seen:
+                    continue
+                seen.add(id(st))
+                sets.append((ws, ref, st, st.extra.get(_m.EXTRA_KEY)))
+            _m.rename_preset(plat, old, new, title, [s[2].extra for s in sets], _prefs())
+            for ws, ref, st, before in sets:
+                if st.extra.get(_m.EXTRA_KEY) != before:
+                    try:
+                        from .. import gui_project as _gp
+                        _gp.autosave_soon(ws.win, ref.doc)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _delete_user_preset(self):
+        p = self._own_preset()
+        if p is None:
+            return
+        title = "Delete preset"
+        if QtWidgets.QMessageBox.question(
+                self, title, "Delete your preset %s? This cannot be undone." % p.name,
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No
+        ) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        # the cells stay ticked; the box goes back to choosing by hand
+        if self._store_user_presets([u for u in self._user_presets() if u.name != p.name],
+                                    title, None):
+            self.preset_hint.setText("")
+
+    def _apply_user_preset(self, p):
+        """Tick a preset of yours: each cell where its signal is now (see
+        userpresets.resolve), the ones no served block carries named in the
+        hint, as a built-in's missing values are. With optimised blocks built
+        for it (and the ECU not known to lack them) its cells come from those."""
+        from . import userpresets as _up
+        from .served import unserved_for
+        self._sync_namer()
+        src = self._layout_source()
+        stock = self._stock_view(src)
+        avoid = sorted(set(unserved_for(stock)) | self._probe_unserved)
+        res = _up.resolve(p, stock, avoid=avoid)
+        opt = self._opt_choice(p.data, p, src)
+        cells = list(res.cells)
+        named = stock
+        if opt is not None:
+            named = opt.namer(self._namer)
+            where = {}
+            for g in opt.groups:
+                for f in named.cell_fields(g):
+                    s = named.resolve(g, f)[1]
+                    if s:
+                        where.setdefault(s, (g, f))
+            cells = []
+            for c in p.cells:
+                at = where.get(c.signal) if c.signal else (c.group, c.field)
+                if at is not None and at not in cells:
+                    cells.append(at)
+        self._channels = [named.channel(g, f) for g, f in cells]
+        if p.eoi and _derived.can_add_eoi(self._channels):
+            self._channels.append(_derived.eoi_channel())
+        self._refresh_sel()
+        self._fill_browse(self._current_group(), None)
+        stock_groups = sorted({g for g, _f in res.cells})
+        if opt is not None:
+            text = "Your preset: %d cell%s, optimised blocks %s (instead of %s): %s." % (
+                len(cells), "" if len(cells) == 1 else "s",
+                ", ".join(map(str, opt.groups)), ", ".join(map(str, stock_groups)) or "-",
+                self._opt_note(opt))
+        else:
+            text = "Your preset: %d cell%s, blocks %s." % (
+                len(res.cells), "" if len(res.cells) == 1 else "s",
+                ", ".join(map(str, stock_groups)) or "-")
+            if res.moved:
+                text += (" %d cell%s found in another block: this calibration keeps that "
+                         "signal elsewhere." % (res.moved, "" if res.moved == 1 else "s"))
+            text = self._opt_failed_note(p.data, p, src) + text
+        if not self._namer.available:
+            text += " Nothing names this controller's cells, so they are logged by block and cell."
+        if res.missing and opt is None:
+            text = "Not in any block this ECU serves: %s. " % ", ".join(res.missing) + text
+        self.preset_hint.setText(text)
+        self._tag_path(p.tag)
+        self._opt = (p.data, opt) if opt is not None else None
+        self._probe_if_needed()
+
+    def _tag_path(self, tag):
+        """Name the log after the preset: swap, don't stack, preset tags."""
+        path = self.path_edit.text().strip()
+        if not path:
+            return
+        tags = []
+        try:
+            tags = [r.key for r in self._recipes()]
+        except Exception:
+            pass
+        tags += [u.tag for u in self._user_presets()]
+        d, b = os.path.split(path)
+        stem, ext = os.path.splitext(b)
+        for t in sorted(set(tags), key=len, reverse=True):
+            if stem.endswith("-" + t):
+                stem = stem[:-len(t) - 1]
+                break
+        self.path_edit.setText(os.path.join(d, stem + "-" + tag + (ext or ".csv")))
 
     def _fill_groups(self):
         """(Re)list the groups this pane's binary knows, keeping the selected
@@ -1669,6 +2061,7 @@ class ConnPane(QtWidgets.QWidget):
         self._worker.failed.connect(self._on_failed)
         self._worker.ended.connect(self._on_ended)
         self._worker.mem_probed.connect(self._on_mem_probed)
+        self._worker.probed.connect(self._on_probed)
         self._worker.set_browse_group(self._current_group())
         self.connect_btn.setText("Connecting...")
         self.connect_btn.setEnabled(False)
@@ -1707,6 +2100,8 @@ class ConnPane(QtWidgets.QWidget):
 
     def _on_connected(self, identity, baud):
         self.ident.setText("%s   (%d baud)" % (identity or "connected", baud))
+        self._hz.reset()
+        self.rate.setText("")
         if identity:
             self._ecu_ident[self.conn.ecu()] = identity
             self._sync_namer()           # names from the catalogue when no binary can
@@ -1714,6 +2109,13 @@ class ConnPane(QtWidgets.QWidget):
         self.connect_btn.setText("Disconnect")
         self.connect_btn.setEnabled(True)
         self._set_logging_ui(False)
+        # a preset with optimised blocks: resolve it again now the ECU's
+        # identity is known, which reads those blocks once
+        if self.preset_box.currentData() and not self._logging:
+            key = self.preset_box.currentData()
+            if (self._opt is not None and self._opt[0] == key) or \
+                    self._layout_source()[0] is not None:
+                self._apply_preset()
         self.state_changed.emit()
 
     def _on_failed(self, msg):
@@ -1727,6 +2129,12 @@ class ConnPane(QtWidgets.QWidget):
         self.connect_btn.setEnabled(True)
         self.conn.set_enabled_all(True)
         self.ident.setText("Not connected.")
+        self._hz.reset()
+        self.rate.setText("")
+        # the next ECU may have other software: ask it again
+        self._probe_state.clear()
+        self._probe_unserved.clear()
+        self._probing = None
         self._set_logging_ui(False, connected=False)
         # Only a recording the session ended in the middle of: one already
         # stopped was handed on then, and _log_path was cleared with it.
@@ -1768,8 +2176,24 @@ class ConnPane(QtWidgets.QWidget):
         for p in late:
             p._wait_worker(deadline)
         for p in panes:
-            retire_thread(p._worker)    # never destroy a still-running QThread
+            w = p._worker
+            retire_thread(w)            # never destroy a still-running QThread
             p._worker = None
+            if not w.isRunning():
+                # Its file is closed (the teardown closes it first): keep the
+                # recording now rather than on ``ended``, which is queued and
+                # may never be delivered once the window (or the standalone
+                # logger) is gone. A worker still running hands it on from
+                # _on_ended, as before; _log_path keeps it from going twice.
+                p._finish_cut_log()
+
+    def _finish_cut_log(self):
+        """Keep a recording its session was taken away in the middle of
+        (closing the window, dual logging turned off)."""
+        self._logging = False
+        path, self._log_path = self._log_path, ""
+        if path and os.path.exists(path):
+            self._finish_log(path, self._live.rows, ended=True)
 
     def _wait_worker(self, deadline):
         """Wait for the worker until ``deadline`` (time.monotonic)."""
@@ -1848,10 +2272,69 @@ class ConnPane(QtWidgets.QWidget):
                         val = text
             self.browse.setItem(row, 2, QtWidgets.QTableWidgetItem(val))
         self.browse.blockSignals(False)
+        self._sync_browse_all()
+
+    def _browse_items(self):
+        """The check items of the cell table, one per listed cell."""
+        out = []
+        for r in range(self.browse.rowCount()):
+            it = self.browse.item(r, 0)
+            if it is not None and it.data(QtCore.Qt.UserRole) is not None:
+                out.append(it)
+        return out
+
+    def _sync_browse_all(self):
+        """The master box follows the cells: ticked when all are, a partial
+        tick when some are, empty when none are (or the group lists none)."""
+        box = getattr(self, "browse_all", None)
+        if box is None:
+            return
+        items = self._browse_items()
+        on = sum(1 for it in items if it.checkState() == QtCore.Qt.Checked)
+        state = (QtCore.Qt.Checked if items and on == len(items) else
+                 QtCore.Qt.PartiallyChecked if on else QtCore.Qt.Unchecked)
+        box.blockSignals(True)
+        box.setTristate(state == QtCore.Qt.PartiallyChecked)
+        box.setCheckState(state)
+        box.setEnabled(bool(items))
+        box.blockSignals(False)
+
+    def _browse_all_clicked(self, *_a):
+        """Tick every cell of the group, or untick them all when every one
+        is ticked already. Each cell goes through the same rules as ticking
+        it by hand (_tick_cell), end of injection included."""
+        items = self._browse_items()
+        if not items:
+            self._sync_browse_all()
+            return
+        on = not all(it.checkState() == QtCore.Qt.Checked for it in items)
+        want = QtCore.Qt.Checked if on else QtCore.Qt.Unchecked
+        before = len(self._channels)
+        self.browse.blockSignals(True)
+        try:
+            for it in items:
+                if it.checkState() != want:
+                    it.setCheckState(want)
+                    group, f = it.data(QtCore.Qt.UserRole)
+                    self._tick_cell(group, f, on)
+        finally:
+            self.browse.blockSignals(False)
+        self._refresh_sel()
+        self._sync_browse_all()
+        g = self._current_group()
+        if on:
+            self._say("Group %d: %d cells ticked (%d to log)."
+                      % (g, len(items), len(self._channels)))
+        else:
+            self._say("Group %d: its cells taken out (%d left to log)."
+                      % (g, len(self._channels)))
+        return len(self._channels) - before
 
     def _on_browsed(self, group, cells):
         if group != self._current_group():
             return
+        if cells:
+            self._show_rate(self._hz.tick())
         if not cells:
             self._say("Group %d: not available on this ECU." % group)
             return
@@ -1868,7 +2351,14 @@ class ConnPane(QtWidgets.QWidget):
         if item.column() != 0:
             return
         group, f = item.data(QtCore.Qt.UserRole)
-        if item.checkState() == QtCore.Qt.Checked:
+        self._tick_cell(group, f, item.checkState() == QtCore.Qt.Checked)
+        self._refresh_sel()
+        self._sync_browse_all()
+
+    def _tick_cell(self, group, f, on):
+        """Add (``on``) or take out one cell of the log, with the end of
+        injection that follows its start and duration cells."""
+        if on:
             if not any(c.key == (group, f) for c in self._channels):
                 self._channels.append(self._namer.channel(group, f))
                 if _derived.can_add_eoi(self._channels):
@@ -1881,13 +2371,21 @@ class ConnPane(QtWidgets.QWidget):
                 # its start or duration cell went: nothing to work it out from
                 self._channels = [c for c in self._channels
                                   if c.derived != _derived.EOI]
-        self._refresh_sel()
 
     # ---- presets ------------------------------------------------------
     def _apply_preset(self, *_):
         key = self.preset_box.currentData()
         if not key:
             self.preset_hint.setText("")
+            return
+        own = self._own_preset()
+        if own is not None:
+            self._apply_user_preset(own)
+            return
+        from . import userpresets as _up
+        if _up.is_user_data(key):                  # gone since the list was filled
+            self._fill_presets()
+            self._say_presets()
             return
         from ..logtune.roles import recipe_groups
         recipes = self._recipes()
@@ -1904,30 +2402,227 @@ class ConnPane(QtWidgets.QWidget):
                                      "preset again." % why)
             return
         from .served import unserved_for
-        avoid = unserved_for(self._namer)
-        groups, missing = recipe_groups(self._namer, rec, rec.max_groups, avoid=avoid)
-        self._channels = [self._namer.channel(g, f) for g in groups
-                          for f in self._cell_fields(g)]
+        # The stock view hides cells built for logging: an ECU without them
+        # answers them as empty, so the usual blocks never lean on them.
+        src = self._layout_source()
+        stock = self._stock_view(src)
+        avoid = sorted(set(unserved_for(stock)) | self._probe_unserved)
+        groups, missing = recipe_groups(stock, rec, rec.max_groups, avoid=avoid)
+        opt = self._opt_choice(key, rec, src)
+        if opt is not None:
+            named = opt.namer(self._namer)
+            self._channels = [named.channel(g, f) for g in opt.groups
+                              for f in self._fields(named, g)]
+        else:
+            self._channels = [stock.channel(g, f) for g in groups
+                              for f in self._fields(stock, g)]
         if {"soi", "dur"} <= set(rec.needs) | set(rec.wants) and \
                 _derived.can_add_eoi(self._channels):
             # end of injection, worked out from the row's SOI and duration
             self._channels.append(_derived.eoi_channel())
         self._refresh_sel()
         self._fill_browse(self._current_group(), None)
-        text = "Blocks %s. %s" % (", ".join(map(str, groups)) or "-", rec.how)
-        if missing:
-            from ..logtune.roles import ROLE_LABELS
-            text = ("Not in any block this ECU serves: %s. "
-                    % ", ".join(ROLE_LABELS.get(r, r) for r in missing)) + text
+        if opt is not None:
+            text = "Optimised blocks %s (instead of %s): %s. %s" % (
+                ", ".join(map(str, opt.groups)), ", ".join(map(str, groups)) or "-",
+                self._opt_note(opt), rec.how)
+        else:
+            text = "Blocks %s. %s" % (", ".join(map(str, groups)) or "-", rec.how)
+            if missing:
+                from ..logtune.roles import ROLE_LABELS
+                text = ("Not in any block this ECU serves: %s. "
+                        % ", ".join(ROLE_LABELS.get(r, r) for r in missing)) + text
+            text = self._opt_failed_note(key, rec, src) + text
         self.preset_hint.setText(text)
-        path = self.path_edit.text().strip()
-        if path:
-            d, b = os.path.split(path)
-            stem, ext = os.path.splitext(b)
-            for r in recipes:                       # swap, don't stack, preset tags
-                if stem.endswith("-" + r.key):
-                    stem = stem[:-len(r.key) - 1]
-            self.path_edit.setText(os.path.join(d, stem + "-" + key + (ext or ".csv")))
+        self._tag_path(key)
+        self._opt = (key, opt) if opt is not None else None
+        self._probe_if_needed()
+
+    # ---- optimised logging blocks (docs/LOGGING_BLOCKS_PLAN.md) --------
+    def _use_optimised(self) -> bool:
+        cb = getattr(self, "opt_cb", None)
+        return cb.isChecked() if cb is not None else _use_optimised_setting()
+
+    def _layout_source(self):
+        """(manifest, value_at) of the optimised logging blocks for this
+        pane's controller: the open file's own record, checked against the
+        file (``value_at``); else the record filed under the identity the ECU
+        reported (``value_at`` None -- the probe confirms it). (None, None)
+        when there is none."""
+        try:
+            from .blockpack import manifest as _m, service as _svc
+            from .blockpack.provider import provider_for
+            ecu = self.conn.ecu()
+            plat = _svc.PLATFORM_OF_ECU.get(ecu)
+            if not plat:
+                return None, None
+            prim = self._primary()
+            if prim is not None and _binary_platform(prim) == ecu:
+                prov = provider_for(prim)
+                if prov is not None:
+                    ref = getattr(self._workspace(), "project_ref", None)
+                    m = _m.load_extra(ref.set.extra) if ref is not None else None
+                    if m is None:
+                        for k in prov.identity().keys:
+                            m = _m.load_for_identity(_prefs(), plat, k)
+                            if m is not None:
+                                break
+                    if m is not None and m.platform == plat:
+                        return m, prov.value_at
+            ident = self._ecu_identity()
+            if ident:
+                m = _m.load_for_identity(_prefs(), plat, _svc.report_key(plat, ident))
+                if m is not None and m.platform == plat:
+                    return m, None
+        except Exception:
+            pass
+        return None, None
+
+    def _stock_view(self, src):
+        """This pane's namer with the cells built for logging hidden."""
+        m, value_at = src
+        if m is None:
+            return self._namer
+        from .blockpack.namer import StockNamer
+        hide = (m.valid_cells(value_at) if value_at is not None
+                else {c.where for c in m.cells})
+        return StockNamer(self._namer, hide)
+
+    @staticmethod
+    def _content(obj) -> str:
+        from . import userpresets as _up
+        from .blockpack import requirements as _q
+        reqs = (_q.from_user_preset(obj) if isinstance(obj, _up.UserPreset)
+                else _q.from_recipe(obj))
+        return _q.content_key(reqs)
+
+    def _opt_layout(self, key, obj, src):
+        """The preset's optimised layout, whether or not the ECU has it."""
+        if not self._use_optimised():
+            return None
+        from .blockpack import service as _svc
+        try:
+            return _svc.optimised_for(src[0], key, self._content(obj), src[1])
+        except Exception:
+            return None
+
+    def _opt_choice(self, key, obj, src):
+        """The optimised layout to read preset ``key`` from now, or None (none
+        built, the option off, or the ECU answered them wrongly)."""
+        o = self._opt_layout(key, obj, src)
+        if o is None:
+            return None
+        st = self._probe_state.get((key, tuple(o.groups)))
+        return None if st is not None and not st[0] else o
+
+    def _opt_note(self, o) -> str:
+        st = self._probe_state.get((o.key, tuple(o.groups)))
+        if st is not None:
+            return "the ECU has them"
+        if self._worker is None:
+            return "checked with the ECU when you connect"
+        return "checking them with the ECU..."
+
+    def _opt_failed_note(self, key, obj, src) -> str:
+        o = self._opt_layout(key, obj, src)
+        st = self._probe_state.get((key, tuple(o.groups))) if o is not None else None
+        if st is None or st[0]:
+            return ""
+        return ("The ECU does not have this preset's optimised blocks (%s): write the file "
+                "to the ECU to use them. Until then, the usual blocks. " % st[1])
+
+    def _opt_title(self, title, key, obj, src) -> str:
+        o = self._opt_layout(key, obj, src)
+        if o is None:
+            return title
+        st = self._probe_state.get((key, tuple(o.groups)))
+        if st is not None and not st[0]:
+            return title
+        n = len(o.groups)
+        return "%s  (optimised: %d block%s)" % (title, n, "" if n == 1 else "s")
+
+    def _fields(self, namer, group):
+        """``_cell_fields`` on a given namer (the stock view or the optimised one)."""
+        if not getattr(namer, "available", False):
+            return list(range(4))
+        try:
+            return list(namer.cell_fields(group))
+        except Exception:
+            return list(range(namer.slots(group)))
+
+    def _probe_if_needed(self):
+        """Read the chosen preset's optimised blocks once (connected, not
+        recording, not already answered on this connection)."""
+        if self._opt is None or self._worker is None or self._logging:
+            self._set_logging_ui(self._logging, connected=self._worker is not None)
+            return
+        key, o = self._opt
+        k = (key, tuple(o.groups))
+        if k in self._probe_state or (self._probing is not None and self._probing[1] == k):
+            return
+        self._probe_token += 1
+        self._probing = (self._probe_token, k, o)
+        self._worker.request_probe(self._probe_token, o.groups)
+        self._set_logging_ui(False)          # Start waits for the answer
+
+    def _on_probed(self, token, read):
+        if self._probing is None or self._probing[0] != token:
+            return
+        _t, k, o = self._probing
+        self._probing = None
+        from .blockpack import probe as _probe
+        empty = tuple(o.manifest.empty) if len(o.manifest.empty) == 2 else (0x25, 0x00)
+        read = read or {}
+        res = _probe.check(read, _probe.expectations(o.manifest, o.groups), empty)
+        self._probe_state[k] = (res.ok, res.describe())
+        if not res.ok:
+            # not a filled stock group that answered: its own cells are what
+            # the usual blocks (of this preset and the others) read
+            self._probe_unserved |= set(_probe.unserved(res, read, o.manifest))
+            self._say("%s: optimised blocks not in the ECU (%s); using the usual blocks."
+                      % (self.title(), res.describe()))
+        else:
+            self._say("%s: optimised blocks %s confirmed." % (
+                self.title(), ", ".join(map(str, o.groups))))
+        self._set_logging_ui(self._logging)
+        self._fill_presets()
+        if not self._logging and self.preset_box.currentData() == k[0]:
+            self._apply_preset()             # channels follow the answer
+
+    def _opt_toggled(self, on):
+        try:
+            _prefs().setValue(OPT_KEY, "true" if on else "false")
+        except Exception:
+            pass
+        self._fill_presets()
+        if self.preset_box.currentData() and not self._logging:
+            self._apply_preset()
+
+    def _sync_opt_btn(self):
+        btn = getattr(self, "opt_btn", None)
+        if btn is None:
+            return
+        try:
+            from .. import gui_blockpack as _gbp
+            ws = self._workspace()
+            prim = getattr(ws, "primary", None)
+            ok = (prim is not None and _binary_platform(prim) == self.conn.ecu()
+                  and _gbp.availability(ws) is None)
+        except Exception:
+            ok = False
+        btn.setEnabled(ok)
+
+    def _open_optimiser(self):
+        from .. import gui_blockpack as _gbp
+        ws = self._workspace()
+        prim = getattr(ws, "primary", None)
+        if prim is None or _binary_platform(prim) != self.conn.ecu():
+            QtWidgets.QMessageBox.information(
+                self, "Build logging blocks",
+                "Open the %s file in a tab first: the blocks are laid out in the file, "
+                "which is then written to the ECU." % self.title())
+            return
+        _gbp.open_for(ws)
 
     def _on_mem_probed(self, works, why):
         """Say so once, on connect, rather than after a drive of N/A columns."""
@@ -1949,6 +2644,7 @@ class ConnPane(QtWidgets.QWidget):
             self.sel.setItem(r, 1, name)
             self.sel.setItem(r, 2, QtWidgets.QTableWidgetItem(""))
         # the widths stay as set (or as the user dragged them)
+        self._sync_preset_buttons()          # Save as... needs a cell to keep
 
     def _remove_selected(self):
         rows = sorted({i.row() for i in self.sel.selectedItems()}, reverse=True)
@@ -2035,15 +2731,28 @@ class ConnPane(QtWidgets.QWidget):
             self.path_edit.setText(path)
 
     def _set_logging_ui(self, logging_, connected=True):
-        self.start_btn.setEnabled(connected and not logging_)
+        self.start_btn.setEnabled(connected and not logging_
+                                  and getattr(self, "_probing", None) is None)
         self.pause_btn.setEnabled(logging_)
         self.stop_btn.setEnabled(logging_)
         if not logging_:
             self.pause_btn.setChecked(False)
         self.state_changed.emit()
 
+    def _start_clicked(self):
+        """The tab's own Start logging (see the wiring in _build_body)."""
+        return self._start()
+
+    def _stop_clicked(self):
+        """The tab's own Stop: stop and keep the log, as the master Stop does."""
+        self._stop_logging(finish=True)
+
     def _start(self, quiet=False):
         if self._worker is None:
+            return False
+        if self._probing is not None:
+            self._say("%s: checking the optimised blocks with the ECU -- a moment."
+                      % self.title())
             return False
         if not self._channels:
             why = "Tick at least one cell to log for %s." % self.title()
@@ -2062,6 +2771,15 @@ class ConnPane(QtWidgets.QWidget):
             os.makedirs(work, exist_ok=True)
             path = os.path.join(work, os.path.basename(path)
                                 or _lf.default_name(self.title()))
+            # The default name is only checked against the log folder, so a
+            # second recording in the same second would reuse this working
+            # copy -- the one the last Stop may still be putting into the
+            # project (OVT Logger does that on a worker thread).
+            stem, ext = os.path.splitext(path)
+            n = 2
+            while os.path.exists(path):
+                path = "%s-%d%s" % (stem, n, ext)
+                n += 1
             self._keep_ref = (ws, path)
         elif not path:
             self._pick_path()
@@ -2175,9 +2893,43 @@ class ConnPane(QtWidgets.QWidget):
             it = self.sel.item(r, 2)
             if it is not None:
                 it.setText(txt)
-        n = self._live.rows
-        if n >= 2 and t > 0:
-            self.rate.setText("%d rows, %.1f rows/s" % (n, (n - 1) / t))
+        self._show_rate(self._hz.tick(), self._live.rows)
+
+    def _show_rate(self, hz, rows=None):
+        """The readings per second over the last few seconds (a measuring
+        block while browsing, a whole row while logging), with the rows
+        recorded so far while logging."""
+        if hz is None:
+            return
+        self.rate.setText("%.1f Hz" % hz if rows is None
+                          else "%d rows, %.1f Hz" % (rows, hz))
+
+class RateMeter:
+    """Readings per second over the last :attr:`WINDOW` seconds: steady
+    within a second of a change (a group added, the speed raised), where the
+    average since Start took the whole recording to show one."""
+
+    WINDOW = 3.0
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._t: List[float] = []
+
+    def reset(self):
+        self._t.clear()
+
+    def tick(self) -> Optional[float]:
+        """Count a reading; the rate, or None until there are two."""
+        now = self._clock()
+        self._t.append(now)
+        cut = now - self.WINDOW
+        while len(self._t) > 2 and self._t[0] < cut:
+            self._t.pop(0)
+        span = self._t[-1] - self._t[0]
+        if len(self._t) < 2 or span <= 0:
+            return None
+        return (len(self._t) - 1) / span
+
 
 #: Rows sampled to pick column widths, instead of scanning all of them.
 VIEW_WIDTH_SAMPLE = 150
@@ -2186,11 +2938,38 @@ VIEW_WIDTH_SAMPLE = 150
 
 #: QSettings key: the Dual logging box as it was last left
 DUAL_KEY = "datalog/dual"
+#: QSettings key: the logging window's size and place as it was last left
+GEOM_KEY = "datalog/geometry"
 
 
 def _prefs():
     """Where the logger's own switches are kept (tests point it elsewhere)."""
     return QtCore.QSettings(*branding.QSETTINGS)
+
+
+#: whether presets read their optimised logging blocks (the pane's check box)
+OPT_KEY = "datalog/use_optimised_blocks"
+
+
+def _use_optimised_setting() -> bool:
+    try:
+        return str(_prefs().value(OPT_KEY, "true")).lower() != "false"
+    except Exception:
+        return True
+
+
+def refresh_optimised() -> None:
+    """Tools > Build logging blocks changed a file's layout: every open
+    logger relabels its presets and resolves the chosen one again (not one
+    that is recording)."""
+    for pane in list(ConnPane._panes_alive):
+        try:
+            pane._fill_presets()
+            pane._sync_opt_btn()
+            if pane.preset_box.currentData() and not pane._logging:
+                pane._apply_preset()
+        except Exception:
+            continue
 
 
 def _remembered_dual() -> bool:
@@ -2233,7 +3012,11 @@ class DataLogDialog(QtWidgets.QDialog):
             self.setWindowIcon(app_icon())
         except Exception:
             pass
-        self.resize(1020, 760)
+        # never taller than the screen: 760 did not fit a laptop's
+        # (the size it was left at comes back in showEvent)
+        from ..gui_fit import fit_to_screen
+        fit_to_screen(self, 1020, 760, 0.95, 0.88)
+        self._placed = False
         v = QtWidgets.QVBoxLayout(self)
 
         # The shared status line is built first even though it sits at the
@@ -2502,8 +3285,32 @@ class DataLogDialog(QtWidgets.QDialog):
     # ---- window events ------------------------------------------------
     def showEvent(self, ev):
         super().showEvent(ev)
+        if not self._placed:
+            self._placed = True
+            self._restore_size()
         for p in self._panes:
             p._sync_namer()
+
+    def _restore_size(self):
+        """The size and place it was left at, shrunk onto the screen it
+        opens on (a window left on a bigger monitor)."""
+        from ..gui_fit import available, keep_on_screen
+        try:
+            geo = _prefs().value(GEOM_KEY)
+            if geo is None or not self.restoreGeometry(geo):
+                return
+        except Exception:
+            return
+        g = available(self)
+        if g is not None and (self.width() > g.width() or self.height() > g.height()):
+            self.resize(min(self.width(), g.width()), min(self.height(), int(g.height() * 0.95)))
+        keep_on_screen(self)
+
+    def _keep_size(self):
+        try:
+            _prefs().setValue(GEOM_KEY, self.saveGeometry())
+        except Exception:
+            pass
 
     def changeEvent(self, ev):
         super().changeEvent(ev)
@@ -2518,6 +3325,7 @@ class DataLogDialog(QtWidgets.QDialog):
         # teardown is the slow one (TP 2.0 disconnect, J2534 close, often
         # through the 32-bit bridge), and both can do it at once. Past the
         # deadline the transport is cut, then the reaper takes over.
+        self._keep_size()
         for p in self._panes:
             p.request_stop()
         ConnPane.wind_down(self._panes)
@@ -2817,14 +3625,29 @@ class EcuTask(QtCore.QThread):
 
 
 class EcuCodesDialog(QtWidgets.QDialog):
-    """Read (and clear) fault codes from the ECU; returns the Dtc list."""
+    """Read (and clear) fault codes from the ECU; returns the Dtc list.
 
-    def __init__(self, window, parent=None):
+    Each read ends in the fault code report (``gui_dtc_report``), which keeps
+    the read in the project; ``report`` is what the asking window knows (its
+    tab and fault-path lookups, ``gui_dtc_report.ReportContext``). After it,
+    ``record`` is the read. The report does not block (it stays open beside
+    the asking window, and its "Show in fault paths" calls the context's
+    ``on_show_paths`` later), so ``show_paths`` is False once a report was
+    shown; it stays True only when the report could not be shown, telling the
+    caller to switch to its fault-path view itself."""
+
+    def __init__(self, window, parent=None, report=None):
         super().__init__(parent or (window if isinstance(window, QtWidgets.QWidget) else None))
         self.setWindowTitle("Fault codes from ECU")
         self.resize(560, 220)
         self.codes: Optional[List[_diag.Dtc]] = None     # None until a read completed
         self._task = None
+        self._what = "read"
+        self.report_ctx = report
+        self.record = None               # dtc_report.Read of the last read
+        self.show_paths = True           # True only if no report could be shown
+        self._before = None              # codes stored just before a clear
+        self._ident = ""                 # the ECU's ident from the session
         v = QtWidgets.QVBoxLayout(self)
         # Its own scope: sharing "a" with the logger's first pane meant each
         # dialog overwrote the other's cable and transport.
@@ -2866,10 +3689,20 @@ class EcuCodesDialog(QtWidgets.QDialog):
                 != QtWidgets.QMessageBox.StandardButton.Yes:
             return
 
+        self._before, self._ident = None, ""
+
         def fn(sess):
             if what == "clear":
+                # what was stored, so the report can say what came back
+                try:
+                    self._before = list(sess.read_dtcs())
+                except Exception:
+                    self._before = None
                 sess.clear_dtcs()
-            return sess.read_dtcs()
+            got = sess.read_dtcs()
+            self._ident = str(getattr(sess, "identity", "") or "")
+            return got
+        self._what = what
         self._task = EcuTask(port, self.conn.ecu(), "Low", self.conn.cap_high(), fn,
                              fast_init=self.conn.fast_init(),
                              transport=("can" if can else "kline"),
@@ -2892,9 +3725,43 @@ class EcuCodesDialog(QtWidgets.QDialog):
         self.codes = list(codes)
         for w in (self.read_btn, self.clear_btn):
             w.setEnabled(True)
+        from .. import dtc_report as _dr
+        enc = getattr(self.report_ctx, "encoding", "") or ""
         self.status.setText("%d fault code(s): %s" % (
-            len(codes), ", ".join(c.text for c in codes) if codes else "none stored"))
+            len(codes), ", ".join(_dr.dtc_text(c, enc) for c in codes) if codes
+            else "none stored"))
+        # the report says what was found (an empty read too, or it looks like
+        # nothing happened) before the window closes on the result
+        self._report(self.codes)
         self.accept()
+
+    def _report(self, codes):
+        from .. import dtc_report as _dr
+        from .. import gui_dtc_report as _gr
+        ctx = self.report_ctx
+        conn = self.conn
+        header = dict(
+            controller=conn.ecu() or "", ecu_ident=getattr(self, "_ident", "") or "",
+            cable=conn.port_box.currentText() if hasattr(conn, "port_box") else "",
+            transport=(conn.transport_box.currentText()
+                       if getattr(conn, "transport_box", None) is not None else ""),
+            file=getattr(ctx, "file", "") or "",
+            set_name=ctx.set_name() if ctx is not None else "",
+            encoding=getattr(ctx, "encoding", "") or "")
+        before = getattr(self, "_before", None) if self._what == "clear" else None
+        try:
+            self.record = _dr.build_read(
+                codes, paths_for=getattr(ctx, "paths_for", None),
+                describe=getattr(ctx, "describe", None), before=before,
+                action=self._what, **header)
+            dlg = _gr.show_after_read(self, self.record, ctx)
+            # non-modal: False here -- "Show in fault paths" comes later,
+            # through the context's on_show_paths
+            self.show_paths = bool(dlg.show_paths)
+        except Exception as ex:                             # noqa: BLE001
+            QtWidgets.QMessageBox.warning(self, "Fault codes",
+                                          "%d fault code(s); the report failed: %s"
+                                          % (len(codes), ex))
 
     def _failed(self, msg):
         for w in (self.read_btn, self.clear_btn):

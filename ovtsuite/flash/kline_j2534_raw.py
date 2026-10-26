@@ -34,12 +34,23 @@ It presents the same face as :class:`~ovtsuite.flash.transport.KLine`
 :class:`~ovtsuite.flash.kwp.Kw1281` and :class:`~ovtsuite.flash.kwp.Kwp2000`
 run on it unchanged. What it cannot do is anything that needs the line itself
 (a break, a bit-banged address): the device owns the init.
+
+Each step is one device call (``kline_xfer``: what is waiting, the write, the
+first reply), which through the 32-bit bridge is one round trip; a bridge
+build without it gets the same reads and writes one call each. A write the
+caller says a read follows (:meth:`write_before_read` -- a KW1281 byte and
+its complement, an acknowledgement and the next byte, a KWP2000 request and
+its reply) goes out with that read, in the same call. What comes back is
+still a byte stream: KW1281 blocks, loader and EEPROM bytes are not KWP
+frames, so nothing is reassembled into one, and the channel timing is left
+as it was.
 """
 import time
 from typing import Callable, Optional
 
 from . import j2534 as J
-from .transport import KLineError, KLineTimeout, LinkStopped, adjust_parity
+from .transport import (KLineError, KLineTimeout, LinkStopped, adjust_parity,
+                        check_init_stop)
 
 #: Reads wait in slices this long, so a stop request lands within one.
 READ_SLICE_MS = 50
@@ -51,6 +62,44 @@ _RAW_TIMING = (("P1_MAX", 2), ("P3_MIN", 0), ("P4_MIN", 0), ("LOOPBACK", 0))
 #: FIVE_BAUD_MOD 1: the device sends ~KB2 and does not wait for ~address.
 FIVE_BAUD_TESTER_COMPLEMENT_ONLY = 1
 
+#: Shorter timing for the EDC15 flash / EEPROM session on this link
+#: (:class:`~ovtsuite.flash.edc15.Edc15Flash`), as the EDC16 J2534 write got.
+#: Not yet bench-tested: set False to put back exactly the timing and calls
+#: used before (the serial KKL path never uses it either way). The channel
+#: timing above is the same both ways -- it is already P1_MAX 1 ms, P3_MIN 0,
+#: P4_MIN 0, the values EDC16's ``set_session_timing`` moves to -- and EDC15
+#: sends no accessTimingParameters for it to match. What is shortened is the
+#: pacing done in Python that was there for a serial adapter.
+EDC15_J2534_FAST_TIMING = True
+
+#: What :data:`EDC15_J2534_FAST_TIMING` changes (the old value in brackets):
+EDC15_J2534_TIMING = {
+    # KW1281 identification at 9600: R6 1 ms, the spec minimum, and no 25 ms
+    # block lead-in -- the logger's timing on the same ECU (R6 2 ms + 25 ms)
+    "kw1281_fast": True,
+    # KWP2000 requests in one write, the device's P4_MIN (0) between bytes
+    # (byte by byte, one device call and a 5 ms sleep each); P3 55 ms kept.
+    # Off: on the bench (2026-10-25, Scanmatik) the ECU answered the first
+    # whole-frame request (10 89) with a garbled negative reply and the read
+    # never started -- its KWP2000 handler wants the gap between bytes.
+    "kwp_batched": False,
+    # extra wait between loader TransferData frames, on top of P3 (5 ms)
+    "transfer_gap": 0.0,
+    # post-loader handshake slices in one write each (byte by byte, 5 ms
+    # apart at 10400). Not yet reached on the bench (the 10 89 failure came
+    # first); to be tried next.
+    "handshake_batched": True,
+    # a loader command goes out in the device call that reads its reply
+    # (a write call, then reads)
+    "loader_write_with_read": True,
+}
+
+
+def edc15_timing() -> Optional[dict]:
+    """The EDC15 session timing this link uses: a copy of
+    :data:`EDC15_J2534_TIMING`, or None for the timing used before."""
+    return dict(EDC15_J2534_TIMING) if EDC15_J2534_FAST_TIMING else None
+
 
 class J2534RawKLine:
     """Byte-stream K-line over an already-opened J2534 device (``PassThru``,
@@ -60,6 +109,11 @@ class J2534RawKLine:
     is_kline = True
     direct = True
     prefer_fast_init = False             # the init is the device's 5-baud one
+    #: line silence already behind a received byte when it is handed over:
+    #: the device ends a message after P1_MAX (1 ms, :data:`_RAW_TIMING`) of
+    #: it, so that much of KW1281's R6 has passed before the reply can be
+    #: written (:class:`~ovtsuite.flash.kwp.Kw1281` waits only the rest)
+    rx_settle_s = 0.001
 
     def __init__(self, dev, baud: int = 10400, log: Optional[Callable[[str], None]] = None,
                  protocol: int = J.ISO9141):
@@ -69,12 +123,15 @@ class J2534RawKLine:
         self._log = log or (lambda s: None)
         self._ch = None
         self._rx = bytearray()
+        self._held: Optional[bytes] = None   # a write that goes out with the next read
         self._timeout = 8.0
         self._data_rate_by_config: Optional[bool] = None
         self.five_baud_mod_ok = False
         self.last_sync = -1
         #: optional callable()->bool, checked between read slices and init tries
         self.is_stop = None
+        #: optional callable()->bool, checked between init tries only
+        self.init_is_stop = None
         self._open()
 
     # ---- channel ----------------------------------------------------------
@@ -101,6 +158,10 @@ class J2534RawKLine:
                       "may be slower." % ", ".join(refused))
 
     def close(self):
+        try:
+            self._flush_held()
+        except Exception:
+            pass
         ch, self._ch = self._ch, None
         if ch is not None:
             try:
@@ -120,6 +181,10 @@ class J2534RawKLine:
         self.close()
 
     # ---- knobs ------------------------------------------------------------
+    def edc15_timing(self) -> Optional[dict]:
+        """See :func:`edc15_timing` (read by the EDC15 flasher)."""
+        return edc15_timing()
+
     @property
     def read_timeout(self) -> float:
         return self._timeout
@@ -135,6 +200,7 @@ class J2534RawKLine:
         baud = int(baud)
         if baud == self._baud and self._ch is not None:
             return
+        self._flush_held()                   # a held write goes at the old rate
         if self._ch is not None and self._data_rate_by_config is not False:
             try:
                 self._ch.set_config(DATA_RATE=baud)
@@ -153,6 +219,7 @@ class J2534RawKLine:
         return None
 
     def clear_rx(self):
+        self._flush_held()
         self._rx.clear()
         if self._ch is not None:
             try:
@@ -168,7 +235,7 @@ class J2534RawKLine:
         addr = adjust_parity(address, even_parity)
         last = None
         for attempt in range(1, tries + 1):
-            self._check_stop()
+            check_init_stop(self)
             try:
                 return self._wake_up_once(addr)
             except LinkStopped:
@@ -177,7 +244,7 @@ class J2534RawKLine:
                 last = ex
                 self.last_sync = -1
                 if attempt < tries:
-                    time.sleep(1.0)
+                    self._wait(1.0)
         msg = "J2534 5-baud init to 0x%02X failed: %s" % (addr, last)
         if not self.five_baud_mod_ok:
             msg += (" (this device refused FIVE_BAUD_MOD 1, so it waits for an "
@@ -186,6 +253,7 @@ class J2534RawKLine:
         raise KLineError(msg)
 
     def _wake_up_once(self, addr: int) -> int:
+        self._held = None                    # a new init: a held byte is moot
         time.sleep(0.3)
         self._rx.clear()
         try:
@@ -210,16 +278,44 @@ class J2534RawKLine:
             self.read_complement(addr)
         return version
 
-    # ---- writes -------------------------------------------------------------
-    def _write(self, data: bytes):
+    # ---- device steps -------------------------------------------------------
+    def _xfer(self, data: Optional[bytes], wait_ms: int, drain: bool) -> bytes:
+        """One device call: what is waiting (``drain``), the write, the first
+        reply within ``wait_ms``. What came before the write goes to the read
+        buffer here, so it stays ahead of the write's echo; what came after is
+        returned, for the caller to put behind one."""
         if self._ch is None:
             raise KLineError("J2534 K-line: channel closed")
-        self._drain()                    # what came before this write stays before its echo
-        budget = max(1000, 1000 + len(data) * 20000 // max(self._baud, 300))
+        budget = 0
+        if data is not None:
+            budget = max(1000, 1000 + len(data) * 20000 // max(self._baud, 300))
+        xfer = getattr(self._ch, "kline_xfer", None)
         try:
-            self._ch.write(bytes(data), timeout_ms=budget)
+            if xfer is not None:
+                before, after = xfer(data, budget, wait_ms, drain)
+            else:                            # e.g. the direct OpenPort channel
+                before, after = J.kline_xfer(self._ch, data, budget, wait_ms, drain)
         except J.J2534Error as ex:
-            raise KLineError("J2534 K-line write failed: %s" % ex)
+            raise KLineError("J2534 K-line %s failed: %s"
+                             % ("write" if data is not None else "read", ex))
+        self._take(before)
+        tail = bytearray()
+        for m in after:
+            if not getattr(m, "is_tx_echo", False):
+                tail += bytes(getattr(m, "payload", b"") or b"")
+        return bytes(tail)
+
+    def _flush_held(self):
+        held, self._held = self._held, None
+        if held is not None and self._ch is not None:
+            self._rx += self._xfer(held, 0, True)
+
+    # ---- writes -------------------------------------------------------------
+    def _write(self, data: bytes, echo: bool = False):
+        self._flush_held()
+        self._rx += self._xfer(bytes(data), 0, True)
+        if echo:
+            self._rx += data
 
     def write_raw(self, data: bytes):
         """Write and leave the (synthesised) echo to be read back, as a serial
@@ -227,8 +323,7 @@ class J2534RawKLine:
         data = bytes(data)
         if not data:
             return
-        self._write(data)
-        self._rx += data
+        self._write(data, echo=True)
 
     def write_byte(self, b: int):
         """Write one byte; its echo is discarded (``KLine.write_byte``)."""
@@ -239,6 +334,18 @@ class J2534RawKLine:
         data = bytes(data)
         if data:
             self._write(data)
+
+    def write_before_read(self, data: bytes):
+        """Write ``data`` (echo discarded) together with the next read: for a
+        caller that reads straight after, so both are one device call.
+        Anything else done on the link first (a write, a baud change,
+        clear_rx, close) sends it on its own first, so it is not lost or
+        reordered; only a new init drops it."""
+        data = bytes(data)
+        if not data:
+            return
+        self._flush_held()
+        self._held = data
 
     # ---- reads --------------------------------------------------------------
     def _take(self, msgs) -> bool:
@@ -255,16 +362,19 @@ class J2534RawKLine:
     def _drain(self):
         if self._ch is None:
             return
-        for _ in range(64):
-            try:
-                msgs = self._ch.read(32, 0)
-            except J.J2534Error:
-                return
-            if not msgs:
-                return
-            self._take(msgs)
+        try:
+            self._xfer(None, 0, True)
+        except KLineError:
+            return
 
     def _fill(self):
+        """Wait for the next received message, sending a held write first in
+        the same call. A blocking PassThruReadMsgs returns only when it has
+        ALL the messages asked for or its timeout runs out, so asking for 32
+        with a 50 ms timeout held every read for the full 50 ms -- every
+        KW1281 complement and every packet ack. The wait asks for one message
+        (back the moment it lands), then whatever else has arrived is
+        collected without waiting (:func:`~ovtsuite.flash.j2534.kline_xfer`)."""
         deadline = time.monotonic() + self._timeout
         while True:
             self._check_stop()
@@ -272,11 +382,10 @@ class J2534RawKLine:
                 raise KLineError("J2534 K-line: channel closed")
             left = deadline - time.monotonic()
             slice_ms = int(max(0, min(left * 1000, READ_SLICE_MS)))
-            try:
-                msgs = self._ch.read(32, max(1, slice_ms))
-            except J.J2534Error as ex:
-                raise KLineError("J2534 K-line read failed: %s" % ex)
-            if self._take(msgs):
+            held, self._held = self._held, None
+            n = len(self._rx)
+            self._rx += self._xfer(held, max(1, slice_ms), held is not None)
+            if len(self._rx) > n:
                 return
             if time.monotonic() >= deadline:
                 raise KLineTimeout("K-line read timed out")
@@ -304,6 +413,20 @@ class J2534RawKLine:
         stop = self.is_stop
         if stop is not None and stop():
             raise LinkStopped("stop requested")
+
+    def _wait(self, seconds: float):
+        """Sleep ``seconds`` between init tries, giving up early on
+        :attr:`is_stop` or :attr:`init_is_stop`."""
+        if self.is_stop is None and self.init_is_stop is None:
+            time.sleep(seconds)
+            return
+        end = time.monotonic() + seconds
+        while True:
+            check_init_stop(self)
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(left, 0.05))
 
 
 __all__ = ["J2534RawKLine"]

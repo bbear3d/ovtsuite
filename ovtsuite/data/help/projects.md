@@ -1,7 +1,7 @@
 ---
 title: Projects (.ovt)
 order: 26
-context: ProjectPanel, RecoveryDialog, ProjectInfoDialog, DiskChangedDialog, MergeConflictDialog, SavingDialog
+context: ProjectPanel, RecoveryDialog, ProjectInfoDialog, RecordDialog, DiskChangedDialog, MergeConflictDialog, SavingDialog
 ---
 # Projects (.ovt)
 
@@ -50,6 +50,39 @@ is optional.
 - A VIN is checked as you type: 17 characters, never I, O or Q.
 - The tab's tooltip and the Project panel show the vehicle, and an imported
   WinOLS project fills in what its own project properties say.
+- **Fitted hardware** lists what is fitted to the car and from when — the
+  injection pump head and nozzles, or the unit injectors — with the version
+  whose calibration is set up for it. **Tools > Injector setup...** records
+  the build it sets a file up for; **Add...**, **Edit...** and **Remove**
+  change the list by hand. The dyno chart and the log tools use it to tell
+  versions and logs for different hardware apart. See
+  [Fitted hardware](#fitted-hardware).
+
+### Fitted hardware
+
+A record says what the car has (*PD150 injectors*, *11 mm pump head,
+DSLA150P764 nozzles*), the day it was fitted, and the version whose
+calibration is set up for it: **Calibrated in version** (that version has
+it), **Set up after version** (the setup was in the edits after it, so the
+next version has it) or **Not recorded** (the car has it, no version is set
+up for it yet). The car and the file can differ -- new injectors fitted
+before the file is set up for them, or an older version written back -- and
+the app shows both where it matters:
+
+- **Project panel** -- under each control unit, a line *🔧 Fitted: PD150
+  injectors*; when the active branch's latest version (with its tab's unsaved
+  changes) is set up for something else it goes on *— this version is set up
+  for: ...* (or *is not set up for it*), in orange. Hover for every record
+  with its date and version; double-click (or right-click) to edit them. The
+  versions where the setup changes are marked *🔧 set up for ...*.
+- **Version history** -- the same mark in **Status**, and every version's
+  tooltip says what it is set up for.
+- **The tab's tooltip** -- the *Fitted: ...* line.
+- **Writing to the car** -- when the version being written is set up for
+  other hardware than is recorded as fitted, the write asks first (see
+  [Flashing](flashing.md)).
+- **The AI assistant** -- *Project info* gives it the records and, per
+  branch, the hardware its latest version is set up for.
 
 ## Opening a project
 
@@ -269,7 +302,16 @@ Right-click an item for what can be done with it:
   **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
 - **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,
   **Remove**.
-- **Attachment** -- **Export...**, **Remove**.
+- **Attachment** -- **Export...**, **Remove**. A kept fault-code read also
+  has **View fault code report**.
+
+**Save** always leaves correct checksums: a tab whose checksums are wrong
+is saved even when nothing in it was edited (a file read or imported with
+bad checksums), as a version named *checksums corrected*.
+
+To remove several logs, patches or attachments at once (fault-code reads
+among them), select them with Ctrl-click or Shift-click and choose **Remove
+*n* items**, or press **Delete**; you are asked once for all of them.
 - **Logs** / **Patches** / **Attachments** (the headings) -- add one.
 
 Each project lists its **Logs**, **Patches** and **Attachments** under its

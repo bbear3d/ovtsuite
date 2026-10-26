@@ -26,6 +26,7 @@ done through a small RAM loader uploaded over KWP2000:
 
 Speeds: Low = stay at 10400; Medium = 38400 (0x50); High = 124800 (0x87).
 """
+import logging
 import time
 
 from .transport import KLineError, KLineTimeout
@@ -94,6 +95,10 @@ VARIANTS = {
                   0x01, 0x7F])),
 }
 AUTO_ORDER = ("V", "P", "VM")
+#: Wait between loader TransferData frames, on top of the KWP2000 P3.
+TRANSFER_GAP = 0.005
+
+_debug = logging.getLogger(__name__).debug
 
 
 def _cks(data) -> int:
@@ -142,6 +147,14 @@ class Edc15Flash:
         self.kwp = None
         self.variant = None
         self.recovered = False
+        #: shorter session timing the link asks for (the J2534 byte-stream
+        #: link's ``edc15_timing``, switched by kline_j2534_raw's
+        #: EDC15_J2534_FAST_TIMING); empty: the timing used on a serial cable
+        get = getattr(link, "edc15_timing", None)
+        self._timing = (get() if get is not None else None) or {}
+        if get is not None:
+            _debug("EDC15 over J2534: %s session timing %s",
+                   "fast" if self._timing else "previous", self._timing or "")
 
     def log(self, msg):
         self._log(msg)
@@ -208,7 +221,8 @@ class Edc15Flash:
         if require_kw1281:
             self.k.set_baud(9600)
             self.log("Connecting to EDC15 (slow init, KW1281)...")
-            kw1281 = _kwp.Kw1281(self.k, self.log)
+            kw1281 = _kwp.Kw1281(self.k, self.log,
+                                 fast=bool(self._timing.get("kw1281_fast")))
             primary_failure = None
             try:
                 version = self.k.wake_up(0x01, even_parity=False)
@@ -251,6 +265,8 @@ class Edc15Flash:
     def _continue_kwp(self, info, speed, skip_0x89, loader, is_stop):
         self.k.clear_rx()
         kwp = self.kwp = _kwp.Kwp2000(self.k, 0x01, self.log)
+        if self._timing.get("kwp_batched"):
+            kwp.fast = True             # whole frame in one write; P3 kept
         if skip_0x89:
             kwp.send_receive(_kwp.SVC_START_DIAG, b"\x85")
         else:
@@ -307,10 +323,13 @@ class Edc15Flash:
             exclude_addresses=True)
         max_block = resp.body[0] if resp.body else 0xFF
         chunk = max(1, max_block - 1)
+        gap = self._transfer_gap()
         for off in range(0, n, chunk):
-            time.sleep(0.005)
+            if gap:
+                time.sleep(gap)
             self._transfer_with_retry(kwp, data[off:off + chunk])
-        kwp.send(_kwp.SVC_START_ROUTINE_LID, b"\x02", exclude_addresses=True)
+        kwp.send(_kwp.SVC_START_ROUTINE_LID, b"\x02", exclude_addresses=True,
+                 _then_read=self._reply_with_write())
         kwp.receive()                                   # NAK 31/22 expected; ignored
 
     @staticmethod
@@ -329,17 +348,21 @@ class Edc15Flash:
         resp = kwp.send_receive(_kwp.SVC_REQ_DOWNLOAD,
                                 LOADER_ADDR + bytes([0x00, 0x00, 0x04, 0x20]),
                                 exclude_addresses=True)
-        time.sleep(0.005)
+        gap = self._transfer_gap()
+        if gap:
+            time.sleep(gap)
         loader = _loaders.flash_loader()
         max_block = resp.body[0] if resp.body else 0xFF
         chunk = max(1, max_block - 1)
         for off in range(0, len(loader), chunk):
             kwp.send_receive(_kwp.SVC_TRANSFER, loader[off:off + chunk], exclude_addresses=True)
-            time.sleep(0.005)
+            if gap:
+                time.sleep(gap)
         kwp.send_receive(_kwp.SVC_TRANSFER,
                          bytes([0xC3, 0xC3, 0x89, 0xC5, 0x45, 0xDA, 0x63, 0x0B]),
                          exclude_addresses=True)
-        time.sleep(0.005)
+        if gap:
+            time.sleep(gap)
         _, ardu, ecu = info
         a = e = 0
         if len(ardu) == 9:
@@ -350,6 +373,18 @@ class Edc15Flash:
             a = self._send_slice(ardu, a, 6); e = self._verify_slice(ecu, e, 18)
             a = self._send_slice(ardu, a, 9); e = self._verify_slice(ecu, e, 2)
 
+    def _transfer_gap(self):
+        return self._timing.get("transfer_gap", TRANSFER_GAP)
+
+    def _reply_with_write(self):
+        return bool(self._timing.get("loader_write_with_read"))
+
+    def _write_for_reply(self, data):
+        """Write a loader command whose reply is read next: with the read, in
+        one device call, where the session timing says so and the link can."""
+        w = getattr(self.k, "write_before_read", None) if self._reply_with_write() else None
+        (w or self.k.write_bytes)(bytes(data))
+
     def _write_delayed(self, b):
         self.k.write_byte(b)
         if not self._fast:
@@ -357,6 +392,9 @@ class Edc15Flash:
 
     def _send_slice(self, src, pos, n):
         part = src[pos:pos + n]
+        if self._timing.get("handshake_batched"):
+            self._write_for_reply(bytes(part) + bytes([_cks(part)]))
+            return pos + n
         for b in part:
             self._write_delayed(b)
         self._write_delayed(_cks(part))
@@ -410,7 +448,7 @@ class Edc15Flash:
 
     def _read_packet_with_retry(self, req, attempts=10):
         for attempt in range(1, attempts + 1):
-            self.k.write_bytes(req)
+            self._write_for_reply(req)
             try:
                 return self._read_flash_packet()
             except (KLineError, KLineTimeout):
@@ -460,7 +498,7 @@ class Edc15Flash:
         chunk = bytes(header) + bytes(data) + bytes([(_cks(header) + _cks(data)) & 0xFF])
         for attempt in range(1, attempts + 1):
             try:
-                self.k.write_bytes(chunk)
+                self._write_for_reply(chunk)
                 self._check_ack()
                 return
             except (KLineError, KLineTimeout):
@@ -504,7 +542,7 @@ class Edc15Flash:
 
         try:
             stage("Erasing flash (whole chip)...")
-            self.k.write_bytes(bytes([0x02, 0xA5, 0x0F, 0xB6]))
+            self._write_for_reply(bytes([0x02, 0xA5, 0x0F, 0xB6]))
             self._check_ack()
             time.sleep(4.0)
             self._check_ack()
@@ -526,7 +564,7 @@ class Edc15Flash:
             raise ValueError("loader message too long")
         buf = bytearray([1 + len(data), service]) + data
         buf.append(_cks(buf))
-        self.k.write_bytes(bytes(buf))
+        self._write_for_reply(bytes(buf))
 
     def _loader_receive(self):
         length = self.k.read_byte()
@@ -707,7 +745,7 @@ class Edc15Flash:
     # ------------------------------------------------------------- EEPROM
     def _eeprom_dump(self):
         kwp = self.kwp
-        kwp.send(0xA6, b"", exclude_addresses=True)
+        kwp.send(0xA6, b"", exclude_addresses=True, _then_read=self._reply_with_write())
         resp = kwp.receive()
         if not resp.is_positive(_kwp.SVC_TRANSFER):
             raise KLineError("Dump EEPROM failed (0x%02X)" % resp.service)
@@ -724,13 +762,14 @@ class Edc15Flash:
             while j < len(pairs) and (pairs[j][0] > 0xFF) == page1 and j - i < 255:
                 j += 1
             run = pairs[i:j]
-            kwp.send(0xAA if page1 else 0xA9, bytes([len(run)]), exclude_addresses=True)
+            kwp.send(0xAA if page1 else 0xA9, bytes([len(run)]), exclude_addresses=True,
+                     _then_read=self._reply_with_write())
             if not kwp.receive().is_positive(_kwp.SVC_TRANSFER):
                 raise KLineError("Write EEPROM (batched) failed")
             raw = bytearray()
             for addr, val in run:
                 raw += bytes([addr & 0xFF, val & 0xFF])
-            self.k.write_bytes(bytes(raw))
+            self._write_for_reply(bytes(raw))
             if not kwp.receive().is_positive(_kwp.SVC_TRANSFER):
                 raise KLineError("Write EEPROM (batched) failed")
             i = j

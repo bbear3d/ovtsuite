@@ -321,3 +321,29 @@ def test_cell_colours_follow_the_table_editor(app, s, monkeypatch):
     assert d.table.alternatingRowColors()
     assert isinstance(d.table.itemDelegate(), CellDelegate)
     d.cancel()
+
+
+def test_check_box_on_a_selected_row_stays_readable(app, s):
+    """The TCU window's "On" boxes use the shared delegate: on a selected
+    row the box is drawn unselected, in the table's own palette."""
+    from ovtsuite.gui_cellmarks import CellDelegate, check_on_selection
+    d = _window(s)
+    t = d.table
+    dlg = t.itemDelegate()
+    assert isinstance(dlg, CellDelegate)
+    S = QtWidgets.QStyle.StateFlag
+    t.selectRow(0)
+    app.processEvents()
+    ix = t.model().index(0, 0)
+    o = QtWidgets.QStyleOptionViewItem()
+    t.initViewItemOption(o)
+    o.rect = t.visualRect(ix)
+    o.state |= S.State_Selected
+    dlg.initStyleOption(o, ix)
+    got = check_on_selection(o, ix)
+    assert got is not None
+    chip, ind = got
+    assert not ind.state & S.State_Selected
+    assert ind.state & (S.State_On | S.State_Off)
+    assert chip.contains(ind.rect)
+    d.close()

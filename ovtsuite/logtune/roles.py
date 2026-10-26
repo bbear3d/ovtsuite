@@ -30,7 +30,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 #: role -> A2L measurements that carry it, most specific first.
 ROLES: Dict[str, Tuple[str, ...]] = {
     "rpm": ("Eng_nAvrg",),
-    "iq": ("InjCtl_qSetUnBal", "InjCtl_qSet"),
+    "iq": ("InjCtl_qSetUnBal", "InjCtl_qSet", "InjCtl_qCurr"),
     "maf": ("AFSCD_mAirPerCyl",),
     "maf_spec": ("AirCtl_mDesVal",),
     "boost": ("BPSCD_pFltVal", "BPSCD_pVal"),
@@ -198,6 +198,7 @@ EDC15_ROLES: Dict[str, Tuple[str, ...]] = {
     "cc_status": ("Edc15_stCc",), "alt_load": ("Edc15_rAltLoad",),
     "src1": ("Edc15_qSrc1",), "src2": ("Edc15_qSrc2",),
     "src3": ("Edc15_qSrc3",), "src4": ("Edc15_qSrc4",),
+    "uqa": ("Edc15_uQaAct",), "uqa_spec": ("Edc15_uQaDes",),
 }
 EDC15_ROLE_LABELS: Dict[str, str] = {
     "soi_act": "Start of injection (actual)",
@@ -213,6 +214,8 @@ EDC15_ROLE_LABELS: Dict[str, str] = {
     "src2": "Smooth-running quantity, cylinder 2",
     "src3": "Smooth-running quantity, cylinder 3",
     "src4": "Smooth-running quantity, cylinder 4",
+    "uqa": "Pump quantity adjuster voltage (actual)",
+    "uqa_spec": "Pump quantity adjuster voltage (specified)",
 }
 ROLES.update(EDC15_ROLES)
 ROLE_LABELS.update(EDC15_ROLE_LABELS)
@@ -334,6 +337,15 @@ RECIPES: Tuple[Recipe, ...] = (
            "Coolant at 70 deg C or more, flat road, no wind if possible. Hold 60, 80, 100 "
            "and 120 km/h for at least 30 s each, same route and direction for "
            "the before and after logs."),
+    Recipe("injectors", "Injector delivery (new injectors or nozzles, unit-injector engines)",
+           ("rpm", "iq", "maf", "lambda"), ("dur", "soi", "clt", "tfuel", "vss", "gear", "pedal"),
+           "For Tools > Injector setup > From logs. Coolant at 70 deg C or more. Two "
+           "minutes of idle in neutral with everything switched off; steady 60, 80, 100 "
+           "and 120 km/h in a fixed gear for 30 s each; steady part throttle at 2000, "
+           "2500 and 3000 rpm; then two full-throttle pulls in 3rd and 4th from 1300 rpm. "
+           "Log the same idle and steady speeds BEFORE the new hardware goes in, if you "
+           "can: those points need no lambda reading.",
+           max_groups=4),
 )
 
 
@@ -383,6 +395,27 @@ EDC15_RECIPES: Tuple[Recipe, ...] = (
            "Set cruise at 80 km/h, step it up and down with the switch, cancel it "
            "with the brake and the clutch, and resume. The log shows each switch "
            "state, whether cruise held, and what cancelled it.",
+           max_groups=3),
+    Recipe("e15pump", "Injection pump calibration (quantity adjuster voltage)",
+           ("rpm", "iq", "uqa"), ("uqa_spec", "clt", "tfuel", "pedal", "vss",
+                                  "src1", "src2", "src3", "src4"),
+           "VE pump files (Tools > Injector setup > From logs). Coolant at 80 deg C "
+           "or more. Two minutes of idle in neutral with everything switched off; "
+           "then, if you have a log from before the pump or nozzles were changed, "
+           "the same steady speeds in the same gears as that log; then two "
+           "full-throttle pulls in 3rd from 1500 rpm to the limiter. Add the "
+           "voltage setpoint to a block first (Injector setup offers it): with it "
+           "the log shows exactly where the pump stops following the map.",
+           max_groups=3),
+    Recipe("e15inj", "Injector delivery, before / after (unit-injector engines)",
+           # the duration needs a unit-injector (PD) file's blocks: not on VE
+           ("rpm", "iq", "dur"), ("soi", "maf", "clt", "vss", "pedal"),
+           "PD files (Tools > Injector setup > From logs). Coolant at 70 deg C or "
+           "more. Log BEFORE the new injectors or nozzles go in, then the same again "
+           "after: two minutes of idle in neutral with everything switched off, then "
+           "steady 60, 80, 100 and 120 km/h in a fixed gear for 30 s each, same road "
+           "and direction. The engine needs the same fuel at the same point, so the "
+           "two logs show what the new hardware delivers (no lambda probe needed).",
            max_groups=3),
 )
 

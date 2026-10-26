@@ -44,6 +44,7 @@ from .project import Project, is_project
 from .project import archive as _ar
 from .project import autosave as _as
 from .project import exporters as _ex
+from .project import hardware as _hw
 from .project import sessionbridge as _sb
 from .project.project import HistoryError
 
@@ -224,6 +225,9 @@ def tab_tooltip(ws, base: str) -> str:
         ft = flashed_text(ref.doc.project, ref.sid)
         if ft:
             lines.append(ft)
+        hw = hardware_text(ref.doc.project, ref.sid, ref.branch.head, ws.is_dirty())[0]
+        if hw:
+            lines.append(hw)
     except (KeyError, AttributeError):
         pass
     return "\n".join(lines)
@@ -820,6 +824,25 @@ def save_selection(win, doc, tabs) -> bool:
     return save(anchor, only=list(tabs))
 
 
+def checksums_wrong(ws) -> bool:
+    """Does the tab's file have checksums its module would correct -- would
+    correcting them change its bytes? Save corrects those even with no edits
+    made (a file read or imported with bad checksums). Not "does it verify":
+    an edited EDC16 keeps a Bosch RSA signature no correction can make, and
+    would count as wrong after every save."""
+    s = getattr(ws, "primary", None)
+    if s is None:
+        return False
+    try:
+        cs = s.checksum_provider()
+        data = bytes(s.binfile.data)
+        if cs is None or not cs.is_supported(data):
+            return False
+        return bytes(cs.correct(data, **s._checksum_opts())) != data
+    except Exception:                           # noqa: BLE001 - no verdict: nothing to do
+        return False
+
+
 def save(ws, tab_only=False, path=None, only=None, label="") -> bool:
     """Save the tab's project: every edited tab of it, or with ``tab_only``
     just this one, or the tabs in ``only`` (the others stay unsaved). True
@@ -845,16 +868,21 @@ def save(ws, tab_only=False, path=None, only=None, label="") -> bool:
         tabs = [t for t in only if getattr(t, "project_ref", None) is not None
                 and t.project_ref.doc is doc]
     else:
-        tabs = [ws] if tab_only else [t for t in doc.tabs(win) if t.is_dirty()]
-        if ws not in tabs and ws.is_dirty():
+        # an unedited tab whose checksums are wrong is saved too: Save
+        # always leaves correct checksums
+        tabs = [ws] if tab_only else [t for t in doc.tabs(win)
+                                      if t.is_dirty() or checksums_wrong(t)]
+        if ws not in tabs and (ws.is_dirty() or checksums_wrong(ws)):
             tabs.append(ws)
     try:
         for t in tabs:
-            if t.is_dirty():
+            fix_only = not t.is_dirty() and checksums_wrong(t)
+            if t.is_dirty() or fix_only:
                 why = t.primary.save_refusal(t.project_ref.workfile)
                 if why:
                     raise ValueError(why)
-                _commit(t, label=label if t is ws else "")
+                _commit(t, label=(label if t is ws else "") or
+                        ("checksums corrected" if fix_only else ""))
         for t in doc.tabs(win):
             keep_definition(t)          # an unedited tab's, too
         if path is not None and os.path.abspath(path) != doc.path:
@@ -1048,8 +1076,15 @@ def open_read(win, data, name, eeprom=None, source=None):
     the user says so, only to a file (Export to file...). It is in the
     crash-recovery store at once, before anything is saved. Returns the tab,
     or None (nothing opened: exported, discarded or failed)."""
-    from .platforms.identify import identify
+    from .platforms.identify import identify, identify_read, read_info, read_name
     from .project import importers as _imp
+    try:
+        ident = identify_read(data)
+    except Exception:
+        ident = None
+    if ident is not None:
+        # named after what was read (EDC16 03G906016GC P475AAXQ), not a time
+        name = read_name(ident, name)
     cur = win.current
     ref = getattr(cur, "project_ref", None)
     here = ref.doc if ref is not None else None
@@ -1078,6 +1113,8 @@ def open_read(win, data, name, eeprom=None, source=None):
         else:
             proj = Project(name)
             s = _imp.import_read(proj, data, name, eeprom=eeprom, source=source)
+            if ident is not None:
+                proj.set_info(read_info(ident))     # what the binary says of itself
             doc = ProjectDoc(proj, None)
             docs(win).append(doc)
     except Exception as ex:
@@ -1214,11 +1251,16 @@ def keep_attachment(win, filename, data, what) -> bool:
 
 # ------------------------------------------------------------ flashing
 def before_flash_write(win, ws) -> bool:
-    """A write is about to send tab ``ws``: with unsaved edits in a project
-    tab, offer to save first so what goes into the car is a version in the
-    history. False = cancel the write."""
-    if ws is None or getattr(ws, "project_ref", None) is None or \
-            not ws.is_dirty():
+    """A write is about to send tab ``ws``: when the version (with its
+    unsaved edits) is set up for other hardware than the project records as
+    fitted, say so (:func:`confirm_hardware`); with unsaved edits in a
+    project tab, offer to save first so what goes into the car is a version
+    in the history. False = cancel the write."""
+    if ws is None or getattr(ws, "project_ref", None) is None:
+        return True
+    if not confirm_hardware(win, ws):
+        return False
+    if not ws.is_dirty():
         return True
     SB = QtWidgets.QMessageBox.StandardButton
     box = QtWidgets.QMessageBox(
@@ -1263,6 +1305,101 @@ def mark_flashed(win, ws, what: str = "") -> bool:
     except Exception:
         pass
     return True
+
+
+# ------------------------------------------------------- fitted hardware
+def hardware_text(project, sid, cid, unsaved: bool = False) -> Tuple[str, str]:
+    """``(line, details)``: what the project records as fitted against what
+    version ``cid`` (with ``unsaved`` edits) is set up for
+    (:func:`ovtsuite.project.hardware.status_text`); ``("", "")`` when
+    nothing is recorded or it cannot be read."""
+    try:
+        return _hw.status_text(project, sid, cid, unsaved=unsaved)
+    except Exception:                                   # noqa: BLE001
+        return "", ""
+
+
+def setup_badge(project, sid, cid, unsaved: bool = False) -> str:
+    """"\U0001f527 set up for PD150 injectors" on a version whose hardware
+    setup differs from the version before it (the Project panel, Version
+    history); "" on the others."""
+    try:
+        recs = _hw.setup_changes(project, sid, cid, unsaved=unsaved)
+    except Exception:                                   # noqa: BLE001
+        return ""
+    return ("\U0001f527 set up for %s" % _hw.summaries(recs)) if recs else ""
+
+
+def version_note(ws):
+    """For Version history in project tab ``ws``: ``note(version) ->
+    (badge, tooltip line)`` -- the badge on the versions where the hardware
+    setup changes, the line ("Set up for: ...") on every version. None for a
+    plain file or a set with no hardware recorded."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is None:
+        return None
+    try:
+        proj, sid, head = ref.doc.project, ref.sid, ref.branch.head
+        if not _hw.records(proj, sid):
+            return None
+    except Exception:                                   # noqa: BLE001
+        return None
+
+    def note(ver):
+        unsaved = bool(ver.get("pending"))
+        cid = head if unsaved else ver.get("id")
+        try:
+            if not unsaved and proj.set(sid).checkpoint(cid) is None:
+                return None
+            cal = _hw.for_checkpoint(proj, sid, cid, unsaved=unsaved)
+        except Exception:                               # noqa: BLE001
+            return None
+        line = "Set up for: %s" % (
+            "; ".join(_hw.describe(r, proj, sid) for r in cal) if cal else
+            "what the car came with (no hardware setup recorded up to here)")
+        return setup_badge(proj, sid, cid, unsaved), line
+    return note
+
+
+def hardware_mismatch(ws) -> str:
+    """What the write of tab ``ws`` would send against what is fitted: ""
+    when the version (with its unsaved edits) is set up for the hardware the
+    project records as fitted, or nothing is recorded; else a sentence."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is None:
+        return ""
+    try:
+        st = _hw.status(ref.doc.project, ref.sid, ref.branch.head,
+                        unsaved=ws.is_dirty())
+    except Exception:                                   # noqa: BLE001
+        return ""
+    if not st["differ"]:
+        return ""
+    fitted = [r for r in st["fitted"] if r.kind in st["differ"]]
+    other = [r for r in st["set_up_for"] if r.kind in st["differ"]]
+    return ("The project records the car as fitted with %s, but the version being "
+            "written is %s." % (_hw.summaries(fitted),
+                               "set up for %s" % _hw.summaries(other) if other
+                               else "not set up for it"))
+
+
+def confirm_hardware(win, ws) -> bool:
+    """Before a write: warn when :func:`hardware_mismatch` says the version
+    is set up for other hardware than is fitted. False = cancel."""
+    text = hardware_mismatch(ws)
+    if not text:
+        return True
+    SB = QtWidgets.QMessageBox.StandardButton
+    box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning, "Write", text,
+                                SB.Cancel, win)
+    box.setInformativeText(
+        "A calibration set up for other injectors or another pump can over- or "
+        "under-fuel the engine. Check File > Project information... (Fitted "
+        "hardware) and Tools > Injector setup before writing.")
+    go = box.addButton("Write anyway", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+    box.setDefaultButton(SB.Cancel)
+    box.exec()
+    return box.clickedButton() is go
 
 
 def flashed_text(project, sid) -> str:
@@ -2378,7 +2515,8 @@ class ProjectInfoDialog(QtWidgets.QDialog):
     information..., and when a project is created (``new``), where it can
     be skipped -- and turned off."""
 
-    def __init__(self, name: str, info: dict, parent=None, new: bool = False):
+    def __init__(self, name: str, info: dict, parent=None, new: bool = False,
+                 project=None):
         from .project.model import INFO_FIELDS, INFO_LABELS
         super().__init__(parent)
         self.setWindowTitle("New project" if new else "Project information")
@@ -2425,6 +2563,12 @@ class ProjectInfoDialog(QtWidgets.QDialog):
         self.notes.setFixedHeight(80)
         form.addRow("Notes:", self.notes)
         lay.addLayout(form)
+        #: what is fitted to the car (gui_hardware): an existing project's
+        self.hw = None
+        if project is not None and not new and project.sets:
+            from .gui_hardware import HardwareBox
+            self.hw = HardwareBox(project, self)
+            lay.addWidget(self.hw)
         self.ask = None
         if new:
             self.ask = QtWidgets.QCheckBox("Ask when a new project is created")
@@ -2508,11 +2652,12 @@ def edit_info(win, doc, new: bool = False) -> bool:
                               doc.project.info)
     else:
         dlg = ProjectInfoDialog(doc.project.name or doc.title,
-                                doc.project.info, win)
+                                doc.project.info, win, project=doc.project)
         values = dlg.values() if dlg.exec() == \
             QtWidgets.QDialog.DialogCode.Accepted else None
     doc.info_asked = True
-    if not _apply_info(doc.project, values):
+    hw = bool(values) and not new and dlg.hw is not None and dlg.hw.write()
+    if not _apply_info(doc.project, values) and not hw:
         return False
     for t in doc.tabs(win):
         win._workspace_changed(t)
@@ -2734,6 +2879,24 @@ def panel(win) -> "ProjectPanel":
 _ROLE = QtCore.Qt.ItemDataRole.UserRole
 #: the Project panel's lists of files kept with a project
 _ATT_TITLE = {"logs": "Logs", "patches": "Patches", "attachments": "Attachments"}
+
+
+def _att_text(a) -> str:
+    """A kept item's line: a fault-code read (``dtc_report``) by when and
+    how many codes, anything else by its file name."""
+    from . import dtc_report as _dr
+    return _dr.label(a) if _dr.is_read(a) else a.filename
+
+
+def _is_kept_read(d, aid) -> bool:
+    from . import dtc_report as _dr
+    return any(a.id == aid and _dr.is_read(a) for a in d.project.attachments)
+
+
+def _view_kept_read(win, data) -> bool:
+    """Open the fault code report of a kept read; False if it is not one."""
+    from . import gui_dtc_report as _gr
+    return _gr.open_kept(win, data[1], data[2])
 _ATT_ITEM = {"logs": "log", "patches": "patch", "attachments": "attachment"}
 
 
@@ -2759,6 +2922,11 @@ class ProjectPanel(AutoHideDock):
         f2 = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2), self.tree)
         f2.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
         f2.activated.connect(self._f2)
+        # Delete: the selected logs, patches and attachments (fault-code
+        # reads among them), as the menu's Remove does
+        dl = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Delete), self.tree)
+        dl.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        dl.activated.connect(self._delete_key)
         self.set_body(self.tree)
         self.setMinimumWidth(self.minimum_body_width())
 
@@ -2804,6 +2972,7 @@ class ProjectPanel(AutoHideDock):
                     pm.fill(col)
                     si.setIcon(0, QtGui.QIcon(pm))
                 top.addChild(si)
+                self._hardware_item(d, s, si, open_)
                 bad = set()
                 if d.project.report.damaged or d.project.report.missing:
                     bad = set(d.project.unreadable_checkpoints(s.id))
@@ -2826,8 +2995,13 @@ class ProjectPanel(AutoHideDock):
                         if flashed.get("checkpoint") == c.id:
                             text += "   ⚡ flashed %s" % (
                                 flashed.get("ts") or "").replace("T", " ")[:16]
+                        badge = setup_badge(d.project, s.id, c.id)
+                        if badge:
+                            text += "   " + badge
                         ci = QtWidgets.QTreeWidgetItem([text])
                         ci.setData(0, _ROLE, ("ck", d, s.id, b.id, c.id))
+                        if badge:
+                            ci.setToolTip(0, badge)
                         if c.id in bad:
                             ci.setForeground(0, QtGui.QBrush(QtGui.QColor("red")))
                         bi.addChild(ci)
@@ -2842,7 +3016,7 @@ class ProjectPanel(AutoHideDock):
                 top.addChild(li)
                 for a in newest_first(lst):
                     ai = QtWidgets.QTreeWidgetItem(["%s%s" % (
-                        "📌 " if a.pinned else "", a.filename)])
+                        "📌 " if a.pinned else "", _att_text(a))])
                     where = ""
                     if a.set:
                         try:
@@ -2866,6 +3040,26 @@ class ProjectPanel(AutoHideDock):
                         ch.child(j).setExpanded(True)
             if cur_ref is not None and cur_ref.doc is d:
                 self.tree.setCurrentItem(top)
+
+    def _hardware_item(self, d, s, si, open_):
+        """The set's "Fitted: ..." line: what the project records as fitted
+        against what the active branch (with its tab's unsaved edits) is set
+        up for. None when nothing is recorded."""
+        b = s.active
+        tab = open_.get((s.id, b.id)) if b is not None else None
+        line, tip = hardware_text(d.project, s.id, b.head if b is not None else None,
+                                  tab is not None and tab.is_dirty())
+        if not line:
+            return None
+        hi = QtWidgets.QTreeWidgetItem(["\U0001f527 " + line])
+        hi.setData(0, _ROLE, ("hardware", d, s.id))
+        hi.setToolTip(0, "%s\n(\"This version\": the head of branch %s.)\n"
+                         "Double-click to edit the records (Project information)"
+                      % (tip, b.name if b is not None else "?"))
+        if "\u2014" in line:                     # set up for something else
+            hi.setForeground(0, QtGui.QBrush(QtGui.QColor("#c07000")))
+        si.addChild(hi)
+        return hi
 
     @staticmethod
     def _key(item):
@@ -2891,7 +3085,7 @@ class ProjectPanel(AutoHideDock):
         data = item.data(0, _ROLE)
         if not data:
             return
-        if data[0] == "doc":
+        if data[0] in ("doc", "hardware"):
             edit_info(self.win, data[1])
         elif data[0] == "branch":
             open_branch(self.win, data[1], data[2], data[3])
@@ -2905,7 +3099,60 @@ class ProjectPanel(AutoHideDock):
         elif data[0] == "log":
             self._view_log(data)            # view it; Export... is on the menu
         elif data[0] == "attachment":
-            self._export_att(data)
+            if not _view_kept_read(self.win, data):     # a fault-code read: its report
+                self._export_att(data)
+
+    #: tree items that Remove takes away (a log, a patch, an attachment)
+    _REMOVABLE = ("log", "patch", "attachment")
+
+    def _picked_items(self, item, d):
+        """The selected logs, patches and attachments of ``d`` (just ``item``
+        when it is not among the selected), as their item data."""
+        sel = self.tree.selectedItems()
+        if item not in sel:
+            return [item.data(0, _ROLE)]
+        out, seen = [], set()
+        for it in sel:
+            x = it.data(0, _ROLE)
+            if x and x[0] in self._REMOVABLE and x[1] is d and (x[0], x[2]) not in seen:
+                seen.add((x[0], x[2]))
+                out.append(x)
+        return out
+
+    def _remove_items(self, d, picked):
+        """Remove ``picked`` (item data of logs, patches, attachments) from
+        ``d``; several are confirmed first."""
+        if not picked:
+            return
+        if len(picked) > 1:
+            names = {"log": "log", "patch": "patch", "attachment": "attachment"}
+            kinds = sorted({names[x[0]] for x in picked})
+            what = ("%d %ss" % (len(picked), kinds[0]) if len(kinds) == 1
+                    else "%d items" % len(picked))
+            if QtWidgets.QMessageBox.question(
+                    self, "Remove", "Remove %s from the project?" % what)                     != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+        def run():
+            for x in picked:
+                kind, aid = x[0], x[2]
+                if kind == "log":
+                    d.project.remove_log(aid)
+                elif kind == "patch":
+                    d.project.remove_patch(aid)
+                else:
+                    d.project.remove_attachment(aid)
+        self._do(d, run)
+
+    def _delete_key(self):
+        item = self.tree.currentItem()
+        sel = self.tree.selectedItems()
+        if item not in sel:
+            item = sel[0] if sel else None
+        data = item.data(0, _ROLE) if item is not None else None
+        if not data or data[0] not in self._REMOVABLE:
+            return
+        self._remove_items(data[1], self._picked_items(item, data[1]))
 
     def _picked_versions(self, item, d, sid):
         """The selected versions of the same set as ``item`` (just ``item``
@@ -3028,6 +3275,9 @@ class ProjectPanel(AutoHideDock):
             m.addSeparator()
             rn = m.addAction("Rename...", lambda: self._rename_version(d, sid, cid))
             rn.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2))
+        elif kind == "hardware":
+            m.addAction("Fitted hardware (Project information)...",
+                        lambda: edit_info(self.win, d))
         elif kind in ("logs", "patches", "attachments"):
             m.addAction("Add %s..." % _ATT_ITEM[kind],
                         lambda: self._add_att(d, kind))
@@ -3045,6 +3295,9 @@ class ProjectPanel(AutoHideDock):
                 from . import gui_ai as _ga
                 m.addAction("Summarise with AI...",
                             lambda: _ga.summarise_log(self.win, d, aid))
+            elif _is_kept_read(d, aid):
+                m.addAction("View fault code report",
+                            lambda: _view_kept_read(self.win, data))
             m.addAction("Export...", lambda: self._export_att(data))
             if kind == "log":
                 a = next(x for x in d.project.logs if x.id == aid)
@@ -3052,10 +3305,10 @@ class ProjectPanel(AutoHideDock):
                             lambda: self._do(d, lambda: d.project.pin_log(
                                 aid, not a.pinned)))
             m.addSeparator()
-            m.addAction("Remove", lambda: self._do(d, lambda: (
-                d.project.remove_log(aid) if kind == "log"
-                else d.project.remove_patch(aid) if kind == "patch"
-                else d.project.remove_attachment(aid))))
+            picked = self._picked_items(item, d)
+            rm = m.addAction("Remove %d items" % len(picked) if len(picked) > 1
+                             else "Remove", lambda: self._remove_items(d, picked))
+            rm.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Delete))
         m.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _do(self, d, fn):

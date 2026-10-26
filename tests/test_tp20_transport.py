@@ -260,7 +260,23 @@ def test_recv_reassembles_real_mpps_log():
 
 
 # --------------------------------------------------------- CanKLine + edc16 write
-def test_edc16_write_over_can():
+def _skip_frame_waits(monkeypatch):
+    """A whole 2-block EDC16 write is ~74 000 CAN frames; paced for real (the
+    default 5 ms clamp) that is ~6 minutes a test. Record the inter-frame waits
+    instead of spending them: the write's protocol is what these tests check,
+    and the pacing is checked by the recorded values (and in
+    test_tp20_edc16_timing.py)."""
+    waits = []
+
+    def wait(sec):
+        if abs(sec * 1000 - TT._POLL_SPIN_MS) > 1e-9:    # not an empty-read poll spin
+            waits.append(sec)
+    monkeypatch.setattr(TT, "_precise_wait", wait)
+    return waits
+
+
+def test_edc16_write_over_can(monkeypatch):
+    waits = _skip_frame_waits(monkeypatch)
     from ovtsuite.flash import edc16 as E
     img = bytearray(b"\xFF" * E.FULL_SIZE)
     for i in range(E.CAL_START, E.FULL_SIZE):
@@ -337,9 +353,12 @@ def test_edc16_write_over_can():
     # entering the programming session resets the ECU transport -> the channel is
     # torn down and set up AGAIN (>=2 channel setups) before the re-auth/download
     assert getattr(ecu, "setup_count", 0) >= 2, "TP2.0 channel not re-established after 10 85"
+    # every frame gap was the shared default: max(ECU 0.1 ms, our A0 5 ms)
+    assert len(waits) > 60000 and set(waits) == {0.005}
 
 
 def test_edc16_write_encrypts_before_opening_session(monkeypatch):
+    _skip_frame_waits(monkeypatch)
     """Encryption (~1-2 s local CPU) must run BEFORE the ECU session opens.  Doing
     it after left the TP 2.0 channel idle and the ECU dropped it (Writeattempt.log
     A8 after a 1.5 s gap).  Assert encrypt() happens before the channel wake_up."""

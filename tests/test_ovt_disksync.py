@@ -350,3 +350,138 @@ def test_a_save_and_a_cache_write_on_another_thread_do_not_clash(car):
     q = ovt.Project.load(car)
     assert q.info["make"] == "VW" and q.cache(s.id, "Stock") == b"DEFN"
     assert mine.changed_on_disk() is None
+
+# ------------------------------------------------------ fitted hardware
+def _hw_add(p, rid, since, **kw):
+    """A fitted-hardware record (sets[].hardware), as raw data."""
+    s = p.set("ECU")
+    rec = dict({"id": rid, "kind": "ve_pump", "summary": rid, "parts": {"n": rid},
+                "since": since, "checkpoint": None, "pending": False,
+                "recorded": since}, **kw)
+    s.extra["hardware"] = list(s.extra.get("hardware") or []) + [rec]
+    p._touch()
+
+
+def _hw_edit(p, rid, **kw):
+    s = p.set("ECU")
+    s.extra["hardware"] = [dict(r, **kw) if r["id"] == rid else r
+                           for r in s.extra["hardware"]]
+    p._touch()
+
+
+def _hw_drop(p, rid):
+    s = p.set("ECU")
+    s.extra["hardware"] = [r for r in s.extra["hardware"] if r["id"] != rid]
+    p._touch()
+
+
+def _hw(p):
+    return {r["id"]: r for r in p.set("ECU").extra.get("hardware") or []}
+
+
+def test_hardware_both_sides_added_are_both_kept_in_fitting_order(tmp_path, car):
+    q = ovt.Project.load(car)
+    _hw_add(q, "old", "2026-01-01", later={"kept": 1})
+    q.save(car)
+    mine = ovt.Project.load(car)
+    _hw_add(mine, "mine", "2026-03-01")
+    _other_program(car, lambda q: _hw_add(q, "theirs", "2026-02-01"))
+    res = _ds.merge(mine, ovt.Project.load(car))
+    assert not res.conflicts and res.differs
+    raw = res.project.set("ECU").extra["hardware"]
+    assert [r["id"] for r in raw] == ["old", "theirs", "mine"]
+    assert raw[0]["later"] == {"kept": 1}                 # unknown keys ride along
+
+
+def test_hardware_one_sides_change_or_deletion_is_taken(car):
+    q = ovt.Project.load(car)
+    for rid in ("a", "b", "c"):
+        _hw_add(q, rid, "2026-01-0%s" % "abc".index(rid))
+    q.save(car)
+    mine = ovt.Project.load(car)
+    _hw_edit(mine, "a", note="ours")
+    _hw_drop(mine, "b")
+    _hw_edit(mine, "c", note="changed here")
+    _other_program(car, lambda q: (_hw_edit(q, "a", since="2025-12-01"),
+                                   _hw_drop(q, "c")))
+    res = _ds.merge(mine, ovt.Project.load(car))
+    hw = _hw(res.project)
+    assert not res.conflicts
+    assert hw["a"]["note"] == "ours" and hw["a"]["since"] == "2025-12-01"
+    assert "b" not in hw                                   # we deleted it
+    assert hw["c"]["note"] == "changed here"               # they deleted, we changed
+    assert any("deleted by the other program" in n for n in res.notes)
+
+
+def test_hardware_changed_differently_on_both_is_a_conflict(car):
+    q = ovt.Project.load(car)
+    _hw_add(q, "a", "2026-01-01")
+    q.save(car)
+    mine = ovt.Project.load(car)
+    s = mine.set("ECU")
+    head = s.branch("Stage 1").head
+    _hw_edit(mine, "a", parts={"n": "mine"}, summary="mine")
+    _hw_edit(mine, "a", checkpoint=head)
+    _other_program(car, lambda q: _hw_edit(q, "a", parts={"n": "theirs"},
+                                           pending=True))
+    theirs = ovt.Project.load(car)
+    res = _ds.merge(mine, theirs)
+    key = ("sets", s.id, "hardware", "a", "parts")
+    cal = ("sets", s.id, "hardware", "a", "checkpoint")
+    # what is fitted, and which version is for it, each merge as one: our
+    # version is never paired with their "pending"
+    assert {c.key for c in res.conflicts} == {key, cal}
+    assert all("hardware record" in c.label for c in res.conflicts)
+    a = _hw(res.project)["a"]
+    assert a["parts"] == {"n": "theirs"} and a["summary"] == "a"      # theirs whole
+    assert a["checkpoint"] is None and a["pending"] is True
+    res = _ds.merge(mine, theirs, {key: "mine", cal: "mine"})
+    a = _hw(res.project)["a"]
+    assert a["parts"] == {"n": "mine"} and a["summary"] == "mine"
+    assert a["checkpoint"] == head and a["pending"] is False
+
+
+@pytest.mark.parametrize("strip", [False, True])
+def test_hardware_on_a_version_they_merged_away_moves_to_the_merged_one(car, strip):
+    """Our record on "a"; they merge "a" and "b" (``strip``: written by
+    something that does not record ``merged_from`` -- the version "a" led
+    to is found instead). "a and later" and "after a" both become "b and
+    later": not pending."""
+    mine = ovt.Project.load(car)
+    s = mine.set("ECU")
+    b = s.branch("Stage 1").head
+    a = s.checkpoint(b).parent
+    _hw_add(mine, "on", "2026-01-01", checkpoint=a, pending=False)
+    _hw_add(mine, "after", "2026-01-02", checkpoint=a, pending=True)
+    _hw_add(mine, "none", "2026-01-03")
+
+    def theirs(q):
+        q.merge_checkpoints(q.set("ECU").id, [a, b])
+        if strip:
+            q.set("ECU").checkpoint(b).extra.pop("merged_from")
+    _other_program(car, theirs)
+    res = _ds.merge(mine, ovt.Project.load(car))
+    hw = _hw(res.project)
+    assert res.project.set("ECU").checkpoint(a) is None
+    assert (hw["on"]["checkpoint"], hw["on"]["pending"]) == (b, False)
+    assert (hw["after"]["checkpoint"], hw["after"]["pending"]) == (b, False)
+    assert hw["none"]["checkpoint"] is None
+    assert not any("Hardware record" in n for n in res.notes)       # exact
+    from ovtsuite.project import hardware as H
+    assert {r.id for r in H.for_checkpoint(res.project, s.id, b)} == {"after"}
+
+
+def test_hardware_on_a_gone_version_with_nothing_after_it_left():
+    """Nothing the version led to is left: the nearest ancestor still there,
+    pending ("the versions after it"), with a note; no ancestor: none."""
+    from ovtsuite.project.model import BinarySet, Checkpoint
+    src = BinarySet(id="s", name="ECU")
+    src.checkpoints = [Checkpoint(id="r", parent=None, kind="read", ts=""),
+                       Checkpoint(id="x", parent="r", kind="save", ts=""),
+                       Checkpoint(id="y", parent="x", kind="save", ts="")]
+    res = BinarySet(id="s", name="ECU")
+    res.checkpoints = [src.checkpoints[0]]
+    assert _ds._where_now(res, "x", {"r"}, [src]) == ("r", True, False)
+    assert _ds._where_now(res, "x", set(), [src]) == (None, False, False)
+    res.checkpoints = list(src.checkpoints[::2])          # "y" is still there
+    assert _ds._where_now(res, "x", {"r", "y"}, [src]) == ("y", False, True)

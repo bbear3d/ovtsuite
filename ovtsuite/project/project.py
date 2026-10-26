@@ -13,6 +13,7 @@ of a set can never be deleted.
 
 from __future__ import annotations
 
+import copy
 import os
 import posixpath
 import threading
@@ -328,8 +329,10 @@ class Project:
         now holds the net change from the oldest one's parent; the others
         go. Refused (ValueError) when a checkpoint inside the run is a
         branch head, has another branch forking from it, or is what an
-        original file or a flash record refers to: removing it would lose
-        a version something else points at."""
+        original file or a flash record refers to: removing it would lose a
+        version something else points at. A hardware record on a version
+        merged away moves to the newest (:meth:`_hardware_after_merge`);
+        refused only when that would change what a version is set up for."""
         s = self.set(sid)
         picked = []
         for cid in cids:
@@ -363,6 +366,7 @@ class Project:
         flashed = [r for r in [s.extra.get("flashed")] +
                    list(s.extra.get("flash_log") or []) if isinstance(r, dict)]
         refs |= {r.get("checkpoint") for r in flashed}
+        hw = self._hardware_after_merge(s, chain)
         for c in inner:
             if c.id in heads:
                 raise ValueError("\"%s\" is the latest version of branch %s; "
@@ -373,9 +377,14 @@ class Project:
                 raise ValueError("Another branch starts at \"%s\"; it cannot "
                                  "be merged away." % (c.label or c.kind))
             if c.id in refs:
-                raise ValueError("\"%s\" is the version an original file or a "
-                                 "flash record refers to; it cannot be merged "
-                                 "away." % (c.label or c.kind))
+                raise ValueError("\"%s\" is the version an original file or "
+                                 "a flash record refers to; it cannot be "
+                                 "merged away." % (c.label or c.kind))
+        if hw is None:
+            raise ValueError("Hardware records of the same kind are set up on "
+                             "more than one of these versions; merged, which "
+                             "one the merged version is set up for could "
+                             "change, so they are not merged.")
         base = self.state(s.id, chain[0].parent)
         top = self.state(s.id, newest.id)
         recs = _d.diff(base, top)
@@ -398,9 +407,51 @@ class Project:
             s.checkpoints.remove(c)
             self._blobs.pop(self._delta_path(s.id, c.id), None)
             self._states.pop((s.id, c.id), None)
+        if hw is not False:
+            s.extra["hardware"] = hw
         self._states[(s.id, newest.id)] = top
         self._touch()
         return newest
+
+    @staticmethod
+    def _hardware_after_merge(s: BinarySet, chain):
+        """The set's hardware records once ``chain`` (oldest first) is merged
+        into its newest: a record on a version merged away moves to the
+        newest, not pending. That keeps its meaning exactly -- "C and later"
+        and "after C" both become "the newest and later", the only versions
+        left that descend from C (merged versions have one child each and
+        are no branch head). False: no record to move. None: moving them
+        would change which record the newest (or a version after it) is set
+        up for -- two of one kind in the run, now on one version, where the
+        tie is decided by when they were recorded instead of by order."""
+        import dataclasses
+        from types import SimpleNamespace
+        from . import hardware as _hw
+        raw = s.extra.get(_hw.KEY)
+        gone = {c.id for c in chain[:-1]}
+        if not isinstance(raw, list) or not any(
+                isinstance(d, dict) and d.get("checkpoint") in gone for d in raw):
+            return False
+        newest = chain[-1]
+        out = [dict(d, checkpoint=newest.id, pending=False)
+               if isinstance(d, dict) and d.get("checkpoint") in gone else d
+               for d in raw]
+        after = copy.copy(s)
+        after.extra = dict(s.extra, **{_hw.KEY: out})
+        after.checkpoints = [dataclasses.replace(c, parent=chain[0].parent)
+                             if c.id == newest.id else c
+                             for c in s.checkpoints if c.id not in gone]
+        was = SimpleNamespace(set=lambda _sid: s)
+        will = SimpleNamespace(set=lambda _sid: after)
+
+        def picks(p, unsaved):
+            return {r.kind: r.id for r in _hw.for_checkpoint(
+                p, s.id, newest.id, unsaved=unsaved)}
+        # the newest itself, and (unsaved: a record pending on it counts)
+        # every version after it
+        if any(picks(was, u) != picks(will, u) for u in (False, True)):
+            return None
+        return out
 
     def set_checkpoint_label(self, sid: str, cid: str, label: str) -> None:
         """Name a checkpoint (its content never changes; its name may). ""

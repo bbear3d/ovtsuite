@@ -317,3 +317,24 @@ def _eoi(ctx, ref, rpm=2000, q=20):
       what="End of injection on an EDC16 PD file, one cell's breakdown shown")
 def tools_eoi(ctx):
     return _eoi(ctx, "edc16_lq")
+
+
+@shot("tools-injector-setup", BASE, size=(1100, 820),
+      what="Injector setup on an EDC16 PD file (BPW), PD150 injectors chosen")
+def tools_injector_setup(ctx):
+    from ovtsuite import gui_injectors
+    w = ctx.main_window(ctx.ref("edc16_lq"))
+    ws = w.current
+    why = gui_injectors.availability(ws)
+    if why:
+        raise Skip(why)
+    dlg = gui_injectors.open_for(ws)    # as Tools > Injector setup does
+    if dlg is None:
+        raise Skip("the Injector setup window did not open")
+    i = dlg.preset.findData("pd-al-1043")
+    if i < 0:
+        raise Skip("the PD150 preset is not installed")
+    dlg.preset.setCurrentIndex(i)
+    dlg._replan()
+    ctx.settle(200)
+    return dlg

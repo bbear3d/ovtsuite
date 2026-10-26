@@ -5,8 +5,8 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Toolbar and menu icons: Lucide SVGs (``data/icons``, ISC licence, see
 Help > Credits & licences) drawn in the palette's text colour. A few the set
-has no match for (``shift-map``, ``lock-up``, ``needle-sweep``) are the app's
-own, drawn in the same style. A module's own Tools-menu item names its icon
+has no match for (``shift-map``, ``lock-up``, ``needle-sweep``, ``injector``,
+``logging-blocks``) are the app's own, drawn in the same style. A module's own Tools-menu item names its icon
 in its declaration (:class:`ovtsuite.modules.api.MenuTool`).
 
 An :class:`_SvgEngine` draws the outline icon at whatever size is asked for,
@@ -69,6 +69,7 @@ FOR_ACTION = {
     "view/project-panel": "panel-left",
     "tools/dtc-fault-path-editor": "triangle-alert",
     "tools/measuring-blocks": "gauge",
+    "tools/build-logging-blocks": "logging-blocks",
     "tools/gear-ratios": "cog",
     "tools/vss-pulse-settings": "activity",
     "tools/hex-editor": "binary",
@@ -78,6 +79,7 @@ FOR_ACTION = {
     "tools/data-logging": "chart-line",
     "tools/tune-from-logs": "sliders-horizontal",
     "tools/end-of-injection": "syringe",
+    "tools/injector-setup": "injector",
     "tools/dyno-chart": "chart-spline",
     "tools/feature-switches": "toggle-right",
     "tools/shift-map-editor": "shift-map",

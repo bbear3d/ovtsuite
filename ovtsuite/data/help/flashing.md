@@ -61,8 +61,11 @@ Details: [Reading](flashing/reading.md).
 1. Open (or read) the project and make your changes in the main window.
 2. Open the flasher; check **ECU**, **Transport** and the cable.
 3. Click **Write flash**. If the tab has unsaved changes you are asked to
-   **Save, then write**, **Write without saving** or **Cancel**. Read the
-   confirmation carefully before answering **Yes**.
+   **Save, then write**, **Write without saving** or **Cancel**. When the
+   version is set up for other hardware than the project records as fitted
+   (see [Fitted hardware](projects.md#fitted-hardware)) you are warned first:
+   **Write anyway** or **Cancel**. Read the confirmation carefully before
+   answering **Yes**.
 4. Do not touch the car, the cable or the computer until the dialog says the
    write is complete. Then follow what the final message says (an EDC16, for
    example, asks you to switch the ignition off for 5 seconds). The version
@@ -105,7 +108,7 @@ described on the page for that unit.
 | ECU entry | Transport | Read | Write | Page |
 |---|---|---|---|---|
 | **EDC16** | K-line or CAN | Calibration (top 512 KB); full read (whole flash + MPC) | Calibration blocks; boot / program / MPC blocks (armed, high risk) | [EDC16](flashing/edc16.md) |
-| **EDC15** | K-line | Whole 512 KB flash; EEPROM; full backup | Changed sectors; EEPROM; flash + EEPROM; boot mode | [EDC15](flashing/edc15.md) |
+| **EDC15** | K-line | Whole 512 KB flash; EEPROM; flash + EEPROM | Changed sectors; EEPROM; flash + EEPROM; boot mode | [EDC15](flashing/edc15.md) |
 | **Climatronic** | CAN | No (it cannot be read over OBD) | The Climatronic set in the active tab, or a `.sgo` / `.hvac` file | [Other units](flashing/other-units.md#climatronic) |
 | **Cluster** | CAN | Experimental flash dump | No | [Other units](flashing/other-units.md#cluster-can) |
 | **Cluster (VDO K-line)** | K-line | 2 KB EEPROM | The whole 2 KB EEPROM, read back and verified (no automatic backup) | [Other units](flashing/other-units.md#cluster-vdo-k-line) |

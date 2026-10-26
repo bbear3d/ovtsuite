@@ -171,6 +171,12 @@ class ModuleSpec:
     #: dataset, for the End of injection view (docs/EOI.md). Optional:
     #: without it the view is not offered for this platform.
     injection: Optional[str] = None
+    #: ``injectors() -> ovtsuite.injectors.Platform`` -- the unit-injector
+    #: hardware presets this module ships and the names of the injector
+    #: body's (solenoid) calibration, for the base app's Injector setup
+    #: window (claude/injector_setup_tool.md). Optional: without it the
+    #: window is not offered for this platform.
+    injectors: Optional[str] = None
     #: ``dyno(session) -> [ovtsuite.dyno.DynoModel]`` -- the full-load chain
     #: of a calibration (driver's wish, torque and smoke limits, the
     #: torque/fuel conversion), one model per dataset, for the calculated
@@ -194,6 +200,17 @@ class ModuleSpec:
     #: window's Tools menu (ovtsuite.gui_modtools). Optional: a module
     #: without it adds none.
     menu_tools: Optional[str] = None
+    #: ``logtune() -> [MenuTool]`` -- this module's own log analysis, opened by
+    #: **Tools > Tune from logs...** on a tab it ``applies`` to that the base
+    #: app's analysis does not cover (``run(ws)`` gets the tab, not the
+    #: window). Optional: a module without it leaves Tune from logs as it is.
+    logtune: Optional[str] = None
+    #: ``msblock_layout(session) -> ovtsuite.datalog.blockpack.provider.LayoutProvider``
+    #: -- this platform's measuring blocks for optimised logging: which groups
+    #: are free, what can go in a cell, how to write it
+    #: (docs/LOGGING_BLOCKS_PLAN.md). Optional: without it Tools > Build
+    #: logging blocks and the logger's optimised blocks are not offered.
+    msblock_layout: Optional[str] = None
     #: Data files this module owns: globs relative to the app's ``data``
     #: directory. Its code is its package (``<app>/<id>/``). Every data file
     #: belongs to exactly one module or to the base app -- the build checks.

@@ -46,7 +46,7 @@ the laptop lid or losing Wi-Fi mid-job costs nothing — the job carries on and
 this end picks up the result when it reconnects.
 
 - It is offered for **EDC16** and **EDC15** jobs — flash reads and writes,
-  and (EDC15) EEPROM reads and writes, the full backup, **Write flash +
+  and (EDC15) EEPROM reads and writes, **Read flash + EEPROM**, **Write flash +
   EEPROM** and boot mode.
 - For reads and writes it is **ticked by default** when a head unit is
   selected: surviving a dropped link is the reason it exists.

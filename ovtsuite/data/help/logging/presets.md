@@ -1,6 +1,7 @@
 ---
 title: Presets and how to drive them
 order: 30
+context: UserPresetDialog
 ---
 # Presets and how to drive them
 
@@ -18,7 +19,7 @@ The list in **Preset:** depends on the **ECU**:
 | **EDC16** | the engine presets below |
 | **EDC15** | the engine presets whose values its blocks carry — typically **Boost control**, **Full-load fuelling**, **Cruise efficiency** and, on unit-injector (PD) engines, **Injection timing** and **Warm-up running** — then the [EDC15 presets](#edc15-presets) below. EDC15 values are recognised by the ECU's own message numbers (engine speed, injected quantity, air mass, boost, pedal, temperatures...), which are the same on every EDC15. A preset that needs a value none of the file's blocks carries (exhaust temperature, say) is not listed. |
 | **ZF6HP** | the transmission presets below |
-| **ZF6HP-UDS**, **Aisin TRx** | none — the **Preset:** box is greyed out and the hint says why; tick the cells by hand. |
+| **ZF6HP-UDS**, **Aisin TRx** | none built in — the hint says why; tick the cells by hand, and [save them as a preset of your own](#your-own-presets) to pick them again. Until you have one, the **Preset:** box is greyed out. |
 
 ## How a preset picks blocks
 
@@ -43,6 +44,47 @@ serves:" followed by the names of the missing values (for example "Boost
 > file before choosing one. The same preset can pick different blocks on two
 > software versions.
 
+Your own presets follow the built-in ones, under **Your presets** — see
+[Your own presets](#your-own-presets).
+
+### Optimised blocks
+
+The blocks a calibration comes with spread a preset's values over several of
+them, and each one read costs sample rate. **Tools > Build logging blocks...**
+(or **Optimise...** under **Preset:**) lays the file's blocks out so the preset
+reads as few as possible -- often one or two. Once the file is written to the
+ECU, the preset reads those blocks, after checking once that the ECU has
+them. See [Optimised logging blocks](optimised-blocks.md).
+
+## Your own presets
+
+Tick the cells you want, then press **Save as...** beside **Preset:** and
+give the set a name. It is listed at the end of the box under **Your
+presets** and is picked like a built-in one; it is kept for the next session.
+
+- **Per controller.** A preset belongs to the **ECU** it was saved for, as the
+  built-in lists do: an EDC16 preset is not offered for an EDC15 or the
+  transmission. Each controller's names must be different (capitals do not
+  count); an empty name is not accepted.
+- **What it keeps.** Each cell's block and position, and the signal it
+  carried. On a calibration that keeps that signal in another block, the cell
+  is found there and the hint says how many moved. A cell no block the ECU
+  serves carries any more is left out, and the hint starts with "Not in any
+  block this ECU serves:" and its name, as for a built-in preset. When
+  nothing names the controller's cells, they are logged by block and cell.
+  If the selection held **End of injection (calculated)**, the preset adds it
+  again whenever its two cells are there.
+- **Edit...** changes the name of the preset chosen and, with **Take the
+  cells selected now** ticked, replaces its cells with the ones ticked in the
+  logger now. **Rename...** changes only the name. **Delete** asks first and
+  cannot be undone; the cells stay ticked.
+- **Built-in presets cannot be changed.** Edit..., Rename... and Delete are
+  greyed out for them. To change one, pick it, adjust the ticked cells and
+  **Save as...** a copy of your own. Saving under a name you already use asks
+  before replacing that preset.
+- Picking one of your presets adds its name to the log file name, as a
+  built-in preset adds its own.
+
 ## Engine presets (EDC16)
 
 | Preset | Needs | Drive like this |
@@ -55,6 +97,7 @@ serves:" followed by the names of the missing values (for example "Boost
 | **Cold take-off (active limiter, boost control, intake air)** | engine speed, injected quantity, coolant, driver's-wish / protection / smoke-limit torque, boost actual and specified, boost actuator duty, intake air temperature | Log from a cold start (coolant under 40 °C) until it passes 70. In D, several take-offs from a full stop, some at half pedal and some firm, with a few seconds at idle in gear before each; then the same take-offs once warm for comparison. Four blocks (1, 7, 8 and 11 on the LQ). |
 | **Gearbox torque intervention (ECU side)** | gearbox torque reduction, torque increase (MSR), the gearbox-intervention and drag-torque status flags | Coolant at 70 °C or more. A dozen closed-throttle coast-downs through every gear with the foot fully off, then half a dozen kickdowns from steady cruise in 4th and 5th, with a few seconds of steady driving between events. Limited to three blocks. |
 | **Cruise efficiency (before/after comparison)** | engine speed, injected quantity, vehicle speed | Coolant at 70 °C or more, flat road: hold 60, 80, 100 and 120 km/h for at least 30 s each. Use the same route and direction for the before and after logs. |
+| **Injector delivery (new injectors or nozzles, unit-injector engines)** | engine speed, injected quantity, air mass, lambda (the ECU's own probe, block 40) | For **Tools > Injector setup > From logs**. Coolant at 70 °C or more: two minutes of idle in neutral with everything off; steady 60, 80, 100 and 120 km/h in a fixed gear, 30 s each; steady part throttle at 2000, 2500 and 3000 rpm; then two full-throttle pulls in 3rd and 4th from 1300 rpm. Log the same idle and steady speeds before the new hardware goes in if you can: those points need no lambda reading. |
 
 **End of injection (calculated)** is not read from the ECU. Whenever a preset
 logs both the start of injection and the injection duration, the logger adds
@@ -76,7 +119,7 @@ Offered after the engine presets above, each only when the open file's
 blocks carry what it needs: the smooth-running and start-of-injection
 presets need a distributor-pump (VE) engine, and a unit-injector (PD)
 engine gets **Injection timing** and **Warm-up running** from the list above
-instead. On a 038906012FD, for example, the list holds ten presets.
+instead. On a 038906012FD, for example, the list holds eleven presets.
 
 | Preset | Needs | Drive like this |
 |---|---|---|
@@ -87,6 +130,8 @@ instead. On a 038906012FD, for example, the list holds ten presets.
 | **Idle smoothness (per-cylinder corrections)** | engine speed, the four smooth-running quantities | Warm engine idling in neutral: a minute with everything off, then a minute with the A/C and lights on. |
 | **Temperatures (coolant, fuel, intake air)** | coolant, fuel and intake-air temperature | From a cold start through normal driving until coolant has been at 90 °C for a few minutes. |
 | **Cruise control and road speed** | vehicle speed, cruise-control switches and status | Set cruise at 80 km/h, step it up and down, cancel it with the brake and the clutch, and resume. |
+| **Injector delivery, before / after (unit-injector engines)** | engine speed, injected quantity, injection duration | For **Tools > Injector setup > From logs** on a PD engine. Coolant at 70 °C or more: two minutes of idle in neutral with everything off, then steady 60, 80, 100 and 120 km/h in a fixed gear, 30 s each, same road and direction. Log the same points before the change (old injectors) and after it. |
+| **Injection pump calibration (quantity adjuster voltage)** | engine speed, injected quantity, the adjuster voltage (actual); its setpoint when a block shows it | VE pump engines, for **Tools > Injector setup > From logs**. Coolant at 80 °C or more: two minutes of idle with everything off, the same steady speeds as a log from before a pump or nozzle change if you have one, then two full-throttle pulls in 3rd from 1500 rpm to the limiter. |
 
 ## Transmission presets (ZF6HP — 6HP19)
 

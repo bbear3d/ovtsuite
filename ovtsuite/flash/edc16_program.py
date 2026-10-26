@@ -38,6 +38,8 @@ RequestDownload per sector/range only (no erase, no transfer). arm=True ->
 ERASE + WRITE. A failed/partial erase can brick the ECU; recover via BDM.
 """
 from .edc16 import Edc16Flash, encrypt, StopRequested, KLineError, FULL_SIZE
+from .edc16 import RangeRefused
+from .transport import KLineTimeout
 
 # Program area = ODIS block 2: [0x40000, 0xA0000) (0x60000), checksum region
 # [0x40000, 0x9FFFF].
@@ -114,6 +116,8 @@ def _open_session(fl, image, speed, allow_fast, fast_init_prime, is_stop, on_sta
             fl._read_erase_signature()
             fl._lvl1_auth()
         fl._establish_session(0x85, speed, allow_fast, _prepare, is_stop)
+        from .edc16 import tp20_level_text
+        fl.log(tp20_level_text())
         reset = getattr(fl.k, "reset_channel", None)
         if reset is not None:
             reset()
@@ -125,9 +129,13 @@ def _open_session(fl, image, speed, allow_fast, fast_init_prime, is_stop, on_sta
         fl._set_access_timing()
         # Session is up and the baud is switched; drop the tester inter-byte time
         # so the big TransferData frames stream fast (init needed the wider P4).
-        setter = getattr(fl.k, "set_tx_interbyte", None)
-        if setter is not None:
-            setter(_TRANSFER_P4_MIN)
+        timing = getattr(fl.k, "set_session_timing", None)
+        if timing is not None and _TRANSFER_P4_MIN == 0:
+            timing()                    # P4/P3 to 0, short P1_MAX (kline_j2534)
+        else:
+            setter = getattr(fl.k, "set_tx_interbyte", None)
+            if setter is not None:
+                setter(_TRANSFER_P4_MIN)
 
 
 def _do_program(fl, image, *, arm, on_stage, on_percent, is_stop,
@@ -1149,7 +1157,9 @@ def _read_one_upload(fl, addr, sz, is_stop):
         got.extend(fl._read_flash_packet(done))
     del got[sz:]
     if len(got) < sz:
-        got.extend(b"\xFF" * (sz - len(got)))
+        # the upload ended early: the rest was never sent, so it is not padded
+        # (see _read_bisect)
+        raise KLineError("EDC16 upload ended after 0x%X of 0x%X bytes" % (len(got), sz))
     try:
         fl._request_transfer_exit()                 # per-upload exit (like MPPS)
     except Exception:
@@ -1157,29 +1167,55 @@ def _read_one_upload(fl, addr, sz, is_stop):
     return bytes(got)
 
 
+def _dead_link(ex) -> bool:
+    """No answer / the channel is gone -- as opposed to a refusal or a damaged
+    packet, which another (smaller) upload can get past."""
+    return isinstance(ex, KLineTimeout) or "disconnected" in str(ex).lower()
+
+
 def _read_bisect(fl, addr, sz, on_stage, is_stop, counters):
     """Read [addr, addr+sz). On refusal, split (aligned to _MIN_READ_CHUNK) and
     retry each half so a non-readable sub-region only 0xFF-pads that part while
     readable neighbours are still captured. A negative requestUpload leaves no
-    pending upload and does not end the session, so there is no teardown here."""
+    pending upload and does not end the session, so there is no teardown here.
+
+    Only a refusal (RangeRefused: the ECU's 7F 35 / 7F 36) is padded. No answer
+    or a lost channel fails the read at once; a damaged or short upload is read
+    again in smaller uploads and fails the read if the smallest one still does
+    not come back whole -- never 0xFF in place of data that was not read."""
+    where = "0x%06X-0x%06X" % (addr, addr + sz - 1)
     try:
         data = _read_one_upload(fl, addr, sz, is_stop)
         counters["ok"] += sz
         return data
     except StopRequested:
         raise
-    except KLineError as ex:
+    except RangeRefused as ex:
         if sz <= _MIN_READ_CHUNK:
-            on_stage("  -> refused 0x%06X-0x%06X (%s) -- 0xFF" % (addr, addr + sz - 1, ex))
+            on_stage("  -> refused %s (%s) -- 0xFF" % (where, ex))
             counters["refused"] += sz
+            counters.setdefault("padded", []).append((addr, sz, str(ex)))
             return b"\xFF" * sz
-        half = sz // 2
-        half -= half % _MIN_READ_CHUNK
-        if half <= 0:
-            half = _MIN_READ_CHUNK
-        left = _read_bisect(fl, addr, half, on_stage, is_stop, counters)
-        right = _read_bisect(fl, addr + half, sz - half, on_stage, is_stop, counters)
-        return left + right
+    except KLineError as ex:
+        if _dead_link(ex):
+            raise KLineTimeout("EDC16 read stopped: no answer from the ECU at %s (%s); "
+                               "the read is incomplete" % (where, ex))
+        if sz <= _MIN_READ_CHUNK:
+            raise KLineError("EDC16 read stopped: %s could not be read (%s); "
+                             "the read is incomplete" % (where, ex))
+        on_stage("  -> %s not read cleanly (%s); reading it in smaller uploads"
+                 % (where, ex))
+        try:
+            fl._request_transfer_exit()             # end the broken upload first
+        except Exception:
+            pass
+    half = sz // 2
+    half -= half % _MIN_READ_CHUNK
+    if half <= 0:
+        half = _MIN_READ_CHUNK
+    left = _read_bisect(fl, addr, half, on_stage, is_stop, counters)
+    right = _read_bisect(fl, addr + half, sz - half, on_stage, is_stop, counters)
+    return left + right
 
 
 def read_full(fl, *, include_program=True, include_mpc=False, full=False,
@@ -1212,6 +1248,13 @@ def read_full(fl, *, include_program=True, include_mpc=False, full=False,
     on_stage("Opening read session (%s)..." % ("CAN/TP2.0" if getattr(fl.k, "is_tp20", False)
                                                else "K-line"))
     _open_read_session(fl, speed, allow_fast, is_stop)
+    # CAN: stream on a channel set up inside the read session (faster ECU T3)
+    reopen = getattr(fl, "reopen_for_read", None)
+    if reopen is not None:
+        def _prepare():
+            fl.connect()
+            fl._lvl3_auth()
+        reopen(_prepare, speed, allow_fast, is_stop)
     for name, base, total in ranges:
         if is_stop and is_stop():
             raise StopRequested("read stopped")
@@ -1229,6 +1272,9 @@ def read_full(fl, *, include_program=True, include_mpc=False, full=False,
             region.extend(_read_bisect(fl, addr, sz, on_stage, is_stop, counters))
             if on_percent and total:
                 on_percent(min(100, (off + sz) * 100 // total))
+        for paddr, psz, why in counters.get("padded", ()):
+            on_stage("  %s: 0x%06X-0x%06X padded with 0xFF -- the ECU refused it (%s)"
+                     % (name, paddr, paddr + psz - 1, why))
         if counters["refused"]:
             on_stage("  (%s: 0x%X of 0x%X bytes refused -- 0xFF-padded; readable "
                      "sub-ranges inside partly-refused chunks were still recovered)"

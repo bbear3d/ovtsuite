@@ -19,10 +19,11 @@ timestamps are the device's microsecond counter.
 import ctypes
 import os
 import sys
+import time
 from ctypes import (POINTER, Structure, byref, c_char, c_char_p, c_ubyte, c_uint32,
                     c_void_p, create_string_buffer)
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 # protocol ids
 J1850VPW, J1850PWM, ISO9141, ISO14230, CAN, ISO15765 = 1, 2, 3, 4, 5, 6
@@ -131,6 +132,215 @@ class Msg:
     @property
     def payload(self) -> bytes:
         return self.data[4:] if self.protocol in (CAN, ISO15765) else self.data
+
+
+def kline_frame_len(buf: bytes) -> Optional[int]:
+    """Length of a complete K-line KWP frame (header, data, checksum) at the
+    front of ``buf``, or None while it is incomplete."""
+    if not buf:
+        return None
+    fmt = buf[0]
+    i = 3 if fmt & 0x80 else 1
+    n = fmt & 0x3F
+    if n == 0:
+        if len(buf) <= i:
+            return None
+        n = buf[i]
+        i += 1
+    total = i + n + 1
+    return total if len(buf) >= total else None
+
+
+#: How far into a received buffer a reply is looked for behind bytes that
+#: cannot start it (a stray byte, line noise after a baud change).
+KLINE_MAX_SKIP = 16
+
+
+def _kline_total(buf: bytes, s: int) -> Optional[int]:
+    """Length of the frame whose format byte is ``buf[s]``: None until the
+    separate length byte is in, 0 for a length of 0 (no frame)."""
+    fmt = buf[s]
+    i = s + (3 if fmt & 0x80 else 1)
+    n = fmt & 0x3F
+    if n == 0:
+        if len(buf) <= i:
+            return None
+        n = buf[i]
+        if n == 0:
+            return 0
+        i += 1
+    return i + n + 1 - s
+
+
+def _kline_fits(buf: bytes, s: int, req: bytes) -> bool:
+    """Whether ``buf[s]`` can start a reply to ``req``: a KWP2000 format byte
+    (no address, or physical / functional addressing -- not the 0x40 CARB
+    mode), addressed the way ``req`` was, and when addressed, to the tester
+    that sent ``req`` from the controller it went to. Address bytes not yet
+    received are not held against it."""
+    fmt = buf[s]
+    if fmt & 0xC0 == 0x40 or _kline_total(buf, s) == 0:
+        return False
+    if req:
+        if bool(fmt & 0x80) != bool(req[0] & 0x80):
+            return False
+        if fmt & 0x80 and len(req) >= 3:
+            if len(buf) > s + 1 and buf[s + 1] != req[2]:
+                return False
+            if len(buf) > s + 2 and buf[s + 2] != req[1]:
+                return False
+    return True
+
+
+def kline_split(buf: bytes, request: Optional[bytes] = None,
+                final: bool = False) -> Optional[Tuple[int, int]]:
+    """Where the first whole KWP2000 reply frame lies in ``buf``: ``(start,
+    end)``, or None while there is none yet. Bytes before ``start`` are not
+    part of any reply and are dropped; bytes from ``end`` on are kept for the
+    next frame.
+
+    A well-formed reply at the front (checksum = sum mod 256) is taken as it
+    is. One with a bad checksum is taken with everything after it, as one
+    message always was: a corrupt reply is the caller's to re-read, and the
+    EDC16 LVL3 seed reply runs past the length in its header. Otherwise the
+    buffer is not read as starting at a frame header:
+
+    * an unflagged echo of ``request`` at the front is dropped;
+    * a front byte that cannot start a reply to ``request`` (see
+      :func:`_kline_fits`) is skipped, up to :data:`KLINE_MAX_SKIP` bytes, to
+      the first frame there with a valid checksum;
+    * a corrupt-looking frame at the front gives way to a valid one that
+      begins inside it and runs past its end -- a stray byte read as a header.
+
+    A plausible header whose frame has not all arrived is waited for, unless
+    a valid frame starts within three bytes of it and ends where the data
+    does; with ``final`` (the caller's time is up) any valid frame behind it
+    is taken instead. Every step moves forward through a bounded window, so
+    nothing here loops on its own."""
+    buf = bytes(buf)
+    req = bytes(request) if request else b""
+    pos = 0
+    if req:
+        while buf.startswith(req, pos):                    # device TX echoes not flagged
+            pos += len(req)
+        rest = buf[pos:]
+        if rest and len(rest) < len(req) and req.startswith(rest) and not final:
+            return None                                    # the echo is still coming in
+    if pos >= len(buf):
+        return None
+
+    def whole(s):
+        t = _kline_total(buf, s)
+        return t if t and len(buf) - s >= t else None
+
+    def valid(s, t):
+        return sum(buf[s:s + t - 1]) & 0xFF == buf[s + t - 1]
+
+    t0 = whole(pos)
+    if t0 and valid(pos, t0):
+        return pos, pos + t0
+    later = None
+    for s in range(pos + 1, min(len(buf), pos + 1 + KLINE_MAX_SKIP)):
+        if not _kline_fits(buf, s, req):
+            continue
+        t = whole(s)
+        if t and valid(s, t):
+            if req and buf[s:s + t] == req:                # an echo behind a stray byte
+                r = kline_split(buf[s + t:], req, final)
+                return None if r is None else (r[0] + s + t, r[1] + s + t)
+            later = (s, s + t)
+            break
+    if not _kline_fits(buf, pos, req):
+        return later                                       # junk at the front
+    if t0:
+        if later is not None and later[1] > pos + t0:
+            return later
+        # a bad checksum: corrupt, or a reply longer than its header says
+        # (the EDC16 LVL3 seed, 83 F1 10 67 03 + 4 bytes) -- all of it, as it came
+        return pos, len(buf)
+    # a header whose frame is still coming in -- or a stray byte that looks
+    # like one: a valid frame just behind it that ends where the data does is
+    # the reply (a reply's own header and service bytes cannot start one)
+    if later is not None and (final or (later[0] <= pos + 3 and later[1] == len(buf))):
+        return later
+    return None
+
+
+def kline_exchange(ch, frame: Optional[bytes], write_timeout_ms: int,
+                   timeout_ms: int, expect: Optional[bytes] = None) -> List[Msg]:
+    """Send ``frame`` (None: send nothing) on a K-line channel and collect what
+    comes back until the received payloads hold one whole KWP frame (found
+    as :func:`kline_split` finds it, judged against ``frame``, or ``expect``
+    -- the request being answered -- when nothing is sent), or ``timeout_ms``
+    runs out. Returns the received messages (device TX echoes and empty
+    indications left out). One call, so a 32-bit bridge runs a whole
+    request/response in one round trip instead of one per read."""
+    import time as _t
+    if frame is not None:
+        ch.write(bytes(frame), 0, write_timeout_ms)
+    req = frame if frame is not None else expect
+    deadline = _t.monotonic() + timeout_ms / 1000.0
+    out, buf = [], bytearray()
+    while True:
+        left = int((deadline - _t.monotonic()) * 1000)
+        if left <= 0:
+            return out
+        for m in ch.read(1, left):
+            if m.is_tx_echo or not m.data:
+                continue
+            out.append(m)
+            buf += m.data
+        if kline_split(buf, req) is not None:
+            return out
+
+
+def kline_xfer(ch, data: Optional[bytes], write_timeout_ms: int, timeout_ms: int,
+               drain: bool = True) -> Tuple[List[Msg], List[Msg]]:
+    """One step of a byte-stream K-line link (KW1281): collect what is
+    already waiting (``drain``), write ``data`` (if any), then wait up to
+    ``timeout_ms`` (0: not at all) for the next received message and take
+    whatever else is in without waiting. Returns ``(before, after)``: the
+    messages received before the write and after it, device TX echoes and
+    empty indications left out. Every read either asks for one message or
+    does not wait -- a PassThruReadMsgs waits for all it is asked for."""
+    def take(msgs, into):
+        got = False
+        for m in msgs:
+            if getattr(m, "is_tx_echo", False) or not getattr(m, "payload", b""):
+                continue
+            into.append(m)
+            got = True
+        return got
+
+    before, after = [], []
+    if drain:
+        for _ in range(64):                                # bounded: a chattering line
+            msgs = ch.read(32, 0)
+            if not msgs:
+                break
+            take(msgs, before)
+    if data is not None:
+        ch.write(bytes(data), 0, write_timeout_ms)
+    if timeout_ms > 0:
+        # A device that reports the start of a message (an empty indication,
+        # the Scanmatik) hands the byte itself over P1_MAX later: keep waiting
+        # for it here, in this call, rather than returning empty and costing
+        # the caller a second round trip for every KW1281 byte.
+        end = time.monotonic() + timeout_ms / 1000.0
+        wait = int(timeout_ms)
+        for _ in range(64):                                # bounded: indications only
+            msgs = ch.read(1, wait)
+            if not msgs:
+                break
+            if take(msgs, after):
+                take(ch.read(32, 0), after)
+                break
+            if take(ch.read(32, 0), after):
+                break
+            wait = int((end - time.monotonic()) * 1000)
+            if wait <= 0:
+                break
+    return before, after
 
 
 def list_devices() -> List[Device]:
@@ -302,6 +512,14 @@ class Channel:
         sout = SBYTE_ARRAY(4, ctypes.cast(out, POINTER(c_char)))
         self.dev.ioctl(self.id, FIVE_BAUD_INIT, byref(sin), byref(sout))
         return bytes(out.raw[:sout.NumOfBytes])
+
+    def kline_exchange(self, frame: Optional[bytes], write_timeout_ms: int = 1000,
+                       timeout_ms: int = 8000, expect: Optional[bytes] = None) -> List[Msg]:
+        return kline_exchange(self, frame, write_timeout_ms, timeout_ms, expect)
+
+    def kline_xfer(self, data: Optional[bytes], write_timeout_ms: int = 1000,
+                   timeout_ms: int = 0, drain: bool = True):
+        return kline_xfer(self, data, write_timeout_ms, timeout_ms, drain)
 
     def fast_init(self, request: bytes) -> bytes:
         m = self.dev._msg(self.protocol, request, 0)
@@ -556,6 +774,39 @@ class BridgeChannel:
 
     def five_baud_init(self, address: int) -> bytes:
         return bytes.fromhex(self._q("five_baud_init", address=address))
+
+    def kline_exchange(self, frame: Optional[bytes], write_timeout_ms: int = 1000,
+                       timeout_ms: int = 8000, expect: Optional[bytes] = None) -> List[Msg]:
+        if not getattr(self.dev, "_no_kline_exchange", False):
+            try:
+                rows = self._q("kline_exchange",
+                               data=None if frame is None else bytes(frame).hex(),
+                               expect=None if expect is None else bytes(expect).hex(),
+                               write_timeout=int(write_timeout_ms), timeout=int(timeout_ms))
+                return [Msg(p, s, f, t, bytes.fromhex(d)) for p, s, f, t, d in rows]
+            except J2534Error as ex:
+                if "unknown op" not in str(ex):
+                    raise
+                # an older bridge build: nothing was sent, do it with write/read
+                self.dev._no_kline_exchange = True
+        return kline_exchange(self, frame, write_timeout_ms, timeout_ms, expect)
+
+    def kline_xfer(self, data: Optional[bytes], write_timeout_ms: int = 1000,
+                   timeout_ms: int = 0, drain: bool = True):
+        """:func:`kline_xfer` in one bridge round trip; on a bridge build
+        without it, done with read/write calls."""
+        if not getattr(self.dev, "_no_kline_xfer", False):
+            try:
+                r = self._q("kline_xfer", data=None if data is None else bytes(data).hex(),
+                            write_timeout=int(write_timeout_ms), timeout=int(timeout_ms),
+                            drain=bool(drain))
+                return tuple([Msg(p, s, f, t, bytes.fromhex(d)) for p, s, f, t, d in rows]
+                             for rows in (r["before"], r["after"]))
+            except J2534Error as ex:
+                if "unknown op" not in str(ex):
+                    raise
+                self.dev._no_kline_xfer = True             # nothing was sent
+        return kline_xfer(self, data, write_timeout_ms, timeout_ms, drain)
 
     def fast_init(self, request: bytes) -> bytes:
         return bytes.fromhex(self._q("fast_init", request=bytes(request).hex()))
@@ -866,6 +1117,9 @@ class BridgeTp20:
         self.opened = False
         self._params = params or {}
         self._log_path = log_path
+        self.log = None                 # set by CanKLine: receives the bridge loop's notes
+        self.backed_off = False         # the in-bridge loop backed its pacing off (9x etc.)
+        self._dropped_noted = False     # the old-bridge note was logged
 
     def _err(self, ex):
         from .transport import KLineError as KE, KLineTimeout as KT
@@ -883,6 +1137,27 @@ class BridgeTp20:
         self.ecu_block_size = r.get("ecu_block_size", 0x0F)
         self.ecu_interframe_ms = r.get("ecu_interframe_ms", 0.0)
         self.opened = True
+        self._note_dropped_params(r.get("params_used"))
+
+    #: Tp20Params fields a bridge built before the EDC16 pacing levels drops
+    NEWER_PARAMS = ("send_ms", "pace_from_start", "backoff_on_flow")
+
+    def _note_dropped_params(self, used):
+        """Log, once, when the bridge did not apply params we asked for -- a
+        frozen bridge built before them paces at the ECU's own T3."""
+        if self._dropped_noted:
+            return
+        asked = set(self._params)
+        dropped = (asked & set(self.NEWER_PARAMS) if used is None
+                   else asked - set(used))
+        if not dropped:
+            return
+        self._dropped_noted = True
+        msg = ("J2534 bridge: this bridge build does not support the faster TP 2.0 "
+               "pacing (%s); rebuild it -- using the ECU's own pace"
+               % ", ".join(sorted(dropped)))
+        if self.log is not None:
+            self.log(msg)
 
     def reopen(self):
         """Re-run the TP 2.0 channel setup on the EXISTING bridge CAN channel (no
@@ -900,9 +1175,14 @@ class BridgeTp20:
 
     def send(self, payload: bytes):
         try:
-            self.b._call("tp_send", payload=bytes(payload).hex())
+            r = self.b._call("tp_send", payload=bytes(payload).hex())
         except J2534Error as ex:
             raise self._err(ex)
+        if isinstance(r, dict):                     # an older bridge answers None
+            self.backed_off = bool(r.get("backed_off", self.backed_off))
+            for note in r.get("notes") or ():
+                if self.log is not None:
+                    self.log(note)
 
     def recv(self, timeout_ms=2000) -> bytes:
         try:

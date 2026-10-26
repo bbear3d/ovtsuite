@@ -234,6 +234,25 @@ def test_raw_j2534_link_runs_a_kw1281_session():
     assert dev.ch.closed
 
 
+def test_raw_j2534_link_never_blocks_waiting_for_many_messages():
+    # PassThruReadMsgs with a timeout waits until it has every message asked
+    # for: a blocking read must ask for one, or each byte costs the timeout
+    ecu = MockEdc15()
+    dev = _RawDev(ecu)
+    link = J2534RawKLine(dev, baud=9600)
+    calls = []
+    real = dev.ch.read
+
+    def read(max_msgs=32, timeout_ms=100):
+        calls.append((max_msgs, timeout_ms))
+        return real(max_msgs, timeout_ms)
+    dev.ch.read = read
+    s = D.DiagSession(link, "EDC15", fast_kw1281=True)
+    s.connect()
+    s.read_group(1)
+    assert calls and all(n == 1 or t == 0 for n, t in calls)
+
+
 def test_raw_j2534_link_baud_change_reopens_when_data_rate_refused():
     ecu = MockEdc15()
     dev = _RawDev(ecu, refuse=("DATA_RATE",))

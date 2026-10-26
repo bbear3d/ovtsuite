@@ -258,17 +258,24 @@ def serve(dll_path: str, inp, out):
                         tp["tap"] = _FrameTap(c, q["log_path"])
                         c = tp["tap"]
                     p = q.get("params") or {}
-                    params = TP.Tp20Params(**{k: p[k] for k in
-                                              ("block_size", "t1_ms", "t3_ms", "ack_every",
-                                               "ignore_ecu_floor", "pace_ecu",
-                                               "tx_ack_every", "inter_send_ms") if k in p})
+                    used = {k: p[k] for k in
+                            ("block_size", "t1_ms", "t3_ms", "ack_every",
+                             "ignore_ecu_floor", "pace_ecu",
+                             "tx_ack_every", "inter_send_ms", "send_ms",
+                             "pace_from_start", "backoff_on_flow")
+                            if k in p}
+                    params = TP.Tp20Params(**used)
+                    tp["params_used"] = sorted(used)
                     channel = TP.Tp20Channel(c, dest=q.get("dest", 0x01),
                                              listen_id=q.get("listen", 0x300), params=params)
                     channel.open()
                     tp["tp"] = channel
                     r = {"tx_id": channel.tx_id, "rx_id": channel.rx_id,
                          "ecu_block_size": channel.ecu_block_size,
-                         "ecu_interframe_ms": channel.ecu_interframe_ms}
+                         "ecu_interframe_ms": channel.ecu_interframe_ms,
+                         # the params this build applied (an older one has no
+                         # such key, and drops what it does not know)
+                         "params_used": tp["params_used"]}
                 elif op == "tp_reopen":
                     # re-run the TP 2.0 setup on the existing channel (the ECU
                     # resets its transport when it enters the programming session)
@@ -278,8 +285,18 @@ def serve(dll_path: str, inp, out):
                          "ecu_block_size": channel.ecu_block_size,
                          "ecu_interframe_ms": channel.ecu_interframe_ms}
                 elif op == "tp_send":
-                    tp["tp"].send(bytes.fromhex(q["payload"]))
-                    r = None
+                    try:
+                        tp["tp"].send(bytes.fromhex(q["payload"]))
+                    except Exception as ex:             # noqa: BLE001
+                        # a back-off noted before the send failed still reaches
+                        # the log, inside the error the tester reports
+                        notes = tp["tp"].take_notes()
+                        if notes:
+                            raise J.J2534Error("%s (%s)" % (ex, "; ".join(notes)))
+                        raise
+                    notes = tp["tp"].take_notes()
+                    r = ({"notes": notes, "backed_off": tp["tp"].backed_off}
+                         if notes else None)
                 elif op == "tp_recv":
                     r = tp["tp"].recv(q.get("timeout", 2000)).hex()
                 elif op == "tp_keepalive":
@@ -471,6 +488,22 @@ def serve(dll_path: str, inp, out):
                     r = None
                 elif op == "five_baud_init":
                     r = ch.five_baud_init(q["address"]).hex()
+                elif op == "kline_exchange":
+                    # a K-line request and its whole reply in one round trip
+                    data = q.get("data")
+                    r = [[m.protocol, m.rx_status, m.tx_flags, m.timestamp, m.data.hex()]
+                         for m in J.kline_exchange(
+                             ch, None if data is None else bytes.fromhex(data),
+                             q.get("write_timeout", 1000), q.get("timeout", 8000),
+                             bytes.fromhex(q["expect"]) if q.get("expect") else None)]
+                elif op == "kline_xfer":
+                    # a byte-stream K-line step: drain, write, first reply, one round trip
+                    data = q.get("data")
+                    before, after = J.kline_xfer(
+                        ch, None if data is None else bytes.fromhex(data),
+                        q.get("write_timeout", 1000), q.get("timeout", 0), q.get("drain", True))
+                    r = {k: [[m.protocol, m.rx_status, m.tx_flags, m.timestamp, m.data.hex()]
+                             for m in v] for k, v in (("before", before), ("after", after))}
                 elif op == "fast_init":
                     r = ch.fast_init(bytes.fromhex(q["request"])).hex()
                 elif op == "battery_voltage":

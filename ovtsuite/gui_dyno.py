@@ -32,6 +32,7 @@ conditions and the runs are kept with the set.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -327,7 +328,11 @@ class DynoState(QtCore.QObject):
         p = getattr(self.ws, "primary", None)
         if p is None:
             return None
-        return self.add_source(_src.make_pin(p))
+        src = _src.make_pin(p)
+        # the hardware it has now goes with it: a record made later is not
+        # what the pinned bytes were set up for
+        src.hardware = self._hardware_of(Run("this", "This file", "", 0, None, session=p))
+        return self.add_source(src)
 
     # -- the x axis ------------------------------------------------------------------
     def gear_speeds(self) -> Tuple[Dict[int, float], str]:
@@ -470,7 +475,8 @@ class DynoState(QtCore.QObject):
         return (id(p), getattr(p, "revision", None),
                 id(c) if cmp_ else None,
                 getattr(c, "revision", None) if cmp_ else None,
-                tuple((x.key, x.shown, self.resolver.stamp(x)) for x in self.sources))
+                tuple((x.key, x.shown, self.resolver.stamp(x)) for x in self.sources),
+                self._hardware_stamp())
 
     def _new_file(self):
         """Another file in the tab: what was picked for the old one -- its
@@ -511,6 +517,7 @@ class DynoState(QtCore.QObject):
         self.curve = self.ref_curve = None
         self.model = self.ref_model = self.ref_session = None
         self.runs = []
+        self.hardware, self.hardware_text = {}, {}
         self.message = ""
         p = getattr(self.ws, "primary", None)
         if p is None:
@@ -533,9 +540,13 @@ class DynoState(QtCore.QObject):
             if ref_s is not None:
                 rm = _dy.matching(_dy.models(ref_s), m.group)
             self.ref_model, self.ref_session = rm, ref_s
-            fuel = _dy.fuel_map(p, ref_s, m.group, self.cond.coolant) \
-                if (ref_s is not None and self.cond.fuel_basis == "duration") \
-                else None
+            self._fuel_own = []
+            carry = ref_s is not None and self.cond.fuel_basis == "duration"
+            same = carry and self._same_injectors(
+                Run("this", "This file", "", 0, None, session=p), ref_s)
+            fuel = _dy.fuel_map(p, ref_s, m.group, self.cond.coolant) if same else None
+            if carry and not same:
+                self._fuel_own.append("This file")
             self.curve = _dy.calculate(m, self.cond, rm, label="This file", fuel=fuel)
             if rm is not None:
                 self.ref_curve = _dy.calculate(rm, self.cond, rm, label="Reference")
@@ -553,6 +564,301 @@ class DynoState(QtCore.QObject):
                                  and self.ref_version == src.key):
                 continue
             self.runs.append(self._run_of(src, p, m, rm, ref_s))
+        self._work_out_hardware()
+
+    # -- fitted hardware (ovtsuite.project.hardware) ---------------------------
+    # Each run's hardware comes from the project that holds it -- this tab's,
+    # another open project's, an .ovt file read from disk -- or, where no
+    # project records it, from its own maps (ovtsuite.dyno_hardware:
+    # inferred, and said to be).
+    def _run_hardware(self, r: Run, ref, _hw):
+        """The hardware ``r`` is calibrated (or, for a log, logged) with: the
+        records of the project it comes from, else what its maps look set up
+        for -- None when neither tells."""
+        got = self._recorded_hardware(r, ref, _hw)
+        if got is None and r.session is not None:
+            from . import dyno_hardware as _dh
+            try:
+                got = _dh.infer(r.session, getattr(self.model, "group", None))
+            except Exception:            # a file the identification can't read
+                got = None
+        return got
+
+    @staticmethod
+    def _of(proj, sid, fn, _hw):
+        """``fn()``'s records of set ``sid`` (a HardwareOf); None when that
+        set records no hardware (not known from it)."""
+        from . import dyno_hardware as _dh
+        if proj is None or not sid or not _hw.records(proj, sid):
+            return None
+        got = fn()
+        return None if got is None else _dh.HardwareOf(got, proj, sid)
+
+    def _recorded_hardware(self, r: Run, ref, _hw):
+        """What a project records of ``r``'s hardware; None when no project
+        says (see :meth:`_run_hardware`)."""
+        proj, sid = (ref.doc.project, ref.sid) if ref is not None else (None, "")
+        here = os.path.normcase(os.path.abspath(ref.doc.path)) \
+            if ref is not None and ref.doc.path else None
+
+        def same(path):
+            return bool(here and path and os.path.normcase(os.path.abspath(path)) == here)
+
+        def mine(fn):
+            return self._of(proj, sid, fn, _hw)
+
+        def at(cid):            # a version of this set, when it is one
+            return mine(lambda: _hw.for_checkpoint(proj, sid, cid)) \
+                if cid and proj.set(sid).checkpoint(cid) is not None else None
+
+        if r.key == "this":
+            if ref is None:
+                return None
+            return mine(lambda: _hw.for_checkpoint(proj, sid, ref.branch.head,
+                                                   unsaved=self.ws.is_dirty()))
+        src = r.source
+        if r.key == "ref":
+            if self.ref_kind == _dy.REF_SOURCE:
+                src = self.source(self.ref_version)     # a run: as the runs are
+            elif ref is None:
+                return None
+            elif self.ref_kind == _dy.REF_ORIGINAL:
+                # the original as read: the root this branch grew from
+                root = proj.set(sid).root_of(ref.branch.head)
+                return at(root.id) if root is not None else None
+            elif self.ref_kind == _dy.REF_VERSION:
+                return at(self.ref_version)     # in a project tab, a checkpoint
+            else:
+                v = getattr(r.session, "version_of", None)
+                return at(v["id"]) if isinstance(v, dict) and not v.get("path") \
+                    and v.get("id") else None
+        if src is None:
+            return None
+        if src.kind == _src.PINNED:
+            return src.hardware                 # as it was when pinned
+        if src.kind == _src.VERSION:
+            return at(src.vid) if ref is not None else None
+        if src.kind == _src.TAB:
+            return self._tab_hardware(src, ref, _hw)
+        win = getattr(self.ws, "win", None)
+        if src.kind == _src.PROJECT:
+            p2 = proj if same(src.path) else self._project_at(src.path, win)
+            if p2 is None:
+                return None
+            return self._of(p2, src.sid, lambda: _hw.for_checkpoint(
+                p2, src.sid, src.cid or p2.head(src.sid, src.bid or None).id), _hw)
+        if src.kind == _src.FILE:
+            if not _src.is_project_file(src.path):
+                return None
+            p2 = proj if same(src.path) else self._project_at(src.path, win)
+            if p2 is None:
+                return None
+            sid2, bid2 = _src.project_file_set(p2, getattr(self.ws, "primary", None))
+            return self._of(p2, sid2, lambda: _hw.for_checkpoint(
+                p2, sid2, p2.head(sid2, bid2 or None).id), _hw) if sid2 else None
+        if src.kind == _src.LOG:
+            when = self.resolver.recorded(src)
+            if not src.log_id:
+                return self._log_car_hardware(src, when, ref, _hw)
+            p2 = proj if same(src.path) else self._project_at(src.path, win)
+            a = next((x for x in p2.logs if x.id == src.log_id), None) \
+                if p2 is not None else None
+            if a is None:
+                return None
+            # when it was recorded (the log's own date), else when it was
+            # added to the project
+            when = when or a.added
+            lsid = a.set if a.set and any(x.id == a.set for x in p2.sets) else (
+                sid if p2 is proj else "")
+            if not lsid:
+                return None
+            return self._of(p2, lsid, lambda: _hw.at(p2, lsid, when), _hw) if when else None
+        return None
+
+    def _project_at(self, path, win):
+        """The project at ``path``: the open one, else read from the file
+        (kept by the resolver until the file changes; never held open)."""
+        try:
+            return self.resolver.project(path, win)
+        except Exception:                # gone, or not a project this reads
+            return None
+
+    def _log_car_hardware(self, src, when, ref, _hw):
+        """A log file not kept in a project: the records of the one open
+        project set whose part number the log's ECU ident names, at the
+        log's own date -- None when the log has no ident or no date, or no
+        open set (or more than one) is that car."""
+        ident = self.resolver.identity(src).split()
+        if not ident or not when:
+            return None
+        pn = ident[0].upper()
+        projs = _src.open_projects(getattr(self.ws, "win", None))
+        if ref is not None and all(p is not ref.doc.project for p in projs):
+            projs.append(ref.doc.project)
+        hits = []
+        for p in projs:
+            for s in getattr(p, "sets", []):
+                part = "".join(str((s.identity or {}).get("part", "")).split()).upper()
+                if part and part == pn:
+                    hits.append((p, s.id))
+        if len(hits) != 1:
+            return None
+        p, lsid = hits[0]
+        return self._of(p, lsid, lambda: _hw.at(p, lsid, when), _hw)
+
+    def _tab_hardware(self, src, ref, _hw):
+        """What another open tab of a project is calibrated for: its branch
+        head, with the tab's unsaved edits when it has them (as Tools >
+        Injector setup reads its own tab) -- that project's records, this
+        tab's or another's. None for a tab that is not a project's."""
+        w = src.tab() if src.tab is not None else None
+        tref = getattr(w, "project_ref", None)
+        if tref is None:
+            return None
+        b = tref.branch
+        if b is None or not b.head:
+            return None
+        dirty = bool(getattr(w, "is_dirty", lambda: False)())
+        p = tref.doc.project
+        return self._of(p, tref.sid, lambda: _hw.for_checkpoint(
+            p, tref.sid, b.head, unsaved=dirty), _hw)
+
+    def _hardware_of(self, r: Run):
+        """``r``'s hardware (:meth:`_run_hardware`); None when not known."""
+        try:
+            from .project import hardware as _hw
+            return self._run_hardware(r, getattr(self.ws, "project_ref", None), _hw)
+        except Exception:                # a project record this version can't read
+            return None
+
+    def _hardware_words(self, got) -> str:
+        from . import dyno_hardware as _dh
+        if not got:
+            return "as it came (no hardware change recorded for it)"
+        proj, sid = getattr(got, "project", None), getattr(got, "sid", "")
+        if proj is None:
+            ref = getattr(self.ws, "project_ref", None)
+            proj, sid = (ref.doc.project, ref.sid) if ref is not None else (None, "")
+        out = []
+        for x in got:
+            try:
+                out.append("%s: %s" % (x.kind_label, _dh.describe(x, proj, sid)))
+            except Exception:
+                out.append("%s: %s" % (x.kind_label, x.summary))
+        return "; ".join(out)
+
+    def _work_out_hardware(self):
+        """Each run's hardware (``self.hardware``) and the line on it its
+        tooltips show (``self.hardware_text``)."""
+        self.hardware, self.hardware_text = {}, {}
+        for r in self.runs:
+            got = self._hardware_of(r)
+            self.hardware[r.key] = got
+            if got is not None:
+                self.hardware_text[r.key] = self._hardware_words(got)
+
+    def run_hardware(self, key: str) -> str:
+        """"Hardware: Unit injectors: PD150 -- fitted ..." for the run
+        ``key`` (the run list's and the legend's tooltips); "" when nothing
+        says (no record, and the maps match nothing)."""
+        t = (getattr(self, "hardware_text", None) or {}).get(key, "")
+        return ("Hardware: " + t) if t else ""
+
+    def _hardware_stamp(self):
+        """What changes when the hardware records the runs are read from do
+        (a record made in Tools > Injector setup recalculates the curves):
+        this set's, another open tab's project's, an open project's."""
+        def of(p, sid=None):
+            try:
+                sets = [p.set(sid)] if sid else list(p.sets)
+                return repr([s.extra.get("hardware") for s in sets])
+            except Exception:
+                return None
+        st = self._set_extra()
+        try:
+            out = [repr(st.extra.get("hardware")) if st is not None else None]
+        except Exception:
+            out = [None]
+        win = getattr(self.ws, "win", None)
+        for x in self.sources:
+            if x.kind == _src.TAB:
+                w = x.tab() if x.tab is not None else None
+                tref = getattr(w, "project_ref", None)
+                if tref is not None:
+                    out.append(of(tref.doc.project, tref.sid))
+            elif x.kind in (_src.PROJECT, _src.LOG, _src.FILE) and x.path:
+                doc = _src._open_doc(win, x.path)
+                if doc is not None:
+                    out.append(of(doc.project))
+        return tuple(out)
+
+    def _same_injectors(self, r: Run, ref_s) -> bool:
+        """False when ``r`` and the reference are calibrated for different
+        unit injectors / nozzles: their duration maps then describe different
+        hardware, so the quantity is not carried across them
+        (:class:`ovtsuite.dyno.FuelMap`) -- each file's own quantity is what
+        its own hardware delivers. Told by the project's records, or by an
+        exact match of the maps (an inference from a close match does not
+        count). True when not known."""
+        if ref_s is None:
+            return True
+        try:
+            from . import dyno_hardware as _dh
+            from .project import hardware as _hw
+            ref = getattr(self.ws, "project_ref", None)
+            a = self._run_hardware(r, ref, _hw)
+            b = self._run_hardware(Run("ref", "", "", 1, None, session=ref_s), ref, _hw)
+            if a is None or b is None:
+                return True
+            a = [x for x in a if x.kind == _hw.PD_INJECTORS]
+            b = [x for x in b if x.kind == _hw.PD_INJECTORS]
+            if any(not _dh.is_confident(x) for x in a + b):
+                return True
+            return _hw.PD_INJECTORS not in _dh.differ(a, b)
+        except Exception:                # a project record this version can't read
+            return True
+
+    def hardware_note(self) -> str:
+        """"Not the same hardware (unit injectors): ..." when the runs shown
+        were calibrated (or logged) with different fitted hardware, as the
+        projects record it or (said to be "from the maps") their maps look
+        set up for -- naming the parts that differ and each run's of them;
+        "" otherwise."""
+        try:
+            from . import dyno_hardware as _dh
+            from .project import hardware as _hw
+            hw = getattr(self, "hardware", None)
+            if hw is None:
+                self._work_out_hardware()
+                hw = self.hardware
+            known = []
+            for r in self.runs:
+                got = hw.get(r.key)
+                if r.curve is None or got is None:
+                    continue
+                lbl = (self.ref_label or r.label) if r.key == "ref" else r.label
+                known.append((lbl, got))
+            kinds = sorted({k for i, (_a, x) in enumerate(known)
+                            for _b, y in known[i + 1:] for k in _dh.differ(x, y)})
+            if not kinds:
+                return ""
+
+            def what(got):
+                bits = [_dh.short(x) for x in got if x.kind in kinds]
+                if bits:
+                    return " + ".join(bits)
+                return ("not told by its maps" if _dh.inferred(got)
+                        else "as it came (no change recorded)")
+            names = ", ".join(_hw.KIND_LABELS.get(k, k.replace("_", " ")).lower()
+                              for k in kinds)
+            own = list(getattr(self, "_fuel_own", []) or [])
+            return "Not the same hardware (%s): %s. Compare the curves knowing that.%s" % (
+                names, "; ".join("%s: %s" % (lbl, what(got)) for lbl, got in known), (
+                    " %s: set up for other injectors than the reference, so the fuel is "
+                    "taken as that calibration asks for it, not carried across the "
+                    "reference's injection-duration maps." % ", ".join(own)) if own else "")
+        except Exception:                # a project record this version can't read
+            return ""
 
     def _run_of(self, src, p, m, rm, ref_s) -> Run:
         """``src`` worked out as this file is: through the reference's
@@ -579,9 +885,12 @@ class DynoState(QtCore.QObject):
             if mo is None:
                 run.why = _dy.models_error(sess) or "not a file the dyno reads"
                 return run
-            fuel = _dy.fuel_map(sess, ref_s, mo.group, self.cond.coolant) \
-                if (ref_s is not None and self.cond.fuel_basis == "duration") \
-                else None
+            carry = ref_s is not None and self.cond.fuel_basis == "duration"
+            same = carry and self._same_injectors(Run(src.key, src.label, "", src.slot, None,
+                                                      source=src, session=sess), ref_s)
+            fuel = _dy.fuel_map(sess, ref_s, mo.group, self.cond.coolant) if same else None
+            if carry and not same:
+                self._fuel_own.append(src.label)
             run.curve = _dy.calculate(mo, self.cond, rm, label=src.label, fuel=fuel)
         except Exception as ex:
             run.why = "could not be worked out: %s" % (str(ex) or type(ex).__name__)
@@ -680,6 +989,7 @@ class DynoChart(QtWidgets.QWidget):
         self._strip = QtCore.QRectF()
         self._xr = (1000.0, 5000.0)
         self._k: Optional[float] = None     # x units per rpm (road speed)
+        self._legend_hits: List[tuple] = []  # (rect, run): the legend's tooltips
         self.show_power = True
         self.show_torque = True
         # without a state (tests, export): set directly
@@ -849,9 +1159,12 @@ class DynoChart(QtWidgets.QWidget):
             p.drawText(QtCore.QPointF(self.width() - w - 2, fm.ascent()), txt)
             sample(self.width() - w - 24, yt, True)
         # legend: a swatch and a name per run
+        self._legend_hits = []
         for run, name, x, row in items:
             x += left
             ly = fm.height() + 4 + row * fm.height()
+            self._legend_hits.append((QtCore.QRectF(
+                x, ly, fm.horizontalAdvance(name) + 16, fm.height()), run))
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(run_colour(run.slot, dark))
             if run.dots:
@@ -987,7 +1300,19 @@ class DynoChart(QtWidgets.QWidget):
                     ev.globalPosition().toPoint(),
                     "%s -- click to open it%s" % (lim.label, (": " + lim.tip) if lim.tip else ""),
                     self)
+        tip = self.legend_tip(ev.position())
+        if tip:
+            QtWidgets.QToolTip.showText(ev.globalPosition().toPoint(), tip, self)
         self.update()
+
+    def legend_tip(self, pos) -> str:
+        """The tooltip of the legend entry at ``pos``: where the run comes
+        from and the hardware it was made on (as the project records it)."""
+        run = next((r for rect, r in self._legend_hits if rect.contains(pos)), None)
+        if run is None:
+            return ""
+        hw = self.state.run_hardware(run.key) if self.state is not None else ""
+        return "\n".join(x for x in (run.label, run.detail, hw) if x)
 
     def leaveEvent(self, _ev):
         self._hover = None
@@ -1848,7 +2173,8 @@ class DynoDialog(QtWidgets.QDialog):
         st = self.state
         whys = {r.key: r.why for r in st.runs}
         sig = tuple((x.key, x.label, x.shown, x.slot, whys.get(x.key, ""),
-                     st.ref_kind == _dy.REF_SOURCE and st.ref_version == x.key)
+                     st.ref_kind == _dy.REF_SOURCE and st.ref_version == x.key,
+                     st.run_hardware(x.key))
                     for x in st.sources)
         if sig == self._runs_sig:
             return
@@ -1865,7 +2191,8 @@ class DynoDialog(QtWidgets.QDialog):
             it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
             it.setCheckState(QtCore.Qt.Checked if x.shown else QtCore.Qt.Unchecked)
             it.setIcon(_swatch(run_colour(1 if is_ref else x.slot, dark)))
-            it.setToolTip(x.detail + ("\n" + why if why else ""))
+            hw = st.run_hardware(x.key)
+            it.setToolTip(x.detail + ("\n" + why if why else "") + ("\n" + hw if hw else ""))
             self.runs_list.addItem(it)
             if cur is not None and cur.key == x.key:
                 self.runs_list.setCurrentItem(it)
@@ -2178,6 +2505,9 @@ class DynoDialog(QtWidgets.QDialog):
                                              if r.dots and r.curve.notes else ""))
             elif r.why:
                 notes.append("%s: not shown, %s." % (r.label, r.why))
+        hw = st.hardware_note() if st is not None else ""
+        if hw:
+            notes.append(hw)
         if len(st.runs) > 1:
             notes.append("Every run is read through the reference's conversion, at "
                          "these conditions, so they compare like for like.")

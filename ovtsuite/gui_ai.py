@@ -777,6 +777,7 @@ if HAVE_QT:
                     "; %s: %s" % s_ for s_ in res.skipped[:5])))
                 continue
             applied_n += 1
+            _record_hardware(ws, q)
             if ws.project_ref is not None and clean and ws.save(tab_only=True):
                 saved_n += 1
             P.resolve(q["id"], "accepted", "applied: %s" % ", ".join(res.applied))
@@ -794,6 +795,27 @@ if HAVE_QT:
                 "it" if applied_n == 1 else "them"))
         st.poll()
         return "\n".join(lines)
+
+    def _record_hardware(ws, q) -> None:
+        """A proposal that sets a calibration up for new hardware (an injector
+        setup) carries it: in a project tab, accepting records it as fitted
+        (ovtsuite.project.hardware), as Tools > Injector setup's Apply does."""
+        hw = q.get("hardware")
+        ref = getattr(ws, "project_ref", None)
+        if not isinstance(hw, dict) or ref is None:
+            return
+        try:
+            from .project import hardware as _hw
+            rec = _hw.record_setup(ref.doc.project, ref.sid, ref.bid, str(hw.get("kind", "")),
+                                   str(hw.get("summary", "")), dict(hw.get("parts") or {}),
+                                   source=_hw.FROM_AI,
+                                   note="AI proposal: %s" % q.get("title", ""))
+            if rec is not None:             # as the Injector setup window does
+                from . import gui_project as _gp
+                _gp.refresh_panel(ws.win)
+                _gp.autosave_soon(ws.win, ref.doc)
+        except Exception:
+            pass
 
     def reject(st, prop, whole_plan=False) -> None:
         end_preview(st)

@@ -39,6 +39,7 @@ class MockEcu:
         self.flash = bytearray(cal if cal is not None else b"\x11" * E.CAL_SIZE)
         self._dl_start = None
         self._dl_pos = 0
+        self.corrupt = []              # absolute addresses of packets sent damaged
 
     # pyserial-ish surface
     def flush(self):
@@ -106,6 +107,9 @@ class MockEcu:
             self._respond([0x8C, 0xF1, 0x10,
                            0x5A, 0x9C, 0x00, 0x28, 0x21, 0x00,
                            0x0C, 0x5E, 0xCF, 0xCF, 0x65, 0x0B]); took(6); return
+        # 1A 9B identification: this ECU does not offer it (7F 1A 12)
+        if b[:5] == bytes([0x82, 0x10, 0xF1, 0x1A, 0x9B]) and len(b) >= 6:
+            self._respond([0x83, 0xF1, 0x10, 0x7F, 0x1A, 0x12]); took(6); return
         # session enter: 82 10 F1 10 <sub> (+cks) or 83 10 F1 10 <sub> <speed> (+cks)
         if b[:4] == bytes([0x82, 0x10, 0xF1, 0x10]) and len(b) >= 6:
             sub = b[4]
@@ -116,7 +120,8 @@ class MockEcu:
         # requestUpload (read): 08 35 18 00 00 00 08 00 00 (+cks)
         if b[:2] == bytes([0x08, 0x35]) and len(b) >= 10:
             self._respond([0x02, 0x75, 0xFF]); took(10)
-            self._up_pos = 0                          # ready to stream on 01 36
+            self._up_pos = ((b[2] << 16) | (b[3] << 8) | b[4]) - E.CAL_START
+            self._up_end = self._up_pos + ((b[6] << 16) | (b[7] << 8) | b[8])
             return
         # transferData read request: 01 36 37 -> emit exactly ONE packet
         if b[:3] == bytes([0x01, 0x36, 0x37]):
@@ -192,7 +197,7 @@ class MockEcu:
     def _emit_read_packet(self):
         # one packet per 01 36 request: full = 00 FF 76 <254> cks; final short =
         # LEN 76 <data> cks (length in the format byte).
-        data = bytes(self.flash)
+        data = bytes(self.flash[:self._up_end])
         pos = self._up_pos
         chunk = data[pos:pos + 254]
         self._up_pos += len(chunk)
@@ -201,7 +206,12 @@ class MockEcu:
             header = bytes([0x00, 0xFF, 0x76])
         else:
             header = bytes([len(chunk) + 1, 0x76])       # counts the SID
-        self.rx += header + chunk + bytes([(_ck(chunk) + _ck(header)) & 0xFF])
+        cks = (_ck(chunk) + _ck(header)) & 0xFF
+        if self.corrupt and self.corrupt[0] == pos + E.CAL_START:
+            # the line drops a bit: one data byte arrives wrong
+            self.corrupt.pop(0)
+            chunk = bytes([chunk[0] ^ 0x10]) + chunk[1:]
+        self.rx += header + chunk + bytes([cks])
 
 
 def _ck(data):
@@ -295,6 +305,21 @@ def test_read_roundtrip_padded_image():
     assert len(img) == E.FULL_SIZE
     assert img[:E.CAL_START] == b"\xFF" * E.CAL_START      # 0xFF pad
     assert img[E.CAL_START:] == cal                        # cal region intact
+
+
+def test_read_rereads_corrupt_packets():
+    # two packets arrive damaged in the single K-line upload, and the first
+    # re-read of one of their 64 KB chunks is damaged again
+    cal = bytes(((i * 7 + 3) & 0xFF) for i in range(E.CAL_SIZE))
+    flash, ecu = _make(bytearray(cal))
+    a, b = E.CAL_START + 254 * 10, E.CAL_START + 254 * 1500
+    ecu.corrupt = [a, b, b - b % 0x10000 + 254 * 3]
+    logs = []
+    flash._log = logs.append
+    img = flash.read_flash(speed="Low", allow_fast=False)
+    assert img[E.CAL_START:] == cal
+    assert sum("Corrupt packet" in m for m in logs) == 3
+    assert not ecu.corrupt
 
 
 def test_write_then_read_roundtrips():
@@ -439,3 +464,124 @@ def test_write_skips_unchanged_block():
     stages = []
     flash_w.write_flash(image, on_stage=stages.append, speed="Low", allow_fast=False)
     assert any("unchanged" in s for s in stages)
+
+
+class _ZeroSigEcu(MockEcu):
+    """An ECU whose 1A 9C carries no erase signature (zeros at data[6:12]) and
+    whose 31 C4 erase wants the six bytes of its 1A 9B identification -- the
+    038906016K of Reference/Logs/SpecialEraseRejected.txt and the MPPS write
+    of the same car (MPPSspecialerasefailuresuccess.log)."""
+
+    SIG = bytes([0x02, 0x80, 0x71, 0x25, 0x38, 0x1D])
+    IDENT_9B = (b"038906016K  " + b"6483" + bytes([0x03, 0x00, 0x00, 0x48]) + SIG
+                + b"R4 2,0L EDC G000SG  ")
+
+    def __init__(self, cal=None):
+        super().__init__(cal)
+        self.erase_sigs = []
+
+    def _consume(self):
+        b = bytes(self.parse)
+        if b[:5] == bytes([0x82, 0x10, 0xF1, 0x1A, 0x9C]) and len(b) >= 6:
+            self._respond([0x8C, 0xF1, 0x10, 0x5A, 0x9C] + [0x00] * 10)
+            del self.parse[:6]; return
+        if b[:5] == bytes([0x82, 0x10, 0xF1, 0x1A, 0x9B]) and len(b) >= 6:
+            data = bytes([0x5A, 0x9B]) + self.IDENT_9B
+            self._respond([0x80, 0xF1, 0x10, len(data)] + list(data))
+            del self.parse[:6]; return
+        if b[:3] == bytes([0x0E, 0x31, 0xC4]) and len(b) >= 16:
+            self.erase_sigs.append(b[9:15])
+            if b[9:15] != self.SIG:
+                self._respond([0x7F, 0x31, 0x33])          # securityAccessDenied
+                del self.parse[:16]; return
+        super()._consume()
+
+
+def test_erase_signature_comes_from_1a_9b_when_1a_9c_has_none():
+    ecu = _ZeroSigEcu(bytearray(b"\x22" * E.CAL_SIZE))
+    flash = E.Edc16Flash(_Link(ecu))
+    flash.write_flash(_diff_image(), force_full=True, speed="Low", allow_fast=False)
+    assert ecu.erase_sigs and all(s == _ZeroSigEcu.SIG for s in ecu.erase_sigs)
+    written = bytes(ecu.flash)
+    assert written[0x40000:0x40000 + 0x3E000] == bytes(_diff_image()[0x1C0000:0x1FE000])
+
+
+def test_erase_signature_parser_needs_the_9b_layout():
+    reply = bytes([0x5A, 0x9B]) + _ZeroSigEcu.IDENT_9B
+    assert E.erase_sig_from_ident_9b(reply) == _ZeroSigEcu.SIG
+    # an ECU that writes with its 9C signature has a different 9B field: only
+    # used when 9C gives zeros
+    assert E.erase_sig_from_ident_9b(reply[:20]) is None             # too short
+    assert E.erase_sig_from_ident_9b(bytes([0x5A, 0x9B]) + b"\x01" * 40) is None
+    zero = bytearray(reply); zero[22:28] = bytes(6)
+    assert E.erase_sig_from_ident_9b(bytes(zero)) is None
+
+
+class _WantsDefaultSig(_ZeroSigEcu):
+    """An untested ECU: a non-zero 1A 9C signature it nevertheless refuses,
+    taking only another candidate -- here the 9B one. No part number is
+    involved; the refusal itself sends the flasher to the next candidate."""
+
+    def _consume(self):
+        b = bytes(self.parse)
+        if b[:5] == bytes([0x82, 0x10, 0xF1, 0x1A, 0x9C]) and len(b) >= 6:
+            self._respond([0x8C, 0xF1, 0x10, 0x5A, 0x9C, 0x00, 0x12, 0x11, 0x00,
+                           0x00, 0x01, 0x02, 0x03, 0x04, 0x05])
+            del self.parse[:6]; return
+        super()._consume()
+
+
+def test_a_refused_erase_signature_is_retried_with_the_other_candidate():
+    ecu = _WantsDefaultSig(bytearray(bytes([0x22]) * E.CAL_SIZE))
+    flash = E.Edc16Flash(_Link(ecu))
+    flash.write_flash(_diff_image(), force_full=True, speed="Low", allow_fast=False)
+    # the 9C one first, refused once; the 9B one from then on, every block
+    assert ecu.erase_sigs[0] == bytes([0x00, 0x01, 0x02, 0x03, 0x04, 0x05])
+    assert all(s == _ZeroSigEcu.SIG for s in ecu.erase_sigs[1:]) and len(ecu.erase_sigs) >= 3
+    written = bytes(ecu.flash)
+    assert written[0x40000:0x40000 + 0x3E000] == bytes(_diff_image()[0x1C0000:0x1FE000])
+
+
+class _RefusesBlockEcu(MockEcu):
+    """An ECU that refuses every written block: its checksum routine answers
+    7F 33 22 (conditionsNotCorrect) on every poll -- what a 038906016K did
+    to an image whose content digest was stale
+    (Reference/Logs/EDC16Checksumfailwritefail.txt)."""
+
+    def __init__(self, cal=None, stop_after=None):
+        super().__init__(cal)
+        self.polls = 0
+        self.stop_after = stop_after
+        self.stop = False
+
+    def _consume(self):
+        b = bytes(self.parse)
+        if b[:3] == bytes([0x02, 0x33, 0xC5]) and len(b) >= 4 and self._dl_start is not None:
+            self.polls += 1
+            if self.stop_after is not None and self.polls >= self.stop_after:
+                self.stop = True
+            self._respond([0x7F, 0x33, 0x22])
+            del self.parse[:4]; return
+        super()._consume()
+
+
+def test_a_refused_block_fails_the_write_with_the_reason(monkeypatch):
+    """7F 33 22 on every poll after a block is written is the ECU refusing
+    it: the write stops with the reason, after VERIFY_REFUSED_AFTER_S of
+    them -- not a minute of polling per block and a dead session after."""
+    monkeypatch.setattr(E, "VERIFY_REFUSED_AFTER_S", 0.5)
+    ecu = _RefusesBlockEcu(bytearray(b"\x22" * E.CAL_SIZE))
+    flash = E.Edc16Flash(_Link(ecu))
+    with pytest.raises(E.KLineError) as ei:
+        flash.write_flash(_diff_image(), force_full=True, speed="Low", allow_fast=False)
+    msg = str(ei.value)
+    assert "rejected the block" in msg and "checksums" in msg and "7F 33 22" in msg
+
+
+def test_cancel_stops_a_write_waiting_on_the_checksum_routine(monkeypatch):
+    monkeypatch.setattr(E, "VERIFY_REFUSED_AFTER_S", 60.0)
+    ecu = _RefusesBlockEcu(bytearray(b"\x22" * E.CAL_SIZE), stop_after=3)
+    flash = E.Edc16Flash(_Link(ecu))
+    with pytest.raises(E.StopRequested):
+        flash.write_flash(_diff_image(), force_full=True, speed="Low", allow_fast=False,
+                          is_stop=lambda: ecu.stop)

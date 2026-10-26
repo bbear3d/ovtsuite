@@ -22,7 +22,7 @@ the same ECU, where every table sits at another address. The same window has
 the flasher, a two-ECU data logger, a CAN/K-line bus sniffer, an ECU simulator
 and an AI assistant that proposes changes but never makes them on its own.
 
-> **Status:** active development, version 0.4.9. The base app is free and open
+> **Status:** active development, version 0.5.0. The base app is free and open
 > source. Editing and checksum support for each kind of control unit comes from
 > a **module**. See [Supported control units](#supported-control-units) and
 > [Tested on real hardware](#tested-on-real-hardware) before you trust a write
@@ -32,10 +32,10 @@ and an AI assistant that proposes changes but never makes them on its own.
 
 | | Windows | Linux / any platform |
 |---|---|---|
-| **OVT-Suite app 0.4.9** | [OVTSuite-Base-0.4.9-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/OVTSuite-Base-0.4.9-setup.exe) | [ovtsuite_0.4.9-1_amd64.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite_0.4.9-1_amd64.deb), [ovtsuite-0.4.9-1.x86_64.rpm](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite-0.4.9-1.x86_64.rpm) |
-| **Bosch EDC16 module 1.0.13** (free) | [OVTSuite-BoschEDC16-1.0.13-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/OVTSuite-BoschEDC16-1.0.13-setup.exe) | [edc16-1.0.13.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/edc16-1.0.13.ovtmod), [ovtsuite-module-edc16_1.0.13-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite-module-edc16_1.0.13-1_all.deb) |
-| **Bosch EDC15 module 1.0.12** (free) | [OVTSuite-BoschEDC15-1.0.12-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/OVTSuite-BoschEDC15-1.0.12-setup.exe) | [edc15-1.0.12.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/edc15-1.0.12.ovtmod), [ovtsuite-module-edc15_1.0.12-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite-module-edc15_1.0.12-1_all.deb) |
-| **ZF 5HP module 0.1.0** (free, open source) | [OVTSuite-ZF5HP-0.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/OVTSuite-ZF5HP-0.1.0-setup.exe) | [zf5hp-0.1.0.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/zf5hp-0.1.0.ovtmod), [ovtsuite-module-zf5hp_0.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite-module-zf5hp_0.1.0-1_all.deb) |
+| **OVT-Suite app 0.5.0** | [OVTSuite-Base-0.5.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/OVTSuite-Base-0.5.0-setup.exe) | [ovtsuite_0.5.0-1_amd64.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite_0.5.0-1_amd64.deb), [ovtsuite-0.5.0-1.x86_64.rpm](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite-0.5.0-1.x86_64.rpm) |
+| **Bosch EDC16 module 1.0.15** (free) | [OVTSuite-BoschEDC16-1.0.15-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/OVTSuite-BoschEDC16-1.0.15-setup.exe) | [edc16-1.0.15.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/edc16-1.0.15.ovtmod), [ovtsuite-module-edc16_1.0.15-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite-module-edc16_1.0.15-1_all.deb) |
+| **Bosch EDC15 module 1.0.13** (free) | [OVTSuite-BoschEDC15-1.0.13-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/OVTSuite-BoschEDC15-1.0.13-setup.exe) | [edc15-1.0.13.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/edc15-1.0.13.ovtmod), [ovtsuite-module-edc15_1.0.13-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite-module-edc15_1.0.13-1_all.deb) |
+| **ZF 5HP module 0.1.0** (free, open source) | [OVTSuite-ZF5HP-0.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/OVTSuite-ZF5HP-0.1.0-setup.exe) | [zf5hp-0.1.0.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/zf5hp-0.1.0.ovtmod), [ovtsuite-module-zf5hp_0.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite-module-zf5hp_0.1.0-1_all.deb) |
 | **VDO Cluster module** (open source) | [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) | [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) |
 
 Install the app first, then the modules you need. Every release is on the
@@ -143,10 +143,10 @@ checksum correction and that unit's tools.
 
 | Module | Control units | What the module adds | Version | Licence |
 |---|---|---|---|---|
-| **Bosch EDC16** | EDC16U31 / U34 (2 MB) VW PD TDI ECUs. Families P350 (038906016…, 038997016…), P475 and P447 (03G906016…), P529, P213. EDC16U1 (1 MB) is untested and may not be compatible. | About 10,000 named parameters per file; all checksums (block/span, prog/boot, header, signatures, digests); MPC and 4 KB EEPROM/immobiliser editor; Tune from logs; `.sgo` / `.dim` round-trip; XDF export | 1.0.13 (stable) | Free, closed source |
-| **Bosch EDC15** | EDC15VM+ (VP37, e.g. 1.9 TDI ALH 038906012…), EDC15P (PD, 038906019…), EDC15M (2.5 V6 TDI, 8E0907401…), and the older MSA15 / EDC15V (256 KB, 028906021…, 038906018…). | Per-dataset parameter tree (manual / automatic); V4.1 checksum chain read from the image's own routine; 512-byte EEPROM editor (immobiliser, SKC, odometer, DSV coding, trims, virginize) | 1.0.12 (stable) | Free, closed source |
-| **ZF 6HP** | 6HP19A (09L/0AT), 6HP26A (09E), 6HP28AF (T04/0B6) TCUs. | Shift points, shift feel, lock-up (TCC), Tiptronic limits, shift programs and state tables; schedules found by structure; Z shown as output, engine or road speed; ZF fault-code editor; shift torque report; CRC-16 checksum; Stage 1 auto-tune (command line) | 1.0.11 (stable) | Closed source |
-| **ZF 8HP** | Gen1 (8K0/8K1/8R0927158…) and Gen2 VW-group TCUs. | Every parameter's location and shape taken from the calibration's pointer table; shift programs and converter-clutch tables; per-block CRC-32 | 0.1.8 (early) | Closed source |
+| **Bosch EDC16** | EDC16U31 / U34 (2 MB) VW PD TDI ECUs. Families P350 (038906016…, 038997016…), P475 and P447 (03G906016…), P529, P213. EDC16U1 (1 MB) is untested and may not be compatible. | About 10,000 named parameters per file; all checksums (block/span, prog/boot, header, signatures, digests); MPC and 4 KB EEPROM/immobiliser editor; feature switches; injector setup and end of injection (PD); dyno chart; optimised logging blocks; Tune from logs; `.sgo` / `.dim` round-trip; XDF export | 1.0.15 (stable) | Free, closed source |
+| **Bosch EDC15** | EDC15VM+ (VP37, e.g. 1.9 TDI ALH 038906012…), EDC15P (PD, 038906019…), EDC15M (2.5 V6 TDI, 8E0907401…), and the older MSA15 / EDC15V (256 KB, 028906021…, 038906018…). | Per-dataset parameter tree (manual / automatic); V4.1 checksum chain read from the image's own routine; 512-byte EEPROM editor (immobiliser, SKC, odometer, DSV coding, trims, virginize); feature switches; injector setup (PD injectors, VE pump head and nozzles) and end of injection (PD); dyno chart; optimised logging blocks | 1.0.13 (stable) | Free, closed source |
+| **ZF 6HP** | 6HP19A (09L/0AT), 6HP26A (09E), 6HP28AF (T04/0B6) TCUs. | Shift points, shift feel, lock-up (TCC), Tiptronic limits, shift programs and state tables; schedules found by structure; Z shown as output, engine or road speed; ZF fault-code editor; shift torque report; full-load shift points from the engine's torque and part-load strategy with log replay; CRC-16 checksum; Stage 1 auto-tune (command line) | 1.0.12 (stable) | Closed source |
+| **ZF 8HP** | Gen1 (8K0/8K1/8R0927158…) and Gen2 VW-group TCUs. | Every parameter's location and shape taken from the calibration's pointer table; shift programs and converter-clutch tables; per-block CRC-32 | 0.1.9 (early) | Closed source |
 | **ZF 5HP** | ZF 5HP19 (VW 01V) and 5HP24 (01L) TCUs. | Identification, CRC-16 checksum, the calibration's tables found by their structure; byte-swapped bench reads; K-line flashing (experimental, off) | 0.1.0 (early) | Free, open source ([bbear3d/ovtsuite-zf5hp](https://github.com/bbear3d/ovtsuite-zf5hp)) |
 | **Aisin TR-xx** | TR-60SN (09D) and TR-80SD (0C8 / 09G). | Identification and the 09D checksum. No parameter tree yet. | 0.1.5 (early) | Closed source |
 | **VDO Cluster** | Mk4-era VDO clusters: VWK501, VWK503, VMMJ08 (verified); VQMJ07, K5MJ07 (extrapolated). | 2 KB EEPROM definitions (K-value, needle maps, coding, SKC); gauge checksum; needle / LED / DSG-needle sweep patches for the exact ROM build; speed and distance correction | 0.1.8 (early) | MPL-2.0, [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) |
@@ -156,8 +156,8 @@ checksum correction and that unit's tools.
 
 | Unit | Link | Read | Write |
 |---|---|---|---|
-| EDC16 | K-line or CAN (TP 2.0) | Calibration; full read (2 MB + MPC) | Calibration; boot, program and MPC blocks individually |
-| EDC15 | K-line | 512 KB flash, EEPROM, full backup | Changed sectors, EEPROM, flash + EEPROM; boot mode on the bench |
+| EDC16 | K-line or CAN (TP 2.0), on a K-line cable or J2534 | Calibration; full read (2 MB + MPC) | Calibration; boot, program and MPC blocks individually |
+| EDC15 | K-line, on a K-line cable or J2534 | 512 KB flash, EEPROM, flash + EEPROM together | Changed sectors, EEPROM, flash + EEPROM; boot mode on the bench |
 | ZF 6HP19 / 6HP26 | KWP2000 over TP 2.0 | Calibration window | Calibration areas |
 | ZF 6HP28 | UDS over ISO-TP | Calibration | Calibration, or program + calibration |
 | Audi 4F/4L Climatronic | CAN | Not possible over OBD | From a factory `.sgo`; changed sectors only |
@@ -171,28 +171,33 @@ The ZF 8HP and the Aisin TR-80SD have no flasher entry yet.
 
 ## Tested on real hardware
 
-The app has a large automated test suite: about 2,600 tests across the base app
-and modules, 1,356 of them in this repository. Those tests can't stand in for a
-car, though. This is what has been done on **real control units**, in cars or on
+The app has a large automated test suite: about 3,700 tests across the base app
+and modules. Those tests can't stand in for a car, though. This is what has been done on **real control units**, in cars or on
 the bench:
 
 | Unit / feature | Real hardware |
 |---|---|
-| Bosch EDC16 (U31/U34): read and write | ✅ Tested |
+| Bosch EDC16 (U31/U34): read and write over K-line | ✅ Tested |
+| Bosch EDC16 (U31/U34): read and write over CAN (TP 2.0, J2534) | ✅ Tested end to end |
 | Bosch EDC16U1 | ⚠️ Untested; may not be compatible |
-| Bosch EDC15 (VM+/P): read and write | ✅ Tested |
+| Bosch EDC15 (VM+/P): read and write, K-line cable | ✅ Tested |
+| Bosch EDC15 (VM+/P): read and write over J2534 K-line (Scanmatik 2 PRO) | ✅ Tested |
 | ZF 6HP19 / 6HP26: read and write | ✅ Tested |
 | ZF 6HP28: read and write | ✅ Tested |
 | Audi 4F Climatronic, post-facelift (2009+) C6: write | ✅ Tested (the unit can't be read over OBD) |
 | Climatronic on a pre-facelift C6 or a Q7 (4L) | ⚠️ Not tested |
 | EDC16 data logging | ✅ Tested |
+| EDC15 data logging, K-line cable and J2534 | ✅ Tested |
+| EDC15 / EDC16 measuring-block editing (reassigning blocks) | ✅ Tested |
 | ZF 6HP19 logging, and dual engine + gearbox logging | ✅ Tested |
-| J2534 on Windows | ✅ Tested |
+| J2534 on Windows (Tactrix OpenPort 2.0; Scanmatik 2 PRO through the 32-bit bridge) | ✅ Tested |
 | Tactrix OpenPort 2.0 direct over USB (Linux) | ⚠️ Not yet confirmed |
 | VDO cluster EEPROM read/write | ⚠️ Not yet tested on hardware |
 | Aisin 09D read | ⚠️ Not yet tested on hardware (write is disabled) |
 | C6 ESP8 ABS and C6 CAN cluster dumps | ⚠️ Not yet tested on hardware |
 | EDC15 / EDC16 fault-code (DTC) editor | ⚠️ Alpha: switching codes off is not yet confirmed working |
+| Fault code report (status decoding worked out from the EDC15 / EDC16 firmware) | ⚠️ Not yet checked against a car's codes |
+| Feature switches, injector setup, end of injection, optimised logging blocks | ⚠️ File changes only, not yet confirmed on a car |
 | ZF 8HP, Aisin TR-80SD | No flasher; file editing only |
 | macOS | ⚠️ Untested |
 
@@ -282,6 +287,13 @@ program blocks.
 - **No module needed:** reading and writing work without one. A module is
   needed only to correct checksums.
 - **Fast K-line:** EDC16 K-line runs at up to 244,898 baud on an FTDI cable.
+- **J2534 for both ECUs:** EDC15 and EDC16 read and write over a J2534
+  device's K-line as well as a KKL cable, and EDC16 also over CAN (TP 2.0).
+  The CAN write paces itself from the timing the ECU itself advertises
+  instead of a fixed safe gap.
+- **Fitted hardware warning:** before a write, the flasher says if the
+  injectors or pump recorded for the version you are writing differ from what
+  the project records as fitted to the car.
 - **Automatic gearbox protocol:** the ZF 6HP transport (TP 2.0 or UDS) is
   chosen for you, and can be overridden.
 - **Tools for unusual cases:**
@@ -302,15 +314,30 @@ program blocks.
   measuring-block map, and the 6HP19 has a built-in catalogue.
 - **Presets:** 8 engine and 8 gearbox presets. Each picks the fewest
   measuring blocks that cover what an analysis needs and comes with driving
-  instructions.
+  instructions. Your own presets (save the ticked cells, then edit, rename or
+  delete them) sit beside them, per controller.
+- **Optimised logging blocks** (EDC15 / EDC16): **Tools > Build logging
+  blocks...** lays the file's measuring blocks out so each preset reads as
+  few blocks as possible. Write the file to the ECU and the presets log
+  faster. Every change is one undo step and can be removed again.
+- **Live rate:** the logger shows how many readings a second it gets while
+  connected, browsing or logging.
 - **Dual logging:** engine on K-line and gearbox on CAN at the same time, on
   one clock.
 - **Live view and connection:** a live chart, keep-alive while paused, and
   automatic reconnect.
 - **Log files:** logs are kept in the project, and VCDS CSV logs can be read
   and exported.
-- **Fault codes:** EDC15/EDC16 fault codes can be read and cleared. Stored
-  codes are highlighted in the DTC editor (alpha).
+- **Fault codes:** EDC15/EDC16 fault codes can be read and cleared. Each read
+  opens a **fault code report**:
+  - codes, P-codes and descriptions, with the status byte decoded as the
+    ECU builds it (worked out from the EDC15 and EDC16 firmware);
+  - which fault paths in your file can set each code;
+  - what is new or gone since the last read, with every read kept in the
+    project;
+  - web search on a choice of sites, and **Ask AI** for one code or the whole
+    history.
+  Stored codes are highlighted in the DTC editor (alpha).
 
 <p align="center">
   <img src="docs/images/edc16-logtune.png" alt="EDC16 Tune from logs: targets and findings from a set of logs" width="620">
@@ -340,6 +367,10 @@ edit, and the report is saved as text or HTML.
   a whole fault class.
 - **Shift torque report:** compares the torque cut the TCU asked for with
   what the engine delivered.
+- **Full-load and part-load shift points:** full-throttle upshifts set from
+  the torque of the engine ECU in the same project, and an economy / sport
+  strategy for the part-load rows. **Replay** shows what an edit does to fuel
+  and response on the drives you have logged.
 - **ZF 8HP:** shift programs and converter-clutch tables, with the same
   speed views.
 
@@ -363,6 +394,30 @@ edit, and the report is saved as text or HTML.
 
 <br clear="right">
 
+### Engine tools
+
+- **Feature switches** (EDC15 / EDC16): turn functions on and off, such as
+  cruise control, A/C type, EGR, the particulate filter, the wideband O2
+  sensor, the smoke limiter's input, MAP sensors from 1 to 6 bar and the
+  gearbox type (including auto to manual). A function is several values that
+  must change together: the window shows every value, table and fault path
+  first and writes them as one undo step.
+- **Injector setup:**
+  - unit injectors (EDC15P / EDC16): fit other injectors or nozzles. The
+    duration maps, start of injection and the start (cranking) maps are
+    converted so the engine gets the fuel it asks for, from presets or
+    learned from your logs;
+  - VE pump (EDC15 VP37): set the pump voltage map up for a pump head and
+    nozzles, and correct it from logs.
+  What is fitted is recorded in the project, and the dyno, the history and
+  the flasher show it.
+- **End of injection** (EDC15P / EDC16 PD): shows when injection ends,
+  worked out from the start-of-injection and duration tables as the ECU does,
+  and lets you set it.
+- **Dyno chart** (EDC15 / EDC16): the power and torque the calibration asks
+  for at full load, rpm by rpm, against the original or other runs. It
+  follows every edit. It is a calculation, not a measurement.
+
 ### Parameter tools
 
 - **DTC / Fault-Path editor** (EDC15 / EDC16, **alpha**: switching codes off
@@ -371,10 +426,12 @@ edit, and the report is saved as text or HTML.
   - restore all from stock;
   - copy the differences from the comparison;
   - highlight the codes read from the ECU.
-- **EEPROM editor (EDC15 / EDC16):** VIN, immobiliser on/off, SKC, odometer
-  and trims, with checksums corrected. EDC15 can also be virginized.
+- **EEPROM editor (EDC15 / EDC16):** VIN, an immobiliser on/off switch,
+  SKC, odometer and trims, with checksums corrected. EDC15 can also be
+  virginized.
 - **Measuring blocks:** reassign what each block reports, so a log needs
-  fewer blocks and runs faster.
+  fewer blocks and runs faster. Edits apply to every dataset by default, and
+  cells can be copied from the comparison.
 - **Gear ratios and V/N gear recognition:** shown per coding variant, with
   automatic generation from ratios and tyre size.
 - **VSS pulse settings:** tyre-size rescaling and correction against GPS
@@ -439,6 +496,11 @@ edit, and the report is saved as text or HTML.
 
 ### And also
 
+- **Converter** (**Tools > Converter**, or the standalone **OVT
+  Converter**): definitions between TunerPro XDF, ASAP2 A2L, Bosch DAMOS,
+  WinOLS projects and map packs, EcuFlash / RomRaider XML and OVT-Suite's own
+  formats; binaries between BIN, Intel HEX and Motorola S-record; calibration
+  values as DCM and CDFX. No project or binary needs to be open.
 - A built-in help browser: F1 opens the page for whatever window you're in.
 - Remappable shortcuts, a customisable toolbar, and light/dark themes.
 - Standalone **OVT Flasher**, **OVT Logger**, **OVT Sniffer** and
@@ -486,9 +548,9 @@ installer, or from **Tools > Modules... > Install from file**.
 
 | Module | Windows | Linux, or any platform |
 |---|---|---|
-| Bosch EDC16 1.0.13 (free) | [OVTSuite-BoschEDC16-1.0.13-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/OVTSuite-BoschEDC16-1.0.13-setup.exe) | [edc16-1.0.13.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/edc16-1.0.13.ovtmod), [ovtsuite-module-edc16_1.0.13-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite-module-edc16_1.0.13-1_all.deb) |
-| Bosch EDC15 1.0.12 (free) | [OVTSuite-BoschEDC15-1.0.12-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/OVTSuite-BoschEDC15-1.0.12-setup.exe) | [edc15-1.0.12.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/edc15-1.0.12.ovtmod), [ovtsuite-module-edc15_1.0.12-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite-module-edc15_1.0.12-1_all.deb) |
-| ZF 5HP 0.1.0 (free, open source) | [OVTSuite-ZF5HP-0.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/OVTSuite-ZF5HP-0.1.0-setup.exe) | [zf5hp-0.1.0.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/zf5hp-0.1.0.ovtmod), [ovtsuite-module-zf5hp_0.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.4.9/ovtsuite-module-zf5hp_0.1.0-1_all.deb) |
+| Bosch EDC16 1.0.15 (free) | [OVTSuite-BoschEDC16-1.0.15-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/OVTSuite-BoschEDC16-1.0.15-setup.exe) | [edc16-1.0.15.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/edc16-1.0.15.ovtmod), [ovtsuite-module-edc16_1.0.15-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite-module-edc16_1.0.15-1_all.deb) |
+| Bosch EDC15 1.0.13 (free) | [OVTSuite-BoschEDC15-1.0.13-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/OVTSuite-BoschEDC15-1.0.13-setup.exe) | [edc15-1.0.13.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/edc15-1.0.13.ovtmod), [ovtsuite-module-edc15_1.0.13-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite-module-edc15_1.0.13-1_all.deb) |
+| ZF 5HP 0.1.0 (free, open source) | [OVTSuite-ZF5HP-0.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/OVTSuite-ZF5HP-0.1.0-setup.exe) | [zf5hp-0.1.0.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/zf5hp-0.1.0.ovtmod), [ovtsuite-module-zf5hp_0.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.0/ovtsuite-module-zf5hp_0.1.0-1_all.deb) |
 | VDO Cluster (open source) | Build it from [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) | Same |
 
 A `.ovtmod` file works on every platform: open it, or use **Tools > Modules...

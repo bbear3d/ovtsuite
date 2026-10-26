@@ -54,7 +54,7 @@ among others.
   project (or the raw 512 bytes).
 - **Write EEPROM...** asks for a 512-byte EEPROM file (`.bin`, `.eep`,
   `.rom`) and writes it. When an EEPROM is already loaded — the set in the
-  active tab holds one (a full backup, an EEPROM read, an imported `.edc15`
+  active tab holds one (a **Read flash + EEPROM**, an EEPROM read, an imported `.edc15`
   that carries one), or it was opened from the EEPROM editor — the button
   reads **Write EEPROM** and writes that one instead.
 
@@ -66,9 +66,9 @@ compared, and the result is shown decoded.
 > An EEPROM from another ECU or car carries that car's immobiliser data.
 > Check the values in the confirmation before you answer **Yes**.
 
-## Full backup
+## Read flash + EEPROM
 
-**Full backup** reads the flash, waits 10 seconds while the ECU restarts,
+**Read flash + EEPROM** reads the flash, waits 10 seconds while the ECU restarts,
 then reads the EEPROM, and puts both into a project as one set — the flash
 for editing, the EEPROM held for the EEPROM editor. In the OVT Flasher it is
 saved as an `.ovt` project by default; save it that way, because the other
@@ -77,7 +77,7 @@ choice, a raw `.bin`, keeps only the flash.
 The app never writes KWHack's `.edc15bak` backups. It still imports them —
 see [Files and backups](../modules/edc15/backups.md).
 
-When the set in the active tab holds an EEPROM — a full backup, an EEPROM
+When the set in the active tab holds an EEPROM — a **Read flash + EEPROM**, an EEPROM
 read, an imported `.edc15` or `.edc15bak` (in the OVT Flasher, the file
 chosen with **Open file...**) — **Write flash + EEPROM** appears: it writes
 the changed flash sectors, waits 10 seconds, then writes the EEPROM.
@@ -92,7 +92,7 @@ all:
 1. Power the ECU up **with its boot pin bridged**. Where that pin is depends
    on the ECU's board; this help does not cover opening the ECU.
 2. Tick **Boot mode**. **Speed**, **Force full write**, the EEPROM buttons,
-   **Full backup** and **Read internal ROM** are greyed out — boot mode
+   **Read flash + EEPROM** and **Read internal ROM** are greyed out — boot mode
    cannot reach the EEPROM.
 3. **Read flash** reads the whole chip. **Write flash** erases the **whole
    chip** and then writes every block; the confirmation says so.
@@ -103,7 +103,7 @@ setting is never hidden. Untick it to go back to normal reads and writes.
 ## Through a head unit
 
 With a paired head unit, **Run on the head unit** is offered for flash reads
-and writes, EEPROM reads and writes, the full backup, **Write flash +
+and writes, EEPROM reads and writes, **Read flash + EEPROM**, **Write flash +
 EEPROM** and boot mode. See [Head units](head-unit.md).
 
 ## See also

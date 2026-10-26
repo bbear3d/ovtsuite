@@ -107,7 +107,7 @@ def test_vag_codes_p475_read_as_stored():
     dt = DtcTable(TunerSession(kn))
     afs = dt.paths.get("AFSCD_SRCAirm")
     assert afs.vag_codes == [0x0103, 0x0102]
-    assert afs.vag_str == "00259, 00258"
+    assert afs.vag_str == "000259, 000258"           # six digits, as VCDS shows them
     assert dt.paths["ACCD"].vag_codes == [5719, 5718, 1605, 5636]
     q = DtcTable(TunerSession(os.path.join(BIN, "038906016Q.Bin")))
     assert q.paths["AFSCD_SRCAirm"].vag_codes[:2] == [16487, 16486]

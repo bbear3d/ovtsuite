@@ -265,7 +265,8 @@ def register(reg: Registry) -> None:
         return {"handle": handle, "rows": out}
 
     @reg.tool("project_info",
-              "For a project set: the project's sets, members, branches and vehicle details. VIN and immobiliser "
+              "For a project set: the project's sets, members, branches, vehicle details and the "
+              "hardware recorded as fitted (pump, nozzles, injectors, from when). VIN and immobiliser "
               "data are never returned.",
               {"type": "object", "required": ["handle"], "properties": {"handle": H}},
               title="Project info")
@@ -275,6 +276,7 @@ def register(reg: Registry) -> None:
             raise ToolError("%s is a plain file, not a project set" % handle)
         p = t.project
         info = {k: v for k, v in (p.info or {}).items() if not _REDACT.search(k)}
+        from ..project import hardware as _hw
         sets = []
         for s in p.sets:
             sets.append({
@@ -283,7 +285,17 @@ def register(reg: Registry) -> None:
                 "active_branch": s.active.name if s.active else None,
                 "branches": [{"name": b.name,
                               "head": (s.checkpoint(b.head).label if s.checkpoint(b.head) else ""),
-                              "checkpoints": len(s.lineage(b.head))} for b in s.branches]})
+                              "checkpoints": len(s.lineage(b.head)),
+                              # the hardware the branch head is calibrated for
+                              "hardware_set_up_for": [
+                                  r.summary for r in _hw.for_checkpoint(p, s.id, b.head)]
+                              or None} for b in s.branches],
+                # what is fitted to the car, newest last (Tools > Injector setup)
+                "fitted_hardware": [{"part": r.kind_label, "what": r.summary,
+                                     "parts": r.parts or None, "fitted": r.since or None,
+                                     "describe": _hw.describe(r, p, s.id),
+                                     "note": r.note or None}
+                                    for r in _hw.records(p, s.id)] or None})
         return {"project": p.name, "info": info, "sets": sets,
                 "logs": len(p.logs), "attachments": len(p.attachments),
                 "patches": len(p.patches)}
@@ -739,6 +751,8 @@ def register(reg: Registry) -> None:
     # ------------------------------------------------------------ injection
     from . import eoi_tools
     eoi_tools.register(reg)
+    from . import injector_tools
+    injector_tools.register(reg)
 
     # ------------------------------------------------------------ gearbox
     from . import gearbox_tools

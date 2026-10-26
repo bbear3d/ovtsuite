@@ -63,6 +63,9 @@ class Source:
     cid: str = ""
     data: Optional[bytes] = None     # PINNED: the bytes as they were
     log_id: str = ""                 # LOG kept in a project (with path)
+    #: PINNED: the hardware this file had when pinned (gui_dyno; None = not
+    #: known then -- worked out from the pinned bytes' maps)
+    hardware: object = None
 
     def to_dict(self) -> Optional[dict]:
         """What a project keeps of it (None for one that does not last)."""
@@ -106,14 +109,34 @@ class Resolver:
         self._cache: Dict[str, Tuple[object, object, str]] = {}
         self._projects: Dict[str, Tuple[float, object]] = {}
         self._runs: Dict[str, Tuple[object, list]] = {}
+        #: when each LOG source was recorded (ISO text, "" = not known)
+        self._recorded: Dict[str, str] = {}
+        #: the ECU ident each LOG source records ("" = none)
+        self._identity: Dict[str, str] = {}
 
     def clear(self):
         self._cache.clear()
         self._runs.clear()
+        self._recorded.clear()
+        self._identity.clear()
 
     def forget(self, key: str):
         self._cache.pop(key, None)
         self._runs.pop(key, None)
+        self._recorded.pop(key, None)
+        self._identity.pop(key, None)
+
+    def recorded(self, src: Source) -> str:
+        """When the LOG source ``src`` was recorded, as the log's own first
+        time stamp says (ISO text, the project's form) -- "" when not known
+        (not read yet, or a log with no date in it). Read by :meth:`runs`."""
+        return self._recorded.get(src.key, "")
+
+    def identity(self, src: Source) -> str:
+        """The ECU ident the LOG source ``src`` records (a VCDS-layout log:
+        the ident the ECU sent on connect) -- "" when it has none, or it is
+        not read yet. Read by :meth:`runs`."""
+        return self._identity.get(src.key, "")
 
     # -- live state, for change tracking ------------------------------------
     @staticmethod
@@ -159,6 +182,16 @@ class Resolver:
         if src.kind == PINNED:
             return _dy.session_of(src.data, primary), ""
         if src.kind == FILE:
+            if is_project_file(src.path):
+                # an .ovt project: its set's branch head, read from the file
+                # (Project.load reads it whole and closes it: nothing is
+                # kept open or locked)
+                proj = self.project(src.path, win)
+                sid, bid = project_file_set(proj, primary)
+                if not sid:
+                    return None, "the project has no binary"
+                return self._project_session(Source(PROJECT, src.label, path=src.path,
+                                                    sid=sid, bid=bid), primary, win)
             from .session import TunerSession
             return TunerSession(src.path), ""
         if src.kind == PROJECT:
@@ -215,27 +248,83 @@ class Resolver:
             return hit[1], ""
         try:
             path = src.path
+            latest = ""             # it was recorded before this, at the latest
             if src.log_id:
                 proj = self.project(src.path, win)
                 data = proj.log_bytes(src.log_id)
                 a = next((x for x in proj.logs if x.id == src.log_id), None)
+                latest = getattr(a, "added", "") or ""
                 d = tempfile.mkdtemp(prefix="ovt-dyno-log-")
                 path = os.path.join(d, os.path.basename(getattr(a, "filename", "")
                                                         or "log.csv"))
                 with open(path, "wb") as fh:
                     fh.write(data)
+            else:
+                latest = time.strftime("%Y-%m-%dT%H:%M:%S",
+                                       time.localtime(os.path.getmtime(path) + 1))
             namer = None
             try:
                 from .datalog.channels import ChannelNamer
                 namer = ChannelNamer(primary)
             except Exception:
                 namer = None
-            from .logtune.samples import runs_from_paths
-            runs = runs_from_paths([path], namer)
+            from .datalog import logfile as _lf
+            from .logtune.samples import run_from_log
+            log = _lf.load(path)
+            runs = [run_from_log(log, namer, os.path.basename(path))]
         except Exception as ex:
             return [], str(ex) or type(ex).__name__
         self._runs[src.key] = (st, runs)
+        self._recorded[src.key] = _recorded_at(log, latest)
+        self._identity[src.key] = (getattr(log, "identity", "") or "").strip()
         return runs, ""
+
+
+def is_project_file(path: str) -> bool:
+    """Is the file at ``path`` an OVT project (.ovt), by its content?"""
+    if not path:
+        return False
+    try:
+        from .project.archive import is_project
+        return is_project(path)
+    except Exception:
+        return False
+
+
+def project_file_set(proj, primary=None) -> Tuple[str, str]:
+    """``(set id, branch id)`` a project file added as a run shows: the set
+    of the tab's platform (else the first with a binary), its active branch
+    -- ``("", "")`` when no set has one."""
+    from .project import sessionbridge as _sb
+    sets = [s for s in proj.sets if _sb._main_member(proj, s.id) is not None]
+    plat = getattr(primary, "platform", "") or ""
+    s = next((x for x in sets if plat and x.platform == plat), sets[0] if sets else None)
+    if s is None:
+        return "", ""
+    b = s.active
+    return s.id, (b.id if b is not None else "")
+
+
+def open_projects(win) -> List[object]:
+    """The projects open in window ``win`` (saved to a file or not)."""
+    try:
+        from . import gui_project as _gp
+        return [d.project for d in _gp.docs(win)] if win is not None else []
+    except Exception:
+        return []
+
+
+def _recorded_at(log, latest: str = "") -> str:
+    """The log's first time stamp as ISO text; "" when it has none, or when
+    it is later than ``latest`` (when the log was added to the project, or
+    its file written) -- a log with no date of its own is stamped with the
+    time it was read, which is not when it was recorded."""
+    stamps = getattr(log, "stamps", None) or []
+    try:
+        when = stamps[0].strftime("%Y-%m-%dT%H:%M:%S")
+    except (AttributeError, IndexError, ValueError):
+        return ""
+    return "" if latest and when > latest else when
 
 
 def _open_doc(win, path):
@@ -326,5 +415,6 @@ def make_tab(t) -> Source:
 
 __all__ = ["Source", "Resolver", "VERSION", "TAB", "PROJECT", "FILE", "PINNED",
            "LOG", "LASTING", "MAX_SOURCES", "free_slot", "tab_choices",
-           "project_choices", "log_choices", "branch_versions",
+           "project_choices", "log_choices", "branch_versions", "is_project_file",
+           "project_file_set", "open_projects",
            "checkpoint_label", "make_pin", "make_tab"]

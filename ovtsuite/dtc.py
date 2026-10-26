@@ -58,9 +58,13 @@ def decode_sae(raw: Optional[int]) -> str:
     return "%s%d%03X" % (letter, d1, raw & 0x0FFF)
 
 
-def vag_text(code: Optional[int]) -> str:
-    """A VAG fault number as a scan tool shows it: minimum five digits."""
-    return "%05d" % code if code else ""
+def vag_text(code: Optional[int], encoding: str = "") -> str:
+    """A VAG fault number as a scan tool shows it: minimum five digits, or
+    six for a file whose paths store SAE code words (``encoding`` "sae":
+    VCDS writes P0103's word as 000259, see :mod:`ovtsuite.dtc_report`)."""
+    if not code:
+        return ""
+    return ("%06d" if encoding == "sae" else "%05d") % code
 
 
 def code_forms(pcode: str) -> List[str]:
@@ -186,6 +190,9 @@ class FaultPath:
     fmk: int = 0                     # hiding-condition selector
     types: List[FaultType] = field(default_factory=list)
     _orig_class: Optional[int] = None   # remembered before disabling
+    #: how the file stores the codes ("vag" 5-digit numbers, "sae" code
+    #: words: shown six digits, as VCDS does; "" not known)
+    encoding: str = ""
     #: the class a path had before a lamp was switched off, by lamp
     _lamp_class: Dict[str, int] = field(default_factory=dict)
 
@@ -232,7 +239,7 @@ class FaultPath:
     def vag_str(self) -> str:
         """The VAG fault number(s) as a scan tool shows them, '-' if none."""
         v = self.vag_codes
-        return ", ".join(vag_text(c) for c in v) if v else "-"
+        return ", ".join(vag_text(c, self.encoding) for c in v) if v else "-"
 
     @property
     def pcode_str(self) -> str:
@@ -278,7 +285,7 @@ class FaultPath:
                 continue
             bits = []
             if t.vag:
-                bits.append("VAG %s%s" % (vag_text(t.vag),
+                bits.append("VAG %s%s" % (vag_text(t.vag, self.encoding),
                                           " (%s)" % t.vag_pcode if t.vag_pcode
                                           and t.vag_pcode != t.pcode else ""))
                 other = [f for f in code_forms(t.vag_pcode)
@@ -302,13 +309,14 @@ class FaultPath:
                 bits.append(t.pcode)
                 bits += code_forms(t.pcode)
             if t.vag:
-                bits += [vag_text(t.vag), str(t.vag), "0x%04x" % t.vag,
-                         t.vag_pcode]
+                bits += [vag_text(t.vag), vag_text(t.vag, self.encoding),
+                         str(t.vag), "0x%04x" % t.vag, t.vag_pcode]
                 bits += code_forms(t.vag_pcode)
             elif t.cdk_raw:
                 # no customer code: the ECU reports the path's own number
                 # (33000 + n, or n) -- what a scan tool then shows
-                bits += [vag_text(t.cdk_raw), str(t.cdk_raw)]
+                bits += [vag_text(t.cdk_raw), vag_text(t.cdk_raw, self.encoding),
+                         str(t.cdk_raw)]
             if t.used:
                 bits.append(t.text)
         return " ".join(b for b in bits if b).lower()
@@ -427,7 +435,8 @@ class DtcTable:
         for p in raw:
             name = p.name or "#%d" % p.index
             fp = FaultPath(name, index=p.index, own=p.own,
-                           name_source=p.name_source, fmk=p.fmk)
+                           name_source=p.name_source, fmk=p.fmk,
+                           encoding=getattr(lay, "encoding", "") or "")
             fp.types = [FaultType(t.kind, t.cdc, t.cdk, t.pcode, t.vag,
                                   t.vag_pcode) for t in p.types]
             addr = lay.cla + p.index

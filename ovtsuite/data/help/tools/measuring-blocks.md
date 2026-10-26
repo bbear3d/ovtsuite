@@ -79,9 +79,10 @@ An EDC15 file holds a set of blocks per dataset (Manual, Automatic...); the
 car's coding picks which one the ECU uses. The **Dataset** box beside the
 filter shows one dataset at a time — each entry names the coding value that
 selects it — and opens on the first; choose **All datasets** to list every
-one together. Tick **Apply edits to every
-dataset** to make a change in all of them at once (one undo step) — otherwise
-change the dataset your car runs (see [EDC15 datasets](../modules/edc15/datasets.md)).
+one together. **Apply edits to every dataset** (ticked to start with) makes a
+change in all of them at once (one undo step), so whichever one the car's
+coding selects has it. Untick it to change only the dataset shown — then make
+sure it is the one your car runs (see [EDC15 datasets](../modules/edc15/datasets.md)).
 
 The **Descriptors** tab lists what each cell id points at: the **Message**
 number picks the value the ECU reads, **Display type** and **Norm** tell the
@@ -89,12 +90,20 @@ scan tool how to scale it. Rescaling a descriptor is how, for example, the
 boost display is matched to a larger MAP sensor. Hex (`0x0F40`) is accepted.
 A descriptor change is held until **Apply**, like a cell's.
 
+## Cells built for logging
+
+A cell that **Tools > Build logging blocks...** built for a logging preset is
+shown in italics; its tooltip, and the block number's, name the presets that
+read it. It is an ordinary cell: changing it here takes it out of those
+presets' optimised blocks (they then log from their usual blocks until built
+again). See [Optimised logging blocks](../logging/optimised-blocks.md).
+
 ## Buttons
 
 | Button | What it does |
 |---|---|
 | **Clear selected block(s)** | Empties every cell of the selected blocks (255) -- held until **Apply**. Also on the right-click menu. |
-| **Copy block(s) from comparison** | Only with a comparison file of the same ECU type open: sets the selected blocks' cells to what the comparison shows in the same block -- held until **Apply**. Signals are matched by meaning (the same internal signal, or on EDC15 the same message number), so this works between different software versions; a signal the primary file has no definition for is left as it is, and the panel says how many. |
+| **Copy block(s) from comparison** | Only with a comparison file of the same ECU type open: sets the selected blocks' cells to what the comparison shows in the same block -- held until **Apply**. Signals are matched by meaning (the same internal signal, or on EDC15 the same message number), so this works between different software versions; a signal the primary file has no definition for is left as it is, and the panel says how many. On an EDC15 with **Apply edits to every dataset** ticked, the same block of every other dataset gets the signals too (matched by meaning in that dataset), as a cell edit does — except a dataset whose own block is selected as well, which takes its own comparison block's. |
 | **Show in editor** | (EDC16) Selects the table chosen in **Related tables** in the main window. |
 | **Apply** | Writes every held change (shaded pale yellow) as one undo step; the window stays open. |
 | **Cancel** | Forgets the changes made since the last **Apply** (or since the window opened) and closes the window. What was applied before stays. |
@@ -107,7 +116,7 @@ window open.
 With a comparison open, its blocks are a read-only table of their own under
 the primary's -- the same blocks on the same rows, so nothing is off to the
 side to scroll to. The two scroll together, keep the same column widths and
-the same selected cell; drag the bar between them to share the room. A cell
+the same selected cells; drag the bar between them to share the room. A cell
 that shows a different signal from the primary is shaded orange in both, and
 the primary's tooltip names the comparison's signal. Cells are compared by
 what they show, not by their names: the same id with the same definition in
@@ -118,6 +127,17 @@ signal is matched by its name, so the same signal under another id is not
 shaded either. Untick **Show
 comparison** to hide the lower table: the shading and tooltips stay.
 
+Right-click the comparison's selected cells for **Copy to primary**: the
+primary's matching cells take those signals, matched by meaning as **Copy
+block(s) from comparison** does, held until **Apply** (a selected **Block**
+cell stands for the whole block) — into every dataset when **Apply edits to
+every dataset** is ticked. The item counts the cells that will change: one
+already showing the comparison's signal, or with no definition in the
+primary, is not counted. **Copy** puts the selected cells on the
+clipboard as tab-separated text, as the table editor's Copy does (Ctrl+C
+too); **Select all** selects every cell. The primary table's right-click menu
+has **Copy** and **Select all** as well.
+
 ## Table colours
 
 The tables use the colours of the rest of the app:
@@ -127,7 +147,7 @@ The tables use the colours of the rest of the app:
 | Pale yellow, bold | A change held until **Apply** (on the **Blocks** and **Descriptors** tabs). In the table above it takes the place of orange; the comparison's copy of the cell stays orange if it differs from the held signal. |
 | Orange | This cell shows a different signal from the comparison (in both tables). |
 | Grey text | In the table above: an empty cell (255), or **—** where a block has no map row for that half. The comparison's text is a little quieter than the primary's throughout. |
-| Accent colour (blue) | Selected cells; the comparison selects the same cell. |
+| Accent colour (blue) | Selected cells; the comparison selects the same cells, every one of them. |
 
 Every other row is shaded lightly, as in the table editor, to help follow a
 block across.

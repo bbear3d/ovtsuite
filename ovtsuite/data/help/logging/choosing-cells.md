@@ -21,6 +21,16 @@ from, so the fewer groups you use, the more rows per second you get.
    for eight, but a cell the file leaves empty is not shown (and a preset
    does not log it). Once connected, the list shows the cells the ECU
    actually sends for that group.
+
+   **Log every cell of this group**, above the table, ticks all the listed
+   cells at once; when they are all ticked it unticks them all. It shows a
+   partial tick while only some of the group's cells are logged, and follows
+   along as you tick cells one by one or pick another group. Each cell it
+   ticks counts as ticked by hand (so a group holding both start of
+   injection and duration adds the calculated end of injection too, see
+   [Presets](presets.md)). Every group you take cells from is read on each
+   row, so ticking whole groups costs rows per second only for groups not
+   already logged.
 3. When connected, the **Value** column shows the live reading of the group
    you are browsing, so you can check a cell is alive before you log it.
 
@@ -97,6 +107,8 @@ the selection alone.
   that are missing (for example "Boost (specified)").
 - Engine presets come from the car's file when it is open, otherwise from the
   factory catalogue (see above).
+- **Save as...** keeps the cells ticked now as a preset of your own for this
+  controller; see [Your own presets](presets.md#your-own-presets).
 
 Which presets there are, and how to drive each one, is on
 [Presets and how to drive them](presets.md).

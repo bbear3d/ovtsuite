@@ -147,7 +147,11 @@ copies of the file. (The original itself is in the Project panel and in
 
 Hover over a row for its automatic label, which other areas it changed
 (the EEPROM or internal flash, for instance) and, for merged versions, how
-many saves it holds.
+many saves it holds. In a project whose
+[fitted hardware](projects.md#fitted-hardware) is recorded, the tooltip also
+says which hardware the version is set up for, and **Status** shows
+*🔧 set up for ...* on the versions where that changes (where Tools > Injector
+setup wrote a calibration for other injectors or another pump).
 
 | Button | What it does |
 |---|---|

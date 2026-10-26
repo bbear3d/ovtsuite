@@ -32,6 +32,110 @@ FULL_SIZE = 0x200000
 # rather than being derived from anything K-line-related in this module.
 CAN_DEST = 0x01
 
+# TP 2.0 timing for EDC16 over CAN. EDC16_TP20_FAST_TIMING = False puts all of
+# it back as it was: our sends follow the shared max(ECU's A1 T3, our A0 T3
+# 5 ms) clamp, we advertise 5 ms, and a read stays on its first channel.
+#
+# Write. The J2534 trace of a CAN write (Reference/Logs/J2534EDC16CANWriteSLOW.txt,
+# Scanmatik, 2026-10-25): after the programming-session re-setup the ECU's A1
+# is ``A1 0F 8A FF 0A FF`` -- block size 15, T3 0x0A = 1.0 ms -- yet we sent at
+# ~6.1 ms a frame (5 ms clamp + the ~0.6 ms write call), 37 frames per 253-byte
+# block, ~230 ms a block, 232 s for the 0x3E000 block, with no 9x not-ready and
+# no retransmit in the whole trace. EDC16_TP20_LEVEL picks how fast we send:
+#
+#   "ecu"        the ECU's advertised T3, waited after each write
+#                returns: ~1.6 ms a frame, ~82 s for block 7. The only EDC16
+#                evidence there is (the ECU's own A1). ODIS on a VAG module that
+#                declares the same ``A1 0F 8A FF 0A FF`` (Reference/Logs/
+#                ODISHVACflash.log, Climatronic) sends at 1.48 ms median, 1.32 ms
+#                at the 1st percentile -- never below the 1 ms -- so this level
+#                matches what the OEM tool does.
+#   "fast"       the same 1.0 ms measured from the START of each write, so the
+#                device call is inside the gap: ~1.0-1.1 ms a frame, ~64 s. On
+#                average not below the ECU's T3; single gaps on the wire can be,
+#                by USB jitter.
+#   "aggressive" (default) 0.8 ms from the start of each write -- below the
+#                ECU's floor, as the commercial tool does on the ZF 6HP (0.73 ms
+#                against its 0.8 ms, see gui_flash._open_link): ~57 s. Tested
+#                on the car (2026-10-25): reads and writes work at this level;
+#                the bus floor is ~0.25 ms a frame.
+#                Never more than 20 % under the ECU's T3
+#                (tp20_transport.SEND_MS_MIN_FRACTION): on a channel declaring
+#                10 ms it sends at 8 ms, not 0.8.
+#
+# "fast" and "aggressive" carry a safety net (Tp20Params.backoff_on_flow): the
+# first 9x not-ready, resend request or unanswered block drops the session back
+# to "ecu" pacing and logs it.
+#
+# The default is the fastest level, verified on the car with the read changes
+# below (2026-10-25). Should a car need it, revert by setting
+# EDC16_TP20_LEVEL = "fast" or "ecu", or EDC16_TP20_FAST_TIMING = False for the
+# old 5 ms timing. These constants are the only switch: there is deliberately
+# no setting or control for them in the flasher. A 32-bit bridge built before
+# these levels drops their fields and paces like "ecu"; the flasher log says so
+# (j2534.BridgeTp20.open).
+#
+# Frames are never batched into one PassThruWriteMsgs: the device sends a batch
+# back to back, ~0.25 ms apart, below even the aggressive level.
+EDC16_TP20_FAST_TIMING = True
+EDC16_TP20_LEVEL = "aggressive"
+
+#: Tp20Params fields per level (see above).
+EDC16_TP20_LEVELS = {
+    "ecu": {"pace_ecu": True},
+    "fast": {"pace_ecu": True, "pace_from_start": True, "backoff_on_flow": True},
+    "aggressive": {"pace_ecu": True, "send_ms": 0.8, "pace_from_start": True,
+                   "backoff_on_flow": True},
+}
+
+# Read. The ECU streams an upload to us at the slower of its own T3 and the one
+# we advertise, plus ~1 ms: on the default-session channel (``A1 .. 4A`` = 10 ms,
+# we advertise 5 ms) its frames come 9-11 ms apart (CANReadCodesFailEDC16.txt,
+# the 5A 9B identification; the write trace's first channel); on the
+# programming channel (``A1 .. 0A`` = 1 ms) 6 ms apart, i.e. our 5 ms + 1. So a
+# read is ECU-paced at ~10.5 ms a frame: 37 frames per 254-byte packet, ~0.4 s,
+# ~14 min for the 512 KB calibration (the ~630 B/s seen before). Two changes:
+#   * a read advertises T3 1.0 ms -- the value ODIS advertises in its own
+#     programming channel (``A0 0F 8A FF 0A FF`` in ODISHVACflash.log); 0.1 ms
+#     once made the Climatronic flow-control us, 1 ms did not. Writes keep the
+#     5 ms A0 the trace was made with.
+#   * EDC16_CAN_READ_REOPEN: once in the read session (10 86) the channel is set
+#     up again, as the write does after 10 85 (where the ECU then declares 1 ms),
+#     and security repeated. If the ECU declares 1 ms there too the read should
+#     drop to ~3 min; if not, nothing is lost but ~0.5 s. If the re-setup, the
+#     security or the 10 86 on it fails, the channel is set up once more and the
+#     session entered the old way (an upload failing later is not retried).
+EDC16_TP20_READ_T3_MS = 1.0
+EDC16_CAN_READ_REOPEN = True
+
+#: worker ops that write to the ECU (they keep the 5 ms A0)
+_WRITE_OPS = ("write", "write_program")
+
+
+def edc16_tp20_params(op=None) -> dict:
+    """Tp20Params overrides for an EDC16 TP 2.0 link opened for ``op`` (a
+    flasher op name; None = a write): the EDC16_TP20_LEVEL fields, plus the
+    read A0 T3 for a non-writing op -- or {} for the shared defaults."""
+    if not EDC16_TP20_FAST_TIMING:
+        return {}
+    out = dict(EDC16_TP20_LEVELS[EDC16_TP20_LEVEL])
+    if op is not None and op not in _WRITE_OPS and EDC16_TP20_READ_T3_MS:
+        out["t3_ms"] = EDC16_TP20_READ_T3_MS
+    return out
+
+
+def tp20_level_text() -> str:
+    """The send pacing in effect, for the flasher log."""
+    if not EDC16_TP20_FAST_TIMING:
+        return "TP 2.0 send pacing: the old 5 ms clamp (EDC16_TP20_FAST_TIMING off)."
+    return "TP 2.0 send pacing: level \"%s\"." % EDC16_TP20_LEVEL
+
+
+def can_read_reopen() -> bool:
+    """Re-set up the TP 2.0 channel once in the read session (see above)."""
+    return bool(EDC16_TP20_FAST_TIMING and EDC16_CAN_READ_REOPEN)
+
+
 SPEEDS = {"Low": (0x50, 38400), "Medium": (0x87, 124800), "High": (0xA7, 244898)}
 
 # Between two J2534 high-baud discovery candidates the ECU must return to its
@@ -67,7 +171,43 @@ _BLOCK = {7: (0x1C0000, 0x1FDFFF, 0x1FFFFF, 0x3E000),
           6: (0x180000, 0x1BFFFF, 0x1BFFFF, 0x40000)}
 
 _TRANSFER_CHUNK = 0xF8          # 248 data bytes; header length byte = 0xF9
+
+# Upload packets carry 254 data bytes (00 FF 76 <254> cks) until the last. A
+# packet that arrives corrupted (a KKL cable at 124800 drops the odd byte) is
+# not fatal: the stream is kept in step, the packet's range is noted, and the
+# 64 KB uploads that hold the bad ranges are read again afterwards -- the same
+# address-aligned uploads the CAN path reads with.
+_UPLOAD_PACKET = 254
+_REREAD_CHUNK = 0x10000
+_REREAD_TRIES = 3
+_MAX_BAD_PACKETS = 32
 _DEFAULT_ERASE_SIG = bytes([0x0C, 0x5E, 0xCF, 0xCF, 0x65, 0x0B])
+
+
+#: how long a checksum routine may answer only 7F 33 22 (conditionsNotCorrect)
+#: before it counts as a refusal of the block (Edc16Flash._poll_checksum)
+VERIFY_REFUSED_AFTER_S = 20.0
+
+
+class _EraseSigRefused(KLineError):
+    """31 C4 answered 7F 31 33: the ECU refused the erase signature."""
+
+
+def erase_sig_from_ident_9b(reply):
+    """The erase signature in a 1A 9B (VAG identification) reply: after
+    ``5A 9B`` come the part number (12 ASCII characters), the software
+    version (4), a 10-byte field, then the engine text; the signature is that
+    field's last six bytes. None unless the reply has that shape (printable
+    part number, 4 ASCII digits) and the bytes are not all zero."""
+    b = bytes(reply)
+    pos = b.find(bytes([0x5A, 0x9B]))
+    if pos < 0 or pos + 28 > len(b):
+        return None
+    part, sw = b[pos + 2:pos + 14], b[pos + 14:pos + 18]
+    if not all(0x20 <= c < 0x7F for c in part) or not sw.isdigit():
+        return None
+    sig = b[pos + 22:pos + 28]
+    return sig if any(sig) else None
 
 # KWP2000 / UDS negative-response codes seen on the EDC16 download path.  Decoded
 # from a NAK frame so a failed TransferData reports WHY, not just "expected 0x01".
@@ -165,12 +305,27 @@ class StopRequested(Exception):
     pass
 
 
+class PacketCorrupt(KLineError):
+    """An upload packet arrived damaged (bad checksum, bad SID byte or cut
+    short). The line has been drained, so the next request is in step."""
+    pass
+
+
+class RangeRefused(KLineError):
+    """The ECU answered a read with a negative response (7F 35 / 7F 36): it
+    refuses that range. Only this may be padded over -- no answer is not a
+    refusal."""
+    pass
+
+
 class Edc16Flash:
     def __init__(self, link, log=None):
         self.k = link
         self._log = log or (lambda s: None)
         self._fast = False
         self._erase_sig = _DEFAULT_ERASE_SIG
+        self._erase_sig_alts = []         # other signatures to offer (_erase_block)
+        self._is_stop = None              # the running write's Cancel (poll loops)
         self._max_block_len = 0            # ECU-declared TransferData max (0x74 <FD>)
 
     def log(self, msg):
@@ -250,10 +405,12 @@ class Edc16Flash:
             raise KLineError("Unexpected EDC16 wakeup version %d" % version)
         self.log("Connected (KW %d)." % version)
 
-    def _read_erase_signature(self):
+    def _read_ident(self, lid):
+        """Send readEcuIdentification ``1A <lid>`` and collect the reply bytes
+        (until quiet after the 5A <lid>, at most 3 s)."""
         time.sleep(0.025)
         self.k.clear_rx()
-        self._send(bytes([0x82, 0x10, 0xF1, 0x1A, 0x9C]))
+        self._send(bytes([0x82, 0x10, 0xF1, 0x1A, lid]))
         acc = bytearray()
         deadline = time.time() + 3.0
         saved = self.k.read_timeout
@@ -263,16 +420,54 @@ class Edc16Flash:
                 try:
                     acc.append(self.k.read_byte())
                 except KLineTimeout:
-                    if _index_of_pair(acc, 0x5A, 0x9C) >= 0:
-                        break
+                    if _index_of_pair(acc, 0x5A, lid) >= 0 or _contains(acc, 0x7F, 0x1A):
+                        break                   # the reply, or a refusal of the ident
         finally:
             self.k.read_timeout = saved
+        return acc
+
+    def _read_erase_signature(self):
+        """The six bytes the 31 C4 erase carries, and the other candidates to
+        try if the ECU refuses it (:meth:`_erase_block`). No part number
+        decides it -- what the ECU itself reports does:
+
+        * 1A 9C, bytes 6-11 after 5A 9C: what every ECU written so far takes
+          (00 01 02 03 04 05 on the 038997016Q / R);
+        * 1A 9B, the identification's (:func:`erase_sig_from_ident_9b`): what
+          MPPS sends to an ECU whose 9C has zeros there
+          (Reference/Logs/SpecialEraseRejected.txt: a zero signature -> 7F 31
+          33 securityAccessDenied; MPPSspecialerasefailuresuccess.log: the 9B
+          bytes -> 71 C4, the erase runs);
+        * the built-in default, when neither can be read.
+
+        The first one that is not all zeros is used; the rest are kept for a
+        retry on 7F 31 33."""
+        sig9c = None
+        acc = self._read_ident(0x9C)
         pos = _index_of_pair(acc, 0x5A, 0x9C)
         if pos >= 0 and pos + 12 <= len(acc):
-            self._erase_sig = bytes(acc[pos + 6:pos + 12])
-            self.log("EDC16 erase signature (1A 9C): %s" % self._erase_sig.hex())
+            sig9c = bytes(acc[pos + 6:pos + 12])
+            self.log("EDC16 erase signature (1A 9C): %s" % sig9c.hex())
         else:
-            self.log("WARNING: couldn't read erase signature; using default.")
+            self.log("WARNING: couldn't read the erase signature from 1A 9C.")
+        sig9b = None
+        try:
+            sig9b = erase_sig_from_ident_9b(self._read_ident(0x9B))
+        except KLineError as ex:
+            self.log("1A 9B could not be read (%s)." % ex)
+        if sig9b is not None:
+            self.log("Erase signature from the identification (1A 9B): %s" % sig9b.hex())
+        cands = []
+        for c in (sig9c, sig9b, _DEFAULT_ERASE_SIG):
+            if c is not None and any(c) and c not in cands:
+                cands.append(c)
+        if sig9c is not None and not any(sig9c):
+            self.log("1A 9C has no erase signature on this ECU (zeros)%s."
+                     % ("; using the identification's (1A 9B)" if sig9b else ""))
+        self._erase_sig = cands[0] if cands else (sig9c or _DEFAULT_ERASE_SIG)
+        self._erase_sig_alts = [c for c in cands if c != self._erase_sig]
+        if sig9c is not None and not any(sig9c) and sig9c not in self._erase_sig_alts:
+            self._erase_sig_alts.append(sig9c)         # the ECU's own word, last
         self.k.clear_rx()
 
     def _lvl3_auth(self):
@@ -659,8 +854,20 @@ class Edc16Flash:
             if b0 == 0x03:                               # negative: 03 7F 35 <NRC>
                 d = self.k.read(3)
                 nrc = d[2] if len(d) >= 3 else 0
-                raise KLineError("EDC16 requestUpload rejected: 7F 35 %02X (%s)"
-                                 % (nrc, _nrc_name(nrc)))
+                raise RangeRefused("EDC16 requestUpload rejected: 7F 35 %02X (%s)"
+                                   % (nrc, _nrc_name(nrc)))
+            if b0 == 0x00:
+                # long form: 00 <len> <payload> <cks> -- how CanKLine frames a
+                # TP 2.0 reply that is not 75 (a refusal arrives as 00 03 7F 35 xx)
+                n = self.k.read_byte()
+                body = self.k.read(n)
+                if len(body) >= 3 and body[0] == 0x7F and body[1] == 0x35:
+                    raise RangeRefused("EDC16 requestUpload rejected: 7F 35 %02X (%s)"
+                                       % (body[2], _nrc_name(body[2])))
+                if body[:2] == b"\x75\xff":
+                    return
+                raise KLineError("EDC16 requestUpload: bad response 00 %02X %s"
+                                 % (n, body.hex()))
             raise KLineError("EDC16 requestUpload: bad response 0x%02X" % b0)
 
     def read_flash(self, on_percent=None, on_stage=None, is_stop=None,
@@ -681,6 +888,7 @@ class Edc16Flash:
             self.log("Requesting security access (read)...")
             self._lvl3_auth()
         self._establish_session(0x86, speed, allow_fast, _prepare, is_stop)
+        self.reopen_for_read(_prepare, speed, allow_fast, is_stop)
         time.sleep(0.075)
 
         image = bytearray(b"\xFF" * CAL_START)
@@ -694,23 +902,20 @@ class Edc16Flash:
                              (addr, addr + size - 1, ci + 1, len(addrs)))
                 else:
                     on_stage("Reading calibration (0x180000-0x1FFFFF)...")
-            self._request_upload(addr, size)
-            done = [False]
-            region = bytearray()
-            while not done[0]:
-                if is_stop and is_stop():
-                    self._try_quiet_stop()
-                    raise StopRequested("read stopped")
-                region.extend(self._read_flash_packet(done))
-                pct = min(100, (len(image) - CAL_START + len(region)) * 100 // CAL_SIZE)
+            base = len(image) - CAL_START
+
+            def _pct(n, base=base):
                 if on_percent:
-                    on_percent(pct)
-            image.extend(region)
-            if upload_chunk:                    # per-chunk transferExit, like MPPS
+                    on_percent(min(100, (base + n) * 100 // CAL_SIZE))
+            region, bad = self._upload(addr, size, is_stop, _pct)
+            if upload_chunk or bad:             # per-chunk transferExit, like MPPS
                 try:
                     self._request_transfer_exit()
                 except KLineError as ex:
                     self.log("(transferExit after chunk not clean: %s)" % ex)
+            if bad:
+                self._reread(addr, region, bad, is_stop, on_stage)
+            image.extend(region)
         # pad to full 2 MB (final packet may leave us short/over the exact size)
         if len(image) < FULL_SIZE:
             image.extend(b"\xFF" * (FULL_SIZE - len(image)))
@@ -721,26 +926,166 @@ class Edc16Flash:
             self.log("(read complete; stopComm not clean: %s)" % ex)
         return bytes(image)
 
+    def reopen_for_read(self, prepare, speed, allow_fast, is_stop=None) -> bool:
+        """Over TP 2.0, once the read session (0x86) is open: set the channel up
+        again and repeat security + session entry on it, so the upload runs on a
+        channel the ECU sets up inside the read session (see
+        EDC16_CAN_READ_REOPEN; after 10 85 the ECU declares 1 ms instead of 10).
+        If any step fails, the channel is set up again (reset_channel) and the
+        session opened the old way, and the read carries on. ``prepare`` is not
+        used for that (see below); it is kept for the callers. Returns True when
+        the read runs on the re-opened channel."""
+        reset = getattr(self.k, "reset_channel", None)
+        if not (getattr(self.k, "is_tp20", False) and reset is not None
+                and can_read_reopen()):
+            return False
+        tp = getattr(self.k, "tp", None)
+        before = getattr(tp, "ecu_interframe_ms", 0.0)
+        if is_stop and is_stop():
+            raise StopRequested("read stopped")
+        try:
+            self.log("Re-opening the TP 2.0 channel in the read session...")
+            reset()
+            self._lvl3_auth()
+            self._enter_session(0x86, speed, False)
+        except StopRequested:
+            raise
+        except KLineError as ex:
+            if is_stop and is_stop():               # Cancel aborted a TP wait
+                raise StopRequested("read stopped")
+            self.log("(re-opening the channel for the read failed: %s; "
+                     "reconnecting as before)" % ex)
+
+            # The channel is set up again with reset_channel, not ``prepare``'s
+            # connect(): through the 32-bit bridge connect() is tp_open, a
+            # second PassThruConnect on the device (refused while the first CAN
+            # channel is open) and a fresh in-bridge channel that forgets a
+            # pacing back-off. In-process the two are the same Tp20Channel.open.
+            def _again():
+                reset()
+                self.log("Requesting security access (read)...")
+                self._lvl3_auth()
+            self._establish_session(0x86, speed, allow_fast, _again, is_stop)
+            return False
+        after = getattr(tp, "ecu_interframe_ms", 0.0)
+        self.log("Read channel: ECU inter-frame time %.1f ms (first channel %.1f ms)."
+                 % (after, before))
+        return True
+
+    def _upload(self, addr, size, is_stop=None, on_count=None):
+        """requestUpload ``[addr, addr+size)`` and stream it. Returns
+        ``(data, bad)``: ``data`` is exactly ``size`` bytes, ``bad`` the
+        ``(offset, length)`` ranges whose packet arrived corrupted (zero-filled
+        in ``data``). Packets are 254 bytes but for the last, so a damaged one's
+        place in the stream is known without trusting its own length byte."""
+        self._request_upload(addr, size)
+        data = bytearray()
+        bad = []
+        done = [False]
+        while not done[0] and len(data) < size:
+            if is_stop and is_stop():
+                self._try_quiet_stop()
+                raise StopRequested("read stopped")
+            try:
+                data.extend(self._read_flash_packet(done))
+            except PacketCorrupt as ex:
+                n = min(_UPLOAD_PACKET, size - len(data))
+                self.log("Corrupt packet at 0x%06X (%s); it will be read again."
+                         % (addr + len(data), ex))
+                bad.append((len(data), n))
+                data.extend(bytes(n))
+                if len(bad) > _MAX_BAD_PACKETS:
+                    raise KLineError("EDC16 read: %d corrupt packets -- the link is "
+                                     "unreliable at this speed; try a lower one"
+                                     % len(bad))
+            if on_count:
+                on_count(len(data))
+        if len(data) < size:
+            # the ECU ended the upload early: the rest was never sent. Not 0xFF
+            # (that would read as erased flash) -- a bad range, read again by
+            # _reread, which fails the read if it stays short.
+            short = size - len(data)
+            self.log("Upload at 0x%06X ended 0x%X bytes short; the rest will be read again."
+                     % (addr, short))
+            bad.append((len(data), short))
+            data.extend(bytes(short))
+        del data[size:]
+        return data, bad
+
+    def _reread(self, addr, region, bad, is_stop=None, on_stage=None):
+        """Read again the 64 KB uploads of ``[addr, addr+len(region))`` that
+        hold the ``bad`` ranges, and patch ``region`` with them."""
+        end = addr + len(region)
+        chunks = sorted({(addr + off + i) // _REREAD_CHUNK * _REREAD_CHUNK
+                         for off, n in bad for i in (0, n - 1)})
+        for c in chunks:
+            lo, hi = max(c, addr), min(c + _REREAD_CHUNK, end)
+            for attempt in range(1, _REREAD_TRIES + 1):
+                if on_stage:
+                    on_stage("Re-reading 0x%06X-0x%06X (attempt %d)..."
+                             % (lo, hi - 1, attempt))
+                got, again = self._upload(lo, hi - lo, is_stop)
+                try:
+                    self._request_transfer_exit()
+                except KLineError as ex:
+                    self.log("(transferExit after re-read not clean: %s)" % ex)
+                if not again:
+                    region[lo - addr:hi - addr] = got
+                    break
+            else:
+                raise KLineError("EDC16 read: packets at 0x%06X-0x%06X stayed corrupt "
+                                 "or missing after %d re-reads; try a lower speed"
+                                 % (lo, hi - 1, _REREAD_TRIES))
+
+    def _drain(self, quiet=0.05, limit=1.0):
+        """Discard whatever is still arriving, until ``quiet`` s of silence."""
+        saved = self.k.read_timeout
+        self.k.read_timeout = quiet
+        deadline = time.time() + limit
+        try:
+            while time.time() < deadline:
+                try:
+                    self.k.read_byte()
+                except KLineTimeout:
+                    break
+        finally:
+            self.k.read_timeout = saved
+
     def _read_flash_packet(self, done):
+        """One transferData upload packet. A damaged packet raises
+        :class:`PacketCorrupt` with the line drained; a 7F refusal raises a
+        plain KLineError."""
         if not self._fast:
             time.sleep(0.015)
         self.k.write_bytes(bytes([0x01, 0x36, 0x37]))
         fmt = self.k.read_byte()
-        length = fmt & 0x3F
-        if length == 0:
-            length = self.k.read_byte()
-            self._check_rec(0x76)
-            header = bytes([fmt, length, 0x76])
-        else:
-            self._check_rec(0x76)
-            header = bytes([fmt, 0x76])
+        try:
+            length = fmt & 0x3F
+            if length == 0:
+                length = self.k.read_byte()
+                header = bytes([fmt, length, 0x76])
+            else:
+                header = bytes([fmt, 0x76])
+            sid = self.k.read_byte()
+            if sid == 0x7F:                          # 03 7F 36 <NRC>: a refusal, not noise
+                d = self.k.read(2)
+                raise RangeRefused("EDC16 read: transferData rejected: 7F %02X %02X (%s)"
+                                   % (d[0], d[1], _nrc_name(d[1])))
+            if sid != 0x76:
+                raise PacketCorrupt("SID 0x%02X" % sid)
+            data_len = max(0, length - 1)
+            data = self.k.read(data_len) if data_len else b""
+            cksb = self.k.read_byte()
+        except KLineTimeout:
+            raise PacketCorrupt("cut short")
+        except PacketCorrupt:
+            self._drain()
+            raise
+        if cksb != ((_cks(data) + _cks(header)) & 0xFF):
+            self._drain()
+            raise PacketCorrupt("checksum mismatch")
         if length != 0xFF:
             done[0] = True
-        data_len = max(0, length - 1)
-        data = self.k.read(data_len) if data_len else b""
-        cksb = self.k.read_byte()
-        if cksb != ((_cks(data) + _cks(header)) & 0xFF):
-            raise KLineError("EDC16 read: packet checksum mismatch")
         return data
 
     # ---- write ----
@@ -845,6 +1190,7 @@ class Edc16Flash:
             raise ValueError("EDC16 write needs a full 2 MB image")
         # Prime tuning (bench-testable); None -> module defaults so a bench run can
         # flip _PRIME_TEARDOWN / _PRIME_TRIM without touching callers.
+        self._is_stop = is_stop               # the poll loops honour Cancel too
         if prime_teardown is None:
             prime_teardown = _PRIME_TEARDOWN
         if prime_trim is None:
@@ -881,6 +1227,7 @@ class Edc16Flash:
                 self.log("Requesting security access (write)...")
                 self._lvl1_auth()
             self._establish_session(0x85, speed, allow_fast, _prepare, is_stop)
+            self.log(tp20_level_text())
             self.log("Re-establishing channel + security (programming session)...")
             reset = getattr(self.k, "reset_channel", None)
             if reset is not None:
@@ -895,6 +1242,13 @@ class Edc16Flash:
             self._open_kline_write_session(speed, allow_fast, fast_init_prime, is_stop, on_stage,
                                            prime_teardown=prime_teardown, prime_trim=prime_trim)
             self._set_access_timing()
+            # The J2534 slow-init channel keeps the init's timing: P4_MIN 2
+            # between sent bytes, P3_MIN 55 ms before each send and P1_MAX
+            # 20 ms to end each reply -- 333 ms per 256-byte TransferData and
+            # a 6-minute write. The session is up, so drop them.
+            timing = getattr(self.k, "set_session_timing", None)
+            if timing is not None:
+                timing()
 
         if is_stop and is_stop():
             self._finalize()
@@ -943,21 +1297,45 @@ class Edc16Flash:
         # (KLineTimeout on the coupled transport) = ECU busy -> keep polling.  The
         # earlier "this ECU NAKs 33 C5 forever" belief (bench 2026-09-23) was wrong
         # -- it polled without a confirmed 71 C5 start / at bad timing.
+        #
+        # 7F 33 22 (conditionsNotCorrect) is NOT "in progress": an ECU whose
+        # block it refuses -- a stale content digest, wrong checksums
+        # (Reference/Logs/EDC16Checksumfailwritefail.txt) -- answers it on every
+        # poll, and polling on for the full minute, then the next block's for
+        # another, was the "hang". Only an unbroken run of 22s for
+        # VERIFY_REFUSED_AFTER_S is a refusal -- long enough for an ECU that answers 22
+        # for a while before it settles, well short of the old two minutes.
         deadline = time.time() + 60
+        only_22_since = None
         while time.time() < deadline:
+            self._check_stop()
             time.sleep(0.05)
             try:
                 self._send(bytes([0x02, 0x33, 0xC5]))
                 r = self._read_response()
             except KLineTimeout:
+                only_22_since = None
                 continue                                 # ECU busy computing -- keep polling
             idx = _index_of_pair(r, 0x73, 0xC5)
             if idx >= 0:
                 return "mismatch" if (idx + 2 < len(r) and r[idx + 2] != 0) else "match"
             if _contains(r, 0x7F, 0x33, 0x40):
                 return "mismatch"
-            # 7F 33 22/23 (routine in progress) or any other NAK -> keep polling
+            if _contains(r, 0x7F, 0x33, 0x22):
+                now = time.time()
+                only_22_since = only_22_since or now
+                if now - only_22_since >= VERIFY_REFUSED_AFTER_S:
+                    return "refused"
+                continue
+            only_22_since = None
+            # 7F 33 23 (routine in progress) or any other NAK -> keep polling
         return "unconfirmed"
+
+    def _check_stop(self):
+        """Cancel during a write's long polls."""
+        stop = self._is_stop
+        if stop is not None and stop():
+            raise StopRequested("stopped")
 
     def _block_matches(self, start, end, checksum):
         self._send_checksum_routine(start, end, checksum)
@@ -984,12 +1362,19 @@ class Edc16Flash:
         res = self._poll_checksum()
         if res == "match":
             return                                       # verified OK
-        if res == "mismatch":
-            self.log("WARNING: post-write checksum MISMATCH at 0x%06X; read back "
-                     "before trusting this write." % start)
-        else:
-            self.log("Note: checksum verify unconfirmed at 0x%06X (routine did not "
-                     "return 73 C5); write completed." % start)
+        if res in ("mismatch", "refused"):
+            # the block is in the ECU, and the ECU says it is not right: going on
+            # to the next block only leaves it waiting on a dead session
+            raise KLineError(
+                "EDC16 write stopped: the ECU %s the block at 0x%06X after writing "
+                "it (%s). The image's checksums or its content digest are most "
+                "likely not correct: correct them (Tools > Verify checksums, or "
+                "Save) and write again. The ECU stays in programming mode until a "
+                "correct image is written."
+                % ("rejected" if res == "refused" else "reports a checksum mismatch for",
+                   start, "33 C5 -> 7F 33 22" if res == "refused" else "73 C5 / 7F 33 40"))
+        self.log("Note: checksum verify unconfirmed at 0x%06X (routine did not "
+                 "return 73 C5); write completed." % start)
 
     def _checksum_probe(self, start, end, checksum, log):
         """VERBOSE 0x31 C5 check: logs the raw routine ack + each 0x33 C5 result
@@ -1132,9 +1517,28 @@ class Edc16Flash:
                                else 0)
 
     def _erase_block(self, start, erase_end):
+        """31 C4 erase of start..erase_end, then poll it to completion. An ECU
+        that refuses the signature (7F 31 33 securityAccessDenied) is offered
+        the other candidates :meth:`_read_erase_signature` found, each once;
+        the one it takes is kept for the session's next blocks."""
+        tried = []
+        while True:
+            try:
+                return self._erase_block_with(start, erase_end, self._erase_sig)
+            except _EraseSigRefused as ex:
+                tried.append(self._erase_sig)
+                alts = [c for c in getattr(self, "_erase_sig_alts", [])
+                        if c not in tried]
+                if not alts:
+                    raise KLineError("EDC16 erase rejected: %s (signatures tried: %s)"
+                                     % (ex, ", ".join(t.hex() for t in tried)))
+                self.log("ECU refused erase signature %s (7F 31 33); trying %s."
+                         % (self._erase_sig.hex(), alts[0].hex()))
+                self._erase_sig = alts[0]
+
+    def _erase_block_with(self, start, erase_end, s):
         time.sleep(0.03)
         self.k.clear_rx()
-        s = self._erase_sig
         erase_cmd = (bytes([0x0E, 0x31, 0xC4,
                             (start >> 16) & 0xFF, (start >> 8) & 0xFF, start & 0xFF,
                             (erase_end >> 16) & 0xFF, (erase_end >> 8) & 0xFF,
@@ -1154,6 +1558,8 @@ class Edc16Flash:
             r = self._read_response()
         except KLineTimeout:
             r = b""                               # start-ack slow/silent -> poll instead
+        if _contains(r, 0x7F, 0x31, 0x33):
+            raise _EraseSigRefused(bytes(r).hex())
         if _contains(r, 0x7F, 0x31) and not _contains(r, 0x7F, 0x31, 0x78):
             raise KLineError("EDC16 erase rejected: %s" % r.hex())
         # Completion poll (0x33 C4 -> 0x73 C4 when done, 7F 33 23 while in progress,
@@ -1165,6 +1571,7 @@ class Edc16Flash:
         ERASE_TIMEOUT_S = 180
         deadline = time.time() + ERASE_TIMEOUT_S
         while time.time() < deadline:
+            self._check_stop()
             time.sleep(0.1)
             try:
                 self._send(bytes([0x02, 0x33, 0xC4]))

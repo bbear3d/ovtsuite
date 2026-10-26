@@ -147,6 +147,114 @@ def test_bridge_roundtrip(monkeypatch):
     assert k.id is None
 
 
+def test_bridge_kline_exchange_is_one_round_trip(monkeypatch):
+    # a K-line request and its whole reply -- here split over two messages,
+    # behind the device's TX echo -- come back from one bridge call
+    monkeypatch.setattr(B.J, "PassThru", FakePassThru)
+    dev = J.BridgePassThru("fake.dll", proc=PipeProc("fake.dll"))
+    k = dev.connect(J.ISO9141, 124800)
+    real = FakePassThru.instances[-1].channels[0]
+    real.queue = [J.Msg(J.ISO9141, 0, 0, 1, bytes.fromhex("0001")),
+                  J.Msg(J.ISO9141, 0, 0, 2, bytes.fromhex("7677"))]
+    calls = []
+    orig = dev._call
+    monkeypatch.setattr(dev, "_call", lambda op, **kw: calls.append(op) or orig(op, **kw))
+    msgs = k.kline_exchange(bytes.fromhex("0002367F"), 1000, 500)
+    assert calls == ["kline_exchange"]
+    assert real.log[-1] == ("write", bytes.fromhex("0002367F"), 0)
+    assert b"".join(m.data for m in msgs) == bytes.fromhex("00017677")
+    dev.close()
+
+
+def test_bridge_kline_exchange_falls_back_on_an_older_bridge(monkeypatch):
+    # a bridge built before kline_exchange answers "unknown op": the exchange
+    # is then done with write/read calls, and not asked for again
+    monkeypatch.setattr(B.J, "PassThru", FakePassThru)
+    dev = J.BridgePassThru("fake.dll", proc=PipeProc("fake.dll"))
+    k = dev.connect(J.ISO9141, 124800)
+    real = FakePassThru.instances[-1].channels[0]
+    calls = []
+    orig = dev._call
+
+    def old_bridge(op, **kw):
+        calls.append(op)
+        if op == "kline_exchange":
+            raise J.J2534Error("unknown op 'kline_exchange'")
+        return orig(op, **kw)
+    monkeypatch.setattr(dev, "_call", old_bridge)
+    for _ in range(2):
+        real.queue = [J.Msg(J.ISO9141, 0, 0, 1, bytes.fromhex("00017677"))]
+        msgs = k.kline_exchange(bytes.fromhex("0002367FB7"), 1000, 500)
+        assert b"".join(m.data for m in msgs) == bytes.fromhex("00017677")
+    assert calls.count("kline_exchange") == 1
+    assert real.log[-1] == ("write", bytes.fromhex("0002367FB7"), 0) or \
+        ("write", bytes.fromhex("0002367FB7"), 0) in real.log
+    dev.close()
+
+
+def test_bridge_kline_exchange_finds_the_reply_behind_a_stray_byte(monkeypatch):
+    # the bridge's own wait ends at the reply, not at the timeout, when a
+    # stray byte comes first -- judged against the request it is answering
+    monkeypatch.setattr(B.J, "PassThru", FakePassThru)
+    dev = J.BridgePassThru("fake.dll", proc=PipeProc("fake.dll"))
+    k = dev.connect(J.ISO9141, 124800)
+    real = FakePassThru.instances[-1].channels[0]
+    real.queue = [J.Msg(J.ISO9141, 0, 0, 1, bytes.fromhex("FF")),
+                  J.Msg(J.ISO9141, 0, 0, 2, bytes.fromhex("83F1106703AA")),
+                  J.Msg(J.ISO9141, 0, 0, 3, bytes.fromhex("98"))]
+    import time as _t
+    t0 = _t.monotonic()
+    msgs = k.kline_exchange(None, 1000, 3000, expect=bytes.fromhex("8210F12703AD"))
+    assert _t.monotonic() - t0 < 2.0
+    assert b"".join(m.data for m in msgs) == bytes.fromhex("FF83F1106703AA98")
+    dev.close()
+
+
+def test_bridge_kline_xfer_is_one_round_trip(monkeypatch):
+    # the byte-stream link's step: what is waiting, the write, the reply
+    monkeypatch.setattr(B.J, "PassThru", FakePassThru)
+    dev = J.BridgePassThru("fake.dll", proc=PipeProc("fake.dll"))
+    k = dev.connect(J.ISO9141, 9600)
+    real = FakePassThru.instances[-1].channels[0]
+    real.queue = [J.Msg(J.ISO9141, 0, 0, 1, b"\x0F")]
+    orig_write = real.write
+
+    def write(data, flags=0, timeout_ms=100):
+        orig_write(data, flags, timeout_ms)                 # TX echo, then the complement
+        real.queue.append(J.Msg(J.ISO9141, 0, 0, 6, bytes([(~data[0]) & 0xFF])))
+    real.write = write
+    calls = []
+    orig = dev._call
+    monkeypatch.setattr(dev, "_call", lambda op, **kw: calls.append(op) or orig(op, **kw))
+    before, after = k.kline_xfer(b"\x12", 1000, 50, True)
+    assert calls == ["kline_xfer"]
+    assert [m.data for m in before] == [b"\x0F"] and [m.data for m in after] == [b"\xED"]
+    dev.close()
+
+
+def test_bridge_kline_xfer_falls_back_on_an_older_bridge(monkeypatch):
+    monkeypatch.setattr(B.J, "PassThru", FakePassThru)
+    dev = J.BridgePassThru("fake.dll", proc=PipeProc("fake.dll"))
+    k = dev.connect(J.ISO9141, 9600)
+    real = FakePassThru.instances[-1].channels[0]
+    calls = []
+    orig = dev._call
+
+    def old_bridge(op, **kw):
+        calls.append(op)
+        if op == "kline_xfer":
+            raise J.J2534Error("unknown op 'kline_xfer'")
+        return orig(op, **kw)
+    monkeypatch.setattr(dev, "_call", old_bridge)
+    for b in (b"\x12", b"\x34"):
+        real.queue = [J.Msg(J.ISO9141, 0, 0, 1, b"\x0F")]
+        before, after = k.kline_xfer(b, 1000, 10, True)
+        assert [m.data for m in before] == [b"\x0F"] and after == []   # echo left out
+        assert ("write", b, 0) in real.log
+    assert calls.count("kline_xfer") == 1 and "write" in calls and "read" in calls
+    dev.close()
+
+
 def test_bridge_set_pwm(monkeypatch):
     """The GPT crank/cam vendor ioctl (Scanmatik SM2, id 0x8008 by default)
     round-trips over the 32-bit bridge: item pairs, an overridden ioctl_id,

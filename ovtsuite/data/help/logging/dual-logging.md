@@ -34,7 +34,9 @@ neither slows the other: each connection keeps its own sample rate.
    own binary (or its controller when none is open).
 6. **Pause** and **Stop** in the master row act on both.
 
-The buttons inside each tab still work for that tab alone.
+The buttons inside each tab still work for that tab alone, and a log
+stopped there is kept exactly as one stopped from the master row: in the
+project, or in its file, and opened in the **Log file** tab.
 
 ## Good to know
 
@@ -47,7 +49,8 @@ The buttons inside each tab still work for that tab alone.
 - When both stop, the second tab's log opens in the **Log file** tab; open
   the other with **Open log...** (or from the Project panel, for a log kept
   in a project).
-- Unticking **Dual logging** disconnects and removes the second tab.
+- Unticking **Dual logging** disconnects and removes the second tab; a log
+  it was recording is kept first.
 - Each tab remembers its own cable, transport and controller separately.
 - If no file for a tab's controller is open, that tab names its cells from the
   active tab of the main window, but its log file is named after its own

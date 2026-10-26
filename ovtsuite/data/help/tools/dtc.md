@@ -46,7 +46,9 @@ panel under the table shows the other one in brackets.
 **Show** narrows the list further: **Enabled**, **Disabled**, **With a fault
 code**, **Lights the MIL**, **Lights the glow-plug lamp**, and, with a
 comparison open, **Differs from comparison**. After **Read codes from ECU...** it also offers **Stored on the
-ECU**.
+ECU**. Each read first opens the [Fault code report](fault-code-report.md),
+which describes every code the ECU reported and keeps the read in the
+project's history.
 
 Click a column heading to sort by it.
 
@@ -210,7 +212,7 @@ the dataset your car uses — or all of them if you are not sure (the
 |---|---|
 | **On** | Ticked when the fault is active (it is detected and stored). |
 | **Fault path** | The calibration's own name for the fault. A path no definition names shows as **fault path _n_**; it can still be switched. |
-| **VAG code** | Every VW fault number the row can set, as a scan tool shows it (at least five digits). On EDC15, **(path: ...)** lists the path's numbers when which one the sub-fault sets is not known. **-** means none. |
+| **VAG code** | Every VW fault number the row can set, as a scan tool shows it (at least five digits). On EDC16 software that stores the codes as OBD-II code words (P447, P475), it is six digits, as VCDS prints them: **000259** for P0103. Searching finds the row by either form (000259 or 00259). On EDC15, **(path: ...)** lists the path's numbers when which one the sub-fault sets is not known. **-** means none. |
 | **OBD-II** | Every standard P-code the row can set. |
 | **Class** (EDC16) / **Defect time** (EDC15) | See the table above. |
 | **MIL** | Ticked (**MIL**) when the code lights the engine warning lamp. Untick it to keep the fault without the lamp (above). |
@@ -245,7 +247,7 @@ The tables use the colours of the rest of the app:
 | Orange | This cell differs from the comparison (in both tables; the comparison's copy stays orange while the row above is yellow). |
 | Light violet | The car's ECU has this fault stored (after **Read codes from ECU...**). The whole row, under any orange cell. |
 | Grey text | The fault is switched off (or, in the comparison, not in that file). |
-| Accent colour (blue) | Selected rows; the comparison selects the same row. |
+| Accent colour (blue) | Selected rows; the comparison selects the same rows, every one of them. A selected row's **On** box sits on a small patch of the table's own colour so its tick stays easy to see. |
 
 Every other row is shaded lightly, as in the table editor, to help follow a
 row across.
@@ -289,7 +291,11 @@ counts towards the next **Apply** — or is taken back by **Cancel**.
 
 Right-click selected rows for **Disable**, **Enable**, the lamp switches,
 **Set fault class** (EDC16), **Copy codes to clipboard** and, with a
-comparison open, **Copy comparison state to primary**.
+comparison open, **Copy comparison state to primary**. The read-only
+comparison table has a right-click menu of its own: **Copy to primary**
+(the selected rows' on / off state, as **Copy comparison state to
+primary**), **Copy codes to clipboard** (the comparison's codes, in the same
+columns) and **Select all**.
 
 ## Tips
 

@@ -13,8 +13,10 @@ the project.
 | Tool | Opens with | For |
 |---|---|---|
 | [DTC / Fault-Path editor](tools/dtc.md) | **Tools > DTC / Fault-Path editor...** (Ctrl+D) | Switching fault codes on or off, and restoring them from stock |
+| [Fault code report](tools/fault-code-report.md) | After **Read codes from ECU...** in the fault-path editor | What a read of the ECU found, its history, web search and AI questions |
 | [Measuring blocks](tools/measuring-blocks.md) | **Tools > Measuring blocks...** (Ctrl+M) | Which signals each measuring-block group shows to a scan tool or the logger |
 | [End of injection](tools/end-of-injection.md) | **Tools > End of injection...** | When the injection ends on an EDC15P / EDC16 unit-injector engine, and moving it |
+| [Injector setup (unit injectors)](tools/injector-setup-pd.md) | **Tools > Injector setup...** | Fitting other injectors or nozzles to an EDC15P / EDC16 unit-injector engine |
 | [Dyno chart](tools/dyno.md) | **Tools > Dyno chart...**, or **Dyno** on the edit bar (Ctrl+4) | The power and torque an EDC15 / EDC16 file asks for at full load, against the original or another reference |
 | [Feature switches](tools/feature-switches.md) | **Tools > Feature switches...** | Turning EDC15 / EDC16 functions on and off as one bundle: cruise, A/C, EGR, DPF, smoke limiter by MAF or MAP and more |
 | [Full-load shift points](tools/full-load-shifts.md) | **Tools > Shift map editor...**, step *Full-load optimum* | Full-throttle upshifts set from the torque of the project's engine ECU, blended into the rest of the maps |

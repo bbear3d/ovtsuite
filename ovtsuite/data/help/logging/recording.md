@@ -20,7 +20,9 @@ records the log.
 3. Drive. Every row reads all the groups your cells come from, writes one
    line to the log, updates the **Value** column of **Selected cells** and
    adds a point to the strip chart. The counter beside the buttons shows the
-   rows written and the rate, for example "812 rows, 6.4 rows/s".
+   rows written and the rate over the last few seconds, for example
+   "812 rows, 6.4 Hz". While you are connected but not logging, it shows how
+   often the group you are browsing is read, for example "8.1 Hz".
 4. **Pause** (a toggle) stops writing rows but keeps the session open with
    keep-alive messages — use it while you wait or turn round. Press it again
    to carry on in the same file.

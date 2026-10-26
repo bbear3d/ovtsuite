@@ -67,6 +67,7 @@ _INHERITED = {
     "setParent", "setToolTip", "isActiveWindow", "update", "setWindowTitle",
     "setWindowIcon", "resize", "isVisible", "raise_", "activateWindow",
     "setWindowModality", "show", "parent", "layout", "setLayout", "window",
+    "width", "height", "saveGeometry", "restoreGeometry",
 }
 
 

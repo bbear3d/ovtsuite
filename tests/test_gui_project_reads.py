@@ -184,6 +184,21 @@ def test_with_a_project_in_front_add_is_offered(win, monkeypatch):
     assert sum(len(x.branches) for x in s) == 2
 
 
+def test_a_read_is_named_after_its_part_and_fills_the_information(win, monkeypatch):
+    from ovtsuite import gui_project as gp
+    from ovtsuite.platforms import identify as _id
+    monkeypatch.setattr(_id, "identify_read", lambda data: _id.Identity(
+        "edc16", "structure", {"family": "U34", "part": "03G906016GC",
+                               "software": "P475AAXQ", "system": "R4 2,0L EDC"}))
+    _answer(monkeypatch, "Open as a new project")
+    assert win.load_from_image(READ, "ECU-read-203611")
+    proj = gp.docs(win)[0].project
+    assert proj.name == "EDC16U34 03G906016GC P475AAXQ"
+    assert proj.sets[0].name == "EDC16U34 03G906016GC P475AAXQ"
+    assert proj.info == {"ecu": "Bosch EDC16U34 03G906016GC",
+                         "notes": "From the read: software P475AAXQ, R4 2,0L EDC."}
+
+
 # -- file information after New project / Add files -----------------------------
 
 def _count_info(G, monkeypatch):
