@@ -121,9 +121,20 @@ ALLOWED = ["%s/data/frf.key" % PKG]
 #: Text that must never appear in an exported file.
 SECRET_TEXT = re.compile(rb"-----BEGIN (?:ENCRYPTED |OPENSSH |RSA |EC )?PRIVATE KEY-----")
 
-#: Names of unreleased projects that published files must not mention
-#: (written so this file does not match itself).
-UNRELEASED_TEXT = re.compile(rb"(?i)UNRELEASED-NAME")
+#: Names that published files must not mention (unreleased projects): one
+#: regular expression a line, in a private file that is never exported. A
+#: public checkout has no such file, and nothing is checked.
+UNRELEASED_FILE = os.path.join(ROOT, "tools", "unreleased_names.txt")
+
+
+def _unreleased():
+    try:
+        with open(UNRELEASED_FILE, encoding="utf-8") as fh:
+            pats = [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
+    except OSError:
+        return None
+    return re.compile("|".join("(?:%s)" % p for p in pats).encode(), re.I) if pats else None
+
 
 #: Base files that are fine to publish only if their source material allows:
 #: printed as a reminder by every base export.
@@ -256,6 +267,7 @@ def select(which: str):
 def _leaks(which: str, paths, owners) -> list:
     """Everything that must not go out in this export."""
     bad = []
+    unreleased = _unreleased()
     for p in paths:
         if _match(p, NEVER) and p not in ALLOWED:
             bad.append("%s: a private kind of file" % p)
@@ -268,7 +280,7 @@ def _leaks(which: str, paths, owners) -> list:
             data = fh.read()
         if SECRET_TEXT.search(data):
             bad.append("%s: contains a private key" % p)
-        if UNRELEASED_TEXT.search(data):
+        if unreleased is not None and unreleased.search(data):
             bad.append("%s: names an unreleased project" % p)
     return bad
 
