@@ -9461,7 +9461,7 @@ if HAVE_QT:
                                                    "full") == "full")
             from . import gui_defexport as _gde     # A2L / WinOLS map pack
             for text, fn in (("Definition as A2L...", _gde.export_a2l),
-                             ("Map pack for WinOLS (.kp, experimental)...",
+                             ("Map pack for WinOLS (.kp)...",
                               _gde.export_kp)):
                 self._act(x, text, lambda _c=False, f=fn: f(cw()),
                           needs_file=True,

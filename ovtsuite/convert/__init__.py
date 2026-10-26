@@ -59,7 +59,7 @@ NAMES = {"xdf": "TunerPro XDF", "a2l": "ASAP2 (A2L)", "kp": "WinOLS map pack (KP
          "ecuflash": "EcuFlash XML", "romraider": "RomRaider XML",
          "extract": "Embedded binaries (extract from the OLS)"}
 #: writers still marked experimental
-EXPERIMENTAL = ("kp",)
+EXPERIMENTAL = ()
 
 
 class ConvertError(ValueError):
@@ -1172,9 +1172,6 @@ def write(defn: Definition, tgt: str, size: int, image: Optional[bytes],
         from ..definitions.winols_write import write_kp
         data = write_kp(ents, size, title, le, warnings=warn, tiers=False)
         _split_warnings(warn, res)
-        res.warnings.append("WinOLS map pack export is experimental: it reads back "
-                            "in %s; whether WinOLS opens it is not yet tested."
-                            % branding.APP_NAME)
         return data, len(ents)
     raise ConvertError("No writer for %r." % tgt)
 

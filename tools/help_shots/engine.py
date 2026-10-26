@@ -338,3 +338,107 @@ def tools_injector_setup(ctx):
     dlg._replan()
     ctx.settle(200)
     return dlg
+
+
+def _item(lst, *words):
+    """Select the first row of list widget ``lst`` whose text holds one of
+    ``words`` (in order of preference)."""
+    for word in words:
+        for i in range(lst.count()):
+            if word.lower() in lst.item(i).text().lower():
+                lst.setCurrentRow(i)
+                return
+    if lst.count():
+        lst.setCurrentRow(0)
+
+
+@shot("tools-feature-switches", BASE, size=(1180, 760),
+      what="Feature switches on an EDC16 file, cruise control chosen")
+def tools_feature_switches(ctx):
+    from ovtsuite import gui_featureswitch
+    w = ctx.main_window(ctx.ref("edc16_lq"))
+    ws = w.current
+    why = gui_featureswitch.availability(ws)
+    if why:
+        raise Skip(why)
+    dlg = gui_featureswitch.open_for(ws)    # as Tools > Feature switches does
+    if dlg is None:
+        raise Skip("the Feature switches window did not open")
+    _item(dlg.list, "cruise", "EGR")
+    ctx.settle(300)
+    return dlg
+
+
+@shot("tools-dyno", BASE, size=(1180, 760),
+      what="The dyno chart of an EDC16 file: power and torque by engine speed")
+def tools_dyno(ctx):
+    from ovtsuite import gui_dyno
+    w = ctx.main_window(ctx.ref("edc16_lq"))
+    ws = w.current
+    why = gui_dyno.availability(ws)
+    if why:
+        raise Skip(why)
+    dlg = gui_dyno.open_for(ws)             # as Tools > Dyno chart does
+    if dlg is None:
+        raise Skip("the Dyno chart window did not open")
+    ctx.settle(500)
+    return dlg
+
+
+@shot("log-blocks", BASE, size=(980, 680),
+      what="Tools > Build logging blocks on an EDC16 file")
+def log_blocks(ctx):
+    from ovtsuite import gui_blockpack
+    w = ctx.main_window(ctx.ref("edc16_lq"))
+    ws = w.current
+    why = gui_blockpack.availability(ws)
+    if why:
+        raise Skip(why)
+    dlg = gui_blockpack.open_for(ws)        # as Tools > Build logging blocks does
+    if dlg is None:
+        raise Skip("the Build logging blocks window did not open")
+    ctx.settle(500)
+    return dlg
+
+
+@shot("tools-fault-code-report", BASE, size=(1240, 560),
+      what="The fault code report after a read: codes of the open EDC16 file, "
+           "one new since the read before (sample codes)")
+def tools_fault_code_report(ctx):
+    from ovtsuite import dtc_report as R
+    from ovtsuite import gui_dtc_report as G
+    from ovtsuite.flash.diag import DTC_KWP2000, Dtc
+    w = ctx.main_window(ctx.ref("edc16_lq"))
+    dtc = _tool(ctx, w, "open_dtc", "dtc")
+    rctx = dtc._report_context()
+    if rctx is None:
+        raise Skip("no fault-code report context")
+    # codes this file's fault paths store, picked by their OBD-II code
+    want = ("P0299", "P0401", "P0101", "P0201", "P0236")
+    found = {}
+    for fp in dtc.dtc.paths.values():
+        pc = next((p for p in want if p in getattr(fp, "pcode_str", "")), "")
+        for c in getattr(fp, "stored_codes", ()) or ():
+            if pc and pc not in found:
+                found[pc] = c
+    codes = [found[p] for p in want if p in found]
+    if len(codes) < 4:
+        raise Skip("too few of the sample fault codes in this file")
+    rctx = G.ReportContext(ws=w.current, paths_for=rctx.paths_for,
+                           describe=rctx.describe, part=rctx.part, file=rctx.file,
+                           encoding=rctx.encoding)
+    head = dict(controller="EDC16", ecu_ident="03G906016LQ  R4 2,0L EDC",
+                cable="FTDI K-line", transport="K-line",
+                file=rctx.file, encoding=rctx.encoding)
+
+    def read(items, ts):
+        return R.build_read([Dtc(c, st, DTC_KWP2000) for c, st in items],
+                            paths_for=rctx.paths_for, describe=rctx.describe,
+                            ts=ts, **head)
+    old = read([(codes[0], 0xA4), (codes[3], 0x22)], "2026-10-18T09:12:00")
+    cur = read([(codes[0], 0xE4), (codes[1], 0x28), (codes[2], 0x24)],
+               "2026-10-25T10:41:00")
+    cur.kept = "A6 BHW swap"            # as a read kept in the sample project
+    dtc.close()
+    dlg = G.FaultCodeReport([(None, cur), (None, old)], rctx, parent=w)
+    return ctx.keep(dlg)

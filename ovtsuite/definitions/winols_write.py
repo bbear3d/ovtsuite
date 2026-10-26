@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Write a WinOLS map pack (``.kp``) -- EXPERIMENTAL.
+"""Write a WinOLS map pack (``.kp``).
 
 Two layouts, both as WinOLS itself writes them (see docs/WINOLS_FORMAT.md):
 

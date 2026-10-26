@@ -17,6 +17,8 @@ logging blocks...** lays the file's blocks out so each preset reads as few as
 possible. You write the file to the ECU as usual, and from then on the presets
 read the new layout.
 
+![Build logging blocks on an EDC16 file: each preset's blocks today and optimised, the rate it gains and the cells it adds](../images/log-blocks.png)
+
 ## Building them
 
 Open the file in a tab, then **Tools > Build logging blocks...** (or

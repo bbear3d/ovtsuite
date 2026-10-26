@@ -20,6 +20,8 @@ It is a calculation, not a measurement. The engine makes these figures only if
 the turbo reaches its target boost and the injectors and fuel system deliver
 the fuel; nothing here knows about a worn turbo or a clogged filter.
 
+![The dyno chart of an EDC16 file: power and torque by engine speed, the limiter governing each band, every engine speed in the table and the run's conditions](../images/tools-dyno.png)
+
 ## Reading the chart
 
 | What | Meaning |

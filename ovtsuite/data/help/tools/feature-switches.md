@@ -27,6 +27,8 @@ only: those change just the coolant correction, and **Off** needs the
 switch. A file of another kind (a gearbox, a cluster) does not offer the
 window.
 
+![Feature switches on an EDC16 file: the functions it offers, and the values cruise control is made of](../images/tools-feature-switches.png)
+
 ## Change a function
 
 1. Open the file and choose **Tools > Feature switches...**.

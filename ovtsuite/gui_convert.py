@@ -1034,11 +1034,10 @@ class ConverterDialog(QtWidgets.QDialog):
         f.addRow("Addresses:", self.a2l_addr)
 
         w, f = page("kp")
-        lab = QtWidgets.QLabel("Experimental: laid out as the map packs WinOLS 5.0 "
-                               "writes; WinOLS 5.87 opens it. From a WinOLS project or "
-                               "map pack, its maps and folders go in as they are "
-                               "(translated, when chosen). If a WinOLS version refuses "
-                               "it, an A2L imports reliably.")
+        lab = QtWidgets.QLabel("Laid out as the map packs WinOLS 5.0 writes; WinOLS "
+                               "opens it. From a WinOLS project or map pack, its maps "
+                               "and folders go in as they are (translated, when "
+                               "chosen).")
         lab.setWordWrap(True)
         f.addRow(lab)
 

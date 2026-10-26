@@ -196,7 +196,7 @@ See [Editing and saving](editing.md#checksums) for what is corrected on save.
 | **Export > Original file (.sgo / .dim / .frf)...** | | The file the set was imported from, with the saved version in it. Only for a set imported from such a file. |
 | **Export > Definition as XDF...** | | The tab's parameters as a TunerPro definition. Needs the file's module. |
 | **Export > Definition as A2L...** | | The tab's parameters as an ASAP2 description, for WinOLS and other tools. See [Exporting](editor/export.md#definition-as-a2l). |
-| **Export > Map pack for WinOLS (.kp, experimental)...** | | The tab's parameters as a WinOLS map pack (experimental). See [Exporting](editor/export.md#map-pack-for-winols-experimental). |
+| **Export > Map pack for WinOLS (.kp)...** | | The tab's parameters as a WinOLS map pack. See [Exporting](editor/export.md#map-pack-for-winols). |
 | **Export > Data log...** / **Patch...** / **Attachment...** | | One of the logs, patches or attachments kept in the project. Greyed out when it has none. |
 | **New window** | | Start another, separate window. See [Tabs and sessions](editor/tabs-and-sessions.md#one-window). |
 | **Exit** | | Close the app (asks about unsaved changes). |

@@ -16,7 +16,7 @@ to the tab in front are greyed out.
 | **Original file (.sgo / .dim / .frf)...** | The file the set was imported from, with the saved version in it -- byte for byte the original when nothing changed. An edited `.frf` cannot be rebuilt yet: the export says so, and **Binary (.bin)...** is the way out. | A set imported from a `.sgo`, `.dim` or `.frf`. |
 | **Definition as XDF...** | A TunerPro XDF describing every parameter of this binary. | Any binary whose module provides definitions. |
 | **Definition as A2L...** | An ASAP2 description (`.a2l`) of every parameter of this binary, for WinOLS and other tools that import A2L. | Any binary whose module provides definitions. |
-| **Map pack for WinOLS (.kp, experimental)...** | A WinOLS map pack of the same parameters. Experimental: see below. | Any binary whose module provides definitions. |
+| **Map pack for WinOLS (.kp)...** | A WinOLS map pack of the same parameters: see below. | Any binary whose module provides definitions. |
 | **Data log...** | One of the project's logs, as a CSV file. | A project that keeps logs. See [Data logging](../logging.md#logs-in-the-project). |
 | **Patch...** | One of the project's patches, as a `.patch` file. | A project that keeps patches. See [Patches](patches.md). |
 | **Attachment...** | One of the project's attachments, as the file it was. | A project with attachments. |
@@ -55,12 +55,10 @@ ratio, which an A2L cannot express, so it is described in the stored units
 To bring these parameters into WinOLS, import the A2L into the WinOLS
 project for this binary.
 
-## Map pack for WinOLS (experimental)
+## Map pack for WinOLS
 
-**Map pack for WinOLS (.kp, experimental)...** writes a WinOLS map pack.
-It is laid out as WinOLS 5.0 writes its map packs, and WinOLS 5.87 opens
-it. The format is only partly known, so if a version of WinOLS refuses a
-pack, use **Definition as A2L...** instead. A
+**Map pack for WinOLS (.kp)...** writes a WinOLS map pack.
+It is laid out as WinOLS 5.0 writes its map packs, and WinOLS opens it. A
 map that the binary stores column by column (as EDC16 does) appears turned
 in the pack, with its axes swapped, because a map pack stores tables row by
 row. Only parameters with a linear scaling fit a map pack; the others, and

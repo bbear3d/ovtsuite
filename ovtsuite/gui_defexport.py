@@ -3,8 +3,8 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""File > Export > Definition as A2L... and Map pack for WinOLS (.kp,
-experimental)...: the tab's parameters (as File > Export > Definition as
+"""File > Export > Definition as A2L... and Map pack for WinOLS
+(.kp)...: the tab's parameters (as File > Export > Definition as
 XDF... takes them) written by :mod:`ovtsuite.a2l_export` and
 :mod:`ovtsuite.definitions.winols_write`."""
 
@@ -67,18 +67,10 @@ def export_a2l(ws) -> str:
 
 
 def export_kp(ws) -> str:
-    """Write the tab's parameters as a WinOLS map pack (experimental).
+    """Write the tab's parameters as a WinOLS map pack.
     Returns the path, or ""."""
     from .definitions.winols_write import write_kp
     if ws is None or ws.primary is None:
-        return ""
-    if QtWidgets.QMessageBox.question(
-            ws, "Export map pack (experimental)",
-            "The WinOLS map pack format is only partly known: %s reads the "
-            "packs it writes, but WinOLS may not open them.\n\nFor WinOLS, "
-            "exporting an A2L (File > Export > Definition as A2L...) and "
-            "importing that is the reliable way.\n\nWrite a map pack anyway?"
-            % branding.APP_NAME) != QtWidgets.QMessageBox.StandardButton.Yes:
         return ""
     path = _ask(ws, "Export map pack", "WinOLS map packs (*.kp)", ".kp")
     if not path:

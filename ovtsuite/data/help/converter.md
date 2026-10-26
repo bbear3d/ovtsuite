@@ -17,6 +17,8 @@ Open it with **Tools > Converter (definitions, values and binaries)...** in the 
 window, or on its own with the **OVT Converter** shortcut. Files dropped on
 the shortcut open as the files to convert.
 
+![The converter with a TunerPro XDF and its binary added](images/converter.png)
+
 ## The window
 
 The window is laid out in tabs:
@@ -312,7 +314,7 @@ display name), and values apply back by either form.
 | ASAP2 A2L | Yes | Yes | Addresses as file offsets (WinOLS, TunerPro) or ECU addresses (INCA, CANape) |
 | Bosch DAMOS | Yes | Yes | Written back into a DAMOS, its own records are kept as they are |
 | WinOLS project (.ols) | Yes | No | Its binary is used when none is given; it and its versions can be [extracted](#extract-the-binaries-of-a-winols-project) |
-| WinOLS map pack (.kp) | Yes | Experimental | Laid out section by section as the map packs WinOLS 5.0 writes, and reads back in OVT-Suite; opens in WinOLS 5.87; if a WinOLS version refuses it, an A2L imports reliably. From a WinOLS project or map pack the maps pass through as they are: every map with its own name, description, units, scaling and axes, in the project's own folders (see [WinOLS project to map pack](#winols-project-to-map-pack)) |
+| WinOLS map pack (.kp) | Yes | Yes | Laid out section by section as the map packs WinOLS 5.0 writes; reads back in OVT-Suite and opens in WinOLS. From a WinOLS project or map pack the maps pass through as they are: every map with its own name, description, units, scaling and axes, in the project's own folders (see [WinOLS project to map pack](#winols-project-to-map-pack)) |
 | EcuFlash XML | Yes | Yes | Finds the base a ROM includes beside it; writes one self-contained file |
 | RomRaider XML | Yes | Yes | Many ROMs per file: found from the binary or picked |
 | OVT definition (JSON) | Yes | Yes | Every field of the definition, for scripts and comparisons |

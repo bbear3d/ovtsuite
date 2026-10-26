@@ -9,5 +9,6 @@
  "aisin09d": "Reference/Aisin09D/09D927750HN_3403.bin",
  "vdo_vwk501": "Reference/VDO/Samples/VWK501-FIS-Diesel-A4-UK-Base.bin",
  "hvac_4f": "Reference/Binaries/4F0910043B___0080-hotseats-code12fix-v2.hvac",
- "log_6hp19": "Reference/Logs/6hp19-tdi20-HALF-6-8_20261008_162724-discover.csv"
+ "log_6hp19": "Reference/Logs/6hp19-tdi20-HALF-6-8_20261008_162724-discover.csv",
+ "xdf_lq": "Reference/XDFs/03G906016KN-LQ-BPW.xdf"
 }

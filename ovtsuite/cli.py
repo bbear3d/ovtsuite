@@ -370,8 +370,6 @@ def cmd_export(args):
         with open(args.out, "wb") as fh:
             fh.write(write_kp(ents, len(s.binfile.data), title=title,
                               warnings=warnings))
-        print("note: the map pack format is experimental -- WinOLS may not "
-              "open it; an A2L imports reliably")
     else:
         from .xdf_export import export_xdf
         xml = export_xdf(ents, title, s.binfile.name,
@@ -1598,7 +1596,7 @@ def main(argv=None):
     s.set_defaults(fn=cmd_coverage)
 
     s = sub.add_parser("export", help="export a binary's definition: TunerPro "
-                       "XDF, ASAP2 A2L or WinOLS map pack (experimental)",
+                       "XDF, ASAP2 A2L or WinOLS map pack",
                        parents=[_common])
     s.add_argument("binary")
     s.add_argument("out")

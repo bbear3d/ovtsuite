@@ -15,6 +15,8 @@ Project panel) for the same file or set takes the place of a report still
 open. See
 [Reading fault codes](../logging/fault-codes.md) for the read itself.
 
+![The report after a read: three codes with their P-codes, decoded status and fault paths, two new since the read before and one gone](../images/tools-fault-code-report.png)
+
 ## What it shows
 
 The top of the window says when the codes were read, which controller

@@ -5,6 +5,8 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Recipes for the VDO Cluster and 4F/4L HVAC module pages, the Module
 Manager, and the About dialog."""
+import os
+
 from help_screenshots import Skip, shot
 
 
@@ -114,4 +116,36 @@ def about_credits(ctx):
         for j in range(top.childCount()):
             if top.child(j).text(0).startswith("hayperek"):
                 tree.setCurrentItem(top.child(j))
+    return ctx.keep(dlg)
+
+
+@shot("converter", "data/help", size=(1100, 780),
+      what="The Converter with an XDF and its binary added, TunerPro XDF to "
+           "ASAP2 A2L, the preview filled in")
+def converter(ctx):
+    import shutil
+    import tempfile
+    from ovtsuite import gui_convert
+    # copies in a short, neutral folder (the paths show in the window), else
+    # the temporary folder
+    d = os.path.join(os.path.splitdrive(tempfile.gettempdir())[0] + os.sep,
+                     "OVT-Suite help", "Converter")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        d = os.path.join(tempfile.gettempdir(), "OVT-Suite help", "Converter")
+        os.makedirs(d, exist_ok=True)
+    import atexit
+    atexit.register(shutil.rmtree, os.path.dirname(d), True)
+    xdf = os.path.join(d, "03G906016LQ.xdf")
+    binary = os.path.join(d, "03G906016LQ.bin")
+    shutil.copyfile(ctx.ref("xdf_lq"), xdf)
+    shutil.copyfile(ctx.ref("edc16_lq"), binary)
+    dlg = gui_convert.ConverterDialog(None, sources=[xdf], binary=binary)
+    ctx.settle(1500)                    # the files are read in the background
+    i = dlg.target.findText("A2L", ctx.QtCore.Qt.MatchFlag.MatchContains)
+    if i >= 0:
+        dlg.target.setCurrentIndex(i)
+    dlg.preview()
+    ctx.settle(4000)                    # the preview runs in the background too
     return ctx.keep(dlg)
