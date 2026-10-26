@@ -66,8 +66,8 @@ class XdfTable:
     def _real(self, ax: Optional[XdfAxis]) -> bool:
         """Is ``ax`` a stored axis, or a placeholder?
 
-        An axis STORED AT THE Z ADDRESS is a placeholder some XDFs carry, not a breakpoint list -- it cannot be a stored axis,
-        because it would overlap the data it indexes. Counting one as real
+        An axis STORED AT THE Z ADDRESS is a placeholder some XDFs carry, not
+        a breakpoint list -- it cannot be a stored axis, because it would overlap the data it indexes. Counting one as real
         turns the table into a "map", which then takes the map header offset
         (first axis - 4) instead of the curve one (axis - 2), so its structure
         address is wrong, its fingerprint is cut from the wrong bytes, and it

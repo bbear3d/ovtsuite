@@ -219,8 +219,9 @@ def test_ols_categories_match_the_expected_xdf(tmp_path):
     WinOLS calls "My maps", which the expected XDF names from its maps'
     commonest word ("LLR").
 
-    The expected XDF is whichever copy carries the expected mark in its first line: the pair's XDF, or Reference/EDC15/038906019GQ.xdf -- an
-    XDF OVT-Suite exported over the pair's is not it."""
+    The expected XDF is whichever copy carries the expected mark in its
+    first line: the pair's XDF, or Reference/EDC15/038906019GQ.xdf -- an
+    XDF exported over the pair's since is not it."""
     from ovtsuite import convert as C
     src = PAIR + ".ols" if os.path.isfile(PAIR + ".ols") else GQ
     ref = None
