@@ -104,9 +104,9 @@ on its own).
   definitions, calibration values and binaries between XDF, A2L, DAMOS,
   WinOLS, EcuFlash/RomRaider, DCM/CDFX, BIN, HEX and S-record, with watch
   folders and a right-click menu.
-- **Gearboxes:** a shift map editor and lock-up (TCC) editor window, full-load
-  shift points from the engine ECU's torque, part-load strategies with log
-  replay, and fault-code editors for the ZF 6HP and 8HP.
+- **Gearboxes:** full-load shift points from the engine ECU's torque,
+  part-load strategies with log replay, fault-code editors for the ZF 6HP and
+  8HP, and the comparison in the shift map and lock-up editors.
 
 **Flashing**
 
@@ -130,16 +130,13 @@ on its own).
   together.
 - Hex editor right-click menu (copy, paste, copy from comparison, revert,
   go to table).
-- EDC15 map sets that share their axes resize and move as one.
 - Patches carry resized tables, and apply across a resize.
 - Logger: user presets, a live readings-a-second readout, a tab's log kept
   when it stops, *Log every cell of this group*.
-- Project panel: remove several logs, patches or attachments at once, or a
-  whole binary with its history; a read opened as a new project is named
-  after its part number and software.
+- Project panel: remove several logs, patches or attachments at once; a read
+  opened as a new project is named after its part number and software.
 - Measuring-block, fault-code and EEPROM editors with Apply, Cancel and OK,
   one undo step per Apply, and the same cell colours as the map editor.
-- Closed modules now ship as compiled code, one package per platform.
 
 The full list of changes is in each release's notes on the
 [Releases](https://github.com/bbear3d/ovtsuite/releases) page.
@@ -743,14 +740,10 @@ installer, from **Tools > Modules... > Install from file**, or with
 |---|---|---|
 | Bosch EDC16 1.1.0 (free) | [OVTSuite-BoschEDC16-1.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/OVTSuite-BoschEDC16-1.1.0-setup.exe), or [edc16-1.1.0-cp313-win_amd64.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/edc16-1.1.0-cp313-win_amd64.ovtmod) | [ovtsuite-module-edc16_1.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/ovtsuite-module-edc16_1.1.0-1_all.deb) |
 | Bosch EDC15 1.1.0 (free) | [OVTSuite-BoschEDC15-1.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/OVTSuite-BoschEDC15-1.1.0-setup.exe), or [edc15-1.1.0-cp313-win_amd64.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/edc15-1.1.0-cp313-win_amd64.ovtmod) | [ovtsuite-module-edc15_1.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/ovtsuite-module-edc15_1.1.0-1_all.deb) |
-| ZF 5HP 0.1.0 (free, open source) | [OVTSuite-ZF5HP-0.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/OVTSuite-ZF5HP-0.1.0-setup.exe), or [zf5hp-0.1.0.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/zf5hp-0.1.0.ovtmod) (any platform) | [ovtsuite-module-zf5hp_0.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/ovtsuite-module-zf5hp_0.1.0-1_all.deb) |
+| ZF 5HP 0.1.0 (free, open source) | [OVTSuite-ZF5HP-0.1.0-setup.exe](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/OVTSuite-ZF5HP-0.1.0-setup.exe), or [zf5hp-0.1.0.ovtmod](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/zf5hp-0.1.0.ovtmod) | [ovtsuite-module-zf5hp_0.1.0-1_all.deb](https://github.com/bbear3d/ovtsuite/releases/download/v0.5.1/ovtsuite-module-zf5hp_0.1.0-1_all.deb) |
 | VDO Cluster (open source) | Build it from [bbear3d/ovtsuite-vdo](https://github.com/bbear3d/ovtsuite-vdo) | Same |
 
-The closed modules ship as compiled code, so each `.ovtmod` is built for one
-platform and Python version (`cp313-win_amd64` is 64-bit Windows); the app
-refuses one built for another platform, and its updater picks the right one.
-Open-source modules ship as source and work on every platform. On Linux the
-`.deb` installs the module for all users
+On Linux the `.deb` installs the module for all users
 (`sudo apt install ./ovtsuite-module-edc16_….deb`), and the app asks you to
 accept the module's licence agreement the first time it starts.
 
@@ -777,7 +770,7 @@ The command line works on any file the installed modules support:
 ovtsuite identify <bin>            # platform, variant, calibration region
 ovtsuite diff <stock> <mod>        # named, physical-unit differences
 ovtsuite export <bin> out.xdf      # a TunerPro XDF (or .a2l / .kp) for this binary
-ovtsuite convert <in> --to kp     # definitions, values and binaries between formats
+ovtsuite convert <in> --to kp      # definitions, values and binaries between formats
 ovtsuite checksum <bin> [--fix]    # verify / correct checksums
 ovtsuite modules                   # installed modules
 ovtsuite install-module <file.ovtmod>
@@ -785,7 +778,7 @@ ovtsuite mcp [--print-config]      # the MCP server for AI apps
 ```
 
 A source checkout has no closed-source modules. To use one, install its
-`.ovtmod` built for your platform and Python. To load a module you built
+`.ovtmod`. To load a module you built
 yourself (unsigned), tick **Allow unsigned modules (development)** in
 Tools > Modules, or set `OVT_ALLOW_UNSIGNED=1`.
 
