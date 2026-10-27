@@ -139,7 +139,7 @@ OPTIONS: Tuple[Option, ...] = (
            "choice", "While a comparison is loaded, this file's own table as "
            "the difference from the comparison (either way round), a "
            "percentage or a ratio. The cells are read only then: switch back "
-           "to Values to edit. Also on the Comparison toolbar. Blank cells "
+           "to Values to edit. Also in the Difference view button on the edit bar. Blank cells "
            "and the tint (below) apply to it too.",
            choices=(("abs", "Values"),) + _cd.MODES[1:]),
     Option("ui/compare_delta_blank", False, "Blank the cells that do not "
@@ -149,9 +149,6 @@ OPTIONS: Tuple[Option, ...] = (
            "red where it is higher. Off: the usual orange for a differing "
            "cell. The tint is the same light colour with dark text in both "
            "themes."),
-    Option("ui/compare_delta_control", "banner", "Mode control", EDITOR,
-           "choice", "Where the drop-down for the comparison's mode is "
-           "offered, besides this page.", choices=_cd.CONTROLS),
     # -- Appearance ----------------------------------------------------------
     Option("ui/theme", "system", "Theme", APPEARANCE, "choice",
            "System follows Windows' light or dark app mode.",
@@ -189,7 +186,7 @@ DEFAULT_TOOLBAR = [
     "file/new-project", "file/open-project", "file/open-recent", "file/save",
     "|", "edit/undo", "edit/redo", "edit/cells/revert-to-last-saved-values",
     "|", "edit/find-panel",
-    "edit/show-differences",
+    "edit/show-differences", "view/difference-view",
     "edit/version-history", "|", "tools/ecu-read-write", "tools/data-logging",
     "|", "view/project-panel", "tools/ai/assistant", "tools/options",
 ]

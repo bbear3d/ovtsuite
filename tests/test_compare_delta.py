@@ -4,7 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """The comparison table as a difference (ovtsuite.compare_delta, the model's
-delta view and the banner / toolbar controls in gui_compare_delta)."""
+delta view and its menu in gui_compare_delta)."""
 import os
 import sys
 
@@ -164,3 +164,53 @@ if QtCore is not None:
         m.set_delta("d1")
         assert _row(m, 0) == ["A", "C", "C"]
 
+    def test_the_menu_sets_both_views_and_the_options(isolated_qsettings_module):
+        from ovtsuite import gui_compare_delta as gcd, options
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        assert app
+        menu = gcd.fill_menu(QtWidgets.QMenu())
+        acts = {a.text(): a for a in menu.actions() if a.text()}
+        sections = [a.text() for a in menu.actions() if a.isSeparator()]
+        assert "Comparison shows" in sections
+        assert "This file's table shows (read only)" in sections
+        try:
+            diff = [a for a in menu.actions()
+                    if a.text().startswith("Difference: this file")]
+            assert len(diff) == 2               # one per section
+            diff[0].trigger()
+            diff[1].trigger()
+            assert options.get("ui/compare_delta") == "d1"
+            assert options.get("ui/primary_delta") == "d1"
+            acts["Tint by direction"].trigger()
+            acts["Blank the cells that do not differ"].trigger()
+            assert options.get("ui/compare_delta_tint") is True
+            assert options.get("ui/compare_delta_blank") is True
+            menu.aboutToShow.emit()             # reads the options back
+            assert diff[0].isChecked() and diff[1].isChecked()
+            assert gcd.active()
+            for a in menu.actions():
+                if a.text() == "Values":
+                    a.trigger()
+            assert not gcd.active()
+        finally:
+            for k in gcd.KEYS:
+                options.set(k, options.BY_KEY[k].default)
+
+    def test_the_edit_bar_button_follows_the_options_and_the_comparison(
+            model, isolated_qsettings_module):
+        from types import SimpleNamespace as NS
+        from ovtsuite import gui_compare_delta as gcd, options
+        ws = NS(model=model)
+        btn = gcd.make_button(ws)
+        try:
+            assert btn.text() == "Difference view" and btn.isEnabled()
+            options.set("ui/primary_delta", "pct")
+            gcd.apply_all(type("W", (), {"workspaces": lambda self: [ws]})())
+            assert ws.model.primary_delta() == "pct"
+            assert btn.text() == "Difference view (on)"
+            ws.model._cmp = []                  # no comparison loaded
+            gcd.refresh_button(ws)
+            assert not btn.isEnabled() and btn.text() == "Difference view"
+        finally:
+            for k in gcd.KEYS:
+                options.set(k, options.BY_KEY[k].default)

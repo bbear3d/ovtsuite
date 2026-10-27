@@ -5742,6 +5742,8 @@ if HAVE_QT:
             self.dyno_btn = QtWidgets.QPushButton("Dyno")
             self.dyno_btn.setShortcut("Ctrl+4")     # a toggle: gui_dyno
             eb.addWidget(self.dyno_btn)
+            from . import gui_compare_delta as _gcd     # comparison as a
+            eb.addWidget(_gcd.make_button(self))        # difference (a menu)
 
             # the comparison (when loaded) is shown INSIDE this same grid,
             # under a banner row, so both share one set of scrollers and one
@@ -9678,6 +9680,8 @@ if HAVE_QT:
                 "Show the Project panel expanded, or collapse it to its strip")
             from . import gui_panelayout as _gpl
             _gpl.add_menu(self, view)
+            from . import gui_compare_delta as _gcd
+            _gcd.add_menu(self, view)           # View > Difference view
             view.addSeparator()
             self._act(view, "Next tab", lambda: self._cycle_tab(1), "Ctrl+Tab")
             self._act(view, "Previous tab", lambda: self._cycle_tab(-1),

@@ -52,8 +52,6 @@ def install(win) -> None:
     _ga.apply_icons(win)
     from . import gui_toolbar
     gui_toolbar.install(win)
-    from . import gui_compare_delta
-    gui_compare_delta.install_toolbar(win)
     note = _opt.notifier()
 
     def changed(key, win=win):

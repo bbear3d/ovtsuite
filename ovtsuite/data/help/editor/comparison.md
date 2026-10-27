@@ -96,10 +96,13 @@ described above.
 ### Showing the difference
 
 Instead of the comparison's own values, its cells can show how this file
-differs from it. Pick the view in the drop-down on the comparison banner
-(on the heading over the comparison's grid in the **below** and **beside**
-layouts; on the banner row of the table otherwise), on the **Comparison**
-toolbar, or in **Tools > Options > Editor > Comparison table**:
+differs from it. Pick the view in the **Difference view** button on the
+table's edit bar, beside **3D surface** and **Dyno** (available while a
+comparison is loaded), in **View > Difference view**, or in **Tools >
+Options > Editor**. The same menu can be a button on the toolbar: **Tools >
+Options > Toolbar**, *View ▸ Difference view*. The menu has a section for the
+comparison and one for your own table, and the two options below. The
+comparison's views:
 
 | View | Each cell shows |
 | --- | --- |
@@ -111,18 +114,16 @@ toolbar, or in **Tools > Options > Editor > Comparison table**:
 
 Values are in the units the table shows. A comparison value of 0 has no
 percentage or ratio, so that cell shows `-`. A cell that does not differ
-shows 0 (percent 0%, ratio 1). The banner says which view is on.
+shows 0 (percent 0%, ratio 1). The banner says which views are on.
 
 Options: **Blank the cells that do not differ in a difference view** leaves
 only the changes on screen; **Tint a difference by direction** fills the
 cells blue where this file is lower and red where it is higher (the same
 light fill with dark text in both themes, so the numbers always read; off,
-a differing cell is the usual orange). **Mode control** chooses where the
-drop-down is offered: on the banner (the default), on a toolbar, both, or
-only in Options.
+a differing cell is the usual orange). Both apply to the comparison and to
+your own table.
 
-**This file's table shows** (Options, and the second drop-down on the
-**Comparison** toolbar) turns your own table into the same kind of view: each
+**This file's table shows** (the menu's second section, or Options) turns your own table into the same kind of view: each
 cell is how it differs from the comparison, in any of the views above. The
 cells are **read only** while it is on -- typing, pasting and the modify bar
 do nothing and the status bar says why -- so set it back to **Values** to

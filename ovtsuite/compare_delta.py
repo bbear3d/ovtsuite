@@ -6,7 +6,7 @@
 """The comparison table as a difference instead of absolute values.
 
 Pure arithmetic and text, no Qt: :class:`gui.TableModel` asks it what a
-comparison cell shows (:mod:`ovtsuite.gui_compare_delta` owns the controls).
+comparison cell shows (:mod:`ovtsuite.gui_compare_delta` owns the menu).
 Values arrive in display units -- the same factor the table's own cells use --
 so a delta reads in the units on screen.
 
@@ -43,13 +43,6 @@ BANNER = {
     "pct": "percent change from comparison",
     "ratio": "ratio (this file / comparison)",
 }
-#: where the mode control is offered
-CONTROLS: Tuple[Tuple[str, str], ...] = (
-    ("banner", "On the comparison banner"),
-    ("toolbar", "On a toolbar"),
-    ("both", "On the banner and a toolbar"),
-    ("none", "Nowhere (Options only)"),
-)
 NONE_TEXT = "-"
 
 
