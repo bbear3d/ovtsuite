@@ -1977,11 +1977,16 @@ def _drop_doc(win, doc):
         docs(win).remove(doc)
     from .gui_files import unlock_project
     unlock_project(win, doc.path)
+    from . import gui_external as _ext
+    _ext.erase_doc(win, doc)                # copies opened in other programs
     doc.close()
 
 
 def close_project(win, doc) -> bool:
     """Close every tab of ``doc`` (asking about unsaved changes once)."""
+    from . import gui_external as _ext
+    if not _ext.settle(win, doc):           # edits made in other programs
+        return False
     tabs = doc.tabs(win)
     if doc.is_dirty(win):
         SB = QtWidgets.QMessageBox.StandardButton
@@ -3015,8 +3020,10 @@ class ProjectPanel(AutoHideDock):
                 li.setData(0, _ROLE, (kind, d))
                 top.addChild(li)
                 for a in newest_first(lst):
-                    ai = QtWidgets.QTreeWidgetItem(["%s%s" % (
-                        "📌 " if a.pinned else "", _att_text(a))])
+                    from . import gui_external as _ext
+                    ai = QtWidgets.QTreeWidgetItem(["%s%s%s" % (
+                        "📌 " if a.pinned else "", _att_text(a),
+                        _ext.badge(self.win, d, _ATT_ITEM[kind], a.id))])
                     where = ""
                     if a.set:
                         try:
@@ -3100,7 +3107,7 @@ class ProjectPanel(AutoHideDock):
             self._view_log(data)            # view it; Export... is on the menu
         elif data[0] == "attachment":
             if not _view_kept_read(self.win, data):     # a fault-code read: its report
-                self._export_att(data)
+                self._open_external(data)
 
     #: tree items that Remove takes away (a log, a patch, an attachment)
     _REMOVABLE = ("log", "patch", "attachment")
@@ -3134,8 +3141,10 @@ class ProjectPanel(AutoHideDock):
                 return
 
         def run():
+            from . import gui_external as _ext
             for x in picked:
                 kind, aid = x[0], x[2]
+                _ext.erase_item(self.win, d, kind, aid)     # its open copy goes
                 if kind == "log":
                     d.project.remove_log(aid)
                 elif kind == "patch":
@@ -3298,6 +3307,17 @@ class ProjectPanel(AutoHideDock):
             elif _is_kept_read(d, aid):
                 m.addAction("View fault code report",
                             lambda: _view_kept_read(self.win, data))
+            m.addAction("Open externally", lambda: self._open_external(data))
+            from . import gui_external as _ext
+            _a, _raw = _att(d, kind, aid)
+            _prog = _ext.program_for(_a.filename)
+            if _prog:
+                m.addAction("Open with %s" % os.path.basename(_prog.rstrip("/")),
+                            lambda: _ext.open_with(self.win, d, kind, aid, False))
+            m.addAction("Open with...", lambda: _ext.open_with(
+                self.win, d, kind, aid))
+            m.addAction("Show copy in folder", lambda: _ext.reveal(
+                self.win, d, kind, aid))
             m.addAction("Export...", lambda: self._export_att(data))
             if kind == "log":
                 a = next(x for x in d.project.logs if x.id == aid)
@@ -3449,6 +3469,10 @@ class ProjectPanel(AutoHideDock):
             set_last_dir(p, dkind)
         if paths:
             self._changed(d)
+
+    def _open_external(self, data):
+        from . import gui_external as _ext
+        _ext.open_default(self.win, data[1], data[0], data[2])
 
     def _export_att(self, data):
         kind, d, aid = data[0], data[1], data[2]

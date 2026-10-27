@@ -302,8 +302,12 @@ Right-click an item for what can be done with it:
   **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
 - **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,
   **Remove**.
-- **Attachment** -- **Export...**, **Remove**. A kept fault-code read also
-  has **View fault code report**.
+- **Attachment** -- **Open externally** (or double-click it), **Open
+  with...**, **Show copy in folder**, **Export...**, **Remove**. A kept
+  fault-code read also has **View fault code report**.
+
+Logs, patches and attachments all have the three *open* commands; see
+[Opening a kept file in another program](#opening-a-kept-file-in-another-program).
 
 **Save** always leaves correct checksums: a tab whose checksums are wrong
 is saved even when nothing in it was edited (a file read or imported with
@@ -317,6 +321,33 @@ among them), select them with Ctrl-click or Shift-click and choose **Remove
 Each project lists its **Logs**, **Patches** and **Attachments** under its
 sets, newest first (as do **File > Export** and the pickers that offer
 them); sets and branches stay in the order they were made.
+
+### Opening a kept file in another program
+
+**Open externally** opens a log, patch or attachment in the program your
+system uses for that kind of file (a spreadsheet for a `.xlsx`, a PDF
+viewer, a text editor), with no export and no place to choose. **Open
+with...** asks for a program once and remembers it for that file type
+(the menu then offers **Open with** *program* directly). **Show copy in
+folder** opens the folder the temporary copy is in, for programs you start
+yourself.
+
+The program gets a **temporary copy**. You never name it or clean it up: it
+is erased when the program you chose with **Open with...** closes, or --
+for **Open externally**, where the app cannot tell when the other program
+ends -- when the project or the app closes. Anything a crash left behind is
+erased at the next start. While the copy is open the item shows
+*(open externally)* in the panel.
+
+When you save the file in the other program and come back to the app, you
+are asked whether to **Update project copy**. That replaces what the
+project keeps (its name, set, pin and note stay). **Not now** leaves it
+alone until the file is saved again. Tick **Always update from now on for
+this file** to stop being asked for that file in this session; the item
+shows *(edited externally)* until the project has the change. If you close
+the project, or the app, with a change the project does not have, you are
+asked once: **Update project copy**, **Discard changes** or **Cancel**.
+Removing the item erases its copy.
 
 ## WinOLS projects and definitions
 

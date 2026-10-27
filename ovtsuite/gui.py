@@ -28,6 +28,7 @@ from .appsettings import settings as _settings
 # Speed-map views: the base app's generic ones, or the ZF 6HP module's when
 # it is installed (ovtsuite.speedview dispatches).
 from . import speedview as _view6
+from . import compare_delta as _cdelta
 from . import platforms as _platforms
 from .modules import registry as _registry
 
@@ -41,6 +42,7 @@ from . import progress as _progress
 from . import gui_search as _gui_search
 from . import gui_ai as _gui_ai
 from . import gui_project as _gp
+from . import gui_external as _gex
 from .session import TunerSession
 from .tiers import TIER_NAMES, tier_name
 from . import catalogue as _catalogue
@@ -511,6 +513,10 @@ if HAVE_QT:
             return False
 
     DIFF_BG = QtGui.QColor(255, 214, 153)
+    # a delta cell tinted by direction (Options > Editor > Comparison table):
+    # opaque and light with dark text, so the numbers read in both themes
+    DELTA_UP_BG = QtGui.QColor(246, 172, 164)     # this file is higher
+    DELTA_DOWN_BG = QtGui.QColor(168, 203, 240)   # this file is lower
     HL_BG = QtGui.QColor(255, 235, 59)            # cells a Find result points at
     EDIT_BG = QtGui.QColor(198, 232, 255)
     AXIS_BG = QtGui.QColor(70, 100, 140)          # X/Y axis breakpoint bands
@@ -786,6 +792,10 @@ if HAVE_QT:
             self._y: List[float] = []
             self._dec = 3
             self._cmp_dec = 3
+            #: comparison shown as a difference: (mode, blank unchanged,
+            #: tint by direction); see compare_delta
+            self._delta = ("abs", False, False)
+            self._delta_hold = False       # copying: absolute values
             self._roff = 0                 # 1 when an X-axis band is shown
             self._coff = 0                 # 1 when a Y-axis band is shown
             #: Swap the axes on screen. Display only -- see _kind.
@@ -1037,9 +1047,12 @@ if HAVE_QT:
                 (["%d axis point(s) differ" % na] if na else [])
             diff = ", ".join(parts) if parts else "identical"
             mode = self.overlay.mode if self.overlay is not None else "direct"
+            dm = self._delta[0]
             if not full:
                 tag = {"axis-mismatch": " · axes differ",
                        "resampled": " · resampled"}.get(mode, "")
+                if dm != "abs":
+                    tag += " · showing " + _cdelta.BANNER[dm]
                 return "Comparison - %s   %s%s" % (
                     self.cmp_name or "comparison", diff, tag)
             note = ""
@@ -1050,6 +1063,47 @@ if HAVE_QT:
             what = self.compare.name if self.compare is not None else ""
             return "Comparison - %s:  %s   %s%s" % (
                 self.cmp_name or "comparison", what, diff, note)
+
+        def set_delta(self, mode: str, blank: bool = False, tint: bool = False):
+            """Show the comparison's cells as a difference (``mode`` of
+            :mod:`ovtsuite.compare_delta`; "abs" is the plain values)."""
+            new = (_cdelta.valid(mode), bool(blank), bool(tint))
+            if new == self._delta:
+                return
+            self._delta = new
+            if self.entity and self._cmp:
+                tl = self.index(0, 0)
+                br = self.index(self.rowCount() - 1, self.columnCount() - 1)
+                self.dataChanged.emit(tl, br)
+
+        def delta_mode(self) -> str:
+            """The comparison's mode now ("abs" while a copy is made)."""
+            return "abs" if self._delta_hold else self._delta[0]
+
+        def _delta_cell(self, v, pv, f, role):
+            """A comparison value cell in a delta mode: ``v`` the
+            comparison's, ``pv`` the primary's. None to show it plain."""
+            mode, blank, tint = self._delta
+            if (mode == "abs" or self._delta_hold or v is None or pv is None
+                    or self._off(v) or self._off(pv)):
+                return None
+            differs = abs(v - pv) > 1e-6
+            d = _cdelta.delta(mode, pv * f, v * f)
+            if role in _R_TEXT:
+                dec = max(self._dec, self._cmp_dec) if f == 1.0 else 1
+                return _cdelta.text(mode, d, differs, dec, blank)
+            if role == _R_TIP:
+                return "this file: %s\n%s: %s" % (
+                    self._ztext(pv, f, self._dec), self.other_label,
+                    self._ztext(v, f, self._cmp_dec))
+            heat = self._heatmap and self._vmax > self._vmin
+            sg = _cdelta.sign(mode, d) if differs else 0
+            if tint and sg and not heat:
+                if role == _R_BG:
+                    return DELTA_UP_BG if sg > 0 else DELTA_DOWN_BG
+                if role == _R_FG:
+                    return CELL_DARK_FG
+            return self._cell_style(v, pv, role)
 
         def set_heatmap(self, on: bool):
             self._heatmap = bool(on)
@@ -1343,6 +1397,12 @@ if HAVE_QT:
                 if _copts and v is not None and role == _R_DISPLAY:
                     _cl = _copts.get(int(round(v)))
                     return "%s  (%s)" % (_cl, _fmt(v, 0)) if _cl else _fmt(v, 0)
+                if self._delta[0] != "abs":
+                    out = self._delta_cell(v, pv, f, role)
+                    if out is not None or role in _R_TEXT:
+                        return out if out is not None else (
+                            "" if v is None else
+                            self._ztext(v, f, self._cmp_dec))
                 if role in _R_TEXT:
                     return "" if v is None else self._ztext(v, f, self._cmp_dec)
                 if role == _R_TIP:
@@ -1586,6 +1646,13 @@ if HAVE_QT:
             included positionally)."""
             if not indexes:
                 return ""
+            self._delta_hold = True     # a copy is the real values
+            try:
+                return self._copy_tsv(indexes)
+            finally:
+                self._delta_hold = False
+
+        def _copy_tsv(self, indexes) -> str:
             rows = [ix.row() for ix in indexes]
             cols = [ix.column() for ix in indexes]
             r0, r1, c0, c1 = min(rows), max(rows), min(cols), max(cols)
@@ -8890,6 +8957,7 @@ if HAVE_QT:
             self._watch.start()
             _gp.install_autosave(self)      # crash recovery for open projects
             _gp.install_disk_watch(self)    # .ovt files changed by other programs
+            _gex.install(self)              # items opened in other programs
             from . import gui_options
             gui_options.install(self)       # Tools > Options, toolbar, shortcuts
             _gui_ai.install(self)           # AI apps: shared tabs, proposals
@@ -9959,6 +10027,9 @@ if HAVE_QT:
             if _sv.saving(self):
                 ev.ignore()                 # a project is being written
                 return
+            if not self._quiet_close and not _gex.settle(self):    # other programs
+                ev.ignore()
+                return
             _gp.pause_autosave(self)        # no snapshot starts mid-close
             if not self._quiet_close:
                 dirty = [ws for ws in self.workspaces() if ws.is_dirty()]
@@ -9986,6 +10057,7 @@ if HAVE_QT:
                                 return
                 self.remember_tabs()
             # a proper exit: saved or refused, crash-recovery data goes
+            _gex.erase_all(self)            # copies opened in other programs
             _gp.shutdown(self)
             self._watch.stop()
             for ws in self.workspaces():

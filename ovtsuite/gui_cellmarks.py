@@ -15,6 +15,10 @@ table editor:
 * **changed, not applied yet**: :data:`PENDING_BG` (pale yellow), bold, dark
   text (:func:`mark_pending`). It takes the place of orange in the primary;
   the comparison's copy stays orange where it differs;
+* **a difference tinted by direction** (the comparison shown as a delta,
+  :mod:`ovtsuite.compare_delta`): ``gui.DELTA_UP_BG`` (this file higher) and
+  ``gui.DELTA_DOWN_BG`` (lower), opaque light fills with ``gui.CELL_DARK_FG``
+  text, the same in either theme; the main table's model draws them;
 * **stored on the ECU** (the fault-code windows, after reading the codes
   from the car): :data:`STORED_BG` (light violet), dark text -- a meaning the
   rest of the app has no colour for, a hue apart from orange and yellow;

@@ -939,6 +939,18 @@ class Project:
         return self._add_att("attachments", self.attachments, filename, data,
                              set_id, note)
 
+    def replace_attachment_bytes(self, kind: str, aid: str, data: bytes) -> None:
+        """New contents for a kept ``"log"``, ``"patch"`` or ``"attachment"``
+        (its file edited in another program). The id, name, set, pin and
+        note stay."""
+        coll, lst = {"log": ("logs", self.logs), "patch": ("patches", self.patches),
+                     "attachment": ("attachments", self.attachments)}[kind]
+        a = next((a for a in lst if a.id == aid), None)
+        if a is None:
+            raise KeyError(aid)
+        self._blobs[self._att_path(coll, a)] = bytes(data)
+        self._touch()
+
     def remove_attachment(self, aid: str) -> None:
         self._remove_att("attachments", self.attachments, aid)
 

@@ -93,6 +93,38 @@ values were resampled. **Ctrl+C** in the comparison grid copies its selected
 cells. The default, **In the same grid, under the table**, is the layout
 described above.
 
+### Showing the difference
+
+Instead of the comparison's own values, its cells can show how this file
+differs from it. Pick the view in the drop-down on the comparison banner
+(on the heading over the comparison's grid in the **below** and **beside**
+layouts; on the banner row of the table otherwise), on the **Comparison**
+toolbar, or in **Tools > Options > Editor > Comparison table**:
+
+| View | Each cell shows |
+| --- | --- |
+| **Absolute values** | the comparison's value (the default) |
+| **Difference: this file - comparison** | what you changed: positive where this file is higher |
+| **Difference: comparison - this file** | the same, the other way round |
+| **Percent change from comparison** | the difference as a percentage of the comparison's value |
+| **Ratio: this file / comparison** | this file's value divided by the comparison's |
+
+Values are in the units the table shows. A comparison value of 0 has no
+percentage or ratio, so that cell shows `-`. A cell that does not differ
+shows 0 (percent 0%, ratio 1). The banner says which view is on.
+
+Options: **Blank the cells that do not differ in a difference view** leaves
+only the changes on screen; **Tint a difference by direction** fills the
+cells blue where this file is lower and red where it is higher (the same
+light fill with dark text in both themes, so the numbers always read; off,
+a differing cell is the usual orange). **Mode control** chooses where the
+drop-down is offered: on the banner (the default), on a toolbar, both, or
+only in Options.
+
+Hover a cell for both absolute values. **Copy** always copies the real
+values, never the differences. Text, hex and list-valued tables stay as
+they are.
+
 **In the same grid, matching cells marked** keeps that one grid, and frames
 the cells matching the selection in the other copy: select primary cells and
 their comparison cells are framed below the banner, select comparison cells

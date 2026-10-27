@@ -408,6 +408,8 @@ class CompareGrid(QtCore.QObject):
                                  .WidgetWithChildrenShortcut)
             sc.setEnabled(False)
             self.jump_sc.append(sc)
+        from . import gui_compare_delta     # comparison as a difference
+        gui_compare_delta.attach(self)
         self.set_mode(mode())
 
     @staticmethod
@@ -491,6 +493,9 @@ class CompareGrid(QtCore.QObject):
         if on:
             self._sync_fonts()
             QtCore.QTimer.singleShot(0, self._fit)
+        ctl = self.__dict__.get("delta_ctl")
+        if ctl is not None:
+            ctl.place()
 
     def _heading(self, *_a) -> None:
         """The comparison grid's heading: the banner it hides (file name,

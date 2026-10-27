@@ -27,6 +27,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import compare_delta as _cd
+
 #: the toolbar's buttons: action ids, "|" for a separator (gui_toolbar)
 TOOLBAR_KEY = "toolbar/actions"
 #: prefix of a changed keyboard shortcut: ``shortcuts/<action id>``
@@ -127,6 +129,22 @@ OPTIONS: Tuple[Option, ...] = (
                     ("below", "Below the table, scrolled with it"),
                     ("beside", "Beside the table, scrolled with it"),
                     ("mark", "In the same grid, matching cells marked"))),
+    Option("ui/compare_delta", "abs", "Comparison shows", EDITOR, "choice",
+           "The comparison's cells as its own values, or as the difference "
+           "from this file (either way round), a percentage or a ratio. "
+           "Copying a comparison cell always copies the real value. Text, "
+           "hex and list maps stay as they are.",
+           choices=_cd.MODES),
+    Option("ui/compare_delta_blank", False, "Blank the cells that do not "
+           "differ in a difference view", EDITOR),
+    Option("ui/compare_delta_tint", False, "Tint a difference by direction",
+           EDITOR, help="Blue where this file is lower than the comparison, "
+           "red where it is higher. Off: the usual orange for a differing "
+           "cell. The tint is the same light colour with dark text in both "
+           "themes."),
+    Option("ui/compare_delta_control", "banner", "Mode control", EDITOR,
+           "choice", "Where the drop-down for the comparison's mode is "
+           "offered, besides this page.", choices=_cd.CONTROLS),
     # -- Appearance ----------------------------------------------------------
     Option("ui/theme", "system", "Theme", APPEARANCE, "choice",
            "System follows Windows' light or dark app mode.",
