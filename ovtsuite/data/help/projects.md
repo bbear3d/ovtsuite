@@ -1,7 +1,7 @@
 ---
 title: Projects (.ovt)
 order: 26
-context: ProjectPanel, RecoveryDialog, ProjectInfoDialog, RecordDialog, DiskChangedDialog, MergeConflictDialog, SavingDialog
+context: ProjectPanel, RecoveryDialog, ProjectInfoDialog, RecordDialog, DiskChangedDialog, MergeConflictDialog, SavingDialog, OlsVersionsDialog
 ---
 # Projects (.ovt)
 
@@ -358,6 +358,12 @@ set of the project:
 - its binary becomes the set's original, named after the WinOLS version it
   holds (*WinOLS: Original*); an image WinOLS put together from an EDC16's
   flash and MPC is split into the two again;
+- a project can hold **several versions of the binary** (the original and
+  what was made from it in WinOLS). When it does, you are asked what to
+  import: **the original only**, **all versions** or **only one version**.
+  All of them go into the one set: the original is its original, each
+  later one a saved version named *WinOLS: <name>* in WinOLS's order, so
+  you can compare them and go back to any of them;
 - its maps become the set's definition: when no module recognises the binary,
   it opens with WinOLS's maps -- names, descriptions, folders as categories,
   axes, units and conversions -- in the main view; when a module does, the

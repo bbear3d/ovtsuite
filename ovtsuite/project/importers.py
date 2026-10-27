@@ -430,12 +430,53 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
     return s
 
 
-def _import_ols(project, data, filename, into_set, branch):
+def ols_versions(data: bytes) -> List[Tuple[str, str, int]]:
+    """The binaries a WinOLS project ``data`` embeds, the original first:
+    ``[(name, comment, size)]``; [] for anything that is not a project with
+    a binary. What :func:`import_bytes` takes as ``ols_versions`` indexes."""
+    from ..definitions import winols as _wo
+    try:
+        if not _wo.is_winols(data):
+            return []
+        wf = _wo.scan_images(data) or _wo.parse(data)
+    except Exception:                                   # noqa: BLE001
+        return []
+    if wf.kind != "ols":
+        return []
+    return [(v.name or ("Original" if i == 0 else "Version %d" % i),
+             v.comment, len(v.data)) for i, v in enumerate(wf.versions)]
+
+
+def _ols_picks(wf, which) -> List[int]:
+    """Indexes into ``wf.versions`` for ``which``: None / ``"original"`` the
+    original only, ``"all"`` every version, or the indexes to import."""
+    n = len(wf.versions)
+    if which is None or which == "original":
+        return [0]
+    if which == "all":
+        return list(range(n))
+    if isinstance(which, int):
+        which = [which]
+    picks = sorted({int(i) for i in which})
+    if not picks or picks[0] < 0 or picks[-1] >= n:
+        raise ImportRefused("the WinOLS project holds %d version%s; "
+                            "%s is not one of them"
+                            % (n, "" if n == 1 else "s", list(which)))
+    return picks
+
+
+def _import_ols(project, data, filename, into_set, branch, which=None):
     """A WinOLS project: its embedded binary becomes the set's root (named
     after the WinOLS version it holds), the project itself is packaged as
     the set's definition (its maps open the binary in the main view when no
     module knows it), and the vehicle and control-unit details entered in
-    WinOLS fill the project information that is still empty."""
+    WinOLS fill the project information that is still empty.
+
+    A project can embed several versions of the binary (the original and
+    what was made from it). ``which`` says which go in: the original only
+    (default), ``"all"``, or the indexes of the ones to import. The first
+    of them is the set's root, each later one a version (a checkpoint) on
+    its branch, in the order WinOLS holds them."""
     from ..definitions import winols
     wf = winols.parse(data)
     if wf.kind != "ols":
@@ -444,33 +485,54 @@ def _import_ols(project, data, filename, into_set, branch):
             "Open the binary and attach it as its definition." % filename)
     if not wf.image:
         raise ImportRefused("%s: the WinOLS project holds no binary" % filename)
-    image = bytes(wf.image)
-    images: Images = {}
-    ident = _identify(image)
-    platform = ident.platform
+    picks = _ols_picks(wf, which)
+    two = None
     if len(wf.segments) == 2:
         # an image WinOLS put together from two memories (flash + the
         # processor's internal flash, e.g. an EDC16 with its MPC)
         (a0, e0), (a1, e1) = wf.segments
-        first = _identify(image[a0:e0 + 1])
+        first = _identify(bytes(wf.versions[picks[0]].data)[a0:e0 + 1])
         if first.known and first.platform == "edc16":
-            ident, platform = first, first.platform
-            images = {"flash": image[a0:e0 + 1], "mpc": image[a1:e1 + 1]}
-    if not images:
-        images = {"flash": image}
+            two = ((a0, e0), (a1, e1))
+
+    def split(image: bytes) -> Images:
+        if two is None:
+            return {"flash": image}
+        (a0, e0), (a1, e1) = two
+        return {"flash": image[a0:e0 + 1], "mpc": image[a1:e1 + 1]}
+
+    image = bytes(wf.versions[picks[0]].data)
+    images = split(image)
+    ident = _identify(images["flash"] if two else image)
+    platform = ident.platform
     s = _new_or_existing_set(project, into_set, platform, filename, ident.facts)
     specs = [_member("flash", "flash" if ident.known else "raw", platform,
                      name="" if ident.known else os.path.basename(filename))]
     if "mpc" in images:
         specs.append(_member("mpc", "mpc", platform, base=0x400000))
     _ensure_members(project, s, specs)
-    version = wf.header.current_version
-    project.add_root(s.id, images, kind="import",
-                     label="WinOLS: %s" % version if version
-                     else "Imported %s" % filename,
-                     source={"file": filename, "format": "ols",
-                             "winols_version": wf.header.version},
-                     branch=branch)
+
+    def vname(i: int) -> str:
+        v = wf.versions[i]
+        return v.name or (wf.header.current_version if i == 0 else
+                          "Version %d" % i)
+
+    def src(i: int) -> dict:
+        d = {"file": filename, "format": "ols",
+             "winols_version": wf.header.version}
+        if len(wf.versions) > 1:
+            d["version"] = vname(i)
+        return d
+
+    first = picks[0]
+    label = ("WinOLS: %s" % vname(first) if vname(first)
+             else "Imported %s" % filename)
+    _c, b = project.add_root(s.id, images, kind="import", label=label,
+                             source=src(first), branch=branch)
+    for i in picks[1:]:
+        project.commit(s.id, b.id, split(bytes(wf.versions[i].data)),
+                       kind="import", label="WinOLS: %s" % vname(i),
+                       source=src(i))
     project.add_definition(s.id, "flash", filename, data, "ols")
     info = winols.project_info(wf.header)
     fresh = {k: v for k, v in info.items() if not project.info.get(k)}
@@ -495,13 +557,17 @@ def definition_type(data: bytes) -> Optional[str]:
 def import_bytes(project: Project, data: bytes, filename: str, *,
                  into_set: Optional[str] = None, branch: str = "",
                  sidecar_log: Optional[str] = None,
-                 definition: Optional[Tuple[str, bytes]] = None):
+                 definition: Optional[Tuple[str, bytes]] = None,
+                 ols_versions=None):
     """Import one file's bytes into ``project``; returns the set it went to.
 
     ``into_set`` adds the file to an existing set as a new branch with its own
     root (e.g. a stock ``.sgo`` next to a read of a tuned car); otherwise a
     new set is created. ``definition`` is ``(filename, bytes)`` of an XDF /
-    A2L / KP / OLS to package with a raw member.
+    A2L / KP / OLS to package with a raw member. ``ols_versions``: which
+    binaries of a WinOLS project go in -- the original only (default),
+    ``"all"`` (the original as the root, the rest as versions of it), or a
+    list of indexes (see :func:`ols_versions`).
     """
     from .. import container as _c
     from .. import dim as _dim
@@ -538,7 +604,8 @@ def import_bytes(project: Project, data: bytes, filename: str, *,
         return _import_frf(project, data, filename, into_set, branch)
     from ..definitions import winols as _wo
     if _wo.is_winols(data):
-        return _import_ols(project, data, filename, into_set, branch)
+        return _import_ols(project, data, filename, into_set, branch,
+                           ols_versions)
     dtype = definition_type(data[:65536])
     if dtype in ("xdf", "a2l", "dam"):
         raise ImportRefused(
@@ -586,7 +653,7 @@ def import_read(project: Project, data: bytes, name: str, *,
 
 def import_file(path: str, project: Optional[Project] = None, *,
                 into_set: Optional[str] = None, branch: str = "",
-                definition_path: Optional[str] = None):
+                definition_path: Optional[str] = None, ols_versions=None):
     """Import the file at ``path``; returns ``(project, set)``.
 
     A ``.log`` beside the file is migrated as its history. A definition with
@@ -619,9 +686,10 @@ def import_file(path: str, project: Optional[Project] = None, *,
         if definition_type(definition[1]) is None:
             definition = None           # not a definition after all
     s = import_bytes(project, data, os.path.basename(path), into_set=into_set,
-                     branch=branch, sidecar_log=log, definition=definition)
+                     branch=branch, sidecar_log=log, definition=definition,
+                     ols_versions=ols_versions)
     return project, s
 
 
-__all__ = ["import_bytes", "import_file", "import_read", "legacy_chain", "ImportRefused",
+__all__ = ["import_bytes", "import_file", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
            "DEFINITION_EXTS", "definition_type", "new_id"]

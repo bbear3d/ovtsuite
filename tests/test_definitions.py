@@ -177,10 +177,22 @@ def _folders(w):
         w.raw(b"\0" * {114: 0, 117: 0, 292: 15, 397: 25, 479: 25, 503: 25, 597: 25}[w.ver])
 
 
-def make_ols(ver, image=None):
+def make_ols(ver, image=None, versions=None):
+    """``versions``: [(name, image)] -- a project embedding several binaries
+    (the version list before the map list, every image whole at the end)."""
     w = _W(ver)
     _header(w)
     w.raw(b"\0" * 64)                       # header fields not read
+    if versions:
+        w.u32(len(versions[0][1]))
+        w.raw(winols.VERSIONS_MAGIC)
+        w.u32(len(versions))
+        for name, _img in versions:
+            for t in (name, ""):
+                w.u32(len(t))
+                w.raw(t.encode())
+            w.raw(winols.VERSION_SIG + b"\0" * 12)
+        w.raw(b"\0" * 16)
     w.raw(winols.RECORDS_MAGIC)
     if ver >= 200:
         w.u8(0)
@@ -190,7 +202,10 @@ def make_ols(ver, image=None):
     struct.pack_into("<I", w.out, count_at, n)
     _folders(w)
     w.raw(b"\0" * 32)
-    w.raw(winols.IMAGE_SIG + (image if image is not None else _image()))
+    if versions:
+        w.raw(winols.IMAGE_SIG + b"".join(img for _n, img in versions))
+    else:
+        w.raw(winols.IMAGE_SIG + (image if image is not None else _image()))
     if ver >= 200:
         struct.pack_into("<I", w.out, 20, len(w.out))
     return bytes(w.out)
@@ -335,6 +350,66 @@ def test_an_ols_imports_as_a_project_with_its_definition_and_details():
     assert p.info["make"] == "Audi" and p.info["model"] == "A4"
     assert p.info["ecu"] == "Bosch ME7.5"
     assert "360654" in p.info["notes"]
+
+
+def _three_versions():
+    a = _image()
+    b = bytearray(a)
+    b[0x40] ^= 0xFF
+    c = bytearray(b)
+    c[0x41] ^= 0xFF
+    return [("Original", a), ("Stage 1", bytes(b)), ("Stage 2", bytes(c))]
+
+
+def _ols_with_versions():
+    return make_ols(597, versions=_three_versions())
+
+
+def test_an_ols_with_several_binaries_lists_them():
+    from ovtsuite.project import importers
+    got = importers.ols_versions(_ols_with_versions())
+    assert [(n, size) for n, _c, size in got] == [
+        (n, len(i)) for n, i in _three_versions()]
+    assert importers.ols_versions(make_ols(597)) == [("Original", "", len(_image()))]
+
+
+def test_an_ols_imports_its_original_only_by_default():
+    from ovtsuite.project import Project, importers
+    p = Project("")
+    s = importers.import_bytes(p, _ols_with_versions(), "car.ols")
+    assert len(s.checkpoints) == 1
+    assert p.member_bytes(s.id, s.members[0].id) == _three_versions()[0][1]
+
+
+def test_an_ols_can_import_every_binary_as_versions():
+    from ovtsuite.project import Project, importers
+    p = Project("")
+    s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
+                               ols_versions="all")
+    want = _three_versions()
+    assert [c.label for c in s.checkpoints] == [
+        "WinOLS: Original", "WinOLS: Stage 1", "WinOLS: Stage 2"]
+    assert s.checkpoints[0].parent is None
+    assert s.checkpoints[1].parent == s.checkpoints[0].id
+    assert s.checkpoints[2].parent == s.checkpoints[1].id
+    mid = s.members[0].id
+    for c, (_n, img) in zip(s.checkpoints, want):
+        assert p.state(s.id, c.id)[mid] == img
+    assert p.member_bytes(s.id, mid) == want[2][1]      # the newest is the head
+    assert len(s.branches) == 1
+
+
+def test_an_ols_can_import_one_chosen_binary():
+    from ovtsuite.project import Project, importers
+    p = Project("")
+    s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
+                               ols_versions=[1])
+    assert len(s.checkpoints) == 1
+    assert s.checkpoints[0].label == "WinOLS: Stage 1"
+    assert p.member_bytes(s.id, s.members[0].id) == _three_versions()[1][1]
+    with pytest.raises(importers.ImportRefused, match="not one of them"):
+        importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
+                               ols_versions=[7])
 
 
 def test_a_definition_alone_is_refused_with_what_to_do():
@@ -668,3 +743,22 @@ def test_reference_a2l_reads_without_warnings():
     p = _ref("A2L", "038997016Q_4999_502333_P350_U8A9_EDC16U31_4.47.a2l")
     defn = a2l.load(open(p, "rb").read())
     assert len(defn.tables) > 5000 and not defn.warnings
+
+
+def test_the_import_dialog_offers_the_versions_only_when_there_are_several(tmp_path):
+    pytest.importorskip("PyQt6")
+    from ovtsuite import gui_olsversions as ov
+    one, many = tmp_path / "one.ols", tmp_path / "many.ols"
+    one.write_bytes(make_ols(597))
+    many.write_bytes(_ols_with_versions())
+    assert ov.choose(None, str(one)) is None            # nothing to ask
+    assert ov.choose(None, str(tmp_path / "x.bin")) is None
+    from PySide6 import QtWidgets
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    dlg = ov.OlsVersionsDialog(None, "many.ols", [("A", "", 1), ("B", "", 1)])
+    assert dlg.value() is None                          # the original by default
+    dlg.all.setChecked(True)
+    assert dlg.value() == "all"
+    dlg.one.setChecked(True)
+    dlg.combo.setCurrentIndex(1)
+    assert dlg.value() == [1]

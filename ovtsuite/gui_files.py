@@ -188,10 +188,14 @@ def _attach_definitions(win, doc, made, defs) -> List[str]:
 def _import_each(win, proj, paths):
     """``[(path, set)]`` of the files that went in; the rest are reported."""
     from .project import importers as _imp
+    from . import gui_olsversions as _ov
     made, problems = [], []
     for path in paths:
+        which = _ov.choose(win, path)           # a WinOLS project's versions
+        if which == _ov.CANCEL:
+            continue
         try:
-            _p, s = _imp.import_file(path, proj)
+            _p, s = _imp.import_file(path, proj, ols_versions=which)
             made.append((path, s))
         except Exception as ex:
             problems.append("%s: %s" % (os.path.basename(path), ex))
