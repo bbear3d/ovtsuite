@@ -132,8 +132,8 @@ OPTIONS: Tuple[Option, ...] = (
     Option("ui/compare_delta", "abs", "Comparison shows", EDITOR, "choice",
            "The comparison's cells as its own values, or as the difference "
            "from this file (either way round), a percentage or a ratio. "
-           "Copying a comparison cell always copies the real value. Text, "
-           "hex and list maps stay as they are.",
+           "Copying a comparison cell always copies the real value. Hex maps "
+           "show a signed hex byte; text and list maps stay as they are.",
            choices=_cd.MODES),
     Option("ui/primary_delta", "abs", "This file's table shows", EDITOR,
            "choice", "While a comparison is loaded, this file's own table as "

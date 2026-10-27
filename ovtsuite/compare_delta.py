@@ -19,7 +19,9 @@ Modes (the first is today's view):
 ``pct``    (this file - comparison) / |comparison|, in percent
 ``ratio``  this file / comparison
 
-A comparison value of 0 has no percentage or ratio: those cells show
+Hex maps show a difference as a signed hex byte (``+0A``); a percentage or
+ratio stays decimal. Text (ASCII) maps stay as they are. A comparison value of
+0 has no percentage or ratio: those cells show
 :data:`NONE_TEXT`. A cell that does not differ shows "0" (percent "0%",
 ratio "1"), or nothing when "blank unchanged cells" is on.
 """
@@ -84,6 +86,19 @@ def text(mode: str, d: Optional[float], differs: bool, dec: int = 3,
     if mode == "ratio":
         return "%.3f" % d
     return "%+.*f" % (dec, d)
+
+
+def hex_text(mode: str, d: Optional[float], differs: bool,
+             blank: bool = False) -> str:
+    """:func:`text` for a map of hex bytes: a difference is a signed hex
+    byte (``+0A``, ``-04``; ``00`` where nothing differs); a percentage or
+    a ratio is a decimal number, as for any other map."""
+    if mode in ("pct", "ratio") or d is None or not differs:
+        if mode in ("d1", "d2") and not differs and not blank:
+            return "00"
+        return text(mode, d, differs, 0, blank)
+    n = int(round(abs(d))) & 0xFF if abs(d) < 256 else int(round(abs(d)))
+    return ("+" if d > 0 else "-") + "%02X" % n
 
 
 def sign(mode: str, d: Optional[float]) -> int:

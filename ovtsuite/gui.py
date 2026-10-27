@@ -1096,7 +1096,7 @@ if HAVE_QT:
             """The comparison's mode now ("abs" while a copy is made)."""
             return "abs" if self._delta_hold else self._delta[0]
 
-        def _delta_cell(self, v, pv, f, role, primary=False):
+        def _delta_cell(self, v, pv, f, role, primary=False, hexed=False):
             """A value cell in a delta mode: ``v`` the comparison's, ``pv``
             the primary's (``primary``: the cell drawn is the primary's).
             None to show it plain."""
@@ -1109,8 +1109,14 @@ if HAVE_QT:
             differs = abs(v - pv) > 1e-6
             d = _cdelta.delta(mode, pv * f, v * f)
             if role in _R_TEXT:
+                if hexed:
+                    return _cdelta.hex_text(mode, d, differs, blank)
                 dec = max(self._dec, self._cmp_dec) if f == 1.0 else 1
                 return _cdelta.text(mode, d, differs, dec, blank)
+            if role == _R_TIP and hexed:
+                return "this file: %02X\n%s: %02X" % (
+                    int(round(pv)) & 0xFF, self.other_label,
+                    int(round(v)) & 0xFF)
             if role == _R_TIP:
                 return "this file: %s\n%s: %s" % (
                     self._ztext(pv, f, self._dec), self.other_label,
@@ -1408,6 +1414,10 @@ if HAVE_QT:
                                                 else _as_char(pv))
                     return self._cell_style(v, pv, role)
                 if tk == "hex":
+                    if self._delta[0] != "abs":
+                        out = self._delta_cell(v, pv, 1.0, role, hexed=True)
+                        if out is not None:
+                            return out
                     if role in _R_TEXT:
                         return "" if v is None else "%02X" % (int(round(v)) & 0xFF)
                     if role == _R_TIP:
@@ -1460,6 +1470,11 @@ if HAVE_QT:
             if tk == "hex":
                 # A patch/bypass site is a raw byte the user matches against a
                 # hex signature ("stock 6C, bypass 60"), not a scaled number.
+                if self._cmp and self.primary_delta() != "abs":
+                    out = self._delta_cell(self._at(self._cmp, a, b), v, 1.0,
+                                           role, primary=True, hexed=True)
+                    if out is not None:
+                        return out
                 if role in _R_TEXT:
                     return "" if v is None else "%02X" % (int(round(v)) & 0xFF)
                 return self._cell_style(v, self._at(self._cmp, a, b)

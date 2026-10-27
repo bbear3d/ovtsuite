@@ -129,8 +129,9 @@ do nothing and the status bar says why -- so set it back to **Values** to
 edit. The banner says it is on. The blanking and tint options apply to it too.
 
 Hover a cell for both absolute values. **Copy** always copies the real
-values, never the differences. Text, hex and list-valued tables stay as
-they are.
+values, never the differences. Hex tables show a difference as a signed
+hex byte (`+0A`, `-04`); a percentage or ratio stays decimal. Text and
+list-valued tables stay as they are.
 
 **In the same grid, matching cells marked** keeps that one grid, and frames
 the cells matching the selection in the other copy: select primary cells and

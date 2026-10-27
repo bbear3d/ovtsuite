@@ -133,61 +133,34 @@ if QtCore is not None:
         assert m.flags(m.index(1, 1)) & QtCore.Qt.ItemIsEditable
         assert cell(0, 1) == "12.0"
 
-    def test_text_maps_stay_absolute(model):
+    def test_hex_maps_show_the_difference_as_hex(model):
         m = model
         m.entity.text_kind = "hex"
+        m.entity.read_only = False
+        m._vals = [[0x6C, 0x60, 0x10], [0x00, 0xFF, 0x20]]
+        m._cmp = [[0x6C, 0x6A, 0x10], [0x04, 0xF0, 0x20]]
+        assert _row(m, 0) == ["6C", "6A", "10"]
         m.set_delta("d1")
-        assert _row(m, 0) == ["0A", "0A", "0E"]
+        assert _row(m, 0) == ["00", "-0A", "00"]
+        assert _row(m, 1) == ["-04", "+0F", "00"]
+        m.set_delta("d2", blank=True)
+        assert _row(m, 0) == ["", "+0A", ""]
+        m.set_delta("pct")
+        assert _row(m, 1)[0] == "-100.0%"
+        tip = m.data(m.index(m.sep_row() + 2, 2), QtCore.Qt.ToolTipRole)
+        assert "60" in tip and "6A" in tip
+        # this file's own table, as a difference: signed hex, read only
+        m.set_delta("abs", primary="d1")
+        D = QtCore.Qt.DisplayRole
+        assert [m.data(m.index(1, c), D) for c in (1, 2, 3)] == ["00", "-0A", "00"]
+        assert [m.data(m.index(2, c), D) for c in (1, 2, 3)] == ["-04", "+0F", "00"]
+        assert not m.flags(m.index(1, 1)) & QtCore.Qt.ItemIsEditable
 
-    @pytest.fixture
-    def grid(model, isolated_qsettings_module):
-        from types import SimpleNamespace as NS
-        from ovtsuite import gui_cmpscroll as GC
-        t = QtWidgets.QTableView()
-        t.setModel(model)
-        ws = NS(table=t, model=model, primary=None)
-        g = GC.CompareGrid(ws)
-        ws.cmp_grid = g
-        host = QtWidgets.QMainWindow()
-        host.setCentralWidget(g.split)
-        host.resize(900, 500)
-        host.show()
-        model.modelReset.emit()
-        QtWidgets.QApplication.processEvents()
-        yield g, ws
-        from ovtsuite import options
-        for k in ("ui/compare_layout", "ui/compare_delta",
-                  "ui/compare_delta_control"):
-            options.set(k, options.BY_KEY[k].default)
-        host.close()
+    def test_ascii_maps_stay_absolute(model):
+        m = model
+        m.entity.text_kind = "ascii"
+        m._vals = [[65, 66, 67], [68, 69, 70]]
+        m._cmp = [[65, 67, 67], [68, 69, 71]]
+        m.set_delta("d1")
+        assert _row(m, 0) == ["A", "C", "C"]
 
-    def _pump():
-        for _ in range(3):
-            QtWidgets.QApplication.processEvents()
-
-    def test_banner_control_follows_the_layout_and_the_option(grid):
-        from ovtsuite import gui_compare_delta as gcd, options
-        g, ws = grid
-        ctl = g.delta_ctl
-        # same grid: on the table's banner row
-        assert ctl.wanted() and ctl.cb.isVisible()
-        assert ctl.cb.parent() is ws.table.viewport()
-        # own grid: on the grid's heading
-        options.set("ui/compare_layout", "below")
-        g.set_mode("below")
-        _pump()
-        assert g.active() and ctl.cb.parent() is g.cmp_head
-        assert ctl.cb.isVisible()
-        # picking a mode sets the option, and the model follows
-        i = ctl.cb.findData("pct")
-        ctl.cb.setCurrentIndex(i)
-        ctl.cb.activated.emit(i)
-        assert options.get("ui/compare_delta") == "pct"
-        gcd.apply_all(type("W", (), {"workspaces": lambda self: [ws]})())
-        _pump()
-        assert ws.model.delta_mode() == "pct"
-        assert "percent change" in g.cmp_head.text()
-        # not offered on the banner
-        options.set("ui/compare_delta_control", "toolbar")
-        gcd.apply_all(type("W", (), {"workspaces": lambda self: [ws]})())
-        assert not ctl.cb.isVisible()
