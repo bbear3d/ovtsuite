@@ -15,7 +15,9 @@ Comparison table, and -- where ``ui/compare_delta_control`` allows -- from
   table in the others (:class:`BannerControl`, one per tab);
 * a drop-down on a toolbar of its own (:func:`install_toolbar`).
 
-Tint colours and the other two options: ``ui/compare_delta_blank`` (blank the
+``ui/primary_delta`` is the same for this file's own table (read only while
+it shows differences; Options and the toolbar only). Tint colours and the
+other two options: ``ui/compare_delta_blank`` (blank the
 cells that do not differ) and ``ui/compare_delta_tint`` (blue below, red
 above, opaque with dark text so the numbers read in both themes).
 """
@@ -30,14 +32,22 @@ MODE_KEY = "ui/compare_delta"
 BLANK_KEY = "ui/compare_delta_blank"
 TINT_KEY = "ui/compare_delta_tint"
 CONTROL_KEY = "ui/compare_delta_control"
-KEYS = (MODE_KEY, BLANK_KEY, TINT_KEY, CONTROL_KEY)
+PRIMARY_KEY = "ui/primary_delta"
+KEYS = (MODE_KEY, PRIMARY_KEY, BLANK_KEY, TINT_KEY, CONTROL_KEY)
 
+_PRIMARY_TIP = ("Show this file's own table as the difference from the "
+                "comparison. Its cells are read only while it does; choose "
+                "Values to edit.")
 _TIP = ("Show the comparison as a difference from this file instead of its "
         "own values. Copying always copies the real values.")
 
 
 def mode() -> str:
     return _cd.valid(_opt.get(MODE_KEY))
+
+
+def primary_mode() -> str:
+    return _cd.valid(_opt.get(PRIMARY_KEY))
 
 
 def control() -> str:
@@ -47,15 +57,16 @@ def control() -> str:
 
 def apply(model) -> None:
     """Put the options into effect in one table model."""
-    model.set_delta(mode(), _opt.get(BLANK_KEY), _opt.get(TINT_KEY))
+    model.set_delta(mode(), _opt.get(BLANK_KEY), _opt.get(TINT_KEY),
+                    primary_mode())
 
 
-def _combo(parent=None) -> QtWidgets.QComboBox:
+def _combo(parent=None, primary: bool = False) -> QtWidgets.QComboBox:
     cb = QtWidgets.QComboBox(parent)
     for key, label in _cd.MODES:
-        cb.addItem(label, key)
-    cb.setToolTip(_TIP)
-    cb.setObjectName("compareDeltaMode")
+        cb.addItem("Values" if primary and key == "abs" else label, key)
+    cb.setToolTip(_PRIMARY_TIP if primary else _TIP)
+    cb.setObjectName("primaryDeltaMode" if primary else "compareDeltaMode")
     return cb
 
 
@@ -68,7 +79,8 @@ def _show(cb: QtWidgets.QComboBox, m: str) -> None:
 
 
 def _picked(cb: QtWidgets.QComboBox) -> None:
-    _opt.set(MODE_KEY, cb.currentData())
+    _opt.set(PRIMARY_KEY if cb.objectName() == "primaryDeltaMode" else MODE_KEY,
+             cb.currentData())
 
 
 class BannerControl(QtCore.QObject):
@@ -150,9 +162,19 @@ def attach(grid) -> BannerControl:
     """Give a tab's comparison grid its banner control and put the options
     into effect in its model."""
     apply(grid.ws.model)
+    grid.ws.model.edit_blocked.connect(lambda: _blocked(grid.ws))
     ctl = BannerControl(grid)
     grid.delta_ctl = ctl
     return ctl
+
+
+def _blocked(ws) -> None:
+    try:
+        ws.win.statusBar().showMessage(
+            "This file's table shows differences, so it is read only. "
+            "Set \"This file's table shows\" to Values to edit.", 8000)
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------ the toolbar
@@ -165,8 +187,14 @@ def install_toolbar(win) -> QtWidgets.QToolBar:
     cb = _combo()
     cb.activated.connect(lambda _i: _picked(cb))
     tb.addWidget(cb)
+    lbl2 = QtWidgets.QLabel("This file shows:")
+    lbl2.setContentsMargins(10, 0, 4, 0)
+    tb.addWidget(lbl2)
+    pcb = _combo(primary=True)
+    pcb.activated.connect(lambda _i: _picked(pcb))
+    tb.addWidget(pcb)
     win.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, tb)
-    win.__dict__["_ovt_delta_toolbar"] = (tb, cb)
+    win.__dict__["_ovt_delta_toolbar"] = (tb, cb, pcb)
     sync_toolbar(win)
     return tb
 
@@ -175,8 +203,9 @@ def sync_toolbar(win) -> None:
     ent = win.__dict__.get("_ovt_delta_toolbar")
     if ent is None:
         return
-    tb, cb = ent
+    tb, cb, pcb = ent
     _show(cb, mode())
+    _show(pcb, primary_mode())
     tb.setVisible(control() in ("toolbar", "both"))
 
 

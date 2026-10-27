@@ -121,6 +121,13 @@ a differing cell is the usual orange). **Mode control** chooses where the
 drop-down is offered: on the banner (the default), on a toolbar, both, or
 only in Options.
 
+**This file's table shows** (Options, and the second drop-down on the
+**Comparison** toolbar) turns your own table into the same kind of view: each
+cell is how it differs from the comparison, in any of the views above. The
+cells are **read only** while it is on -- typing, pasting and the modify bar
+do nothing and the status bar says why -- so set it back to **Values** to
+edit. The banner says it is on. The blanking and tint options apply to it too.
+
 Hover a cell for both absolute values. **Copy** always copies the real
 values, never the differences. Text, hex and list-valued tables stay as
 they are.

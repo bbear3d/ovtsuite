@@ -775,6 +775,8 @@ if HAVE_QT:
         #: An edit was made through this grid (typed, pasted, or a selection
         #: operation) -- the table tab showing it stops being a preview.
         edited = QtCore.Signal()
+        #: an edit was refused: this file's table shows differences, not values
+        edit_blocked = QtCore.Signal()
 
         def __init__(self, session: TunerSession, readonly: bool = False,
                      other_label: str = "comparison"):
@@ -792,9 +794,10 @@ if HAVE_QT:
             self._y: List[float] = []
             self._dec = 3
             self._cmp_dec = 3
-            #: comparison shown as a difference: (mode, blank unchanged,
-            #: tint by direction); see compare_delta
-            self._delta = ("abs", False, False)
+            #: the comparison, and this file's own table, shown as a
+            #: difference: (comparison mode, blank unchanged, tint by
+            #: direction, this file's mode); see compare_delta
+            self._delta = ("abs", False, False, "abs")
             self._delta_hold = False       # copying: absolute values
             self._roff = 0                 # 1 when an X-axis band is shown
             self._coff = 0                 # 1 when a Y-axis band is shown
@@ -1053,6 +1056,9 @@ if HAVE_QT:
                        "resampled": " · resampled"}.get(mode, "")
                 if dm != "abs":
                     tag += " · showing " + _cdelta.BANNER[dm]
+                if self._delta[3] != "abs":
+                    tag += " · this file: %s, read only" % _cdelta.BANNER[
+                        self._delta[3]]
                 return "Comparison - %s   %s%s" % (
                     self.cmp_name or "comparison", diff, tag)
             note = ""
@@ -1064,10 +1070,13 @@ if HAVE_QT:
             return "Comparison - %s:  %s   %s%s" % (
                 self.cmp_name or "comparison", what, diff, note)
 
-        def set_delta(self, mode: str, blank: bool = False, tint: bool = False):
-            """Show the comparison's cells as a difference (``mode`` of
+        def set_delta(self, mode: str, blank: bool = False, tint: bool = False,
+                      primary: str = "abs"):
+            """Show the comparison's cells (``mode``) and this file's own
+            (``primary``) as a difference from the other (modes of
             :mod:`ovtsuite.compare_delta`; "abs" is the plain values)."""
-            new = (_cdelta.valid(mode), bool(blank), bool(tint))
+            new = (_cdelta.valid(mode), bool(blank), bool(tint),
+                   _cdelta.valid(primary))
             if new == self._delta:
                 return
             self._delta = new
@@ -1076,14 +1085,24 @@ if HAVE_QT:
                 br = self.index(self.rowCount() - 1, self.columnCount() - 1)
                 self.dataChanged.emit(tl, br)
 
+        def primary_delta(self) -> str:
+            """The mode this file's table shows in ("abs" with no
+            comparison, or while a copy is made)."""
+            if self._delta_hold or not self._cmp:
+                return "abs"
+            return self._delta[3]
+
         def delta_mode(self) -> str:
             """The comparison's mode now ("abs" while a copy is made)."""
             return "abs" if self._delta_hold else self._delta[0]
 
-        def _delta_cell(self, v, pv, f, role):
-            """A comparison value cell in a delta mode: ``v`` the
-            comparison's, ``pv`` the primary's. None to show it plain."""
-            mode, blank, tint = self._delta
+        def _delta_cell(self, v, pv, f, role, primary=False):
+            """A value cell in a delta mode: ``v`` the comparison's, ``pv``
+            the primary's (``primary``: the cell drawn is the primary's).
+            None to show it plain."""
+            mode, blank, tint = self._delta[:3]
+            if primary:
+                mode = self._delta[3]
             if (mode == "abs" or self._delta_hold or v is None or pv is None
                     or self._off(v) or self._off(pv)):
                 return None
@@ -1103,6 +1122,8 @@ if HAVE_QT:
                     return DELTA_UP_BG if sg > 0 else DELTA_DOWN_BG
                 if role == _R_FG:
                     return CELL_DARK_FG
+            if primary:
+                return self._cell_style(pv, v, role)
             return self._cell_style(v, pv, role)
 
         def set_heatmap(self, on: bool):
@@ -1457,6 +1478,11 @@ if HAVE_QT:
                     return head + "\n".join("%d = %s" % (k2, t)
                                              for k2, t in sorted(opts.items()))
             f = self._zf(b)
+            if self._cmp and self.primary_delta() != "abs":
+                out = self._delta_cell(self._at(self._cmp, a, b), v, f, role,
+                                       primary=True)
+                if out is not None:
+                    return out
             if role in _R_TEXT:
                 return self._ztext(v, f, self._dec)
             if role == _R_TIP and self._cmp:
@@ -1480,6 +1506,8 @@ if HAVE_QT:
                 return f & _NO_SELECT_EDIT
             if k in ("cz", "cx", "cy") or self.readonly:
                 return f & _NO_EDIT  # comparison is view-only
+            if k == "z" and self.primary_delta() != "abs":
+                return f & _NO_EDIT     # differences, not the stored values
             if getattr(self.entity, "read_only", False):
                 # a definition marks it so (a cluster's odometer, immobilizer
                 # data): carried by patches and transfers, never hand-edited
@@ -1488,6 +1516,9 @@ if HAVE_QT:
             return f
 
         def _edit_cells(self, cells):
+            if self.primary_delta() != "abs":
+                self.edit_blocked.emit()        # the cells show differences
+                return
             self.session.edit_cells(self.entity, cells)
             self.edited.emit()
 

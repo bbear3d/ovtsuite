@@ -135,6 +135,13 @@ OPTIONS: Tuple[Option, ...] = (
            "Copying a comparison cell always copies the real value. Text, "
            "hex and list maps stay as they are.",
            choices=_cd.MODES),
+    Option("ui/primary_delta", "abs", "This file's table shows", EDITOR,
+           "choice", "While a comparison is loaded, this file's own table as "
+           "the difference from the comparison (either way round), a "
+           "percentage or a ratio. The cells are read only then: switch back "
+           "to Values to edit. Also on the Comparison toolbar. Blank cells "
+           "and the tint (below) apply to it too.",
+           choices=(("abs", "Values"),) + _cd.MODES[1:]),
     Option("ui/compare_delta_blank", False, "Blank the cells that do not "
            "differ in a difference view", EDITOR),
     Option("ui/compare_delta_tint", False, "Tint a difference by direction",

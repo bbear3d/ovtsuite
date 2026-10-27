@@ -101,6 +101,38 @@ if QtCore is not None:
         tip = m.data(up, QtCore.Qt.ToolTipRole)
         assert "12.0" in tip and "10.0" in tip
 
+    def test_this_files_table_as_a_difference_is_read_only(model):
+        from ovtsuite import gui
+        m = model
+        D = QtCore.Qt.DisplayRole
+        blocked = []
+        m.edit_blocked.connect(lambda: blocked.append(1))
+        cell = lambda r, c: m.data(m.index(1 + r, 1 + c), D)   # noqa: E731
+        assert [cell(0, c) for c in range(3)] == ["10.0", "12.0", "14.0"]
+        assert m.flags(m.index(1, 1)) & QtCore.Qt.ItemIsEditable
+        m.set_delta("abs", primary="d1")
+        assert [cell(0, c) for c in range(3)] == ["0", "+2.0", "0"]
+        assert [cell(1, c) for c in range(3)] == ["-5.0", "0", "+24.0"]
+        m.set_delta("abs", primary="pct")
+        assert cell(1, 2) == cd.NONE_TEXT                 # comparison is 0
+        m.set_delta("abs", blank=True, primary="d2")
+        assert [cell(0, c) for c in range(3)] == ["", "-2.0", ""]
+        # the comparison half is untouched, and says so on the banner
+        assert _row(m, 0) == ["10.0", "10.0", "14.0"]
+        assert "this file: difference" in m.sep_text()
+        # no typing, no pasting, no selection arithmetic
+        assert not m.flags(m.index(1, 1)) & QtCore.Qt.ItemIsEditable
+        m._edit_cells([(0, 0, 99.0)])
+        assert blocked and m._vals[0][0] == 10
+        # tint, and a copy gives the real values
+        m.set_delta("abs", tint=True, primary="d1")
+        assert m.data(m.index(1, 2), QtCore.Qt.BackgroundRole) == gui.DELTA_UP_BG
+        assert m.copy_tsv([m.index(1, 2)]) == "12.0"
+        # back to values: editable again
+        m.set_delta("abs")
+        assert m.flags(m.index(1, 1)) & QtCore.Qt.ItemIsEditable
+        assert cell(0, 1) == "12.0"
+
     def test_text_maps_stay_absolute(model):
         m = model
         m.entity.text_kind = "hex"
