@@ -171,7 +171,8 @@ def test_the_sweep_takes_what_an_earlier_run_left(tmp_path, monkeypatch):
         (base / name).mkdir(parents=True)
         (base / name / "f.txt").write_text("x")
     assert X.sweep(str(base)) == 1
-    assert sorted(os.listdir(base)) == ["%d-9" % os.getpid(), "4242-1", "notapid"]
+    assert sorted(os.listdir(base)) == sorted(
+        ["%d-9" % os.getpid(), "4242-1", "notapid"])
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="uses a shell script")

@@ -127,6 +127,7 @@ class BannerControl(QtCore.QObject):
             cb.hide()
             head.setContentsMargins(0, 0, 0, 0)
             head.setMinimumHeight(0)
+            g.prim_head.setMinimumHeight(0)
             return
         _show(cb, mode())
         cb.setFont(g.ws.table.font())
@@ -137,11 +138,13 @@ class BannerControl(QtCore.QObject):
             h = cb.sizeHint().height()
             head.setContentsMargins(0, 0, w + 8, 0)
             head.setMinimumHeight(h)
+            g.prim_head.setMinimumHeight(h)     # beside: rows stay level
             cb.setGeometry(max(0, head.width() - w - 2), 0, w, h)
             cb.show()
             return
         head.setContentsMargins(0, 0, 0, 0)
         head.setMinimumHeight(0)
+        g.prim_head.setMinimumHeight(0)
         t = g.ws.table
         vp = t.viewport()
         if cb.parent() is not vp:
