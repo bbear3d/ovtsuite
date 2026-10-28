@@ -570,6 +570,10 @@ class Version:
     name: str
     comment: str
     data: bytes = field(repr=False, default=b"")
+    #: unix time WinOLS lists as *Created* (0: not known, shown as "?" -- the
+    #: original) and *Changed*
+    created: int = 0
+    changed: int = 0
 
 
 def _vstr(d: bytes, p: int, nul: bool) -> Tuple[str, int]:
@@ -587,12 +591,12 @@ def _vstr(d: bytes, p: int, nul: bool) -> Tuple[str, int]:
 
 
 def read_versions(d: bytes, start: int, limit: int, ver: int
-                  ) -> Tuple[int, List[Tuple[str, str]]]:
+                  ) -> Tuple[int, List[Tuple[str, str, int, int]]]:
     """The version list just before the map list: ``(size of one version's
-    image, [(name, comment)])``, or ``(0, [])``. It is ``u32`` image size,
-    ``99 78 00 42``, ``u32 n``, then n entries -- ``str`` name, ``str``
-    comment, ``01 92 BC 93``, two times and (in later formats) the checksum
-    state. Every version's image is stored in full, one after the other,
+    image, [(name, comment, created, changed)])``, or ``(0, [])``. It is
+    ``u32`` image size, ``99 78 00 42``, ``u32 n``, then n entries -- ``str``
+    name, ``str`` comment, ``01 92 BC 93``, the two times (unix time: created,
+    changed) and (in later formats) the checksum state. Every version's image is stored in full, one after the other,
     after the image marker at the end of the file."""
     q = d.rfind(VERSIONS_MAGIC, start, limit)
     if q < 4:
@@ -602,7 +606,7 @@ def read_versions(d: bytes, start: int, limit: int, ver: int
     if not 0 < n <= 1000 or not size:
         return 0, []
     nul = ver < 400
-    out: List[Tuple[str, str]] = []
+    out: List[Tuple[str, str, int, int]] = []
     p = q + 8
     for i in range(n):
         got = None
@@ -613,13 +617,15 @@ def read_versions(d: bytes, start: int, limit: int, ver: int
             except (ValueError, struct.error):
                 continue
             if d[r:r + 4] == VERSION_SIG and name.isprintable():
-                got = (name, comment, r + 12)
+                created, changed = (struct.unpack_from("<II", d, r + 4)
+                                    if r + 12 <= len(d) else (0, 0))
+                got = (name, comment, r + 12, created, changed)
                 break
         if got is None:
-            out += [("Original" if k == 0 else "Version %d" % k, "")
+            out += [("Original" if k == 0 else "Version %d" % k, "", 0, 0)
                     for k in range(len(out), n)]
             break
-        out.append((got[0].strip(), got[1].strip()))
+        out.append((got[0].strip(), got[1].strip(), got[3], got[4]))
         p = got[2]
     return size, out
 
@@ -755,8 +761,9 @@ def _versions(d: bytes, h: Header, limit: int, end: int = 0) -> List[Version]:
     if size and names:
         at = len(d) - size * len(names) - 4
         if at > limit and d[at:at + 4] == IMAGE_SIG:
-            return [Version(n, c, d[at + 4 + i * size:at + 4 + (i + 1) * size])
-                    for i, (n, c) in enumerate(names)]
+            return [Version(n, c, d[at + 4 + i * size:at + 4 + (i + 1) * size],
+                            t0, t1)
+                    for i, (n, c, t0, t1) in enumerate(names)]
     sig = d.find(IMAGE_SIG, end or limit)
     if sig < 0:
         return []
@@ -765,11 +772,12 @@ def _versions(d: bytes, h: Header, limit: int, end: int = 0) -> List[Version]:
         return []
     if size and names and len(region) > size and len(region) % size == 0:
         k = len(region) // size
-        names = (names + [("Version %d" % i, "") for i in range(len(names), k)])[:k]
-        return [Version(n, c, region[i * size:(i + 1) * size])
-                for i, (n, c) in enumerate(names)]
-    name, comment = names[0] if names else ("Original", "")
-    return [Version(name or "Original", comment, region)]
+        names = (names + [("Version %d" % i, "", 0, 0)
+                          for i in range(len(names), k)])[:k]
+        return [Version(n, c, region[i * size:(i + 1) * size], t0, t1)
+                for i, (n, c, t0, t1) in enumerate(names)]
+    name, comment, t0, t1 = names[0] if names else ("Original", "", 0, 0)
+    return [Version(name or "Original", comment, region, t0, t1)]
 
 
 def scan_images(data: bytes) -> Optional[WinOlsFile]:

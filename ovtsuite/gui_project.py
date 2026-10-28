@@ -1460,12 +1460,18 @@ def open_ols(win, path, ws=None) -> bool:
     maps as the binary's definition, and the vehicle details entered in
     WinOLS as the project information."""
     from .project import importers as _imp
+    from . import gui_olsversions as _ov
     name = os.path.splitext(os.path.basename(path))[0]
+    with open(path, "rb") as fh:
+        data = fh.read()
+    which = _ov.choose(win, path, data)         # several versions: which?
+    if which == _ov.CANCEL:
+        return False
     QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
     try:
         proj = Project(name)
-        with open(path, "rb") as fh:
-            _imp.import_bytes(proj, fh.read(), os.path.basename(path))
+        _imp.import_bytes(proj, data, os.path.basename(path),
+                          ols_versions=which)
     except Exception as ex:
         QtWidgets.QApplication.restoreOverrideCursor()
         QtWidgets.QMessageBox.critical(
@@ -1546,10 +1552,14 @@ def _import_paths(win, proj, paths) -> list:
     """Import each file into ``proj``; returns the new sets. A definition
     beside a binary (same name, .xdf / .a2l / .kp / .dam) comes with it."""
     from .project import importers as _imp
+    from . import gui_olsversions as _ov
     sets, problems = [], []
     for path in paths:
+        which = _ov.choose(win, path)           # a WinOLS project's versions
+        if which == _ov.CANCEL:
+            continue
         try:
-            _p, s = _imp.import_file(path, proj)
+            _p, s = _imp.import_file(path, proj, ols_versions=which)
             sets.append(s)
         except Exception as ex:
             problems.append("%s: %s" % (os.path.basename(path), ex))
