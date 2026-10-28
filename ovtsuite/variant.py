@@ -429,17 +429,26 @@ def _anchor(data, sec, lo, hi, win=0x40, thresh=0.6):
     lo2 = max(0, lo - 16)
     hi2 = min(hi, lo + 0x400) + 16
     hi2 = min(hi2, n - win)
-    best_p, best = None, -1
+    scores = []
     for p in range(lo2, hi2):
         s = 0
         for k in range(win):
             if data[sec + k] == data[p + k]:
                 s += 1
-        if s > best:
-            best, best_p = s, p
-    if best < int(thresh * win):
+        scores.append((s, p))
+    if not scores:
         return None, 0
-    return best_p, best
+    best, best_p = max(scores)
+    if best >= int(thresh * win):
+        return best_p, best
+    # A copy whose values were retuned (the gear ratios and v/n bands, say)
+    # loses bytes at the true base. Still take it when it stands well clear of
+    # every unrelated alignment: a shifted self-match of the same block (a few
+    # bytes either side) does not count as a rival.
+    rival = max((s for s, p in scores if abs(p - best_p) > 8), default=0)
+    if best >= int(0.35 * win) and best >= 2 * rival:
+        return best_p, best
+    return None, 0
 
 
 def _anchor_value_variants(session, data, main_lo, main_hi, active):

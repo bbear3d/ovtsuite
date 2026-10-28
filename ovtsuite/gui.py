@@ -2421,6 +2421,28 @@ if HAVE_QT:
         def _cmp_copy(self):
             if not self.cmp_copies:
                 return None
+            mine = (self.copies[self.cur]
+                    if self.cur < len(self.copies) else None)
+            if mine is not None:
+                # the comparison column is the SAME transmission, not the same
+                # position: one file's main block can be the automatic and the
+                # other's the manual. Match on the transmission the coding
+                # selects (the label), not the coding number, which differs
+                # between two files of one car (150034 vs 158034).
+                def tx(cp):
+                    t = cp.label.split(" · ")[0]
+                    return None if t.startswith(("Primary", "Variant")) else t
+                t = tx(mine)
+                if t is not None:
+                    for cc in self.cmp_copies:
+                        if tx(cc) == t:
+                            return cc
+                    if any(tx(cc) for cc in self.cmp_copies):
+                        return None    # nothing there for this transmission
+                codes = set(getattr(mine, "codings", None) or ())
+                for cc in self.cmp_copies:
+                    if codes & set(getattr(cc, "codings", None) or ()):
+                        return cc
             return (self.cmp_copies[self.cur]
                     if self.cur < len(self.cmp_copies) else self.cmp_copies[0])
 

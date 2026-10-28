@@ -199,3 +199,22 @@ def test_every_copy_is_shown_and_none_overlaps(fname):
         assert G.is_advanced(v) == G.is_advanced(t)
     assert any(G.is_advanced(v) for v in ve)
     assert any(not G.is_advanced(v) for v in ve)
+
+
+def test_anchor_survives_retuned_values():
+    """A relocated block whose values were retuned still anchors to its main
+    base while one alignment stands clear of the rest (the gear-ratio copy
+    vanished from files with corrected ratios)."""
+    import random
+    from ovtsuite.variant import _anchor
+    rnd = random.Random(7)
+    data = bytearray(rnd.randrange(256) for _ in range(0x1000))
+    main, sec = 0x400, 0xC00
+    data[sec:sec + 0x40] = data[main:main + 0x40]
+    for k in range(0x08, 0x2C):                  # retune ~55% of the window
+        data[sec + k] ^= 0x55
+    base, score = _anchor(bytes(data), sec, main - 8, main + 0x80)
+    assert base == main
+    # pure noise anchors nowhere
+    noise = bytes(rnd.randrange(256) for _ in range(0x1000))
+    assert _anchor(noise, sec, main - 8, main + 0x80)[0] is None
