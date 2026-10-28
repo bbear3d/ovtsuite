@@ -40,6 +40,8 @@ class MockEcu:
         self._dl_start = None
         self._dl_pos = 0
         self.corrupt = []              # absolute addresses of packets sent damaged
+        self.drop = []                 # ... sent one byte short (the line lost a byte)
+        self.silent = []               # ... where the ECU sends no packet, only line noise
 
     # pyserial-ish surface
     def flush(self):
@@ -199,6 +201,10 @@ class MockEcu:
         # LEN 76 <data> cks (length in the format byte).
         data = bytes(self.flash[:self._up_end])
         pos = self._up_pos
+        if self.silent and self.silent[0] == pos + E.CAL_START:
+            self.silent.pop(0)                  # the pointer does not move
+            self.rx += bytes(11)
+            return
         chunk = data[pos:pos + 254]
         self._up_pos += len(chunk)
         full = len(chunk) == 254 and self._up_pos < len(data)
@@ -211,7 +217,11 @@ class MockEcu:
             # the line drops a bit: one data byte arrives wrong
             self.corrupt.pop(0)
             chunk = bytes([chunk[0] ^ 0x10]) + chunk[1:]
-        self.rx += header + chunk + bytes([cks])
+        frame = header + chunk + bytes([cks])
+        if self.drop and self.drop[0] == pos + E.CAL_START:
+            self.drop.pop(0)
+            frame = frame[:100] + frame[101:]   # one byte never arrives
+        self.rx += frame
 
 
 def _ck(data):
@@ -307,19 +317,94 @@ def test_read_roundtrip_padded_image():
     assert img[E.CAL_START:] == cal                        # cal region intact
 
 
-def test_read_rereads_corrupt_packets():
-    # two packets arrive damaged in the single K-line upload, and the first
-    # re-read of one of their 64 KB chunks is damaged again
+def _no_waits(monkeypatch):
+    """The per-packet pacing sleeps are not what these tests are about."""
+    monkeypatch.setattr(E.time, "sleep", lambda s: None)
+
+
+def test_read_rereads_corrupt_packets(monkeypatch):
+    _no_waits(monkeypatch)
+    # two packets arrive damaged in the single K-line upload; each is requested
+    # again from its own address, and the third (never reached) stays unused
     cal = bytes(((i * 7 + 3) & 0xFF) for i in range(E.CAL_SIZE))
     flash, ecu = _make(bytearray(cal))
-    a, b = E.CAL_START + 254 * 10, E.CAL_START + 254 * 1500
-    ecu.corrupt = [a, b, b - b % 0x10000 + 254 * 3]
+    # after the first re-request the stream restarts on a 16-byte boundary, so
+    # the second damaged packet is placed relative to that
+    a = E.CAL_START + 254 * 10
+    resume = (a - E.CAL_START) // 16 * 16
+    b = E.CAL_START + resume + 254 * 1400
+    ecu.corrupt = [a, b]
     logs = []
     flash._log = logs.append
     img = flash.read_flash(speed="Low", allow_fast=False)
     assert img[E.CAL_START:] == cal
-    assert sum("Corrupt packet" in m for m in logs) == 3
+    assert sum("Corrupt packet" in m for m in logs) == 2
     assert not ecu.corrupt
+
+
+def test_very_low_speed_never_negotiates_a_baud(monkeypatch):
+    # Very Low stays at 10400 even where the link may escalate: no speed byte
+    # is offered, so there is no "ECU refused ... baud" fallback either
+    _no_waits(monkeypatch)
+    cal = bytes(((i * 7 + 3) & 0xFF) for i in range(E.CAL_SIZE))
+    flash, ecu = _make(bytearray(cal))
+    sent = []
+    real_write = ecu.write
+    ecu.write = lambda d: (sent.append(bytes(d)), real_write(d))[1]
+    logs = []
+    flash._log = logs.append
+    img = flash.read_flash(speed="Very Low", allow_fast=True)
+    assert img[E.CAL_START:] == cal
+    assert not any(d[:4] == bytes([0x83, 0x10, 0xF1, 0x10]) for d in sent)
+    assert ecu.baudrate == 10400
+    assert any("Entered session 0x86 (10400)" in m for m in logs)
+    assert not any("refused" in m for m in logs)
+
+
+def test_read_rerequests_a_packet_that_lost_a_byte(monkeypatch):
+    _no_waits(monkeypatch)
+    # a byte lost mid-packet: the read does not wait out the 8 s timeout for it
+    # but asks for the packet again, and the image is complete and in place
+    cal = bytes(((i * 7 + 3) & 0xFF) for i in range(E.CAL_SIZE))
+    flash, ecu = _make(bytearray(cal))
+    first = 254 * 153
+    ecu.drop = [E.CAL_START + first,
+                E.CAL_START + first // 16 * 16 + 254 * 700]    # placed after the restart
+    logs = []
+    flash._log = logs.append
+    img = flash.read_flash(speed="Low", allow_fast=False)
+    assert img[E.CAL_START:] == cal
+    assert sum("cut short" in m for m in logs) == 2
+
+
+def test_read_stays_in_step_when_the_ecu_sends_no_packet(monkeypatch):
+    _no_waits(monkeypatch)
+    # the ECU sent nothing (line noise only) and did not advance its pointer;
+    # the bad slot is re-requested, so nothing after it is shifted
+    cal = bytes(((i * 7 + 3) & 0xFF) for i in range(E.CAL_SIZE))
+    flash, ecu = _make(bytearray(cal))
+    ecu.silent = [E.CAL_START + 254 * 105]
+    img = flash.read_flash(speed="Low", allow_fast=False)
+    assert img[E.CAL_START:] == cal
+
+
+def test_read_gives_up_on_a_packet_that_never_arrives_whole(monkeypatch):
+    _no_waits(monkeypatch)
+    cal = bytes(((i * 7 + 3) & 0xFF) for i in range(E.CAL_SIZE))
+    flash, ecu = _make(bytearray(cal))
+
+    class Covers:                       # damages every packet that holds this address
+        def __eq__(self, other):
+            return E.CAL_START + 5000 <= other < E.CAL_START + 5000 + 254
+
+    class Always(list):
+        def __bool__(self): return True
+        def __getitem__(self, i): return Covers()
+        def pop(self, i=-1): return None
+    ecu.corrupt = Always()
+    with pytest.raises(E.KLineError) as ei:
+        flash.read_flash(speed="Low", allow_fast=False)
+    assert "stayed corrupt after 5 tries" in str(ei.value)
 
 
 def test_write_then_read_roundtrips():

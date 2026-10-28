@@ -124,13 +124,16 @@ binary before it is written, and to show its tables.
 
 **Speed** applies to K-line only:
 
-| ECU | Low | Medium | High |
-|---|---|---|---|
-| EDC16 | 38400 | 124800 | 244898 |
-| EDC15 | 10400 | 38400 | 124800 |
+| ECU | Very Low | Low | Medium | High |
+|---|---|---|---|---|
+| EDC16 | 10400 | 38400 | 124800 | 244898 |
+| EDC15 | - | 10400 | 38400 | 124800 |
 
 - Start with **Medium**. Use **Low** if the connection drops or a transfer
   fails part-way.
+- EDC16 **Very Low** stays at the 10400 baud the connection starts at: the
+  speed is never raised. It is slow (a read takes several minutes), but it is
+  the most tolerant of a poor cable or a noisy K-line.
 - For EDC16, **High** is offered only for cables that can hold it: it is
   removed for CH340/CH341 cables and for J2534 devices (both are limited to
   Medium), and for a head unit whose cable cannot do it.

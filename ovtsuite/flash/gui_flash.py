@@ -103,9 +103,10 @@ ZF6HP_TRANSPORTS = (("auto", "Automatic"),
                     ("tp20", "TP 2.0 (6HP19 / 6HP26)"),
                     ("uds", "UDS (6HP28)"))
 
-EDC16_SPEEDS = ["Low (38400)", "Medium (124800)", "High (244898)"]
+EDC16_SPEEDS = ["Very Low (10400)", "Low (38400)", "Medium (124800)", "High (244898)"]
 EDC15_SPEEDS = ["Low (10400)", "Medium (38400)", "High (124800)"]
 SPEED_KEYS = ["Low", "Medium", "High"]
+EDC16_SPEED_KEYS = ["Very Low"] + SPEED_KEYS
 
 
 def _as_bool(v, default=True):
@@ -2448,17 +2449,18 @@ class FlashDialog(QtWidgets.QDialog):
         selected cable can't hold it (CH340/CH341 or a J2534 device -> Medium cap)."""
         edc15 = self._ecu() == "EDC15"
         labels = list(EDC15_SPEEDS if edc15 else EDC16_SPEEDS)
-        keys = list(SPEED_KEYS)
+        keys = list(SPEED_KEYS if edc15 else EDC16_SPEED_KEYS)
         if not edc15 and not cable_allows_high(self.port_box.currentData()):
-            labels = labels[:2]                      # drop High (244898) for capped cables
-            keys = keys[:2]
+            labels = labels[:-1]                     # drop High (244898) for capped cables
+            keys = keys[:-1]
         prev = self.speed_box.currentData()
         self.speed_box.blockSignals(True)
         self.speed_box.clear()
         for lbl, key in zip(labels, keys):
             self.speed_box.addItem(lbl, key)
         idx = next((i for i in range(self.speed_box.count())
-                    if self.speed_box.itemData(i) == prev), 1 if len(keys) > 1 else 0)
+                    if self.speed_box.itemData(i) == prev),
+                   keys.index("Medium") if "Medium" in keys else 0)
         self.speed_box.setCurrentIndex(min(idx, self.speed_box.count() - 1))
         self.speed_box.blockSignals(False)
 

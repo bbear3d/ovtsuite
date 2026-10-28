@@ -136,7 +136,10 @@ def can_read_reopen() -> bool:
     return bool(EDC16_TP20_FAST_TIMING and EDC16_CAN_READ_REOPEN)
 
 
-SPEEDS = {"Low": (0x50, 38400), "Medium": (0x87, 124800), "High": (0xA7, 244898)}
+SPEEDS = {"Very Low": (0x00, 10400), "Low": (0x50, 38400),
+          "Medium": (0x87, 124800), "High": (0xA7, 244898)}
+#: Speeds that stay at the init rate: no speed byte is sent, the baud never changes.
+NO_ESCALATION = ("Very Low",)
 
 # Between two J2534 high-baud discovery candidates the ECU must return to its
 # default 10400 idle state before the next fast init, or that init gets no reply
@@ -181,6 +184,13 @@ _UPLOAD_PACKET = 254
 _REREAD_CHUNK = 0x10000
 _REREAD_TRIES = 3
 _MAX_BAD_PACKETS = 32
+# A packet's header has arrived, so the rest of it is moments away (70 ms at
+# Low): a byte that is not there after this is lost, not late. Waiting out the
+# normal 8 s read timeout instead outlasts the ECU's session timeout, so the
+# retry gets no answer at all.
+_PACKET_BODY_TIMEOUT = 1.5
+_PACKET_RETRIES = 5          # tries at one packet before the read gives up
+_RESUME_ALIGN = 0x10         # a re-request starts on a 16-byte boundary
 _DEFAULT_ERASE_SIG = bytes([0x0C, 0x5E, 0xCF, 0xCF, 0x65, 0x0B])
 
 
@@ -577,7 +587,7 @@ class Edc16Flash:
 
     def _enter_session(self, session_sub, speed, allow_fast, baud_override=None,
                        verify=False, slow_fallback=True):
-        if allow_fast:
+        if allow_fast and speed not in NO_ESCALATION:
             speed_byte, baud = SPEEDS[speed]
             if baud_override is not None:
                 baud = baud_override                    # discovery: test this exact device rate
@@ -975,29 +985,46 @@ class Edc16Flash:
     def _upload(self, addr, size, is_stop=None, on_count=None):
         """requestUpload ``[addr, addr+size)`` and stream it. Returns
         ``(data, bad)``: ``data`` is exactly ``size`` bytes, ``bad`` the
-        ``(offset, length)`` ranges whose packet arrived corrupted (zero-filled
-        in ``data``). Packets are 254 bytes but for the last, so a damaged one's
-        place in the stream is known without trusting its own length byte."""
+        ``(offset, length)`` ranges that could not be read (zero-filled in
+        ``data``) -- only an upload the ECU ended early; a damaged or lost
+        packet is read again on the spot.
+
+        Whether the ECU's upload pointer moved past a damaged packet cannot be
+        told from the line (a packet can be mangled, lost, or never sent), so
+        the next address is never assumed: after a bad packet the upload is
+        requested afresh from the first byte still missing. ``data`` therefore
+        only ever grows by a packet that arrived whole, at its own address."""
         self._request_upload(addr, size)
         data = bytearray()
         bad = []
         done = [False]
+        lead = 0                                # bytes to drop from a resumed stream
+        failures = resyncs = 0
         while not done[0] and len(data) < size:
             if is_stop and is_stop():
                 self._try_quiet_stop()
                 raise StopRequested("read stopped")
             try:
-                data.extend(self._read_flash_packet(done))
+                packet = self._read_flash_packet(done)
             except PacketCorrupt as ex:
-                n = min(_UPLOAD_PACKET, size - len(data))
-                self.log("Corrupt packet at 0x%06X (%s); it will be read again."
-                         % (addr + len(data), ex))
-                bad.append((len(data), n))
-                data.extend(bytes(n))
-                if len(bad) > _MAX_BAD_PACKETS:
-                    raise KLineError("EDC16 read: %d corrupt packets -- the link is "
-                                     "unreliable at this speed; try a lower one"
-                                     % len(bad))
+                at = addr + len(data)
+                failures += 1
+                resyncs += 1
+                self.log("Corrupt packet at 0x%06X (%s); reading it again." % (at, ex))
+                if failures >= _PACKET_RETRIES or resyncs > _MAX_BAD_PACKETS:
+                    raise KLineError(
+                        "EDC16 read: the packet at 0x%06X stayed corrupt after %d tries "
+                        "-- the link is unreliable at this speed; try a lower one"
+                        % (at, failures))
+                done[0] = False
+                lead = self._resume_upload(addr, size, len(data))
+                continue
+            if lead:
+                cut = min(lead, len(packet))
+                packet = packet[cut:]
+                lead -= cut
+            failures = 0
+            data.extend(packet)
             if on_count:
                 on_count(len(data))
         if len(data) < size:
@@ -1011,6 +1038,21 @@ class Edc16Flash:
             data.extend(bytes(short))
         del data[size:]
         return data, bad
+
+    def _resume_upload(self, addr, size, got):
+        """End the upload in progress and request the rest of ``[addr, addr+size)``
+        from byte ``got`` on, starting on a ``_RESUME_ALIGN`` boundary. Returns
+        how many bytes the new stream sends before ``got`` (to be dropped)."""
+        self._drain()
+        try:
+            self._request_transfer_exit()
+        except KLineError as ex:
+            self.log("(transferExit before the re-request not clean: %s)" % ex)
+        want = addr + got
+        start = want - want % _RESUME_ALIGN
+        lead = want - start
+        self._request_upload(start, size - got + lead)
+        return lead
 
     def _reread(self, addr, region, bad, is_stop=None, on_stage=None):
         """Read again the 64 KB uploads of ``[addr, addr+len(region))`` that
@@ -1059,6 +1101,16 @@ class Edc16Flash:
             time.sleep(0.015)
         self.k.write_bytes(bytes([0x01, 0x36, 0x37]))
         fmt = self.k.read_byte()
+        normal = self.k.read_timeout
+        if normal > _PACKET_BODY_TIMEOUT:
+            self.k.read_timeout = _PACKET_BODY_TIMEOUT
+        try:
+            return self._read_packet_rest(fmt, done)
+        finally:
+            if normal > _PACKET_BODY_TIMEOUT:
+                self.k.read_timeout = normal
+
+    def _read_packet_rest(self, fmt, done):
         try:
             length = fmt & 0x3F
             if length == 0:
