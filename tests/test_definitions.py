@@ -191,7 +191,7 @@ def make_ols(ver, image=None, versions=None):
             for t in (name, ""):
                 w.u32(len(t))
                 w.raw(t.encode())
-            w.raw(winols.VERSION_SIG + b"\0" * 12)
+            w.raw(winols.VERSION_SIG + struct.pack("<III", 0, 1339200000, 0))
         w.raw(b"\0" * 16)
     w.raw(winols.RECORDS_MAGIC)
     if ver >= 200:
@@ -368,9 +368,9 @@ def _ols_with_versions():
 def test_an_ols_with_several_binaries_lists_them():
     from ovtsuite.project import importers
     got = importers.ols_versions(_ols_with_versions())
-    assert [(n, size) for n, _c, size in got] == [
+    assert [(n, size) for n, _c, size, _t in got] == [
         (n, len(i)) for n, i in _three_versions()]
-    assert importers.ols_versions(make_ols(597)) == [("Original", "", len(_image()))]
+    assert importers.ols_versions(make_ols(597)) == [("Original", "", len(_image()), 0)]
 
 
 def test_an_ols_imports_its_original_only_by_default():
@@ -397,6 +397,11 @@ def test_an_ols_can_import_every_binary_as_versions():
         assert p.state(s.id, c.id)[mid] == img
     assert p.member_bytes(s.id, mid) == want[2][1]      # the newest is the head
     assert len(s.branches) == 1
+    # WinOLS's "Changed" date is the version's date
+    import time
+    day = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(1339200000))
+    assert [c.ts for c in s.checkpoints] == [day] * 3
+    assert winols.parse(_ols_with_versions()).versions[1].changed == 1339200000
 
 
 def test_an_ols_can_import_one_chosen_binary():
@@ -753,12 +758,16 @@ def test_the_import_dialog_offers_the_versions_only_when_there_are_several(tmp_p
     many.write_bytes(_ols_with_versions())
     assert ov.choose(None, str(one)) is None            # nothing to ask
     assert ov.choose(None, str(tmp_path / "x.bin")) is None
-    from PySide6 import QtWidgets
+    from PySide6 import QtCore, QtWidgets
     QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    dlg = ov.OlsVersionsDialog(None, "many.ols", [("A", "", 1), ("B", "", 1)])
+    dlg = ov.OlsVersionsDialog(None, "many.ols", [("A", "", 1, 0), ("B", "", 1, 0),
+                                                  ("C", "", 1, 0)])
     assert dlg.value() is None                          # the original by default
     dlg.all.setChecked(True)
     assert dlg.value() == "all"
-    dlg.one.setChecked(True)
-    dlg.combo.setCurrentIndex(1)
-    assert dlg.value() == [1]
+    dlg.some.setChecked(True)
+    dlg.tree.topLevelItem(0).setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+    dlg.tree.topLevelItem(2).setCheckState(0, QtCore.Qt.CheckState.Checked)
+    assert dlg.value() == [2]
+    dlg.tree.topLevelItem(0).setCheckState(0, QtCore.Qt.CheckState.Checked)
+    assert dlg.value() == [0, 2]

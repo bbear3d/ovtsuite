@@ -360,9 +360,11 @@ set of the project:
   flash and MPC is split into the two again;
 - a project can hold **several versions of the binary** (the original and
   what was made from it in WinOLS). When it does, you are asked what to
-  import: **the original only**, **all versions** or **only one version**.
-  All of them go into the one set: the original is its original, each
-  later one a saved version named *WinOLS: <name>* in WinOLS's order, so
+  import: **the original only**, **all versions**, or **the versions you
+  tick** in the list (it shows the date WinOLS lists for each, and its
+  comment as a tooltip). All of them go into the one set: the first is its
+  original, each later one a saved version named *WinOLS: <name>* in
+  WinOLS's order, dated as WinOLS dates it, with WinOLS's comment kept; so
   you can compare them and go back to any of them;
 - its maps become the set's definition: when no module recognises the binary,
   it opens with WinOLS's maps -- names, descriptions, folders as categories,

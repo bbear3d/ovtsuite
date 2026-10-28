@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Dict, List, Optional, Tuple
 
 from .model import Member, new_id
@@ -430,9 +431,10 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
     return s
 
 
-def ols_versions(data: bytes) -> List[Tuple[str, str, int]]:
+def ols_versions(data: bytes) -> List[Tuple[str, str, int, int]]:
     """The binaries a WinOLS project ``data`` embeds, the original first:
-    ``[(name, comment, size)]``; [] for anything that is not a project with
+    ``[(name, comment, size, changed)]`` (``changed``: unix time WinOLS lists
+    for it, 0 if none); [] for anything that is not a project with
     a binary. What :func:`import_bytes` takes as ``ols_versions`` indexes."""
     from ..definitions import winols as _wo
     try:
@@ -444,7 +446,8 @@ def ols_versions(data: bytes) -> List[Tuple[str, str, int]]:
     if wf.kind != "ols":
         return []
     return [(v.name or ("Original" if i == 0 else "Version %d" % i),
-             v.comment, len(v.data)) for i, v in enumerate(wf.versions)]
+             v.comment, len(v.data), v.changed)
+            for i, v in enumerate(wf.versions)]
 
 
 def _ols_picks(wf, which) -> List[int]:
@@ -514,8 +517,7 @@ def _import_ols(project, data, filename, into_set, branch, which=None):
 
     def vname(i: int) -> str:
         v = wf.versions[i]
-        return v.name or (wf.header.current_version if i == 0 else
-                          "Version %d" % i)
+        return v.name or ("Original" if i == 0 else "Version %d" % i)
 
     def src(i: int) -> dict:
         d = {"file": filename, "format": "ols",
@@ -524,15 +526,26 @@ def _import_ols(project, data, filename, into_set, branch, which=None):
             d["version"] = vname(i)
         return d
 
+    def stamp(c, i: int):
+        """The time WinOLS lists for the version (*Changed*), as the
+        version's date; the comment WinOLS keeps with it goes with it."""
+        v = wf.versions[i]
+        if c is None:
+            return
+        if v.changed:
+            c.ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(v.changed))
+        if v.comment.strip():
+            c.source["comment"] = v.comment.strip()
+
     first = picks[0]
-    label = ("WinOLS: %s" % vname(first) if vname(first)
-             else "Imported %s" % filename)
-    _c, b = project.add_root(s.id, images, kind="import", label=label,
+    c0, b = project.add_root(s.id, images, kind="import",
+                             label="WinOLS: %s" % vname(first),
                              source=src(first), branch=branch)
+    stamp(c0, first)
     for i in picks[1:]:
-        project.commit(s.id, b.id, split(bytes(wf.versions[i].data)),
-                       kind="import", label="WinOLS: %s" % vname(i),
-                       source=src(i))
+        stamp(project.commit(s.id, b.id, split(bytes(wf.versions[i].data)),
+                             kind="import", label="WinOLS: %s" % vname(i),
+                             source=src(i)), i)
     project.add_definition(s.id, "flash", filename, data, "ols")
     info = winols.project_info(wf.header)
     fresh = {k: v for k, v in info.items() if not project.info.get(k)}
