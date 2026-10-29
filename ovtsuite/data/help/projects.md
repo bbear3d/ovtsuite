@@ -352,17 +352,20 @@ Removing the item erases its copy.
 ## WinOLS projects and definitions
 
 **A WinOLS project** (`.ols`) holds a binary *and* its map definitions.
-Importing one (**File > Import**, or **File > New project...**) makes it a
-set of the project:
+**File > Open project...** lists `.ols` files beside `.ovt` ones and opens a
+WinOLS project as a new, unsaved project; importing one (**File > Import**,
+or **File > New project...**) makes it a set of the project. Either way:
 
 - its binary becomes the set's original, named after the WinOLS version it
   holds (*WinOLS: Original*); an image WinOLS put together from an EDC16's
   flash and MPC is split into the two again;
 - a project can hold **several versions of the binary** (the original and
-  what was made from it in WinOLS). When it does, you are asked what to
-  import: **the original only**, **all versions**, or **the versions you
-  tick** in the list (it shows the date WinOLS lists for each, and its
-  comment as a tooltip). All of them go into the one set: the first is its
+  what was made from it in WinOLS). What you get is
+  **the original only** (the default), **all versions**, or **the versions
+  you tick** in a list (it shows the date WinOLS lists for each, and its
+  comment as a tooltip). **Tools > Options > Projects and saving** sets
+  whether to take the original or all versions without asking, or to ask
+  each time. All versions go into the one set: the first is its
   original, each later one a saved version named *WinOLS: <name>* in
   WinOLS's order, dated as WinOLS dates it, with WinOLS's comment kept; so
   you can compare them and go back to any of them;

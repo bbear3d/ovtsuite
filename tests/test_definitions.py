@@ -771,3 +771,40 @@ def test_the_import_dialog_offers_the_versions_only_when_there_are_several(tmp_p
     assert dlg.value() == [2]
     dlg.tree.topLevelItem(0).setCheckState(0, QtCore.Qt.CheckState.Checked)
     assert dlg.value() == [0, 2]
+
+
+def test_a_ols_with_several_versions_opens_as_the_option_says(tmp_path, monkeypatch):
+    pytest.importorskip("PySide6")
+    from PySide6 import QtWidgets
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from ovtsuite import gui_olsversions as ov, options
+    many = tmp_path / "many.ols"
+    many.write_bytes(_ols_with_versions())
+    setting = {"projects/ols_versions": "original"}
+    sets = []
+    monkeypatch.setattr(options, "get", lambda k: setting[k])
+    monkeypatch.setattr(options, "set", lambda k, v: (sets.append((k, v)),
+                                                      setting.update({k: v})))
+    asked = []
+
+    def fake_exec(self):
+        asked.append(self)
+        self.all.setChecked(True)
+        self.remember.setChecked(True)
+        return QtWidgets.QDialog.DialogCode.Accepted
+    monkeypatch.setattr(ov.OlsVersionsDialog, "exec", fake_exec)
+    # the default opens the original without a question
+    assert ov.choose(None, str(many)) is None and not asked
+    setting["projects/ols_versions"] = "all"
+    assert ov.choose(None, str(many)) == "all" and not asked
+    # "ask" shows the dialog, and its box can stop the questions
+    setting["projects/ols_versions"] = "ask"
+    assert ov.choose(None, str(many)) == "all" and len(asked) == 1
+    assert sets == [("projects/ols_versions", "all")]
+
+
+def test_open_project_lists_winols_projects():
+    pytest.importorskip("PySide6")
+    from ovtsuite import gui_files
+    first = gui_files.PROJECT_FILTER.split(";;")[0]
+    assert "*.ovt" in first and "*.ols" in first

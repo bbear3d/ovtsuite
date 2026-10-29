@@ -2137,6 +2137,7 @@ if HAVE_QT:
             self.abs_tbl = QtWidgets.QTableWidget(0, len(_acols))
             self.abs_tbl.setHorizontalHeaderLabels(_acols)
             self.abs_tbl.verticalHeader().setVisible(False)
+            self._style_table(self.abs_tbl)
             v.addWidget(self.abs_tbl)
 
             v.addWidget(QtWidgets.QLabel(
@@ -2166,6 +2167,7 @@ if HAVE_QT:
             self.vn_tbl = QtWidgets.QTableWidget(0, len(_vcols))
             self.vn_tbl.setHorizontalHeaderLabels(_vcols)
             self.vn_tbl.verticalHeader().setVisible(False)
+            self._style_table(self.vn_tbl)
             v.addWidget(self.vn_tbl)
 
             self._apply_mode_ui()          # configure the spinbox for the mode
@@ -2213,6 +2215,16 @@ if HAVE_QT:
             self.abs_tbl.itemChanged.connect(self._changed)
             self.vn_tbl.itemChanged.connect(self._changed)
             self._populate()
+
+        def _style_table(self, tbl):
+            """The app's table look and clipboard: alternating rows (the
+            selection draws solid), the shared delegate (a selected cell's text
+            stays legible), Ctrl+C / Ctrl+V and a right-click Copy / Paste."""
+            from .gui_cellmarks import CellDelegate, install_clipboard
+            tbl.setAlternatingRowColors(True)
+            tbl.setItemDelegate(CellDelegate(tbl))
+            install_clipboard(
+                tbl, paste=lambda r, c, grid: self._paste(tbl, r, c, grid))
 
         def _ask_tire(self, hint=None):
             """Modal tyre-size entry; returns the geometric rolling circumference
@@ -2385,7 +2397,7 @@ if HAVE_QT:
             self._update_unit_label()
             self._populate()
 
-        def _num_item(self, entity, name, shared, vn=False):
+        def _num_item(self, entity, name, shared, vn=False, diff=False):
             """A cell holding one editable value. ``entity`` is the entity to
             edit for the selected copy (the copy's own, or the shared main-block
             one); ``name`` is the parameter symbol (used to mirror edits to
@@ -2409,6 +2421,9 @@ if HAVE_QT:
                                                             entity.addr))
             else:
                 it.setToolTip("%s @ 0x%X" % (entity.name, entity.addr))
+            if diff:                    # differs from the comparison: orange
+                from .gui_cellmarks import mark_differs
+                mark_differs(it)
             return it
 
         def _label_item(self, text, tip=""):
@@ -2476,10 +2491,11 @@ if HAVE_QT:
             it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             it.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
             if diff:
-                it.setBackground(EDIT_BG)
-                it.setForeground(CELL_DARK_FG)
+                from .gui_cellmarks import mark_differs
+                mark_differs(it)
             else:
-                it.setForeground(QtGui.QColor(140, 140, 140))
+                from .gui_cellmarks import cmp_fg
+                it.setForeground(cmp_fg(self.abs_tbl))
             return it
 
         def _populate(self):
@@ -2491,9 +2507,10 @@ if HAVE_QT:
             for r, (lbl, name) in enumerate(arows):
                 self.abs_tbl.setItem(r, 0, self._label_item(lbl, name))
                 e, shared = cp.entity(name, pbn)
-                self.abs_tbl.setItem(r, 1, self._num_item(e, name, shared))
+                cv = self._cmp_value(name) if self._has_cmp else None
+                self.abs_tbl.setItem(r, 1, self._num_item(
+                    e, name, shared, diff=self._val_diff(cv, e)))
                 if self._has_cmp:
-                    cv = self._cmp_value(name)
                     dec = _entity_decimals(e) if e is not None else 3
                     self.abs_tbl.setItem(r, 2, self._cmp_item(
                         cv, dec, diff=self._val_diff(cv, e)))
@@ -2512,11 +2529,13 @@ if HAVE_QT:
                 (e1, s1, n1), (e2, s2, n2) = (
                     ((ehi, shi, hi), (elo, slo, lo)) if swap
                     else ((elo, slo, lo), (ehi, shi, hi)))
-                self.vn_tbl.setItem(r, 1, self._num_item(e1, n1, s1, vn=True))
-                self.vn_tbl.setItem(r, 2, self._num_item(e2, n2, s2, vn=True))
+                cv1 = self._cmp_value(n1) if self._has_cmp else None
+                cv2 = self._cmp_value(n2) if self._has_cmp else None
+                self.vn_tbl.setItem(r, 1, self._num_item(
+                    e1, n1, s1, vn=True, diff=self._val_diff(cv1, e1)))
+                self.vn_tbl.setItem(r, 2, self._num_item(
+                    e2, n2, s2, vn=True, diff=self._val_diff(cv2, e2)))
                 if self._has_cmp:
-                    cv1 = self._cmp_value(n1)
-                    cv2 = self._cmp_value(n2)
                     self.vn_tbl.setItem(r, 3, self._cmp_item(
                         cv1, 0, vn=True, diff=self._val_diff(cv1, e1)))
                     self.vn_tbl.setItem(r, 4, self._cmp_item(
@@ -2548,6 +2567,18 @@ if HAVE_QT:
                     out.append(e)
             return out or [entity]
 
+        def _item_raw(self, item, text):
+            """The stored-units value an edit of ``text`` in ``item`` means,
+            or None when it cannot be read (the v/n tables hold the display
+            transform; the ratios the plain number)."""
+            try:
+                x = text.strip().replace(",", ".")
+                if item.tableWidget() is self.vn_tbl:
+                    return self._vn_parse(x)
+                return float(x)
+            except (ValueError, ZeroDivisionError):
+                return None
+
         def _changed(self, item):
             if self._loading or item is None:
                 return
@@ -2555,19 +2586,44 @@ if HAVE_QT:
             name = item.data(QtCore.Qt.UserRole + 1)
             if entity is None:
                 return
-            is_vn = item.tableWidget() is self.vn_tbl
-            try:
-                raw = self._vn_parse(item.text()) if is_vn \
-                    else float(item.text())
-            except (ValueError, ZeroDivisionError):
-                self._populate()
-                return
+            raw = self._item_raw(item, item.text())
             if raw is None:
                 self._populate()
                 return
             for e in self._edit_targets(name, entity):
                 self.gears.set_value(e, raw)
             self._populate()
+
+        def _paste(self, tbl, row, col, grid):
+            """Clipboard cells with their top-left at ``(row, col)`` of
+            ``tbl``: each lands on the editable value cell beneath it (the
+            labels and the comparison columns are skipped), as if typed;
+            'copy edits to all copies' applies. One undo step. Returns how
+            many cells were set."""
+            writes = {}
+            for dr, line in enumerate(grid):
+                for dc, text in enumerate(line):
+                    r, c = row + dr, col + dc
+                    if r >= tbl.rowCount() or c >= tbl.columnCount():
+                        continue
+                    it = tbl.item(r, c)
+                    if it is None or not it.flags() & QtCore.Qt.ItemIsEditable:
+                        continue
+                    entity = it.data(QtCore.Qt.UserRole)
+                    raw = self._item_raw(it, text)
+                    if entity is None or raw is None \
+                            or text.strip() == it.text().strip():
+                        continue        # (what is shown already: keep exact)
+                    for e in self._edit_targets(
+                            it.data(QtCore.Qt.UserRole + 1), entity):
+                        writes[e.addr] = (e, raw)
+            changed = [(e, v) for e, v in writes.values()
+                       if self._val_diff(v, e)]
+            if changed:
+                self.session.edit_values(changed, "paste gear ratios")
+                self.copies = self.gears.copies()
+            self._populate()
+            return len(writes)
 
         def _copy_gears_from_cmp(self):
             if not self._has_cmp:
@@ -3421,10 +3477,8 @@ if HAVE_QT:
             self.tbl.horizontalHeader().setSectionResizeMode(
                 QtWidgets.QHeaderView.ResizeMode.Stretch)
             self.tbl.itemChanged.connect(self._cell_changed16)
-            if self._has_cmp:
-                self.tbl.setContextMenuPolicy(
-                    QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-                self.tbl.customContextMenuRequested.connect(self._vss_menu16)
+            self._style_table(self.tbl, paste=self._paste16,
+                              extra=self._vss_menu16 if self._has_cmp else None)
             v.addWidget(self.tbl)
 
             cav = QtWidgets.QHBoxLayout()
@@ -3480,6 +3534,20 @@ if HAVE_QT:
             note.setStyleSheet("color: gray")
             v.addWidget(note)
 
+        def _style_table(self, tbl, paste=None, extra=None):
+            """The app's table look and clipboard: alternating rows (the
+            selection draws solid), the shared delegate (a selected cell's text
+            stays legible), Ctrl+C and a right-click Copy, and Paste where the
+            table has cells to edit."""
+            from .gui_cellmarks import CellDelegate, install_clipboard
+            tbl.setAlternatingRowColors(True)
+            tbl.setItemDelegate(CellDelegate(tbl))
+            tbl.setSelectionBehavior(
+                QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
+            tbl.setSelectionMode(
+                QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+            install_clipboard(tbl, paste=paste, extra=extra)
+
         def _vss_src_entities(self):
             ents = {e.name: e for e in list(self.session.entities)
                     + list(self.session.variant_entities())}
@@ -3492,6 +3560,7 @@ if HAVE_QT:
             return None
 
         def _reload16(self):
+            from .gui_cellmarks import mark_differs
             self._loading = True
             rows = vss_pulse_settings(self.session)
             self._rows16 = rows
@@ -3506,12 +3575,16 @@ if HAVE_QT:
                 ad.setFlags(QtCore.Qt.ItemIsEnabled)
                 ad.setFont(QtGui.QFont("Consolas"))
                 self.tbl.setItem(i, 1, ad)
+                cr = (self._cmp_rows16[i] if self._has_cmp
+                      and i < len(self._cmp_rows16) else None)
                 for col, txt in ((2, "%.3f" % r["imp_m"]),
                                  (3, "%d" % r["imp_km"])):
                     it = QtWidgets.QTableWidgetItem(txt)
                     it.setFont(QtGui.QFont("Consolas"))
                     it.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsEditable
                                 | QtCore.Qt.ItemIsSelectable)
+                    if cr and cr["imp_km"] != r["imp_km"]:
+                        mark_differs(it)     # differs from the comparison
                     self.tbl.setItem(i, col, it)
                 # source drop-down (editable where the row has its own switch);
                 # short labels keep the column narrow, full meaning in tooltip
@@ -3532,9 +3605,11 @@ if HAVE_QT:
                     lambda _ix, row=i: self._source_changed16(row))
                 self._src_combos.append(combo)
                 self.tbl.setCellWidget(i, 4, combo)
+                # the source's text under the drop-down, so Copy has it
+                srcown = QtWidgets.QTableWidgetItem(combo.currentText())
+                srcown.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+                self.tbl.setItem(i, 4, srcown)
                 if self._has_cmp:
-                    cr = (self._cmp_rows16[i]
-                          if i < len(self._cmp_rows16) else None)
                     kmit = QtWidgets.QTableWidgetItem(
                         "%d" % cr["imp_km"] if cr else "\u2014")
                     kmit.setFont(QtGui.QFont("Consolas"))
@@ -3545,11 +3620,10 @@ if HAVE_QT:
                     srcit.setFlags(QtCore.Qt.ItemIsEnabled
                                    | QtCore.Qt.ItemIsSelectable)
                     if cr and cr["imp_km"] != r["imp_km"]:
-                        kmit.setBackground(EDIT_BG)
-                        kmit.setForeground(CELL_DARK_FG)
+                        mark_differs(kmit)
                     if cr and cr.get("src") != r.get("src"):
-                        srcit.setBackground(EDIT_BG)
-                        srcit.setForeground(CELL_DARK_FG)
+                        mark_differs(srcit)
+                        mark_differs(srcown)
                     self.tbl.setItem(i, 5, kmit)
                     self.tbl.setItem(i, 6, srcit)
             self.copy_all_btn.setEnabled(len(rows) > 1)
@@ -3560,16 +3634,24 @@ if HAVE_QT:
             self._loading = False
             self._recalc()
 
-        def _write_pulses16(self, row, km):
+        @staticmethod
+        def _pulses_raw16(km):
+            """The 4 stored bytes of ``km`` pulses/km, or None when outside
+            what the constant can hold."""
             raw = round(3.6e9 / (km / 1000.0)) if km else 0
             if not (0 <= raw <= 0xFFFFFFFF):
+                return None
+            return raw.to_bytes(4, "big")
+
+        def _write_pulses16(self, row, km):
+            raw = self._pulses_raw16(km)
+            if raw is None:
                 QtWidgets.QMessageBox.warning(
                     self, "VSS",
                     "That pulses/km value is outside the storable range.")
                 self._reload()
                 return
-            self.session.edit_bytes(self._rows16[row]["addr"],
-                                    raw.to_bytes(4, "big"))
+            self.session.edit_bytes(self._rows16[row]["addr"], raw)
             self._reload()
             self._after_write()
 
@@ -3578,7 +3660,7 @@ if HAVE_QT:
                 return
             row, col = item.row(), item.column()
             try:
-                x = float(item.text().strip())
+                x = float(item.text().strip().replace(",", "."))
             except ValueError:
                 self._reload()
                 return
@@ -3587,28 +3669,71 @@ if HAVE_QT:
             elif col == 3:                     # Pulses/km
                 self._write_pulses16(row, x)
 
-        def _source_changed16(self, row):
-            if getattr(self, "_loading", False):
-                return
+        def _write_source16(self, row, want):
+            """Set row ``row``'s signal source (0 sensor, 1 CAN) and force the
+            calibrated source type; True if a byte changed. The caller groups
+            it into an undo step."""
             r = self._rows16[row]
             saddr = r.get("src_addr")
             if saddr is None:
-                return
-            want = int(self._src_combos[row].currentData())
+                return False
             data = self.session.binfile.data
             changed = False
+            if 0 <= saddr < len(data) and data[saddr] != want:
+                self.session.edit_bytes(saddr, bytes([want]))
+                changed = True
+            styp = r.get("styp_addr")           # force cal-controlled source
+            if styp is not None and 0 <= styp < len(data) and data[styp] != 2:
+                self.session.edit_bytes(styp, bytes([2]))
+                changed = True
+            return changed
+
+        def _source_changed16(self, row):
+            if getattr(self, "_loading", False):
+                return
+            if self._rows16[row].get("src_addr") is None:
+                return
+            want = int(self._src_combos[row].currentData())
             # one action for the user -> one undo step
             with self.session.transaction("VSS source selection"):
-                if 0 <= saddr < len(data) and data[saddr] != want:
-                    self.session.edit_bytes(saddr, bytes([want]))
-                    changed = True
-                styp = r.get("styp_addr")       # force cal-controlled source
-                if styp is not None and 0 <= styp < len(data) and data[styp] != 2:
-                    self.session.edit_bytes(styp, bytes([2]))
-                    changed = True
+                changed = self._write_source16(row, want)
             if changed:
                 self._reload()
                 self._after_write()
+
+        def _paste16(self, row, col, grid):
+            """Clipboard cells with their top-left at ``(row, col)``: Imp/m,
+            Pulses/km and Signal source cells take the value beneath them
+            (Role, Address and the comparison columns are skipped); the whole
+            paste is one undo step. Returns how many cells were set."""
+            rows = getattr(self, "_rows16", [])
+            n = 0
+            with self.session.transaction("VSS: paste"):
+                for dr, line in enumerate(grid):
+                    for dc, text in enumerate(line):
+                        r, c = row + dr, col + dc
+                        if r >= len(rows) or not 2 <= c <= 4:
+                            continue
+                        text = text.strip()
+                        if c == 4:
+                            want = {"sensor": 0, "hw sensor": 0, "0": 0,
+                                    "can": 1, "1": 1}.get(text.lower())
+                            if want is not None and self._write_source16(r, want):
+                                n += 1
+                            continue
+                        try:
+                            x = float(text.replace(",", "."))
+                        except ValueError:
+                            continue
+                        raw = self._pulses_raw16(x * 1000.0 if c == 2 else x)
+                        if raw is None:
+                            continue
+                        if self.session.edit_bytes(rows[r]["addr"], raw):
+                            n += 1
+            self._reload()
+            if n:
+                self._after_write()
+            return n
 
         def _copy_to_variants16(self):
             rows = getattr(self, "_rows16", [])
@@ -3665,17 +3790,14 @@ if HAVE_QT:
                 self._reload()
                 self._after_write()
 
-        def _vss_menu16(self, pos):
-            if not self._has_cmp:
-                return
+        def _vss_menu16(self, menu, pos):
+            """The comparison's entry in the table's right-click menu."""
             rows = sorted({i.row() for i in self.tbl.selectedIndexes()})
             if not rows:
                 return
-            menu = QtWidgets.QMenu(self)
             act = menu.addAction(
                 "Copy comparison \u2192 primary (%d row(s))" % len(rows))
             act.triggered.connect(lambda: self._copy_from_cmp16(rows))
-            menu.exec(self.tbl.viewport().mapToGlobal(pos))
 
         def _recalc(self, *a):
             if getattr(self, "_loading", False):
@@ -3961,8 +4083,7 @@ if HAVE_QT:
             self.tbl.verticalHeader().setVisible(False)
             self.tbl.setEditTriggers(
                 QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-            self.tbl.setSelectionMode(
-                QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+            self._style_table(self.tbl)            # copy only: nothing to paste
             self.tbl.horizontalHeader().setSectionResizeMode(
                 QtWidgets.QHeaderView.ResizeMode.Stretch)
             v.addWidget(self.tbl)
@@ -4057,6 +4178,7 @@ if HAVE_QT:
             v.addWidget(note)
 
         def _reload15(self):
+            from .gui_cellmarks import mark_differs
             from .edc15.vss15 import (speed_settings as _edc15_speed,
                                       FGG_SOURCES as _FGG_SRC)
             st = _edc15_speed(self.session)
@@ -4091,6 +4213,10 @@ if HAVE_QT:
                     for j, txt in enumerate(ccells):
                         it = QtWidgets.QTableWidgetItem(txt)
                         it.setFont(QtGui.QFont("Consolas"))
+                        # differs from the comparison: orange, in both halves
+                        if txt != cells[4 + j]:
+                            mark_differs(it)
+                            mark_differs(self.tbl.item(i, 4 + j))
                         self.tbl.setItem(i, 7 + j, it)
             self._ds_changed15()
             self._recalc15()

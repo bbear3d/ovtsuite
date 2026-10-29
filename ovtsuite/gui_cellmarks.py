@@ -318,3 +318,101 @@ def selection_tsv(table) -> str:
             line.append(it.text() if it is not None else "")
         out.append("\t".join(line))
     return "\n".join(out)
+
+
+# ------------------------------------------------------------ copy and paste
+def parse_tsv(text: str) -> list:
+    """Clipboard text as rows of cell texts: tab separated, a row a line (the
+    table editor's Paste). Blank lines are dropped; cells are not stripped."""
+    return [ln.split("\t") for ln in text.replace("\r", "").split("\n")
+            if ln != ""]
+
+
+def paste_anchor(table):
+    """Where a paste lands: the top-left of the selection, else the current
+    cell; ``(row, column)`` or None."""
+    idx = table.selectedIndexes()
+    if idx:
+        return min((i.row(), i.column()) for i in idx)
+    r, c = table.currentRow(), table.currentColumn()
+    return (r, c) if r >= 0 and c >= 0 else None
+
+
+def has_editable(table) -> bool:
+    """Does ``table`` hold a cell the user can edit (a paste has a use)?"""
+    for r in range(table.rowCount()):
+        for c in range(table.columnCount()):
+            it = table.item(r, c)
+            if it is not None and it.flags() & QtCore.Qt.ItemFlag.ItemIsEditable:
+                return True
+    return False
+
+
+def copy_to_clipboard(table) -> str:
+    """The selected cells of ``table`` to the clipboard (:func:`selection_tsv`);
+    the text, empty if nothing was selected."""
+    text = selection_tsv(table)
+    if text:
+        QtWidgets.QApplication.clipboard().setText(text)
+    return text
+
+
+def install_clipboard(table, paste=None, extra=None) -> None:
+    """Ctrl+C / Ctrl+V and a right-click menu (Copy, Paste, Select all) on
+    ``table`` -- what the main table editor and the measuring blocks have, for
+    the small tables of dialogs.
+
+    ``paste(row, col, grid)`` writes the clipboard's rows of text with their
+    top-left cell at ``(row, col)`` and returns how many cells it set (it
+    should make the whole paste one undo step); None for a read-only table, in
+    which case there is no Paste. ``extra(menu, pos)`` adds a window's own
+    entries above the standard ones. Qt's own Ctrl+C copies the current cell
+    only; this copies the whole selection."""
+    def do_copy():
+        return copy_to_clipboard(table)
+
+    def do_paste():
+        if paste is None:
+            return 0
+        at = paste_anchor(table)
+        grid = parse_tsv(QtWidgets.QApplication.clipboard().text())
+        if at is None or not grid:
+            return 0
+        return paste(at[0], at[1], grid) or 0
+
+    def add(key, slot):
+        a = QtGui.QAction(table)
+        a.setShortcut(QtGui.QKeySequence(key))
+        a.setShortcutContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        a.triggered.connect(slot)
+        table.addAction(a)
+
+    SK = QtGui.QKeySequence.StandardKey
+    add(SK.Copy, do_copy)
+    if paste is not None:
+        add(SK.Paste, do_paste)
+
+    def menu_at(pos):
+        menu = QtWidgets.QMenu(table)
+        if extra is not None:
+            n = len(menu.actions())
+            extra(menu, pos)
+            if len(menu.actions()) > n:
+                menu.addSeparator()
+        cp = menu.addAction("Copy")
+        cp.setShortcut(QtGui.QKeySequence(SK.Copy))
+        cp.setEnabled(bool(table.selectedIndexes()))
+        cp.triggered.connect(do_copy)
+        if paste is not None:
+            pa = menu.addAction("Paste")
+            pa.setShortcut(QtGui.QKeySequence(SK.Paste))
+            pa.setEnabled(bool(QtWidgets.QApplication.clipboard().text())
+                          and has_editable(table))
+            pa.triggered.connect(do_paste)
+        sa = menu.addAction("Select all")
+        sa.setShortcut(QtGui.QKeySequence(SK.SelectAll))
+        sa.triggered.connect(table.selectAll)
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+    table.customContextMenuRequested.connect(menu_at)

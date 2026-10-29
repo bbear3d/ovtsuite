@@ -7,7 +7,10 @@
 
 Everything the user works on is a project (``.ovt``):
 
-* **Open project...** / **Open Recent** open projects -- nothing else;
+* **Open project...** / **Open Recent** open projects -- nothing else but a
+  WinOLS project (``.ols``), which the dialog lists beside ``.ovt`` and which
+  opens as a new project the way Options > Projects and saving says (its
+  original only, by default) rather than asking;
 * **Import** brings files in, *into this project* or *into a new project*:
   a binary or container (``.bin``, ``.sgo``, ``.frf``, ``.dim``, an old
   ``.edc16`` / ``.6hp`` ... or ``.edc15bak``) becomes a set, opened in a new
@@ -43,7 +46,9 @@ IMPORT_FILTER = (
     "WinOLS projects (*.ols);;"
     "Definitions (*.xdf *.a2l *.kp *.dam);;"
     "All files (*)")
-PROJECT_FILTER = "OVT projects (*.ovt);;All files (*)"
+PROJECT_FILTER = ("Projects and WinOLS projects (*.ovt *.ols);;"
+                  "OVT projects (*.ovt);;WinOLS projects (*.ols);;"
+                  "All files (*)")
 COMPARE_FILTER = (
     "Projects and binaries (*.ovt *.bin *.ori *.sgo *.frf *.dim *.edc16 "
     "*.edc15 *.6hp *.8hp *.vdo);;All files (*)")

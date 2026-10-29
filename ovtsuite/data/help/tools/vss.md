@@ -38,6 +38,14 @@ kilometre. If the file has none, the menu item says *No vehicle-speed
 | **Imp / m**, **Pulses / km** | The same value in two units. Double-click either to type a new one. |
 | **Signal source** | **Sensor** (the hardware speed sender) or **CAN** (speed over the CAN bus, from the ABS or gateway). A variant that follows the primary's source has no switch of its own; its drop-down is greyed out. |
 
+Select cells and press Ctrl+C, or right-click for **Copy**, **Paste** and
+**Select all** (the right-click menu also has **Copy comparison → primary**
+with a comparison open). A paste lands with its top-left cell on the first
+selected cell and sets the **Imp / m**, **Pulses / km** and **Signal source**
+cells it covers (the other columns are skipped) as one undo step. Cells that
+differ from the comparison are orange, in the comparison's columns and in
+yours. On EDC15 the table is read-only: copy only.
+
 When the source is **CAN**, the ECU takes road speed from the bus and the
 pulse count is not used.
 

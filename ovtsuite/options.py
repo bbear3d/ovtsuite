@@ -101,6 +101,15 @@ OPTIONS: Tuple[Option, ...] = (
     Option("projects/auto_reload", True, "Reload a project with nothing "
            "unsaved when its file changes", PROJECTS,
            help="Off: ask first."),
+    Option("projects/ols_versions", "original", "A WinOLS project with several "
+           "versions of its binary", PROJECTS, "choice",
+           "What File > Open project and File > Import bring in when a "
+           ".ols holds the original and versions made from it. A project "
+           "with a single binary is never asked about.",
+           choices=(("original", "Open the original only"),
+                    ("all", "Open all versions (the original, then each "
+                            "version as a saved version)"),
+                    ("ask", "Ask each time"))),
     Option("projects/watch_s", 2, "Look at the open projects' files every",
            PROJECTS, "int", minimum=1, maximum=60, suffix=" s"),
     Option(PROGRAM_AREA_KEY, False, "ZF 6HP: also correct the program-area "
