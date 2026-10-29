@@ -39,6 +39,14 @@ other file goes into a new project when no project is open; with a project
 tab in front, a small menu asks: **Import into <project>**, **Import into a
 new project**, or **Compare with this tab** (one binary).
 
+**An EDC16 calibration-only file** (exactly 512 KB, with the calibration
+descriptor in it) is a window of the 2 MB flash, so it is imported -- or read
+from the car over K-line -- as the full 2 MB image: the 512 KB at `0x180000`
+over `0xFF`, the image the flasher writes. The set records that it was
+padded. A 1 MB file is more likely an EDC16U1's whole flash and is never
+padded; neither is anything else. Exporting a raw binary from an older
+project that still holds a 512 KB file gives the 2 MB image too.
+
 While a binary loads, a progress window shows each step; identifying the
 software and placing every parameter can take a few seconds on a large
 image. Then:

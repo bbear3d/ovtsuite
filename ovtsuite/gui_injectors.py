@@ -343,7 +343,7 @@ class InjectorDialog(QtWidgets.QDialog):
         self.cmp_check = QtWidgets.QCheckBox("Show comparison")
         self.cmp_check.setToolTip(
             "Show what the comparison file is set up for, how each table this "
-            "writes compares with the comparison's (orange: differs) and the "
+            "writes compares with the comparison's (orange outline: differs) and the "
             "comparison's fuel per degree in the chart (dotted).")
         self.cmp_check.setChecked(True)
         self.cmp_check.toggled.connect(self._show_cmp)
@@ -508,7 +508,7 @@ class InjectorDialog(QtWidgets.QDialog):
         self.changes.setHorizontalHeaderLabels(["Table", "What", "Cells", "Largest change",
                                                 "Comparison"])
         self.changes.horizontalHeaderItem(4).setToolTip(
-            "The table as this writes it against the comparison file's (orange: differs)")
+            "The table as this writes it against the comparison file's (orange outline: differs)")
         self.changes.verticalHeader().setVisible(False)
         self.changes.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.changes.setSelectionBehavior(

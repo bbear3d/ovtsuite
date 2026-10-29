@@ -101,17 +101,31 @@ OPTIONS: Tuple[Option, ...] = (
     Option("projects/auto_reload", True, "Reload a project with nothing "
            "unsaved when its file changes", PROJECTS,
            help="Off: ask first."),
-    Option("projects/ols_versions", "original", "A WinOLS project with several "
-           "versions of its binary", PROJECTS, "choice",
-           "What File > Open project and File > Import bring in when a "
-           ".ols holds the original and versions made from it. A project "
-           "with a single binary is never asked about.",
-           choices=(("original", "Open the original only"),
-                    ("all", "Open all versions (the original, then each "
-                            "version as a saved version)"),
-                    ("ask", "Ask each time"))),
     Option("projects/watch_s", 2, "Look at the open projects' files every",
            PROJECTS, "int", minimum=1, maximum=60, suffix=" s"),
+    Option("ols/open", "stored", "Opening a WinOLS project (.ols)", PROJECTS,
+           "choice", "What File > Open does with a WinOLS project. As stored: "
+           "every binary it holds, as the versions it lists, and only the "
+           "maps the project has (the module's maps are left out; the module "
+           "still corrects the checksums). Ask: pick the binaries to take, "
+           "with the module's maps beside the project's. Original only: the "
+           "first binary, with the module's maps beside the project's. "
+           "Add files and New project always ask. The project is saved as an "
+           ".ovt project either way.",
+           choices=(("stored", "As stored: every version, its own maps only"),
+                    ("ask", "Ask which versions to take"),
+                    ("original", "The original only, with the module's maps"))),
+    Option("ols/layout", "star", "Versions of a WinOLS project in the history",
+           PROJECTS, "choice", "WinOLS keeps its versions as a flat list of "
+           "whole binaries. Each a branch of its own: every version is a "
+           "branch off the original, opened and compared like any other, and "
+           "the version WinOLS had open is the one the project opens on. One "
+           "chain: each version is saved on top of the one before it, on a "
+           "single branch.",
+           choices=(("star", "Each version a branch of its own, from the "
+                     "original"),
+                    ("chain", "One chain: each version follows the one "
+                     "before it"))),
     Option(PROGRAM_AREA_KEY, False, "ZF 6HP: also correct the program-area "
            "checksums", PROJECTS,
            help="Rewrites the program / boot-area descriptor self-checks "
@@ -138,26 +152,44 @@ OPTIONS: Tuple[Option, ...] = (
                     ("below", "Below the table, scrolled with it"),
                     ("beside", "Beside the table, scrolled with it"),
                     ("mark", "In the same grid, matching cells marked"))),
-    Option("ui/compare_delta", "abs", "Comparison shows", EDITOR, "choice",
-           "The comparison's cells as its own values, or as the difference "
-           "from this file (either way round), a percentage or a ratio. "
-           "Copying a comparison cell always copies the real value. Hex maps "
-           "show a signed hex byte; text and list maps stay as they are.",
+    Option("ui/compare_size", "resampled", "Comparison values", EDITOR,
+           "choice", "How a comparison's table is shown. Resampled: put onto "
+           "the primary's rows and columns (cell for cell when they match). "
+           "Original size: as stored -- its own rows, columns and axes -- in "
+           "a grid of its own; the two tables are linked (scroll, "
+           "selection) only when they have the same size, and when they "
+           "differ every cell is outlined, nothing being compared cell for "
+           "cell. Copying from it never resamples. This is the default: each "
+           "table can have its own (the Comparison button on the edit bar, "
+           "right-click, View > Comparison size).",
+           choices=(("resampled", "Resampled onto the primary's axes"),
+                    ("original", "Original size"))),
+    Option("ui/compare_delta", "abs", "Difference view: show as", EDITOR,
+           "choice", "While a comparison is loaded, the cells as their own "
+           "values, or as the difference between the primary and the "
+           "comparison (either way round), a percentage or a ratio. Copying "
+           "a cell always copies the real value. Hex maps show a signed hex "
+           "byte; text and list maps stay as they are. Also in the "
+           "Difference view button on the edit bar, View > Difference view, "
+           "and the toolbar.",
            choices=_cd.MODES),
-    Option("ui/primary_delta", "abs", "This file's table shows", EDITOR,
-           "choice", "While a comparison is loaded, this file's own table as "
-           "the difference from the comparison (either way round), a "
-           "percentage or a ratio. The cells are read only then: switch back "
-           "to Values to edit. Also in the Difference view button on the edit bar. Blank cells "
-           "and the tint (below) apply to it too.",
-           choices=(("abs", "Values"),) + _cd.MODES[1:]),
+    Option("ui/compare_delta_in", "cmp", "Difference view: show it in",
+           EDITOR, "choice", "Which table shows the difference: the "
+           "comparison's cells (the primary keeps its values), the primary's "
+           "own table (read only while it shows differences, switch back to "
+           "Values to edit), or both.",
+           choices=(("cmp", "The comparison block"),
+                    ("primary", "The primary table (read only)"),
+                    ("both", "Both"))),
     Option("ui/compare_delta_blank", False, "Blank the cells that do not "
            "differ in a difference view", EDITOR),
     Option("ui/compare_delta_tint", False, "Tint a difference by direction",
-           EDITOR, help="Blue where this file is lower than the comparison, "
-           "red where it is higher. Off: the usual orange for a differing "
-           "cell. The tint is the same light colour with dark text in both "
-           "themes."),
+           EDITOR, help="Fills a cell that differs red where the primary is "
+           "the higher and blue where it is the lower, whatever the table "
+           "shows (values or a difference). The same light fill with dark "
+           "text in both themes. Not shown while a table's heat map is on, "
+           "which has the fill. The orange outline of a differing cell stays "
+           "either way."),
     # -- Appearance ----------------------------------------------------------
     Option("ui/theme", "system", "Theme", APPEARANCE, "choice",
            "System follows Windows' light or dark app mode.",

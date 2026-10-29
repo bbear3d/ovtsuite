@@ -44,8 +44,8 @@ the unit's flash (or EEPROM) and programs them again from your binary.
 
 After a successful write — flash, block write, flash + EEPROM, EEPROM write,
 6HP28 UDS write or cluster write — the version written is marked in its
-project as **last flashed**. The Project panel shows *⚡ flashed <date>* on
-that version, and the set's and the tab's tooltips say *Last flashed <date>
+project as **last flashed**. The Project panel puts a **⚡ bolt in front of**
+that version (its tooltip says when), and the set's and the tab's tooltips say *Last flashed <date>
 (<branch>, saved version)*, or *unsaved edits* when it was written without
 saving.
 

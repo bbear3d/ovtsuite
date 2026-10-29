@@ -9,8 +9,8 @@ Everything the user works on is a project (``.ovt``):
 
 * **Open project...** / **Open Recent** open projects -- nothing else but a
   WinOLS project (``.ols``), which the dialog lists beside ``.ovt`` and which
-  opens as a new project the way Options > Projects and saving says (its
-  original only, by default) rather than asking;
+  opens as a new project the way Options > Projects and saving > Opening a
+  WinOLS project says (``gui_project.open_ols``), not through Import;
 * **Import** brings files in, *into this project* or *into a new project*:
   a binary or container (``.bin``, ``.sgo``, ``.frf``, ``.dim``, an old
   ``.edc16`` / ``.6hp`` ... or ``.edc15bak``) becomes a set, opened in a new
@@ -102,11 +102,14 @@ def open_any(win, path: str) -> bool:
         from .recent import remove_recent
         remove_recent(path)
         return False
-    if classify(path) == "project":
+    kind = classify(path)
+    if kind == "project":
         ok = _gp.open_project(win, path)
         if ok:
             _info_on_open(win)
         return ok
+    if kind == "ols":
+        return _gp.open_ols(win, path)          # Options: Opening a WinOLS project
     return import_files(win, [path], target="new")
 
 

@@ -385,7 +385,7 @@ def test_an_ols_can_import_every_binary_as_versions():
     from ovtsuite.project import Project, importers
     p = Project("")
     s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
-                               ols_versions="all")
+                               ols_versions="all", ols_layout="chain")
     want = _three_versions()
     assert [c.label for c in s.checkpoints] == [
         "WinOLS: Original", "WinOLS: Stage 1", "WinOLS: Stage 2"]
@@ -402,6 +402,61 @@ def test_an_ols_can_import_every_binary_as_versions():
     day = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(1339200000))
     assert [c.ts for c in s.checkpoints] == [day] * 3
     assert winols.parse(_ols_with_versions()).versions[1].changed == 1339200000
+
+
+def test_an_ols_lays_its_versions_out_as_branches_off_the_original():
+    """The default: WinOLS keeps its versions as a flat list of whole images,
+    so each is a branch of its own off the original, not a link in a chain."""
+    from ovtsuite.project import Project, importers
+    p = Project("")
+    s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
+                               ols_versions="all")
+    want = _three_versions()
+    mid = s.members[0].id
+    root = s.roots()[0]
+    assert len(s.roots()) == 1 and root.label == "WinOLS: Original"
+    assert [b.name for b in s.branches] == ["Stock", "Stage 1", "Stage 2"]
+    for b, (_n, img) in zip(s.branches, want):
+        assert p.member_bytes(s.id, mid, branch=b.id) == img
+    for c in s.checkpoints[1:]:
+        assert c.parent == root.id          # all of them from the original
+    assert [c.label for c in s.checkpoints] == [
+        "WinOLS: Original", "WinOLS: Stage 1", "WinOLS: Stage 2"]
+    assert s.active.name == "Stock"        # the project's own current version
+
+
+def test_an_ols_opens_on_the_version_winols_had_current(monkeypatch):
+    from ovtsuite.definitions import winols as W
+    from ovtsuite.project import Project, importers
+    real = W.parse
+
+    def parse(data):
+        wf = real(data)
+        wf.header.current_version = "Stage 2"
+        return wf
+    monkeypatch.setattr(W, "parse", parse)
+    s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
+                               ols_versions="all")
+    assert s.active.name == "Stage 2"
+    # a chain has one branch: nothing to choose
+    s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
+                               ols_versions="all", ols_layout="chain")
+    assert len(s.branches) == 1
+
+
+def test_an_ols_can_use_only_its_own_maps_where_winols_has_them():
+    from ovtsuite.project import Project, importers
+    p = Project("")
+    s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
+                               ols_versions="all", ols_stored=True)
+    d = s.members[0].definition
+    assert d["type"] == "ols" and d["use"] == "instead"
+    assert d["place"] == importers.OLS_STORED_PLACEMENT == {
+        "base": 0, "relocate": False, "unverified": True}
+    # the default beside a module's maps, placed by what the binary shows
+    s = importers.import_bytes(Project(""), make_ols(597), "car.ols")
+    d = s.members[0].definition
+    assert "use" not in d and "place" not in d
 
 
 def test_an_ols_can_import_one_chosen_binary():
@@ -773,34 +828,23 @@ def test_the_import_dialog_offers_the_versions_only_when_there_are_several(tmp_p
     assert dlg.value() == [0, 2]
 
 
-def test_a_ols_with_several_versions_opens_as_the_option_says(tmp_path, monkeypatch):
+def test_open_of_a_winols_project_goes_through_the_open_setting(monkeypatch, tmp_path):
+    """File > Open (and a drop, and Open Recent) hands a .ols to open_ols, which
+    reads Options > Opening a WinOLS project -- not to the Import route, which
+    asks about versions whatever the setting says."""
     pytest.importorskip("PySide6")
-    from PySide6 import QtWidgets
-    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    from ovtsuite import gui_olsversions as ov, options
-    many = tmp_path / "many.ols"
-    many.write_bytes(_ols_with_versions())
-    setting = {"projects/ols_versions": "original"}
-    sets = []
-    monkeypatch.setattr(options, "get", lambda k: setting[k])
-    monkeypatch.setattr(options, "set", lambda k, v: (sets.append((k, v)),
-                                                      setting.update({k: v})))
-    asked = []
-
-    def fake_exec(self):
-        asked.append(self)
-        self.all.setChecked(True)
-        self.remember.setChecked(True)
-        return QtWidgets.QDialog.DialogCode.Accepted
-    monkeypatch.setattr(ov.OlsVersionsDialog, "exec", fake_exec)
-    # the default opens the original without a question
-    assert ov.choose(None, str(many)) is None and not asked
-    setting["projects/ols_versions"] = "all"
-    assert ov.choose(None, str(many)) == "all" and not asked
-    # "ask" shows the dialog, and its box can stop the questions
-    setting["projects/ols_versions"] = "ask"
-    assert ov.choose(None, str(many)) == "all" and len(asked) == 1
-    assert sets == [("projects/ols_versions", "all")]
+    from ovtsuite import gui_files, gui_project
+    p = tmp_path / "car.ols"
+    p.write_bytes(make_ols(597))
+    seen = []
+    monkeypatch.setattr(gui_files, "classify", lambda path: "ols")
+    monkeypatch.setattr(gui_project, "open_ols",
+                        lambda win, path, ws=None: seen.append(path) or True)
+    monkeypatch.setattr(gui_files, "import_files",
+                        lambda *a, **k: seen.append("IMPORT") or True)
+    monkeypatch.setattr(gui_project, "parse_ref", lambda path: None)
+    assert gui_files.open_any(object(), str(p))
+    assert seen == [str(p)]
 
 
 def test_open_project_lists_winols_projects():

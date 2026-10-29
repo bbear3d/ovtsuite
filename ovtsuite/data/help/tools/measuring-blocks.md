@@ -117,7 +117,7 @@ With a comparison open, its blocks are a read-only table of their own under
 the primary's -- the same blocks on the same rows, so nothing is off to the
 side to scroll to. The two scroll together, keep the same column widths and
 the same selected cells; drag the bar between them to share the room. A cell
-that shows a different signal from the primary is shaded orange in both, and
+that shows a different signal from the primary has an orange outline in both, and
 the primary's tooltip names the comparison's signal. Cells are compared by
 what they show, not by their names: the same id with the same definition in
 both files is the same signal even when it has no name (a bare number, or a
@@ -144,8 +144,8 @@ The tables use the colours of the rest of the app:
 
 | Colour | Meaning |
 |---|---|
-| Pale yellow, bold | A change held until **Apply** (on the **Blocks** and **Descriptors** tabs). In the table above it takes the place of orange; the comparison's copy of the cell stays orange if it differs from the held signal. |
-| Orange | This cell shows a different signal from the comparison (in both tables). |
+| Pale yellow, bold | A change held until **Apply** (on the **Blocks** and **Descriptors** tabs), in the table above only. |
+| Orange outline | This cell shows a different signal from the comparison (in both tables; a frame, so it shows over a held change's yellow too). |
 | Grey text | In the table above: an empty cell (255), or **—** where a block has no map row for that half. The comparison's text is a little quieter than the primary's throughout. |
 | Accent colour (blue) | Selected cells; the comparison selects the same cells, every one of them. |
 
@@ -161,4 +161,4 @@ block across.
   [Tune from logs](../modules/edc16/logtune.md)) work out which blocks to read
   from the calibration that is open in the app. After rearranging blocks,
   log with the version you actually wrote to the car open in a tab (the
-  Project panel marks it *⚡ flashed*).
+  Project panel puts a *⚡* in front of it).

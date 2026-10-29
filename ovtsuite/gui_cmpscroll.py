@@ -14,7 +14,7 @@ scrollers serves both and a tall map pushes the comparison out of sight.
 ``below``   in a read-only grid of its own under the table
 ``beside``  in a read-only grid of its own to the right of the table
 ``mark``    in the same grid, with the cells matching the selection marked
-            in the other copy (a frame, so the orange difference fill stays)
+            in the other copy (a frame, apart from the orange difference outline)
 
 and in ``below`` / ``beside`` the two grids are kept in step the way the
 Measuring blocks dialog keeps its two tables: scrolling (either way, from
@@ -362,6 +362,8 @@ class CompareGrid(QtCore.QObject):
         self.view = QtWidgets.QTableView()
         self.view.setObjectName("compareView")
         self.view.setModel(ws.model)
+        from .gui_cellmarks import OutlineDelegate  # the difference outline
+        self.view.setItemDelegate(OutlineDelegate(self.view))
         self.view.setEditTriggers(
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.view.setSelectionMode(
@@ -376,6 +378,9 @@ class CompareGrid(QtCore.QObject):
                         self.copy, context=QtCore.Qt.ShortcutContext
                         .WidgetWithChildrenShortcut)
         self.cmp_box, self.cmp_head = self._box(self.view)
+        from .gui_cmpsize import NativeView     # the comparison at its own size
+        self.native = NativeView(self)
+        self.cmp_box.layout().addWidget(self.native.view, 1)
         self.split.addWidget(self.prim_box)
         self.split.addWidget(self.cmp_box)
         self.split.setStretchFactor(0, 1)
@@ -455,32 +460,40 @@ class CompareGrid(QtCore.QObject):
         a mode change: which rows each grid shows, and the headings."""
         t, v, m = self.ws.table, self.view, self.ws.model
         sep = m.sep_row()
-        on = self.mode in ("below", "beside") and sep is not None
-        marking = self.mode == "mark" and sep is not None
+        # the comparison at its original size (gui_cmpsize) has a grid of
+        # its own whatever the layout: under the table where the layout
+        # keeps it in the same grid
+        native = self.native.update()
+        on = native or (self.mode in ("below", "beside") and sep is not None)
+        marking = self.mode == "mark" and sep is not None and not native
         self.marks.setVisible(marking)
         self.marks.setGeometry(t.viewport().rect())
         for sc in self.jump_sc:
-            sc.setEnabled(on or marking)
+            sc.setEnabled((on or marking) and not native)
         was = self._shown
         if on or was:       # off and staying off: nothing is hidden
             n = m.rowCount()
             t.setUpdatesEnabled(False)
             try:
                 for r in range(n):
-                    t.setRowHidden(r, on and r >= sep)
-                    v.setRowHidden(r, not on or r <= sep)
+                    t.setRowHidden(r, on and sep is not None and r >= sep)
+                    v.setRowHidden(r, native or not on or sep is None
+                                   or r <= sep)
             finally:
                 t.setUpdatesEnabled(True)
+        v.setVisible(not native)
+        self.native.view.setVisible(native)
         self._shown = on
         spans = getattr(self.ws, "_apply_spans", None)
         if spans is not None and on != was:
             spans()             # the banner row's span goes with its row
-        self.link.enabled = on
+        self.link.enabled = on and not native
         if was and not on:
             v.clearSelection()      # nothing stale for the next time
         self.cmp_box.setVisible(on)
         beside = on and self.mode == "beside"
         v.horizontalHeader().setVisible(beside)
+        self.native.view.horizontalHeader().setVisible(True)
         self._heading()
         self.cmp_head.setVisible(on)
         prim = getattr(getattr(getattr(self.ws, "primary", None),
@@ -499,6 +512,11 @@ class CompareGrid(QtCore.QObject):
         cells differing, resampled / axes differ), read only."""
         if not self._shown:
             return
+        if self.native.on:      # a long one is cut off; the tooltip has it all
+            text = self.native.heading()
+            self.cmp_head.setText("<b>%s</b>" % _esc(text))
+            self.cmp_head.setToolTip(text)
+            return
         m = self.ws.model
         sep = m.sep_row()
         text = m.data(m.index(sep, 0)) if sep is not None else None
@@ -506,10 +524,23 @@ class CompareGrid(QtCore.QObject):
             text = "Comparison: %s" % (getattr(m, "cmp_name", "")
                                        or "comparison")
         self.cmp_head.setText("<b>%s</b> (read only)" % _esc(text))
+        self.cmp_head.setToolTip("")
 
     def _row_heads(self) -> None:
         """Below: both row-label columns one width, so the cells line up."""
         t, v = self.ws.table.verticalHeader(), self.view.verticalHeader()
+        if self.native.on:      # linked: the row labels one width
+            n = self.native.view.verticalHeader()
+            if self.native.linked() and self.mode != "beside":
+                w = max(t.sizeHint().width(), n.sizeHint().width())
+                for h in (t, n):
+                    if h.minimumWidth() != w:
+                        h.setMinimumWidth(w)
+            else:
+                for h in (t, n):
+                    if h.minimumWidth():
+                        h.setMinimumWidth(0)
+            return
         if self._shown and self.mode == "below":
             w = max(t.sizeHint().width(), v.sizeHint().width())
             for h in (t, v):
@@ -527,6 +558,9 @@ class CompareGrid(QtCore.QObject):
         try:
             if not self._shown:
                 return
+            if self.native.on:
+                self.native.fit()
+                return
             t = self.ws.table
             for c in range(self.ws.model.columnCount()):
                 need = self.view.sizeHintForColumn(c)
@@ -537,10 +571,11 @@ class CompareGrid(QtCore.QObject):
             pass
 
     def _sync_fonts(self) -> None:
-        t, v = self.ws.table, self.view
-        v.setFont(t.font())
-        v.horizontalHeader().setFont(t.horizontalHeader().font())
-        v.verticalHeader().setFont(t.verticalHeader().font())
+        t = self.ws.table
+        for v in (self.view, self.native.view):
+            v.setFont(t.font())
+            v.horizontalHeader().setFont(t.horizontalHeader().font())
+            v.verticalHeader().setFont(t.verticalHeader().font())
 
     def eventFilter(self, obj, ev):
         if obj is not self.ws.__dict__.get("table") and \
@@ -573,6 +608,8 @@ class CompareGrid(QtCore.QObject):
         to = menu.addAction("Copy cells to primary",
                             lambda: _gck.to_primary(self.ws, self.view))
         to.setEnabled(bool(_gck.comparison_cells(self.ws, self.view)))
+        from . import gui_cmpsize as _gcs
+        _gcs.add_to_menu(self.ws, menu)
         menu.exec(self.view.viewport().mapToGlobal(pos))
 
     def copy(self) -> None:
@@ -666,7 +703,7 @@ class CompareGrid(QtCore.QObject):
 class _Marks(QtWidgets.QWidget):
     """A frame round each marked range, drawn over the table's viewport:
     a line in the text colour (dark on a light theme, light on a dark one,
-    and either way clear of the orange difference fill and the heatmap)
+    and either way clear of the orange difference outline and the heatmap)
     with the highlight colour inside it. It takes no mouse events."""
 
     def __init__(self, grid: "CompareGrid"):

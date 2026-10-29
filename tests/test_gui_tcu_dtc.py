@@ -277,14 +277,14 @@ def test_restore_and_copy_from_comparison_are_taken_back_too(
 
 def test_cell_colours_follow_the_table_editor(app, s, monkeypatch):
     """As the engine fault-code window and the table editor: a state that
-    differs from the comparison orange (gui.DIFF_BG, dark text) in the On box
-    and Cmp on; a row not applied yet PENDING_BG, bold, dark text -- over
-    orange in On, while Cmp on stays orange; a code the gearbox has stored
-    STORED_BG under both; alternating rows so the selection shows."""
+    differs from the comparison has the orange outline in the On box and Cmp
+    on, over whatever fill they have; a row not applied yet PENDING_BG, bold,
+    dark text; a code the gearbox has stored STORED_BG under both;
+    alternating rows so the selection shows."""
     _no_question(monkeypatch)
     from types import SimpleNamespace
     from ovtsuite import gui
-    from ovtsuite.gui_cellmarks import CellDelegate, STORED_BG
+    from ovtsuite.gui_cellmarks import CellDelegate, OUTLINE_ROLE, STORED_BG
     from ovtsuite.gui_tcu_dtc import PENDING_BG
     original = s.sibling(bytes(s.binfile.data), "6HP - as read")
     d = _window(s, compare=original)
@@ -304,17 +304,17 @@ def test_cell_colours_follow_the_table_editor(app, s, monkeypatch):
         return d.table.item(_keys(d).index(k), c)
 
     for c in (0, cmp_col):                  # the primary's state, the comparison's
-        assert cell(k1, c).background().color() == gui.DIFF_BG
-        assert cell(k1, c).foreground().color() == dark
+        assert cell(k1, c).data(OUTLINE_ROLE) is True
+        assert cell(k1, c).background().color() == STORED_BG
+        assert cell(k2, c).data(OUTLINE_ROLE) is True
+    assert cell(k1, 1).data(OUTLINE_ROLE) is None
     assert cell(k1, 1).background().color() == STORED_BG
     for c in range(d.table.columnCount()):
         it = cell(k2, c)
-        if c == cmp_col:
-            assert it.background().color() == gui.DIFF_BG
-        else:
-            assert it.background().color() == PENDING_BG and it.font().bold()
-            assert it.foreground().color() == dark
+        assert it.background().color() == PENDING_BG and it.font().bold()
+        assert it.foreground().color() == dark
         assert cell(k3, c).background().color() == STORED_BG
+        assert cell(k3, c).data(OUTLINE_ROLE) is None
     for r in range(d.table.rowCount()):
         for c in range(d.table.columnCount()):
             assert d.table.item(r, c).background().color() != gui.EDIT_BG

@@ -100,6 +100,70 @@ def test_renaming_the_compared_version_renames_the_comparison(win, tab):
     assert tab.comparison.version_of["label"] == "Stage 1"
 
 
+def _ck_items(panel, gp):
+    out = {}
+    it = QtWidgets.QTreeWidgetItemIterator(panel.tree)
+    while it.value() is not None:
+        data = it.value().data(0, gp._ROLE)
+        if data and data[0] == "ck":
+            out[data[4]] = it.value()
+        it += 1
+    return out
+
+
+def test_the_flashed_flag_leads_the_version_row(win, tab):
+    """The bolt is the row's icon -- in front of the name, and every version
+    keeps the icon column so the names stay in line -- not text at the end
+    that a long name pushes out of sight."""
+    from ovtsuite import gui_project as gp
+    ref = tab.project_ref
+    flashed = ref.branch.head
+    ref.doc.project.mark_flashed(ref.sid, ref.bid, flashed, tool="test")
+    panel = gp.panel(win)
+    panel.refresh()
+    rows = _ck_items(panel, gp)
+    assert len(rows) >= 2
+    on = rows[flashed]
+    assert "flashed" not in on.text(0)
+    assert not on.icon(0).isNull() and "Flashed to the ECU" in on.toolTip(0)
+    img = on.icon(0).pixmap(16, 16).toImage()
+    assert any(img.pixelColor(x, y).alpha() for x in range(16) for y in range(16))
+    for cid, item in rows.items():
+        if cid == flashed:
+            continue
+        assert not item.icon(0).isNull()                 # the column is kept
+        blank = item.icon(0).pixmap(16, 16).toImage()
+        assert not any(blank.pixelColor(x, y).alpha()
+                       for x in range(16) for y in range(16))
+        assert "Flashed" not in item.toolTip(0)
+
+
+def test_a_long_version_name_can_be_read_in_every_version_list(win, tab):
+    """The Project panel's row, the Version history row and the Compare with
+    saved version menu entry each carry the whole name in a tooltip, however
+    long the name and however narrow the list."""
+    from ovtsuite import gui
+    from ovtsuite import gui_project as gp
+    ref = tab.project_ref
+    cid = ref.branch.head
+    long_name = "Stage 2 with the long name that no narrow list can show " * 2
+    gp.rename_version(win, ref.doc, ref.sid, cid, long_name.strip())
+    panel = gp.panel(win)
+    panel.refresh()
+    row = _ck_items(panel, gp)[cid]
+    assert long_name.strip() in row.toolTip(0)
+    # the history dialog's row: the name and its time, then the automatic name
+    dlg = gui.VersionHistoryDialog(tab.primary, tab, on_compare=None)
+    names = [dlg.tbl.item(r, dlg.NAME).toolTip() for r in range(dlg.tbl.rowCount())]
+    assert any(long_name.strip() in t and "Automatic label:" in t for t in names)
+    # the menu: project tabs and plain ones alike
+    menu = QtWidgets.QMenu()
+    win.fill_version_menu(menu)
+    assert menu.toolTipsVisible()
+    assert any(long_name.strip() in a.toolTip() for a in menu.actions())
+    dlg.close()
+
+
 def test_the_panel_offers_rename_on_a_version(win, tab, monkeypatch):
     from ovtsuite import gui_project as gp
     panel = gp.panel(win)
@@ -221,3 +285,65 @@ def test_a_new_project_compares_with_nothing_until_its_first_save(win):
     root = ref.set.root_of(ref.branch.head)
     assert ws.comparison is not None
     assert ws.comparison.version_of["id"] == root.id != ref.branch.head
+
+
+# -- a new original --------------------------------------------------------------
+
+def _click(monkeypatch, label):
+    """Answer the next QMessageBox with its button called ``label``."""
+    seen = []
+
+    def clicked(self):
+        seen.append(self.informativeText())
+        return next(b for b in self.buttons() if b.text().startswith(label))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", lambda self: 0)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "clickedButton", clicked)
+    return seen
+
+
+def test_import_a_new_original_from_the_panel(win, tab, monkeypatch, tmp_path):
+    from ovtsuite import gui_original as go
+    from ovtsuite import gui_project as gp
+    ref = tab.project_ref
+    proj, sid = ref.doc.project, ref.sid
+    old_root = ref.set.roots()[0]
+    edited = bytes(tab.primary.binfile.data)
+    stock = bytearray(READ)
+    stock[0x80:0x84] = b"\xDE\xAD\xBE\xEF"
+    path = tmp_path / "stock.bin"
+    path.write_bytes(bytes(stock))
+    # the panel offers it on the binary
+    panel = gp.panel(win)
+    panel.refresh()
+    seen = _click(monkeypatch, "Make it the original")
+    assert go.import_original(win, ref.doc, sid, str(path))
+    assert "4 of %d bytes differ" % len(READ) in seen[0]
+    s = proj.set(sid)
+    new_root = s.roots()[0]
+    assert new_root.id != old_root.id and len(s.roots()) == 1
+    assert s.checkpoint(old_root.id).parent == new_root.id
+    mid = next(iter(old_root.sizes))
+    assert proj.state(sid, new_root.id)[mid] == bytes(stock)
+    # what was saved is unchanged
+    assert proj.state(sid, old_root.id)[mid] == READ
+    assert proj.state(sid, ref.branch.head)[mid] == edited
+    # the panel shows the new one as the original
+    panel.refresh()
+    rows = _ck_items(panel, gp)
+    assert "(original)" in rows[new_root.id].text(0)
+    assert "(original)" not in rows[old_root.id].text(0)
+    assert "Previous original" in rows[old_root.id].text(0)
+
+
+def test_a_new_original_of_another_size_is_refused(win, tab, monkeypatch, tmp_path):
+    from ovtsuite import gui_original as go
+    ref = tab.project_ref
+    warned = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.append(a[2])))
+    path = tmp_path / "other.bin"
+    path.write_bytes(READ[:-16])
+    roots = [c.id for c in ref.set.roots()]
+    assert not go.import_original(win, ref.doc, ref.sid, str(path))
+    assert warned and "another size" in warned[0]
+    assert [c.id for c in ref.set.roots()] == roots

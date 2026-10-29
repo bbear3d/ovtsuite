@@ -64,7 +64,8 @@ as is shown — the same as **File > Comparison information...** shows later.
 In the **grid**, the comparison's copy of the table is drawn under the
 primary's, below a dark banner such as
 **Comparison - 03G906016LQ.bin   20 cell(s) differ**. Both copies scroll
-together. Cells whose values differ are orange in both copies. Hover over a
+together. Cells whose values differ have an orange outline in both copies (a
+frame, so the cell keeps its heat-map shade or tint). Hover over a
 primary cell to read the comparison's value, or over a comparison cell to
 read the primary's.
 
@@ -93,41 +94,86 @@ values were resampled. **Ctrl+C** in the comparison grid copies its selected
 cells. The default, **In the same grid, under the table**, is the layout
 described above.
 
+### Comparison size: resampled or original
+
+By default the comparison is put onto your table's rows and columns, cell for
+cell when the two tables have the same shape and **resampled** onto your
+table's axes when they do not (the banner says which). **Comparison size**
+shows it as it is stored instead: its own rows, columns, axes, labels and
+units, in a read-only grid of its own, so nothing is interpolated.
+
+Change it for the table in front with the **Comparison** button on the table's
+edit bar (beside *Difference view*), by right-clicking the table or the
+comparison and ticking **Show comparison at original size**, or in **View >
+Comparison size**. Each table remembers its own choice, as the heat map does;
+where it has none, the default applies: **Tools > Options > Editor >
+Comparison values**. **Use the default for this table** clears a table's own
+choice, and **Make this the default for all tables** sets the default and
+clears every table's.
+
+The original-size grid goes where the layout puts a comparison's own grid
+(below or beside the table); with *In the same grid, under the table* or
+*matching cells marked* it is under the table, since one grid cannot hold two
+shapes. Its heading says its size and whether it is linked.
+
+- **Same size**: the two grids are linked as in the layouts above -- they
+  scroll together, share column widths, and a cell or range selected in one is
+  selected in the other. A cell that differs has the orange outline in both.
+- **Different sizes**: no cell is compared with another, so **nothing is
+  linked** (each grid keeps its own selection and scrolling) and **every cell
+  of both tables, the axes included, has the orange outline**. The difference
+  view and the direction tint are off. Select comparison cells and a **dashed
+  frame** shows, in your table, the cells at the same row and column: where
+  **Copy comparison → primary** would write them.
+
+Copying never resamples. **Copy comparison → primary** (right-click the
+comparison, or **Ctrl+R** on your own selection, *Copy selected cells from
+the comparison*) writes each comparison cell, as stored, into your table's cell
+at the same row and column; cells your table has no counterpart for are left
+out, and the status bar says how many. **Paste at the primary's current cell**
+puts the selection's text in from your current cell, as Paste does. **Ctrl+C**
+copies the comparison's own cells. Each is one undo step. The difference view
+applies to your own table while the comparison is at its original size.
+
 ### Showing the difference
 
-Instead of the comparison's own values, its cells can show how this file
-differs from it. Pick the view in the **Difference view** button on the
-table's edit bar, beside **3D surface** and **Dyno** (available while a
-comparison is loaded), in **View > Difference view**, or in **Tools >
+Instead of values, the cells can show how the **primary** (the file you are
+editing) differs from the **comparison**. Pick it in the **Difference view**
+button on the table's edit bar, beside **3D surface** and **Dyno** (available
+while a comparison is loaded), in **View > Difference view**, or in **Tools >
 Options > Editor**. The same menu can be a button on the toolbar: **Tools >
-Options > Toolbar**, *View ▸ Difference view*. The menu has a section for the
-comparison and one for your own table, and the two options below. The
-comparison's views:
+Options > Toolbar**, *View ▸ Difference view*. It names the two files at the
+top, then asks two things.
+
+**Show as:**
 
 | View | Each cell shows |
 | --- | --- |
-| **Absolute values** | the comparison's value (the default) |
-| **Difference: this file - comparison** | what you changed: positive where this file is higher |
-| **Difference: comparison - this file** | the same, the other way round |
-| **Percent change from comparison** | the difference as a percentage of the comparison's value |
-| **Ratio: this file / comparison** | this file's value divided by the comparison's |
+| **Values** | the value itself (the default; the view is off) |
+| **Difference: primary - comparison** | what you changed: positive where the primary is higher |
+| **Difference: comparison - primary** | the same, the other way round |
+| **Percent change of the primary from the comparison** | the difference as a percentage of the comparison's value |
+| **Ratio: primary / comparison** | the primary's value divided by the comparison's |
+
+**Show it in:** **the comparison block** (the default: the primary keeps its
+values, so it stays editable), **the primary table** (read only while it shows
+differences -- typing, pasting and the modify bar do nothing and the status
+bar says why; set it back to **Values** to edit), or **both**. The banner says
+what is on.
 
 Values are in the units the table shows. A comparison value of 0 has no
 percentage or ratio, so that cell shows `-`. A cell that does not differ
-shows 0 (percent 0%, ratio 1). The banner says which views are on.
+shows 0 (percent 0%, ratio 1).
 
-Options: **Blank the cells that do not differ in a difference view** leaves
-only the changes on screen; **Tint a difference by direction** fills the
-cells blue where this file is lower and red where it is higher (the same
-light fill with dark text in both themes, so the numbers always read; off,
-a differing cell is the usual orange). Both apply to the comparison and to
-your own table.
-
-**This file's table shows** (the menu's second section, or Options) turns your own table into the same kind of view: each
-cell is how it differs from the comparison, in any of the views above. The
-cells are **read only** while it is on -- typing, pasting and the modify bar
-do nothing and the status bar says why -- so set it back to **Values** to
-edit. The banner says it is on. The blanking and tint options apply to it too.
+A cell that differs always has an **orange outline**, whatever the table
+shows, so it can sit over a heat map or a tint. Two options:
+**Blank the cells that do not differ** leaves only the changes on screen;
+**Tint by direction** fills a differing cell **red where the primary is the
+higher** and **blue where it is the lower**, whether the table shows values or
+a difference and whichever way round the difference is taken (the same light
+fill with dark text in both themes, so the numbers always read). With the
+heat map on, the heat map has the fill and the tint is not shown. Both
+options apply wherever the difference view does.
 
 Hover a cell for both absolute values. **Copy** always copies the real
 values, never the differences. Hex tables show a difference as a signed

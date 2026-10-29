@@ -61,7 +61,7 @@ ALL_DATASETS = "All datasets"
 
 #: the app's cell colours (:mod:`ovtsuite.gui_cellmarks`): a row changed
 #: since the last Apply (PENDING_BG, bold), a cell that differs from the
-#: comparison (orange, in both tables), a fault the ECU has stored
+#: comparison (orange outline, in both tables), a fault the ECU has stored
 #: (STORED_BG); a switched-off fault's text is grey
 _GREY = OFF_FG
 _CHECKABLE = (QtCore.Qt.ItemFlag.ItemIsUserCheckable
@@ -589,16 +589,17 @@ class DtcDialog(QtWidgets.QDialog):
                 ctip = ("Ticked: the fault is detected and stored (the class "
                         "decides which lamp, if any, it lights)\n") + ctip
             it.setToolTip(ctip)
-            # as the shift editor: not applied (whole row) > differs from
-            # the comparison > stored on the ECU (whole row) > off (grey)
+            # as the shift editor: the fill is not applied (whole row) >
+            # stored on the ECU (whole row) > off (grey); a cell that
+            # differs from the comparison has its outline over any of them
             if pending:
                 mark_pending(it, self.table.font())
-            elif differs:
-                mark_differs(it)
             elif stored is not None:
                 mark_stored(it)
             elif not en:
                 it.setForeground(_GREY)
+            if differs:
+                mark_differs(it)
             if k in LAMP_COLS:
                 self._lamp_item(it, fp, k, dtc.lights(fp, k))
             self.table.setItem(r, self._col[k], it)
@@ -636,8 +637,8 @@ class DtcDialog(QtWidgets.QDialog):
                 differs = cells[k] != mine[k]
             else:
                 differs = k not in ("path", "desc") and cells[k] != mine[k]
-            if differs:                 # orange here even while the
-                mark_differs(it)        # primary's cell is held (yellow)
+            if differs:
+                mark_differs(it)
             elif not cen:
                 it.setForeground(_GREY)
             t.setItem(r, self._col[k], it)

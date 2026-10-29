@@ -9,16 +9,21 @@ measuring blocks (:mod:`ovtsuite.gui_msblock`) and the shift / lock-up
 editors (:mod:`ovtsuite.gui_gearbox_compare`) -- so they read like the main
 table editor:
 
-* **differs from the comparison**: ``gui.DIFF_BG`` (opaque orange) with
-  ``gui.CELL_DARK_FG`` text, in the primary's cell and the comparison's
-  copy, the same in either theme (:func:`mark_differs`);
+* **differs from the comparison**: an orange outline (:data:`DIFF_OUTLINE`)
+  round the cell, in the primary's cell and the comparison's copy, the same
+  in either theme (:func:`mark_differs`). It is a frame, not a fill, so it
+  sits on top of whatever else the cell says -- a heat-map or band shade,
+  the direction tint, the pending yellow, a selection -- and none of them
+  has to give way to it. Every delegate that draws a table of the app
+  calls :func:`draw_outline` (the model side answers :data:`OUTLINE_ROLE`);
 * **changed, not applied yet**: :data:`PENDING_BG` (pale yellow), bold, dark
   text (:func:`mark_pending`). It takes the place of orange in the primary;
   the comparison's copy stays orange where it differs;
-* **a difference tinted by direction** (the comparison shown as a delta,
-  :mod:`ovtsuite.compare_delta`): ``gui.DELTA_UP_BG`` (this file higher) and
+* **a difference tinted by direction** (an option of the difference view,
+  :mod:`ovtsuite.compare_delta`): ``gui.DELTA_UP_BG`` (primary higher) and
   ``gui.DELTA_DOWN_BG`` (lower), opaque light fills with ``gui.CELL_DARK_FG``
-  text, the same in either theme; the main table's model draws them;
+  text, the same in either theme; the main table's model draws them, under
+  the outline;
 * **stored on the ECU** (the fault-code windows, after reading the codes
   from the car): :data:`STORED_BG` (light violet), dark text -- a meaning the
   rest of the app has no colour for, a hue apart from orange and yellow;
@@ -49,6 +54,12 @@ from typing import Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+#: the frame of a cell that differs from the comparison
+DIFF_OUTLINE = QtGui.QColor(255, 140, 0)
+#: its width in pixels (drawn inside the cell, over a selection too)
+OUTLINE_WIDTH = 2
+#: item data / model role: True on a cell that differs from the comparison
+OUTLINE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 0x0D17
 #: a cell changed in the window, not applied yet (bold, dark text)
 PENDING_BG = QtGui.QColor(255, 236, 170)
 #: a fault the car's ECU has stored (read with Read codes from ECU...)
@@ -57,22 +68,40 @@ STORED_BG = QtGui.QColor(218, 202, 255)
 OFF_FG = QtGui.QColor(150, 150, 150)
 
 
-def diff_colors():
-    """``(gui.DIFF_BG, gui.CELL_DARK_FG)``."""
-    from . import gui as _g
-    return _g.DIFF_BG, _g.CELL_DARK_FG
-
-
 def dark_fg() -> QtGui.QColor:
     from . import gui as _g
     return _g.CELL_DARK_FG
 
 
 def mark_differs(item: QtWidgets.QTableWidgetItem) -> None:
-    """``item`` as differing from the comparison: orange, dark text."""
-    bg, fg = diff_colors()
-    item.setBackground(QtGui.QBrush(bg))
-    item.setForeground(QtGui.QBrush(fg))
+    """``item`` as differing from the comparison: the orange outline, which
+    the table's delegate draws (the cell's own fill and text stay)."""
+    item.setData(OUTLINE_ROLE, True)
+
+
+def differs(index) -> bool:
+    """Is the model cell ``index`` marked as differing from the comparison?"""
+    return bool(index.data(OUTLINE_ROLE))
+
+
+def draw_outline(painter: QtGui.QPainter, option, index) -> None:
+    """Frame the cell in :data:`DIFF_OUTLINE` when it differs from the
+    comparison (:func:`mark_differs`, or a model answering
+    :data:`OUTLINE_ROLE`). Call it last in a delegate's ``paint``, so the
+    frame lies over the fill, the text and the selection."""
+    if not index.data(OUTLINE_ROLE):
+        return
+    w = OUTLINE_WIDTH
+    painter.save()
+    painter.setClipRect(option.rect)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, False)
+    painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+    painter.setPen(QtGui.QPen(DIFF_OUTLINE, w, QtCore.Qt.PenStyle.SolidLine,
+                              QtCore.Qt.PenCapStyle.FlatCap,
+                              QtCore.Qt.PenJoinStyle.MiterJoin))
+    painter.drawRect(option.rect.adjusted(w // 2, w // 2,
+                                          -(w + 1) // 2, -(w + 1) // 2))
+    painter.restore()
 
 
 def mark_pending(item: QtWidgets.QTableWidgetItem, font: QtGui.QFont) -> None:
@@ -206,8 +235,10 @@ def check_on_selection(opt: QtWidgets.QStyleOptionViewItem, index):
 
 
 class CellDelegate(QtWidgets.QStyledItemDelegate):
-    """The tables' delegate: :func:`selection_text` on the stock drawing, and
-    a selected cell's check box redrawn readable (:func:`check_on_selection`)."""
+    """The tables' delegate: :func:`selection_text` on the stock drawing, a
+    selected cell's check box redrawn readable (:func:`check_on_selection`),
+    and the outline of a cell that differs from the comparison
+    (:func:`draw_outline`)."""
 
     def initStyleOption(self, opt, index):
         super().initStyleOption(opt, index)
@@ -219,6 +250,7 @@ class CellDelegate(QtWidgets.QStyledItemDelegate):
         self.initStyleOption(opt, index)
         got = check_on_selection(opt, index)
         if got is None:
+            draw_outline(painter, option, index)
             return
         chip, ind = got
         w = opt.widget
@@ -232,6 +264,17 @@ class CellDelegate(QtWidgets.QStyledItemDelegate):
         style.drawPrimitive(
             QtWidgets.QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck,
             ind, painter, w)
+        draw_outline(painter, option, index)
+
+
+class OutlineDelegate(QtWidgets.QStyledItemDelegate):
+    """The stock drawing plus the outline of a cell that differs from the
+    comparison (:func:`draw_outline`): what a table that needs nothing
+    else of its delegate uses."""
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        draw_outline(painter, option, index)
 
 
 def follow_current(other, r, c) -> None:

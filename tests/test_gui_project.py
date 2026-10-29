@@ -487,6 +487,65 @@ def test_an_ols_opens_as_a_new_project_with_its_maps_and_details(win, tmp_path):
     assert gp.docs(win) == [ref.doc]
 
 
+def test_an_ols_opens_with_every_version_and_only_its_own_maps(win, tmp_path):
+    """File > Open of a WinOLS project: no questions, every binary it lists as
+    a branch of its own, the project's maps as the only maps, and an .ovt
+    project to save."""
+    from test_definitions import _three_versions, make_ols
+    from ovtsuite import gui_project as gp
+    path = tmp_path / "car.ols"
+    path.write_bytes(make_ols(597, versions=_three_versions()))
+    assert win.open_path(str(path))
+    ref = win.current.project_ref
+    s = ref.set
+    assert [b.name for b in s.branches] == ["Stock", "Stage 1", "Stage 2"]
+    main = s.members[0]
+    assert main.definition["use"] == "instead"
+    assert main.definition["place"]["relocate"] is False
+    assert ref.doc.path is None and gp.docs(win) == [ref.doc]   # saved as .ovt
+    # the panel lists the versions as branches
+    panel = gp.panel(win)
+    panel.refresh()
+    names = []
+    it = QtWidgets.QTreeWidgetItemIterator(panel.tree)
+    while it.value() is not None:
+        data = it.value().data(0, gp._ROLE)
+        if data and data[0] == "branch":
+            names.append(data[3])
+        it += 1
+    assert len(names) == 3
+
+
+def test_the_ols_options_choose_what_opening_one_does(win, tmp_path, monkeypatch):
+    from test_definitions import _three_versions, make_ols
+    from ovtsuite import gui_project as gp
+    from ovtsuite import options
+    path = tmp_path / "car.ols"
+    path.write_bytes(make_ols(597, versions=_three_versions()))
+    try:
+        options.set("ols/open", "original")
+        assert gp.open_ols(win, str(path))
+        s = win.current.project_ref.set
+        assert len(s.checkpoints) == 1 and "use" not in s.members[0].definition
+        options.set("ols/open", "stored")
+        options.set("ols/layout", "chain")
+        assert gp.open_ols(win, str(path))
+        s = win.current.project_ref.set
+        assert len(s.branches) == 1 and len(s.checkpoints) == 3
+        # "ask" asks, and Cancel opens nothing
+        from ovtsuite import gui_olsversions as ov
+        options.set("ols/open", "ask")
+        asked = []
+        monkeypatch.setattr(ov, "choose",
+                            lambda *a, **k: asked.append(1) or ov.CANCEL)
+        n = len(win.workspaces())
+        assert not gp.open_ols(win, str(path)) and asked
+        assert len(win.workspaces()) == n
+    finally:
+        for k in ("ols/open", "ols/layout"):
+            options.set(k, options.BY_KEY[k].default)
+
+
 def test_the_first_save_of_a_new_project_asks_for_its_information(
         win, tmp_path, monkeypatch):
     from test_definitions import make_ols

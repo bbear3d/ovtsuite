@@ -6,12 +6,10 @@
 """Which binaries of a WinOLS project to import.
 
 A WinOLS project (``.ols``) can embed several versions of its binary: the
-original and what was made from it. :func:`choose` says, only when there is
+original and what was made from it. :func:`choose` asks, only when there is
 more than one, whether to import the original, every version (as versions of
 one set) or a single one, and returns what ``import_file(...,
-ols_versions=...)`` takes. Options > Projects and saving
-(``projects/ols_versions``) decides: the original (the default), all the
-versions, or ask -- the dialog, which can also set the option for next time.
+ols_versions=...)`` takes.
 """
 
 from __future__ import annotations
@@ -63,15 +61,6 @@ class OlsVersionsDialog(QtWidgets.QDialog):
         self.tree.setEnabled(False)
         self.some.toggled.connect(self.tree.setEnabled)
         lay.addWidget(self.tree, 1)
-        self.remember = QtWidgets.QCheckBox(
-            "Do this for every WinOLS project (change it in Tools > Options)")
-        self.remember.setToolTip(
-            "Stops this question: the original only, or all versions, as "
-            "chosen above. Not offered for a pick of versions.")
-        lay.addWidget(self.remember)
-        self.some.toggled.connect(
-            lambda on: (self.remember.setEnabled(not on),
-                        on and self.remember.setChecked(False)))
         self.bb = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
@@ -98,8 +87,7 @@ class OlsVersionsDialog(QtWidgets.QDialog):
 def choose(parent, path: str, data: Optional[bytes] = None):
     """The ``ols_versions`` to import ``path`` with: None (the original),
     ``"all"`` or ``[index]``; :data:`CANCEL` when the user backs out. A file
-    that is not a project with several versions is not asked about, nor is
-    any once Options says what to do (``projects/ols_versions``)."""
+    that is not a project with several versions is not asked about."""
     if not path.lower().endswith(".ols"):
         return None
     from .project import importers as _imp
@@ -109,19 +97,10 @@ def choose(parent, path: str, data: Optional[bytes] = None):
                 data = fh.read()
         except OSError:
             return None
-    from . import options as _opt
-    setting = _opt.get("projects/ols_versions")
-    if setting == "original":
-        return None             # (no need to read the versions out to say so)
     versions = _imp.ols_versions(data)
     if len(versions) < 2:
         return None
-    if setting == "all":
-        return "all"
     dlg = OlsVersionsDialog(parent, os.path.basename(path), versions)
     if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
         return CANCEL
-    value = dlg.value()
-    if dlg.remember.isChecked() and (value is None or value == "all"):
-        _opt.set("projects/ols_versions", "all" if value == "all" else "original")
-    return value
+    return dlg.value()

@@ -232,3 +232,44 @@ def test_vss_paste_skips_role_address_and_comparison_columns(app):
     assert d._paste16(0, 0, [["primary", "0x10"]]) == 0
     assert d._paste16(0, 5, [["4000", "CAN"]]) == 0
     assert d.session.writes == []
+
+
+# ------------------------------------------------------ VSS on EDC15 (typed)
+def _vss15_dialog(app, blocks):
+    from ovtsuite import gui
+    d = gui.VssDialog.__new__(gui.VssDialog)
+    QtWidgets.QDialog.__init__(d)
+    d.session = _VSess()
+    d._blocks15 = blocks
+    d._reload = lambda: None
+    d._after_write = lambda: None
+    return d
+
+
+def _block(name, addr, valid=True):
+    return type("B", (), {"name": name, "addr": addr, "valid": valid})()
+
+
+def test_vss15_cells_become_bytes_of_the_speed_block(app):
+    import struct
+    d = _vss15_dialog(app, [_block("fgwDA1", 0x10)])
+    b = d._blocks15[0]
+    assert d._write15(b, 4, "11000") == (0x12, struct.pack("<H", 11000))      # SF
+    assert d._write15(b, 5, "13451") == (0x18, struct.pack("<H", 13451))      # TMX
+    assert d._write15(b, 6, "4.5") == (0x22, struct.pack("<h", 270))          # IMP = x60
+    assert d._write15(b, 4, "70000") is None and d._write15(b, 4, "abc") is None
+    assert d._write15(b, 6, "600") is None                                    # s16
+
+
+def test_vss15_only_valid_speed_blocks_are_editable(app):
+    d = _vss15_dialog(app, [_block("fgwDA1", 0x10), _block("fgwKTG", 0x40),
+                            _block("fgwDA2", 0x60, valid=False)])
+    assert d._editable15(0, 4) and d._editable15(0, 6)
+    assert not d._editable15(0, 3) and not d._editable15(1, 4) and not d._editable15(2, 5)
+
+
+def test_vss15_paste_is_one_undo_step_and_skips_what_is_not_editable(app):
+    d = _vss15_dialog(app, [_block("fgwDA1", 0x10), _block("fgwKTG", 0x40)])
+    n = d._paste15(0, 3, [["x", "100", "200", "2"], ["y", "1", "2", "3"]])
+    assert n == 3 and d.session.txn == ["VSS: paste"]
+    assert {a for a, _ in d.session.writes} == {0x12, 0x18, 0x22}

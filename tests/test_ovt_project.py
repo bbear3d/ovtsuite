@@ -794,3 +794,61 @@ def test_a_set_is_named_after_its_file_and_can_be_renamed(tmp_path):
     path = str(tmp_path / "car.ovt")
     proj.save(path)
     assert [x.name for x in ovt.Project.load(path).sets] == ["Engine"]
+
+
+# -- a new original under an existing history -------------------------------
+def test_a_new_original_takes_the_old_one_as_a_version_on_top():
+    p, s, root, stock, flash, ee = _new_project()
+    tuned = _edit(flash, (0x100, b"\xAA\xBB"))
+    c1 = p.commit(s.id, stock.id, {"flash": tuned}, label="Stage 1")
+    br = p.fork(s.id, "Experiment", at=c1.id)
+    c2 = p.commit(s.id, br.id, {"flash": _edit(tuned, (0x200, b"\x01"))},
+                  label="Try")
+    # the file that should have been the original: the car's stock, which
+    # differs from what was first read (that read was already tuned)
+    true_stock = _edit(flash, (0x40, b"\x11\x22\x33"))
+    new = p.rebase_original(s.id, {"flash": true_stock, "eeprom": ee},
+                            label="Imported original: stock.bin",
+                            source={"file": "stock.bin"})
+    assert [c.id for c in s.roots()] == [new.id] and new.parent is None
+    assert s.checkpoint(root.id).parent == new.id
+    assert s.checkpoint(root.id).label.startswith("Previous original: ")
+    assert s.root_of(c2.id).id == new.id                      # every line starts there
+    # every version still holds exactly the bytes it did
+    assert p.state(s.id, new.id)["flash"] == true_stock
+    assert p.state(s.id, root.id)["flash"] == flash
+    assert p.state(s.id, c1.id)["flash"] == tuned
+    assert p.state(s.id, c2.id)["flash"] == _edit(tuned, (0x200, b"\x01"))
+    assert {b.name: b.head for b in s.branches} == {"Stock": c1.id,
+                                                   "Experiment": c2.id}
+    # the full image moved with the root, and survives a save and a reload
+    assert p._image_points(s) == {new.id}
+    q = ovt.Project.from_bytes(p.to_bytes())
+    t = q.set(s.id)
+    assert [c.id for c in t.roots()] == [new.id]
+    assert q.state(t.id, c2.id)["flash"] == _edit(tuned, (0x200, b"\x01"))
+    assert q.state(t.id, root.id)["flash"] == flash
+    assert not q.report.damaged and not q.report.missing
+
+
+def test_a_new_original_must_fit_the_old_one():
+    p, s, root, stock, flash, ee = _new_project()
+    with pytest.raises(ValueError, match="another size"):
+        p.rebase_original(s.id, {"flash": flash[:-1], "eeprom": ee})
+    with pytest.raises(ValueError, match="holds flash"):
+        p.rebase_original(s.id, {"flash": flash})
+    with pytest.raises(ValueError, match="same as the original"):
+        p.rebase_original(s.id, {"flash": flash, "eeprom": ee})
+    assert [c.id for c in s.roots()] == [root.id]            # nothing changed
+
+
+def test_a_new_original_can_get_a_branch_and_the_flash_record_stays():
+    p, s, root, stock, flash, ee = _new_project()
+    c1 = p.commit(s.id, stock.id, {"flash": _edit(flash, (0, b"\x07"))})
+    p.mark_flashed(s.id, stock.id, c1.id, tool="test")
+    new = p.rebase_original(
+        s.id, {"flash": _edit(flash, (9, b"\x09")), "eeprom": ee},
+        branch="Original")
+    assert s.branch("Original").head == new.id
+    assert p.last_flashed(s.id)["checkpoint"] == c1.id
+    assert [c.id for c in s.lineage(c1.id)] == [c1.id, root.id, new.id]

@@ -74,10 +74,9 @@ def test_comparison_after_the_first_save_opens(app, fd):
         assert on.checkState() == QtCore.Qt.CheckState.Unchecked
         assert d.cmp_table.item(r, 0).checkState() == QtCore.Qt.CheckState.Checked
         assert "Comparison: on" in on.toolTip()
-        from ovtsuite.gui import CELL_DARK_FG, DIFF_BG
-        assert on.background().color() == DIFF_BG       # orange, as the editor
-        assert on.foreground().color() == CELL_DARK_FG
-        assert d.cmp_table.item(r, 0).background().color() == DIFF_BG
+        from ovtsuite.gui_cellmarks import OUTLINE_ROLE
+        assert on.data(OUTLINE_ROLE) is True            # the orange outline,
+        assert d.cmp_table.item(r, 0).data(OUTLINE_ROLE) is True   # as the editor
         assert not (d.cmp_table.item(r, 0).flags()
                     & QtCore.Qt.ItemFlag.ItemIsUserCheckable)   # read only
         d.show_box.setCurrentText("Differs from comparison")
@@ -430,10 +429,10 @@ def test_edc16_lamp_and_class_edits_cancel_exactly(app, monkeypatch):
 
 
 # -- cell colours: the app's convention (ovtsuite.gui_cellmarks) -------------
-# Differs from the comparison: gui.DIFF_BG with gui.CELL_DARK_FG in both
-# tables; changed, not applied: PENDING_BG, bold, dark text, which wins over
-# orange in the primary (the comparison's copy stays orange); stored on the
-# ECU: STORED_BG, under both; alternating rows so the selection shows.
+# Differs from the comparison: the orange outline (OUTLINE_ROLE) in both
+# tables, over whatever fill the cell has; changed, not applied: PENDING_BG,
+# bold, dark text; stored on the ECU: STORED_BG, under both; alternating rows
+# so the selection shows.
 
 def _bg(it):
     return it.background().color()
@@ -447,7 +446,7 @@ def test_cell_colours_follow_the_table_editor(app, own_fd, monkeypatch):
     _no_question(monkeypatch)
     from types import SimpleNamespace
     from ovtsuite import gui
-    from ovtsuite.gui_cellmarks import CellDelegate, STORED_BG
+    from ovtsuite.gui_cellmarks import CellDelegate, OUTLINE_ROLE, STORED_BG
     from ovtsuite.gui_dtc import DtcDialog, PENDING_BG
     s = own_fd
     original = s.sibling(bytes(s.binfile.data), "FD - as read")
@@ -468,23 +467,26 @@ def test_cell_colours_follow_the_table_editor(app, own_fd, monkeypatch):
     on, path = d._col["on"], d._col["path"]
     dark = gui.CELL_DARK_FG
 
-    # differs (and stored): orange where it differs, in both tables, violet
-    # in the rest of the row
+    # differs (and stored): the outline where it differs, in both tables; the
+    # whole primary row violet, the outlined cell too
     r1 = _row_of(d, k1)
     for t in (d.table, d.cmp_table):
-        assert _bg(t.item(r1, on)) == gui.DIFF_BG
-        assert _fg(t.item(r1, on)) == dark
+        assert t.item(r1, on).data(OUTLINE_ROLE) is True
+        assert t.item(r1, path).data(OUTLINE_ROLE) is None
+    assert _bg(d.table.item(r1, on)) == STORED_BG
     assert _bg(d.table.item(r1, path)) == STORED_BG
     assert _fg(d.table.item(r1, path)) == dark
     assert _bg(d.cmp_table.item(r1, path)) != STORED_BG   # the car's, not the file's
 
-    # not applied: the whole primary row yellow, bold, dark -- over orange --
-    # while the comparison's copy of the differing cell stays orange
+    # not applied: the whole primary row yellow, bold, dark -- with the
+    # outline of the differing cell over the yellow, and in the comparison's
+    # copy of it
     r2 = _row_of(d, k2)
     for c in range(d.table.columnCount()):
         it = d.table.item(r2, c)
         assert _bg(it) == PENDING_BG and it.font().bold() and _fg(it) == dark
-    assert _bg(d.cmp_table.item(r2, on)) == gui.DIFF_BG
+    assert d.table.item(r2, on).data(OUTLINE_ROLE) is True
+    assert d.cmp_table.item(r2, on).data(OUTLINE_ROLE) is True
     assert not d.cmp_table.item(r2, path).font().bold()
 
     # stored only: the row violet, dark text
@@ -508,12 +510,12 @@ def test_cell_colours_follow_the_table_editor(app, own_fd, monkeypatch):
 
 
 def test_pending_colour_is_shared_and_stored_stands_apart():
-    from ovtsuite import gui, gui_cellmarks, gui_dtc, gui_msblock, gui_tcu_dtc
+    from ovtsuite import gui_cellmarks, gui_dtc, gui_msblock, gui_tcu_dtc
     assert (gui_dtc.PENDING_BG is gui_msblock.PENDING_BG
             is gui_tcu_dtc.PENDING_BG is gui_cellmarks.PENDING_BG)
     assert gui_dtc.STORED_BG is gui_tcu_dtc.STORED_BG
     st = gui_cellmarks.STORED_BG
-    for other in (gui.DIFF_BG, gui_cellmarks.PENDING_BG):
+    for other in (gui_cellmarks.DIFF_OUTLINE, gui_cellmarks.PENDING_BG):
         # a hue well apart from orange and yellow, not just a shade of them
         d = abs(st.hslHue() - other.hslHue())
         assert min(d, 360 - d) > 90

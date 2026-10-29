@@ -95,6 +95,32 @@ under the buttons says what was opened.
 **SOI** and **Duration** cells are shaded from light (low) to darker blue
 (high) across the grid.
 
+The grid follows the app's table conventions: rows alternate, and a selected
+cell shows in the solid accent colour (the band or shade comes back when you
+select elsewhere). **Right-click** a cell for **Copy** (the selected cells as
+shown, tab-separated; **Ctrl+C**), **Paste** (**Ctrl+V**: typed values from the
+clipboard, from the top-left selected cell, or one value over the whole
+selection -- as typing them, so it is one undo step; a copy made with **Copy
+table** pastes without its headers), **Set target EOI for the selection...**,
+**Go to SOI table** and **Go to duration table**.
+
+### Comparing
+
+With a comparison loaded, **Show comparison** (on by default) adds a second,
+read-only grid **below** the first, headed with the two files' names. It holds
+the comparison file's own values, worked out at the same engine speeds and
+quantities as the primary's grid, so the two grids always line up even when
+the comparison's SOI table has other breakpoints. They scroll together, and a
+cell or range selected in one is selected in the other. A cell that differs
+from the comparison has an **orange outline** in both, over the EOI band or
+the shade it keeps. The window opens large enough for both grids on a
+laptop-size screen, and the bar between them shares out the height.
+
+Right-click either grid for **Copy comparison → primary** (the selected
+cells: the primary is changed as if you had typed the comparison's values,
+in the view shown, as one undo step) and **Copy primary − comparison** (the
+difference of the selected cells, as text).
+
 ## Changing it
 
 Type a value into a cell. What changes depends on what is shown:

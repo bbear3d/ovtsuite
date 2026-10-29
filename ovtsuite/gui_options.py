@@ -87,7 +87,10 @@ def _apply(win, key: str) -> None:
     elif key == "ui/compare_layout":
         from . import gui_cmpscroll
         gui_cmpscroll.apply_all(win)
-    elif key.startswith("ui/compare_delta") or key == "ui/primary_delta":
+    elif key == "ui/compare_size":
+        from . import gui_cmpsize
+        gui_cmpsize.apply_all(win)
+    elif key.startswith("ui/compare_delta"):
         from . import gui_compare_delta
         gui_compare_delta.apply_all(win)
     elif key == "ui/theme":

@@ -349,7 +349,6 @@ def test_comparison_shows_its_hardware_and_tables():
     """BEW with the N (the same PD100 hardware) as the comparison: what it is
     set up for, a Comparison column (orange where the written table differs)
     and its curve; Show comparison hides them."""
-    from ovtsuite import gui
     from ovtsuite import gui_injectors
     _app()
     s, c = _load(BEW), _load(N16)
@@ -363,9 +362,10 @@ def test_comparison_shows_its_hardware_and_tables():
     assert not d.changes.isColumnHidden(4)
     cells = [d.changes.item(r, 4) for r in range(d.changes.rowCount())]
     assert all(it is not None and it.text() for it in cells)
+    from ovtsuite.gui_cellmarks import OUTLINE_ROLE
     dur = next(it for r, it in enumerate(cells)
                if d.changes.item(r, 0).text() == "InjVlv_phiInjMI1_MAP2")
-    assert "differ" in dur.text() and dur.background().color() == gui.DIFF_BG
+    assert "differ" in dur.text() and dur.data(OUTLINE_ROLE) is True
     assert d.chart.cmp
     d.cmp_check.setChecked(False)
     assert d.changes.isColumnHidden(4) and not d.chart.cmp
