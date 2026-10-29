@@ -44,13 +44,19 @@ def images_for(project: Project, sid: str, path: str, data: Optional[bytes] = No
         raise ValueError(str(ex))
 
 
-def differing_bytes(project: Project, sid: str, images: Images) -> Tuple[int, int]:
+def differing_bytes(project: Project, sid: str, images: Images,
+                    embed=None) -> Tuple[int, int]:
     """``(bytes that differ, bytes compared)`` between ``images`` and the
-    set's current original."""
+    set's current original -- with ``embed`` (``{member: offset}``), the
+    original where it sits in the larger image."""
     s = project.set(sid)
     old = s.root_of(s.active.head)
     cur = project.state(sid, old.id)
-    recs = _d.diff({k: v for k, v in images.items() if k in cur}, cur)
+    new = {k: v for k, v in images.items() if k in cur}
+    if embed:
+        for mid, at in embed.items():
+            new[mid] = bytes(images[mid])[at:at + len(cur[mid])]
+    recs = _d.diff(new, cur)
     total = sum(len(v) for v in cur.values())
     return _d.changed_bytes(recs), total
 
@@ -71,10 +77,17 @@ def import_original(win, doc, sid: str, path: Optional[str] = None) -> bool:
     name = os.path.basename(path)
     try:
         images, source, originals = images_for(proj, sid, path)
-        why = proj.original_problem(sid, images)
+        embed = source.get("embed_previous") or None
+        why = proj.original_problem(sid, images, embed=embed)
         if why:
             raise ValueError(why)
-        n, total = differing_bytes(proj, sid, images)
+        if embed and any(t.is_dirty() for t in doc.tabs(win)
+                         if t.project_ref.sid == sid):
+            raise ValueError(
+                "%s has unsaved changes in an open tab. Save or discard them "
+                "first: the file is a larger image, and every version of the "
+                "binary moves into it." % s.name)
+        n, total = differing_bytes(proj, sid, images, embed)
     except (ValueError, OSError) as ex:
         QtWidgets.QMessageBox.warning(win, "Import a new original", str(ex))
         return False
@@ -83,13 +96,18 @@ def import_original(win, doc, sid: str, path: Optional[str] = None) -> bool:
     box = QtWidgets.QMessageBox(
         QtWidgets.QMessageBox.Icon.Question, "Import a new original",
         "Make %s the original of %s?" % (name, s.name), SB.Cancel, win)
+    where = ("" if not embed else
+             " It is a larger image: the current original, and every version "
+             "after it, sits in its calibration area (the rest of each is "
+             "this file's).")
     box.setInformativeText(
         "The current original (%s) becomes a version based on it, and every "
-        "version and branch after it stays as it is. Comparing with the "
+        "version and branch after it stays as it is.%s Comparing with the "
         "original then compares with %s.\n\n"
         "%d of %d bytes differ between the two (%.1f %%). Save the project "
         "to keep the change." % (
-            (old.label or old.kind), name, n, total, 100.0 * n / max(1, total)))
+            (old.label or old.kind), where, name, n, total,
+            100.0 * n / max(1, total)))
     go = box.addButton("Make it the original",
                        QtWidgets.QMessageBox.ButtonRole.AcceptRole)
     box.setDefaultButton(SB.Cancel)
@@ -98,7 +116,8 @@ def import_original(win, doc, sid: str, path: Optional[str] = None) -> bool:
         return False
     try:
         c = proj.rebase_original(
-            sid, images, label="Imported original: %s" % name, source=source)
+            sid, images, label="Imported original: %s" % name, source=source,
+            embed=embed)
         for fn, fmt, raw, members in originals:
             proj.add_original(sid, fn, fmt, raw, checkpoint=c.id, members=members)
     except ValueError as ex:

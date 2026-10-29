@@ -255,10 +255,14 @@ class Project:
         return old if old is not None and old.parent is None else None
 
     def original_problem(self, sid: str, images: Images,
-                         root: Optional[str] = None) -> str:
+                         root: Optional[str] = None,
+                         embed: Optional[Dict[str, int]] = None) -> str:
         """Why ``images`` cannot be the set's new original (:meth:`
         rebase_original`), or "" when they can: the same members and sizes
-        as the current original, and not the same bytes."""
+        as the current original, and not the same bytes -- or, for a member
+        in ``embed`` (``{member: offset}``), an image the current original
+        fits into at that offset."""
+        embed = embed or {}
         s = self.set(sid)
         old = self._original_of(s, root)
         if old is None:
@@ -268,6 +272,13 @@ class Project:
                     % (", ".join(sorted(images)) or "nothing", s.name,
                        ", ".join(sorted(old.sizes))))
         for mid, data in images.items():
+            if mid in embed:
+                at = int(embed[mid])
+                if at < 0 or at + old.sizes[mid] > len(data):
+                    return ("The original of %s (%d bytes) does not fit in "
+                            "the file's %d at 0x%X."
+                            % (s.name, old.sizes[mid], len(data), at))
+                continue
             if len(data) != old.sizes[mid]:
                 m = s.member(mid)
                 return ("The file's %s is %d bytes; the original's is %d. A "
@@ -275,14 +286,61 @@ class Project:
                         "not another copy of this one."
                         % (m.label if m else mid, len(data), old.sizes[mid]))
         cur = self.state(s.id, old.id)
-        if all(bytes(images[m]) == cur[m] for m in images):
+        if not embed and all(bytes(images[m]) == cur[m] for m in images):
             return "The file is the same as the original already."
         return ""
+
+    def _widen_versions(self, s: BinarySet, old: Checkpoint,
+                        new_images: Images, embed: Dict[str, int]) -> None:
+        """The old original and every version after it, in the sizes
+        ``new_images`` has: the deltas' offsets move by ``embed``, the sizes
+        change. All checked before anything is changed."""
+        ids, stack = [], [old.id]
+        while stack:
+            cid = stack.pop()
+            ids.append(cid)
+            stack += [c.id for c in s.children(cid)]
+        moved = {}
+        for cid in ids:
+            if cid == old.id:
+                continue
+            recs = self._delta_of(s, cid)
+            if recs is None:
+                raise ValueError("The history of %s is damaged; its versions "
+                                 "cannot be moved." % s.name)
+            for r in recs:
+                if r.member in embed and r.op != _d.OP_PATCH:
+                    raise ValueError(
+                        "\"%s\" changes the size of %s, so the history "
+                        "cannot move into a larger image."
+                        % (s.checkpoint(cid).label or cid, r.member))
+            moved[cid] = recs
+        for cid, recs in moved.items():
+            for r in recs:
+                if r.member in embed:
+                    r.offset += embed[r.member]
+            self._blobs[self._delta_path(s.id, cid)] = _d.encode(recs)
+        for cid in ids:
+            c = s.checkpoint(cid)
+            for mid in embed:
+                if mid in c.sizes:
+                    c.sizes[mid] = len(new_images[mid])
+            self._states.pop((s.id, cid), None)
+        branches = {b.id for b in s.branches if b.head in set(ids)}
+        for bid in branches:                    # located on the old image
+            self._blobs.pop(self._cache_path(s.id, bid), None)
+        for mid, at in embed.items():
+            m = s.member(mid)
+            base = ((m.definition or {}).get("place") or {}).get("base") \
+                if m is not None else None
+            if base is not None:
+                m.definition["place"]["base"] = base - at
 
     def rebase_original(self, sid: str, images: Images, *, label: str = "",
                         source: Optional[dict] = None, kind: str = "import",
                         root: Optional[str] = None,
-                        branch: str = "") -> Checkpoint:
+                        branch: str = "",
+                        embed: Optional[Dict[str, int]] = None) -> Checkpoint:
         """Make ``images`` the set's original: a new root with the full
         images, and the current original (``root``, default the root of the
         active branch) becomes a version based on it -- its parent is the new
@@ -295,14 +353,31 @@ class Project:
         of another size is another software, not another copy of this one);
         ``ValueError`` otherwise, or when the file is the original already.
         ``branch`` names a branch to put on the new original (none by
-        default). Returns the new root."""
+        default).
+
+        ``embed`` -- ``{member: offset}`` -- lets a member of the new original
+        be larger than the old one's: the old original (and every version
+        after it) then sits at that offset in the new image, the rest of each
+        version being the new original's (an EDC16 calibration-only original
+        replaced by the 2 MB image it is a window of). Every version's size
+        and delta moves with it; a version that changed the member's size
+        cannot move (ValueError). Returns the new root."""
         s = self.set(sid)
         old = self._original_of(s, root)
-        why = self.original_problem(sid, images, root)
+        embed = {m: int(at) for m, at in (embed or {}).items()}
+        why = self.original_problem(sid, images, root, embed)
         if why:
             raise ValueError(why)
         new_images = {k: bytes(v) for k, v in images.items()}
         old_images = self.state(s.id, old.id)
+        if embed:
+            widened = dict(old_images)
+            for mid, at in embed.items():
+                base = bytearray(new_images[mid])
+                base[at:at + len(old_images[mid])] = old_images[mid]
+                widened[mid] = bytes(base)
+            self._widen_versions(s, old, new_images, embed)
+            old_images = widened
         recs = _d.diff(new_images, old_images)
         c = Checkpoint(id=new_id(), parent=None, kind=kind, ts=now(),
                        label=label or "Imported original",

@@ -375,6 +375,14 @@ once imported. As a new original it replaces only that window of the original's
 image: the boot and program areas stay as the original has them, so the other
 versions keep the bytes they share with it.
 
+The other way round, an older project's original may still be a 512 KB
+calibration-only file. A 2 MB EDC16 image can replace it: the 2 MB image
+becomes the original, and the 512 KB original -- with every version and branch
+after it -- becomes a version sitting in that image's calibration area (the
+rest of each of them is the 2 MB image's). Every version keeps the bytes it
+had. Save or discard the unsaved changes in the binary's open tabs first; a
+history that changed the file's size cannot move.
+
 ## WinOLS projects and definitions
 
 **A WinOLS project** (`.ols`) holds a binary *and* its map definitions.

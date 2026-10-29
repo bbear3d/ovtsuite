@@ -398,15 +398,14 @@ def _import_backup15(project, data, filename, into_set, branch):
     return s
 
 
-def _full_image(ident, data: bytes, source: dict, keep_size: bool = False):
+def _full_image(ident, data: bytes, source: dict):
     """``(data, source)`` with an EDC16 calibration-only file (512 KB) made
     the full 2 MB image it is a window of, as the flasher writes it: always,
     so the project holds the image the module's tables are placed in and
     exports and flashes agree. ``source`` records it. Nothing else is padded
     (a 1 MB file is an EDC16U1's whole flash)."""
     from ..platforms import edc16 as _e16
-    if (not keep_size and ident.platform == "edc16"
-            and _e16.is_cal_only(data)):
+    if ident.platform == "edc16" and _e16.is_cal_only(data):
         source = dict(source, padded_from=len(data),
                       padded="calibration at 0x%X, 0xFF below" % _e16.CAL_START)
         return _e16.pad_cal_only(data), source
@@ -436,11 +435,8 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
         project.add_member(s.id, _member(mid, role, ident.platform,
                                          name="" if ident.known else
                                          os.path.basename(filename)))
-    # (a change log written beside a 512 KB file speaks of its offsets: that
-    # history is kept as it is, the file unpadded)
     data, src = _full_image(ident, bytes(data),
-                            {"file": filename, "format": "bin"},
-                            keep_size=bool(sidecar_log))
+                            {"file": filename, "format": "bin"})
     _add_history(project, s.id, {mid: bytes(data)}, sidecar_log or "",
                  root_kind="import", root_label="Imported %s" % filename,
                  source=src, branch=branch)
@@ -624,7 +620,10 @@ def original_images(project: Project, sid: str, data: bytes, filename: str
     2 MB image) carries nothing outside its calibration window: where the
     set's original is the full image, the file replaces that window and the
     rest stays as the original has it -- no 0xFF over the boot and program
-    areas, and the history's other versions keep the bytes they share."""
+    areas, and the history's other versions keep the bytes they share. The
+    other way round -- a full 2 MB image for a set whose original is still a
+    calibration-only file -- ``source["embed_previous"]`` says where the old
+    original sits in it (:meth:`Project.rebase_original`, ``embed``)."""
     from ..platforms import edc16 as _e16
     from .sessionbridge import _main_member
     scratch = Project("scratch")
@@ -658,6 +657,16 @@ def original_images(project: Project, sid: str, data: bytes, filename: str
         elif cur is not None and len(cur) == _e16.CAL_SIZE:
             images[mid] = images[mid][_e16.CAL_START:]   # a calibration-only original
             source.pop("padded_from", None)
+    elif (old is not None and mid in images and mid in old.sizes
+            and old.sizes[mid] == _e16.CAL_SIZE
+            and len(images[mid]) == _e16.FULL_SIZE
+            and s2.platform == "edc16"
+            and _e16.find_cal_marker(images[mid], _e16.CAL_START) >= 0):
+        cur = project.state(sid, old.id).get(mid)
+        if cur is not None and _e16.is_cal_only(cur):
+            # the full image replaces a calibration-only original: that file
+            # becomes a version over the image's calibration window
+            source["embed_previous"] = {mid: _e16.CAL_START}
     originals = [(o.filename, o.format, scratch.original_bytes(s2.id, o.id),
                   list(o.members)) for o in s2.originals]
     return images, source, originals

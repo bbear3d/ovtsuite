@@ -54,6 +54,13 @@ def test_a_512_kb_file_imports_as_the_full_image():
     assert s.platform == "edc16"
 
 
+def test_a_change_log_beside_the_file_makes_no_difference():
+    """The sidecar log is deprecated: the file is padded like any other."""
+    p = ovt.Project("x")
+    s = imp.import_bytes(p, _cal(), "cal.bin", sidecar_log="# notes\n")
+    assert len(p.state(s.id, s.roots()[0].id)["flash"]) == E.FULL_SIZE
+
+
 def test_a_1_mb_file_is_not_padded():
     one = bytes([0xFF]) * 0x80000 + _cal()
     p = ovt.Project("x")
@@ -115,10 +122,70 @@ def test_a_calibration_only_original_takes_a_calibration_only_file():
     assert p.original_problem(s.id, images) == ""
 
 
-def test_a_full_image_cannot_replace_a_calibration_only_original():
+def _old_project():
+    """An older project: a calibration-only original (512 KB) with a save on
+    it and a branch off that."""
     p = ovt.Project("old")
     s = p.add_set("ECU", platform="edc16")
     p.add_member(s.id, ovt.Member(id="flash", role="flash"))
-    p.add_root(s.id, {"flash": _cal(tag=0x01)}, kind="import")
-    images, _src, _o = imp.original_images(p, s.id, _full(tag=0x02), "full.bin")
-    assert "bytes" in p.original_problem(s.id, images)           # refused
+    root, stock = p.add_root(s.id, {"flash": _cal(tag=0x01)}, kind="import")
+    tuned = bytearray(_cal(tag=0x01))
+    tuned[0x4000:0x4004] = b"\x12\x34\x56\x78"
+    c1 = p.commit(s.id, stock.id, {"flash": bytes(tuned)}, label="Stage 1")
+    br = p.fork(s.id, "Experiment", at=c1.id)
+    exp = bytearray(tuned)
+    exp[0x5000] = 0x99
+    c2 = p.commit(s.id, br.id, {"flash": bytes(exp)}, label="Try")
+    p.mark_flashed(s.id, stock.id, c1.id, tool="test")
+    return p, s, root, c1, c2, bytes(tuned), bytes(exp)
+
+
+def test_a_full_image_replaces_a_calibration_only_original():
+    """The 512 KB original and every version after it move into the
+    calibration window of the 2 MB image, which becomes the original."""
+    p, s, root, c1, c2, tuned, exp = _old_project()
+    full = _full(tag=0x02, low=0xA5)
+    images, source, _o = imp.original_images(p, s.id, full, "full.bin")
+    assert images["flash"] == full and source["embed_previous"] == {"flash": CAL}
+    embed = source["embed_previous"]
+    assert p.original_problem(s.id, images, embed=embed) == ""
+    assert "bytes" in p.original_problem(s.id, images)       # not without it
+    new = p.rebase_original(s.id, images, source=source, embed=embed)
+    low = bytes([0xA5]) * CAL
+
+    def window(cid):
+        st = p.state(s.id, cid)["flash"]
+        assert len(st) == E.FULL_SIZE and st[:CAL] == low   # the new original's
+        return st[CAL:]
+    assert p.state(s.id, new.id)["flash"] == full
+    assert window(root.id) == _cal(tag=0x01)                # what it was, in place
+    assert window(c1.id) == tuned and window(c2.id) == exp
+    assert [x.id for x in s.roots()] == [new.id]
+    assert s.checkpoint(root.id).parent == new.id
+    assert all(c.sizes["flash"] == E.FULL_SIZE for c in s.checkpoints)
+    assert p.last_flashed(s.id)["checkpoint"] == c1.id
+    # and the same after a save and a reload
+    q = ovt.Project.from_bytes(p.to_bytes())
+    t = q.set(s.id)
+    assert q.state(t.id, c2.id)["flash"][CAL:] == exp
+    assert q.state(t.id, root.id)["flash"][:CAL] == low
+    assert not q.report.damaged and not q.report.missing
+    # the history still goes both ways
+    assert p.state(s.id, c1.id)["flash"][CAL + 0x4000:CAL + 0x4004] == b"\x12\x34\x56\x78"
+
+
+def test_a_full_image_that_is_not_a_window_of_it_is_refused():
+    p, s, root, c1, c2, tuned, exp = _old_project()
+    other = bytes([0xA5]) * 0x100000                 # 1 MB: not what it was
+    images, source, _o = imp.original_images(p, s.id, other, "other.bin")
+    assert "embed_previous" not in source
+    assert "bytes" in p.original_problem(s.id, images)
+
+
+def test_a_history_that_changes_size_cannot_move_into_a_larger_image():
+    p, s, root, c1, c2, tuned, exp = _old_project()
+    p.commit(s.id, s.active.id, {"flash": _cal(tag=0x01)[:-16]}, label="short")
+    full = _full(tag=0x02)
+    with pytest.raises(ValueError, match="changes the size"):
+        p.rebase_original(s.id, {"flash": full}, embed={"flash": CAL})
+    assert [x.id for x in s.roots()] == [root.id]                  # nothing moved
