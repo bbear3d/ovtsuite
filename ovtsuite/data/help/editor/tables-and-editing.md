@@ -62,7 +62,7 @@ How the table was located matters before you change it:
 - With a comparison open, the comparison's copy of the table is underneath,
   below a dark banner (or in a grid of its own that scrolls with it: Tools >
   Options > Editor > Comparison table). A project tab starts out compared with the original
-  as read, so the cells you have changed since the read show in orange. See
+  as read, so the cells you have changed since the read show with an orange outline. See
   [Comparing files](comparison.md).
 
 Hover over a value to see the comparison's value for that cell, when a
@@ -73,7 +73,7 @@ Cell colours:
 | Colour | Meaning |
 |---|---|
 | Dark blue band, white bold text | Axis breakpoints. |
-| Orange | This cell differs from the comparison. |
+| Orange outline | This cell differs from the comparison. It is a frame, not a fill, so it shows over the heat map and the direction tint (see [Showing the difference](comparison.md#showing-the-difference)). |
 | Yellow | A cell the [Find panel](search.md) is pointing at. |
 | Blue to red | **Heatmap** shading (see below). |
 
@@ -89,7 +89,7 @@ edit lands in the same place either way. The setting is remembered.
 Tick **Heatmap** to shade each cell by its value, from blue (lowest) through
 green and yellow to red (highest). With a comparison open, both copies are
 shaded on one scale, so equal values get equal colours, and cells that
-differ are shown in bold instead of orange. Each table tab remembers its own
+differ keep their orange outline over the shade. Each table tab remembers its own
 heatmap setting; a newly opened table starts with the setting you used last.
 
 ![The same map with Heatmap ticked](../images/main-heatmap.png)

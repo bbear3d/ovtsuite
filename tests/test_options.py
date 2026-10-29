@@ -121,3 +121,13 @@ def test_moved_tools_menu_items_keep_their_buttons_and_keys():
     assert opt.toolbar() == want
     assert opt.shortcuts() == {"tools/lock-up-tcc-editor": "F9"}
     assert opt.shortcuts() == {"tools/lock-up-tcc-editor": "F9"}
+
+
+def test_the_winols_options_match_the_importer():
+    from ovtsuite import options
+    from ovtsuite.project import importers
+    assert options.BY_KEY["ols/layout"].choices == tuple(importers.OLS_LAYOUTS)
+    assert options.BY_KEY["ols/layout"].default == "star"
+    assert options.BY_KEY["ols/open"].default == "stored"
+    assert {c for c, _l in options.BY_KEY["ols/open"].choices} == {
+        "stored", "ask", "original"}

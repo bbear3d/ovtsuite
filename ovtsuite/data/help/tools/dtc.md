@@ -98,8 +98,8 @@ classes differently.
 A change made here reaches the file at once, so the main window and the
 comparison shading show it straight away; the rows changed since the window
 opened or since the last **Apply** are shaded pale yellow, in bold, and the
-count is shown beside the buttons (while a row is yellow, its difference from
-the comparison is shaded orange in the comparison's table only). See
+count is shown beside the buttons (a cell that differs from the comparison
+keeps its orange outline over the yellow). See
 [Table colours](#table-colours).
 
 - **Apply** keeps those changes as **one** undo step — however many rows,
@@ -230,8 +230,8 @@ With a comparison file open (the tab's comparison — in a project, the
 original as read once the tab is saved) its fault codes are shown in a
 read-only table of their own under the primary's, row for row: the same
 fault on the same row, sorted, scrolled and selected with the primary's.
-Every cell that differs is shaded orange in both tables, as in the table
-editor, and a shaded primary cell's tooltip gives the comparison's value; the panel under the table says what the
+Every cell that differs has an orange outline in both tables, as in the table
+editor, and an outlined primary cell's tooltip gives the comparison's value; the panel under the table says what the
 comparison has for the selected row. **Show comparison** hides or shows the
 lower table (the shading stays), and **Show > Differs from comparison** lists
 just the rows whose state — on/off, class or time, lamps — differs. A fault
@@ -243,9 +243,9 @@ The tables use the colours of the rest of the app:
 
 | Colour | Meaning |
 |---|---|
-| Pale yellow, bold | Changed here, not applied yet: **Apply** or **OK** keeps it, **Cancel** takes it back. The whole row, in the table above only; it takes the place of orange and violet there. |
-| Orange | This cell differs from the comparison (in both tables; the comparison's copy stays orange while the row above is yellow). |
-| Light violet | The car's ECU has this fault stored (after **Read codes from ECU...**). The whole row, under any orange cell. |
+| Pale yellow, bold | Changed here, not applied yet: **Apply** or **OK** keeps it, **Cancel** takes it back. The whole row, in the table above only; it takes the place of violet there. |
+| Orange outline | This cell differs from the comparison (in both tables). A frame over the cell's own colour, so it shows over yellow and violet too. |
+| Light violet | The car's ECU has this fault stored (after **Read codes from ECU...**). The whole row. |
 | Grey text | The fault is switched off (or, in the comparison, not in that file). |
 | Accent colour (blue) | Selected rows; the comparison selects the same rows, every one of them. A selected row's **On** box sits on a small patch of the table's own colour so its tick stays easy to see. |
 

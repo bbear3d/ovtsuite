@@ -47,11 +47,11 @@ lines), it says so and the comparison features stay off.
 - **Under the table** a read-only copy of the value table shows the
   comparison: same rows, columns and units, headed *Comparison: file (read
   only)*. It scrolls, sizes its columns and moves its current cell with the
-  table above (either way). Cells that differ are orange in both tables, as
+  table above (either way). Cells that differ have an orange outline in both tables, as
   in the [table editor](../editor/tables-and-editing.md), and each cell's
   tooltip gives the other file's value. The table shows the edit's preview,
   so a cell a step has already brought to the comparison's value is no
-  longer orange in the comparison (in the table above it shows as changed:
+  longer outlined in the comparison (in the table above it shows as changed:
   see *Table colours* below).
 - Where a paired schedule's pedal axis differs from the comparison's, its
   line is still drawn (on its own axis) but its cells are not compared,
@@ -73,8 +73,8 @@ the app:
 
 | Colour | Meaning |
 |---|---|
-| Pale yellow, bold | The edit's steps change this cell: not written until **Apply...** (the tooltip gives the value before and after). Shown in the table above only; it takes the place of orange there. |
-| Orange | This cell differs from the comparison (in both tables). |
+| Pale yellow, bold | The edit's steps change this cell: not written until **Apply...** (the tooltip gives the value before and after). Shown in the table above only. |
+| Orange outline | This cell differs from the comparison (in both tables; over the yellow too). |
 | Accent colour (blue) | Selected cells; the comparison selects the same cells. |
 
 Every other row is shaded lightly, as in the table editor, to help follow a

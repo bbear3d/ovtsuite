@@ -107,7 +107,7 @@ this changes marked, and bring the main window forward; the line under the
 list says if it could not); and what was found. With a comparison, the
 **Comparison** column compares each table as it will be written with the
 comparison's table of the same name: *the same*, or how many cells differ and
-by how much (orange), or that the comparison does not have it. The list
+by how much (outlined in orange), or that the comparison does not have it. The list
 selects whole rows, as the other editing windows do. Drag the bar between the
 settings and the preview to share out the height; on a short screen the
 settings scroll. The window opens at the size you left it. A warning that the full-load quantity runs past the

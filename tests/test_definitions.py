@@ -385,7 +385,7 @@ def test_an_ols_can_import_every_binary_as_versions():
     from ovtsuite.project import Project, importers
     p = Project("")
     s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
-                               ols_versions="all")
+                               ols_versions="all", ols_layout="chain")
     want = _three_versions()
     assert [c.label for c in s.checkpoints] == [
         "WinOLS: Original", "WinOLS: Stage 1", "WinOLS: Stage 2"]
@@ -402,6 +402,61 @@ def test_an_ols_can_import_every_binary_as_versions():
     day = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(1339200000))
     assert [c.ts for c in s.checkpoints] == [day] * 3
     assert winols.parse(_ols_with_versions()).versions[1].changed == 1339200000
+
+
+def test_an_ols_lays_its_versions_out_as_branches_off_the_original():
+    """The default: WinOLS keeps its versions as a flat list of whole images,
+    so each is a branch of its own off the original, not a link in a chain."""
+    from ovtsuite.project import Project, importers
+    p = Project("")
+    s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
+                               ols_versions="all")
+    want = _three_versions()
+    mid = s.members[0].id
+    root = s.roots()[0]
+    assert len(s.roots()) == 1 and root.label == "WinOLS: Original"
+    assert [b.name for b in s.branches] == ["Stock", "Stage 1", "Stage 2"]
+    for b, (_n, img) in zip(s.branches, want):
+        assert p.member_bytes(s.id, mid, branch=b.id) == img
+    for c in s.checkpoints[1:]:
+        assert c.parent == root.id          # all of them from the original
+    assert [c.label for c in s.checkpoints] == [
+        "WinOLS: Original", "WinOLS: Stage 1", "WinOLS: Stage 2"]
+    assert s.active.name == "Stock"        # the project's own current version
+
+
+def test_an_ols_opens_on_the_version_winols_had_current(monkeypatch):
+    from ovtsuite.definitions import winols as W
+    from ovtsuite.project import Project, importers
+    real = W.parse
+
+    def parse(data):
+        wf = real(data)
+        wf.header.current_version = "Stage 2"
+        return wf
+    monkeypatch.setattr(W, "parse", parse)
+    s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
+                               ols_versions="all")
+    assert s.active.name == "Stage 2"
+    # a chain has one branch: nothing to choose
+    s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
+                               ols_versions="all", ols_layout="chain")
+    assert len(s.branches) == 1
+
+
+def test_an_ols_can_use_only_its_own_maps_where_winols_has_them():
+    from ovtsuite.project import Project, importers
+    p = Project("")
+    s = importers.import_bytes(p, _ols_with_versions(), "car.ols",
+                               ols_versions="all", ols_stored=True)
+    d = s.members[0].definition
+    assert d["type"] == "ols" and d["use"] == "instead"
+    assert d["place"] == importers.OLS_STORED_PLACEMENT == {
+        "base": 0, "relocate": False, "unverified": True}
+    # the default beside a module's maps, placed by what the binary shows
+    s = importers.import_bytes(Project(""), make_ols(597), "car.ols")
+    d = s.members[0].definition
+    assert "use" not in d and "place" not in d
 
 
 def test_an_ols_can_import_one_chosen_binary():

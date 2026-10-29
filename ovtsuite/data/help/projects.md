@@ -227,8 +227,8 @@ use **Overwrite** or **Save mine as a copy**.
   **Export to file...** instead of opening it (see
   [Reading](flashing/reading.md#where-the-read-goes)).
 - After a successful **write**, the version written is marked as last
-  flashed: the Project panel shows *⚡ flashed <date>* on it, and the set's
-  and tab's tooltips say *Last flashed <date> (<branch>, saved version |
+  flashed: the Project panel puts a **⚡ bolt in front of it** (its tooltip says
+  when), and the set's and tab's tooltips say *Last flashed <date> (<branch>, saved version |
   unsaved edits)*. A tab with unsaved changes is offered to be saved first
   (see [Writing](flashing/writing.md)).
 - A change proposed by the **AI** and accepted on a project tab with no
@@ -273,7 +273,9 @@ Right-click an item for what can be done with it:
   file](editor/definitions.md)); **Hide the module's built-in maps** (when a
   module also defines the binary) to show only the definition's maps, or
   untick it to show them beside the module's again; remove it again.
-  The set's tooltip names the definition it has. **Remove from the
+  The set's tooltip names the definition it has. **Import a new original...**
+  makes another file of the same software the binary's original (see
+  [A new original](#a-new-original)). **Remove from the
   project...** takes the binary out with all its versions and branches
   (its open tab closes; logs, patches and attachments kept for it stay in
   the project). A project keeps at least one binary.
@@ -349,27 +351,54 @@ the project, or the app, with a change the project does not have, you are
 asked once: **Update project copy**, **Discard changes** or **Cancel**.
 Removing the item erases its copy.
 
+## A new original
+
+The original of a binary is the first version of its history, the one **compare
+with the original** shows. When the first file you imported turns out not to
+have been the stock one (a read of a car that was already tuned), right-click
+the binary in the Project panel > **Import a new original...** and pick the
+stock file: a read, a `.bin`, an `.sgo`, `.frf`, `.dim` or a container.
+
+The file becomes the original, and **the original the binary had becomes a
+version based on it** (named *Previous original: ...*); every version and
+branch after it stays exactly as it was, and the comparison of every version
+is now the new original. You are shown how many bytes differ between the two
+before you confirm, and the change is kept when you save the project. The file
+has to be the same software -- the same parts and sizes -- as the original it
+replaces; for another software, add it as a binary of its own.
+
 ## WinOLS projects and definitions
 
 **A WinOLS project** (`.ols`) holds a binary *and* its map definitions.
-Importing one (**File > Import**, or **File > New project...**) makes it a
-set of the project:
+**File > Open** opens one as a new, unsaved project (saved as an `.ovt`);
+importing one (**File > New project...**, or **Add files to the project**) makes
+it a set of a project you already have:
 
 - its binary becomes the set's original, named after the WinOLS version it
   holds (*WinOLS: Original*); an image WinOLS put together from an EDC16's
   flash and MPC is split into the two again;
 - a project can hold **several versions of the binary** (the original and
-  what was made from it in WinOLS). When it does, you are asked what to
-  import: **the original only**, **all versions**, or **the versions you
-  tick** in the list (it shows the date WinOLS lists for each, and its
-  comment as a tooltip). All of them go into the one set: the first is its
-  original, each later one a saved version named *WinOLS: <name>* in
-  WinOLS's order, dated as WinOLS dates it, with WinOLS's comment kept; so
-  you can compare them and go back to any of them;
+  what was made from it in WinOLS). **File > Open** takes all of them, as
+  the project lists them; importing asks what to take: **the original
+  only**, **all versions**, or **the versions you tick** in the list (it shows
+  the date WinOLS lists for each, and its comment as a tooltip). All of them
+  go into the one set: the first is its original, each later one a saved
+  version named *WinOLS: <name>*, dated as WinOLS dates it, with WinOLS's
+  comment kept. WinOLS keeps its versions as a flat list of whole binaries, so
+  by default **each is a branch of its own** off the original (named after the
+  version; the one WinOLS had open is the branch the project opens on), and
+  you can compare them and go back to any of them. **Tools > Options >
+  Projects and saving > Versions of a WinOLS project in the history** can
+  chain them instead: one branch, each version saved on top of the one before;
 - its maps become the set's definition: when no module recognises the binary,
   it opens with WinOLS's maps -- names, descriptions, folders as categories,
-  axes, units and conversions -- in the main view; when a module does, the
-  module's tree stays and WinOLS's maps are added beside it, under **From
+  axes, units and conversions -- in the main view. **File > Open** shows
+  *only* these maps, placed at the addresses WinOLS has them (nothing is
+  searched for in the binary, the module's maps are left out, and the module
+  still corrects the checksums; **Hide the module's built-in maps** on the set
+  turns that on or off afterwards). Importing, or **Tools > Options >
+  Projects and saving > Opening a WinOLS project** set to *Ask* or *The
+  original only*, adds WinOLS's maps beside a module's tree, under **From
   <file>.ols**. German descriptions and categories are shown in English;
 - the vehicle and control-unit details entered in WinOLS fill the project
   information.

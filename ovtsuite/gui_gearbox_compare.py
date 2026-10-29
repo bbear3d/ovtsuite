@@ -17,9 +17,8 @@ comparison's schedule set with the same provider as the window's own
 * a read-only copy of the value table for the comparison under the table,
   same rows, columns and units, scrolled, sized and selected with it
   (:class:`gui_cmpscroll.ViewLink`), the cells that differ shaded in both
-  with the main editor's "differs from comparison" colours (``gui.DIFF_BG``
-  with ``gui.CELL_DARK_FG`` text, in either theme) and the other value in
-  the tooltip;
+  with the app's "differs from comparison" orange outline
+  (:func:`gui_cellmarks.mark_differs`) and the other value in the tooltip;
 * right-click **Copy selected cells from comparison** / **Copy whole line
   from comparison** (on the table, either copy, or on a line on the chart):
   each adds a step to *Steps in this edit*, applied with Apply like any
@@ -28,9 +27,8 @@ comparison's schedule set with the same provider as the window's own
 The tables show the edit's preview: a cell a step has already brought to
 the comparison's value is no longer shaded. A cell the edit would change is
 "held, not applied yet", shown as the fault-code and measuring-block windows
-show theirs (:data:`PENDING_BG`, bold, dark text); in the primary table that
-wins over the comparison shading, as it does there, while the comparison's
-copy of the cell still shows whether it differs from the preview. When the comparison has no
+show theirs (:data:`PENDING_BG`, bold, dark text); in the primary table the
+outline of a difference lies over it, as it does there. When the comparison has no
 matching set (another gearbox, other lines) or a schedule another shape,
 the status beside the switch says so and those parts stay off.
 """
@@ -44,34 +42,19 @@ from . import gearbox_edit as GE
 # a cell the edit's steps would change, not applied yet: the colour the
 # fault-code and measuring-block windows give their held changes, from one
 # place, with bold text
-from .gui_cellmarks import PENDING_BG
+from .gui_cellmarks import PENDING_BG, dark_fg, mark_differs
 
 SHOW_TEXT = "Show comparison"
 
-#: item data on a primary cell the edit changes (so the comparison shading
-#: leaves it alone)
+#: item data on a primary cell the edit changes
 PENDING_ROLE = int(QtCore.Qt.UserRole) + 41
-
-
-def _colors():
-    from . import gui as _g
-    return _g.DIFF_BG, _g.CELL_DARK_FG
-
-
-def mark_differs(item: QtWidgets.QTableWidgetItem) -> None:
-    """``item`` in the main editor's "differs from comparison" colours:
-    opaque orange, dark text (the default text is light in the dark theme)."""
-    bg, fg = _colors()
-    item.setBackground(QtGui.QBrush(bg))
-    item.setForeground(QtGui.QBrush(fg))
 
 
 def mark_pending(item: QtWidgets.QTableWidgetItem, font: QtGui.QFont) -> None:
     """``item`` as a change held until Apply: :data:`PENDING_BG`, bold, dark
-    text. Wins over :func:`mark_differs` in the primary table."""
-    _bg, fg = _colors()
+    text. The outline of :func:`mark_differs` lies over it."""
     item.setBackground(QtGui.QBrush(PENDING_BG))
-    item.setForeground(QtGui.QBrush(fg))
+    item.setForeground(QtGui.QBrush(dark_fg()))
     bold = QtGui.QFont(font)
     bold.setBold(True)
     item.setFont(bold)
@@ -257,8 +240,7 @@ class CompareView(QtCore.QObject):
                     mark_differs(it)
                     mine = pt.item(row, r)
                     if mine is not None:
-                        if not is_pending(mine):     # held change wins
-                            mark_differs(mine)
+                        mark_differs(mine)   # the frame lies over a held change
                         mine.setToolTip(mine.toolTip() + "\nComparison: %.0f (%+.0f)"
                                         % (cv * f, (pv - cv) * f))
                 it.setToolTip(tip)

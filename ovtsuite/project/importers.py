@@ -468,7 +468,20 @@ def _ols_picks(wf, which) -> List[int]:
     return picks
 
 
-def _import_ols(project, data, filename, into_set, branch, which=None):
+#: how the versions of a WinOLS project are laid out in the history: each
+#: its own branch from the original (WinOLS keeps them as a flat list of whole
+#: images, none the parent of another that the file says), or one chain
+OLS_LAYOUTS = (("star", "Each version a branch of its own, from the original"),
+               ("chain", "One chain: each version follows the one before it"))
+
+#: how a packaged WinOLS project's maps are placed when only they are used:
+#: at the addresses WinOLS has them (the project carries the image they were
+#: made for), nothing searched for, and every map shown
+OLS_STORED_PLACEMENT = {"base": 0, "relocate": False, "unverified": True}
+
+
+def _import_ols(project, data, filename, into_set, branch, which=None,
+                layout="star", stored=False):
     """A WinOLS project: its embedded binary becomes the set's root (named
     after the WinOLS version it holds), the project itself is packaged as
     the set's definition (its maps open the binary in the main view when no
@@ -478,8 +491,15 @@ def _import_ols(project, data, filename, into_set, branch, which=None):
     A project can embed several versions of the binary (the original and
     what was made from it). ``which`` says which go in: the original only
     (default), ``"all"``, or the indexes of the ones to import. The first
-    of them is the set's root, each later one a version (a checkpoint) on
-    its branch, in the order WinOLS holds them."""
+    of them is the set's root; each later one is a version (a checkpoint) on
+    a branch of its own off the root (``layout`` ``"star"``, named after the
+    WinOLS version; the one WinOLS had current is the branch the project
+    opens on), or on one branch after the version before it (``"chain"``),
+    in the order WinOLS holds them.
+
+    ``stored``: use only the project's own maps -- the definition replaces
+    the module's, and is placed at the addresses WinOLS has it
+    (:data:`OLS_STORED_PLACEMENT`), nothing matched against the binary."""
     from ..definitions import winols
     wf = winols.parse(data)
     if wf.kind != "ols":
@@ -538,15 +558,31 @@ def _import_ols(project, data, filename, into_set, branch, which=None):
             c.source["comment"] = v.comment.strip()
 
     first = picks[0]
+    fresh_set = into_set is None
     c0, b = project.add_root(s.id, images, kind="import",
                              label="WinOLS: %s" % vname(first),
                              source=src(first), branch=branch)
     stamp(c0, first)
+    heads = {first: b}
     for i in picks[1:]:
-        stamp(project.commit(s.id, b.id, split(bytes(wf.versions[i].data)),
+        if layout == "chain":
+            at = b
+        else:
+            at = project.fork(s.id, vname(i), at=c0.id)
+        stamp(project.commit(s.id, at.id, split(bytes(wf.versions[i].data)),
                              kind="import", label="WinOLS: %s" % vname(i),
                              source=src(i)), i)
-    project.add_definition(s.id, "flash", filename, data, "ols")
+        heads[i] = at
+    if fresh_set and layout != "chain" and len(picks) > 1:
+        # the version WinOLS had open is the one to open
+        cur = (wf.header.current_version or "").strip()
+        at = next((br for i, br in heads.items() if vname(i) == cur), None)
+        if at is not None:
+            project.set_active(s.id, at.id)
+    project.add_definition(s.id, "flash", filename, data, "ols",
+                           instead_of_module=stored)
+    if stored:
+        project.set_definition_options(s.id, "flash", dict(OLS_STORED_PLACEMENT))
     info = winols.project_info(wf.header)
     fresh = {k: v for k, v in info.items() if not project.info.get(k)}
     if fresh:
@@ -571,7 +607,8 @@ def import_bytes(project: Project, data: bytes, filename: str, *,
                  into_set: Optional[str] = None, branch: str = "",
                  sidecar_log: Optional[str] = None,
                  definition: Optional[Tuple[str, bytes]] = None,
-                 ols_versions=None):
+                 ols_versions=None, ols_layout: str = "star",
+                 ols_stored: bool = False):
     """Import one file's bytes into ``project``; returns the set it went to.
 
     ``into_set`` adds the file to an existing set as a new branch with its own
@@ -580,7 +617,9 @@ def import_bytes(project: Project, data: bytes, filename: str, *,
     A2L / KP / OLS to package with a raw member. ``ols_versions``: which
     binaries of a WinOLS project go in -- the original only (default),
     ``"all"`` (the original as the root, the rest as versions of it), or a
-    list of indexes (see :func:`ols_versions`).
+    list of indexes (see :func:`ols_versions`); ``ols_layout`` how they sit
+    in the history (:data:`OLS_LAYOUTS`) and ``ols_stored`` whether only the
+    project's own maps are used (see :func:`_import_ols`).
     """
     from .. import container as _c
     from .. import dim as _dim
@@ -618,7 +657,7 @@ def import_bytes(project: Project, data: bytes, filename: str, *,
     from ..definitions import winols as _wo
     if _wo.is_winols(data):
         return _import_ols(project, data, filename, into_set, branch,
-                           ols_versions)
+                           ols_versions, ols_layout, ols_stored)
     dtype = definition_type(data[:65536])
     if dtype in ("xdf", "a2l", "dam"):
         raise ImportRefused(
@@ -666,7 +705,8 @@ def import_read(project: Project, data: bytes, name: str, *,
 
 def import_file(path: str, project: Optional[Project] = None, *,
                 into_set: Optional[str] = None, branch: str = "",
-                definition_path: Optional[str] = None, ols_versions=None):
+                definition_path: Optional[str] = None, ols_versions=None,
+                ols_layout: str = "star", ols_stored: bool = False):
     """Import the file at ``path``; returns ``(project, set)``.
 
     A ``.log`` beside the file is migrated as its history. A definition with
@@ -700,9 +740,11 @@ def import_file(path: str, project: Optional[Project] = None, *,
             definition = None           # not a definition after all
     s = import_bytes(project, data, os.path.basename(path), into_set=into_set,
                      branch=branch, sidecar_log=log, definition=definition,
-                     ols_versions=ols_versions)
+                     ols_versions=ols_versions, ols_layout=ols_layout,
+                     ols_stored=ols_stored)
     return project, s
 
 
 __all__ = ["import_bytes", "import_file", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
+           "OLS_LAYOUTS", "OLS_STORED_PLACEMENT",
            "DEFINITION_EXTS", "definition_type", "new_id"]

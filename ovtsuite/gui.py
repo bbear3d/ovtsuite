@@ -29,6 +29,7 @@ from .appsettings import settings as _settings
 # it is installed (ovtsuite.speedview dispatches).
 from . import speedview as _view6
 from . import compare_delta as _cdelta
+from . import gui_cellmarks as _cm
 from . import platforms as _platforms
 from .modules import registry as _registry
 
@@ -512,6 +513,8 @@ if HAVE_QT:
                 return e is not None or t == QtCore.QEvent.MouseButtonRelease
             return False
 
+    #: no longer a cell fill: a difference from the comparison is the orange
+    #: outline of gui_cellmarks. Kept for code written against the old colour.
     DIFF_BG = QtGui.QColor(255, 214, 153)
     # a delta cell tinted by direction (Options > Editor > Comparison table):
     # opaque and light with dark text, so the numbers read in both themes
@@ -524,7 +527,6 @@ if HAVE_QT:
     CELL_DARK_FG = QtGui.QColor(20, 20, 20)       # dark text on any light fill
     HEX_EDIT_BG = QtGui.QColor(255, 213, 145)     # byte changed from original
     HEX_DEF_BG = QtGui.QColor(129, 199, 132)      # byte inside a defined table
-    HEX_DIFF_BG = QtGui.QColor(239, 154, 154)     # byte differs vs comparison
     SEP_BG = QtGui.QColor(96, 110, 128)           # comparison banner row
     SEP_FG = QtGui.QColor(255, 255, 255)
     HEX_HL_FG = QtGui.QColor(20, 20, 20)          # text on any highlight
@@ -540,11 +542,14 @@ if HAVE_QT:
     _R_BG = int(QtCore.Qt.BackgroundRole)
     _R_FG = int(QtCore.Qt.ForegroundRole)
     _R_SIZE = int(QtCore.Qt.SizeHintRole)
+    #: True on a cell that differs from the comparison: the orange outline
+    #: the delegate draws (gui_cellmarks)
+    _R_OUTLINE = _cm.OUTLINE_ROLE
     _R_TEXT = frozenset((_R_DISPLAY, _R_EDIT))
     #: everything TableModel.data answers; Qt asks for more, and those
     #: return None before any work is done
     _GRID_ROLES = frozenset((_R_DISPLAY, _R_EDIT, _R_TIP, _R_FONT, _R_ALIGN,
-                             _R_BG, _R_FG, _R_SIZE))
+                             _R_BG, _R_FG, _R_SIZE, _R_OUTLINE))
     _AL_LEFT = int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
     _AL_RIGHT = int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
     _AL_CENTER = int(QtCore.Qt.AlignCenter)
@@ -723,7 +728,7 @@ if HAVE_QT:
         def addStretch(self, _n=0):
             self._next()
 
-    class OptionsDelegate(QtWidgets.QStyledItemDelegate):
+    class OptionsDelegate(_cm.OutlineDelegate):
         """A drop-down editor for a value cell whose parameter names its
         values (``entity.options``: raw -> label, e.g. a VDO cluster's coding
         digits). Every other cell gets the ordinary line editor."""
@@ -853,10 +858,14 @@ if HAVE_QT:
             self._vmin = min(flat) if flat else 0.0
             self._vmax = max(flat) if flat else 0.0
 
-        def _cell_style(self, v, other, role):
-            """Background / foreground / font for a value cell. With the
-            heatmap on, heat wins in both halves and a differing cell is
-            marked bold; otherwise a differing cell gets the diff fill.
+        def _cell_style(self, v, other, role, primary=False):
+            """Background / foreground for a value cell, and whether it
+            differs from the other half (``_R_OUTLINE``: the orange outline
+            the delegate draws, over whatever the fill is). The fill is the
+            heat map's when it is on, else -- with the difference view's
+            "Tint by direction" -- red where the primary is the higher and
+            blue where it is the lower (``primary``: ``v`` is the primary's
+            value, else the comparison's), else none.
 
             ``v`` is None for a comparison cell the other calibration has no
             value for -- a TCC map with three sub-columns per gear group laid
@@ -865,17 +874,21 @@ if HAVE_QT:
             if v is None:
                 return None
             differs = other is not None and abs(v - other) > 1e-6
+            if role == _R_OUTLINE:
+                return True if differs else None
             heat = self._heatmap and self._vmax > self._vmin
+            tint = (differs and not heat and self._delta[2]
+                    and not self._delta_hold)
             if role == _R_BG:
                 if heat:
                     return self._heat((v - self._vmin) / (self._vmax - self._vmin))
-                return DIFF_BG if differs else None
-            if role == _R_FG and (heat or differs):
-                # both DIFF_BG and the heat ramp are light fills -> dark text,
+                if tint:
+                    return DELTA_UP_BG if (v > other) == primary else DELTA_DOWN_BG
+                return None
+            if role == _R_FG and (heat or tint):
+                # the heat ramp and the tint are light fills -> dark text,
                 # theme-independent (default text would be white in dark mode)
                 return CELL_DARK_FG
-            if role == _R_FONT and heat and differs:
-                return _bold_font()
             return None
 
         def _sync_compare(self):
@@ -1057,7 +1070,7 @@ if HAVE_QT:
                 if dm != "abs":
                     tag += " · showing " + _cdelta.BANNER[dm]
                 if self._delta[3] != "abs":
-                    tag += " · this file: %s, read only" % _cdelta.BANNER[
+                    tag += " · primary: %s, read only" % _cdelta.BANNER[
                         self._delta[3]]
                 return "Comparison - %s   %s%s" % (
                     self.cmp_name or "comparison", diff, tag)
@@ -1100,7 +1113,7 @@ if HAVE_QT:
             """A value cell in a delta mode: ``v`` the comparison's, ``pv``
             the primary's (``primary``: the cell drawn is the primary's).
             None to show it plain."""
-            mode, blank, tint = self._delta[:3]
+            mode, blank = self._delta[:2]
             if primary:
                 mode = self._delta[3]
             if (mode == "abs" or self._delta_hold or v is None or pv is None
@@ -1114,22 +1127,15 @@ if HAVE_QT:
                 dec = max(self._dec, self._cmp_dec) if f == 1.0 else 1
                 return _cdelta.text(mode, d, differs, dec, blank)
             if role == _R_TIP and hexed:
-                return "this file: %02X\n%s: %02X" % (
+                return "primary: %02X\n%s: %02X" % (
                     int(round(pv)) & 0xFF, self.other_label,
                     int(round(v)) & 0xFF)
             if role == _R_TIP:
-                return "this file: %s\n%s: %s" % (
+                return "primary: %s\n%s: %s" % (
                     self._ztext(pv, f, self._dec), self.other_label,
                     self._ztext(v, f, self._cmp_dec))
-            heat = self._heatmap and self._vmax > self._vmin
-            sg = _cdelta.sign(mode, d) if differs else 0
-            if tint and sg and not heat:
-                if role == _R_BG:
-                    return DELTA_UP_BG if sg > 0 else DELTA_DOWN_BG
-                if role == _R_FG:
-                    return CELL_DARK_FG
             if primary:
-                return self._cell_style(pv, v, role)
+                return self._cell_style(pv, v, role, True)
             return self._cell_style(v, pv, role)
 
         def set_heatmap(self, on: bool):
@@ -1451,9 +1457,11 @@ if HAVE_QT:
                 # a breakpoint the other side does not share is marked like a
                 # differing cell
                 if role == _R_BG:
-                    return DIFF_BG if differs else AXIS_BG
+                    return AXIS_BG
                 if role == _R_FG:
-                    return CELL_DARK_FG if differs else AXIS_FG
+                    return AXIS_FG
+                if role == _R_OUTLINE:
+                    return True if differs else None
                 if role == _R_FONT:
                     return _bold_font()
                 return None
@@ -1466,7 +1474,7 @@ if HAVE_QT:
                 if role in _R_TEXT:
                     return _as_char(v)
                 return self._cell_style(v, self._at(self._cmp, a, b)
-                                        if self._cmp else None, role)
+                                        if self._cmp else None, role, True)
             if tk == "hex":
                 # A patch/bypass site is a raw byte the user matches against a
                 # hex signature ("stock 6C, bypass 60"), not a scaled number.
@@ -1478,7 +1486,7 @@ if HAVE_QT:
                 if role in _R_TEXT:
                     return "" if v is None else "%02X" % (int(round(v)) & 0xFF)
                 return self._cell_style(v, self._at(self._cmp, a, b)
-                                        if self._cmp else None, role)
+                                        if self._cmp else None, role, True)
             opts = getattr(self.entity, "options", None)
             if opts and v is not None:
                 lbl = opts.get(int(round(v)))
@@ -1510,7 +1518,7 @@ if HAVE_QT:
                         "Type a speed to switch it on, or \"off\" to restore "
                         "it." % _fmt(v, 0))
             return self._cell_style(v, self._at(self._cmp, a, b) if self._cmp
-                                    else None, role)
+                                    else None, role, True)
 
         def flags(self, idx):
             f = super().flags(idx)
@@ -2760,12 +2768,11 @@ if HAVE_QT:
             return "%08X" % (sec * self.COLS)
 
         def _cell_bg(self, a):
-            """Highlight colour for byte ``a`` (or None): differs-vs-comparison,
-            edited-from-original, or inside a defined table."""
+            """Highlight colour for byte ``a`` (or None): edited-from-original
+            or inside a defined table. A byte that differs from the comparison
+            has the orange outline instead (``OUTLINE_ROLE``), over either."""
             if a >= len(self.buf):
                 return None
-            if self._differs(a):
-                return HEX_DIFF_BG
             if self.compare_shown() is None and a < len(self.original) \
                     and self.original[a] != self.buf[a]:
                 return HEX_EDIT_BG
@@ -2799,6 +2806,8 @@ if HAVE_QT:
                 return "%02X" % b
             if role == QtCore.Qt.TextAlignmentRole:
                 return int(QtCore.Qt.AlignCenter)
+            if role == _cm.OUTLINE_ROLE:
+                return True if self._differs(a) else None
             if role == QtCore.Qt.BackgroundRole:
                 return self._cell_bg(a)
             if role == QtCore.Qt.ForegroundRole:
@@ -2896,6 +2905,7 @@ if HAVE_QT:
             view = self.parent()
             current = (view is not None and view.currentIndex() == index)
             if not selected and not current:
+                _cm.draw_outline(painter, option, index)
                 return
             pal = option.palette
             r = option.rect
@@ -2915,6 +2925,7 @@ if HAVE_QT:
                     painter.drawRect(r.adjusted(3, 3, -3, -3))
             finally:
                 painter.restore()
+            _cm.draw_outline(painter, option, index)
 
         def createEditor(self, parent, option, index):
             ed = QtWidgets.QLineEdit(parent)

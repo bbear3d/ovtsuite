@@ -139,14 +139,16 @@ def test_switch_off_hides_everything(shift):
 
 
 # ---------------------------------------------------------- the dialog: table
+from ovtsuite.gui_cellmarks import OUTLINE_ROLE  # noqa: E402
+
+
 def _differing(t):
     return [(r, c) for r in range(t.rowCount()) for c in range(t.columnCount())
             if t.item(r, c) is not None
-            and t.item(r, c).background().style() != QtCore.Qt.NoBrush]
+            and t.item(r, c).data(OUTLINE_ROLE) is True]
 
 
 def test_comparison_table_shades_and_follows(shift):
-    from ovtsuite import gui as _g
     cv, pt = shift.cmpv, shift.table
     ct = cv.cmp_table
     shift.range_edit.setText("10-12")
@@ -159,7 +161,7 @@ def test_comparison_table_shades_and_follows(shift):
     diff = _differing(ct)
     assert diff and _differing(pt) == diff
     r, c = diff[0]
-    assert ct.item(r, c).background().color() == _g.DIFF_BG
+    assert ct.item(r, c).data(OUTLINE_ROLE) is True
     assert "This file:" in ct.item(r, c).toolTip()
     assert "Comparison:" in pt.item(r, c).toolTip()
     assert ct.item(r, c).text() != pt.item(r, c).text()
@@ -200,14 +202,14 @@ def test_cell_colours_follow_the_main_editor(shift):
     shift.range_edit.setText("10-12")
     shift._select_range(False)
     shift._recompute()
-    # no edit yet: only the comparison colours, the same in both tables
+    # no edit yet: only the difference outline, the same in both tables, and
+    # no fill of its own
     diff = _differing(ct)
     assert diff and _differing(pt) == diff
     for t in (pt, ct):
         for r, c in diff:
             it = t.item(r, c)
-            assert it.background().color() == _g.DIFF_BG
-            assert it.foreground().color() == _g.CELL_DARK_FG
+            assert it.background().style() == QtCore.Qt.NoBrush
             assert not it.font().bold() and not GC.is_pending(it)
     # a pending offset over part of the pedal range
     shift.op_box.setCurrentIndex(shift.op_box.findData("offset"))
@@ -225,23 +227,21 @@ def test_cell_colours_follow_the_main_editor(shift):
     for r, c in _cells(pt):
         it, cit = pt.item(r, c), ct.item(r, c)
         bg, fg = it.background(), it.foreground()
-        if (r, c) in changed:                # held change: wins
+        if (r, c) in changed:                # held change: the yellow fill
             assert GC.is_pending(it) and it.font().bold()
             assert bg.color() == GC.PENDING_BG and fg.color() == _g.CELL_DARK_FG
             assert "not applied yet" in it.toolTip()
-        elif (r, c) in cdiff:                # differs only
-            assert bg.color() == _g.DIFF_BG and fg.color() == _g.CELL_DARK_FG
-            assert not it.font().bold()
+        elif (r, c) in cdiff:                # differs only: no fill
+            assert bg.style() == QtCore.Qt.NoBrush and not it.font().bold()
         else:                                # neither: the view's own colours
             assert bg.style() == QtCore.Qt.NoBrush
             assert fg.style() == QtCore.Qt.NoBrush
-        # the comparison copy: orange where it differs from the preview,
-        # nothing else ever
-        if (r, c) in cdiff:
-            assert cit.background().color() == _g.DIFF_BG
-            assert cit.foreground().color() == _g.CELL_DARK_FG
-        else:
-            assert cit.background().style() == QtCore.Qt.NoBrush
+        # the outline lies over the held change's yellow too
+        assert (it.data(OUTLINE_ROLE) is True) == ((r, c) in cdiff)
+        # the comparison copy: the outline where it differs from the preview,
+        # never a fill
+        assert (cit.data(OUTLINE_ROLE) is True) == ((r, c) in cdiff)
+        assert cit.background().style() == QtCore.Qt.NoBrush
         assert not cit.font().bold()
     # both tables shade rows like the main editor's grid -- in the Windows
     # 11 style that also draws the selection over the cell fills
@@ -249,7 +249,6 @@ def test_cell_colours_follow_the_main_editor(shift):
 
 
 def test_cell_colours_in_the_lockup_editor(tcc):
-    from ovtsuite import gui as _g
     from ovtsuite import gui_gearbox_compare as GC
     tcc._check_all(True)
     tcc._recompute()
@@ -259,8 +258,8 @@ def test_cell_colours_in_the_lockup_editor(tcc):
     for t in (pt, ct):
         assert t.alternatingRowColors()
         for r, c in diff:
-            assert t.item(r, c).background().color() == _g.DIFF_BG
-            assert t.item(r, c).foreground().color() == _g.CELL_DARK_FG
+            assert t.item(r, c).data(OUTLINE_ROLE) is True
+            assert t.item(r, c).background().style() == QtCore.Qt.NoBrush
     tcc.op_box.setCurrentIndex(tcc.op_box.findData("offset"))
     tcc.amount.setValue(50)
     tcc._recompute()
@@ -268,8 +267,7 @@ def test_cell_colours_in_the_lockup_editor(tcc):
     assert pend
     assert all(pt.item(r, c).background().color() == GC.PENDING_BG
                and pt.item(r, c).font().bold() for r, c in pend)
-    assert all(ct.item(r, c).background().style() in (QtCore.Qt.NoBrush,)
-               or ct.item(r, c).background().color() == _g.DIFF_BG
+    assert all(ct.item(r, c).background().style() == QtCore.Qt.NoBrush
                for r, c in _cells(ct))
 
 

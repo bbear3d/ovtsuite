@@ -14,7 +14,7 @@ scrollers serves both and a tall map pushes the comparison out of sight.
 ``below``   in a read-only grid of its own under the table
 ``beside``  in a read-only grid of its own to the right of the table
 ``mark``    in the same grid, with the cells matching the selection marked
-            in the other copy (a frame, so the orange difference fill stays)
+            in the other copy (a frame, apart from the orange difference outline)
 
 and in ``below`` / ``beside`` the two grids are kept in step the way the
 Measuring blocks dialog keeps its two tables: scrolling (either way, from
@@ -362,6 +362,8 @@ class CompareGrid(QtCore.QObject):
         self.view = QtWidgets.QTableView()
         self.view.setObjectName("compareView")
         self.view.setModel(ws.model)
+        from .gui_cellmarks import OutlineDelegate  # the difference outline
+        self.view.setItemDelegate(OutlineDelegate(self.view))
         self.view.setEditTriggers(
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.view.setSelectionMode(
@@ -666,7 +668,7 @@ class CompareGrid(QtCore.QObject):
 class _Marks(QtWidgets.QWidget):
     """A frame round each marked range, drawn over the table's viewport:
     a line in the text colour (dark on a light theme, light on a dark one,
-    and either way clear of the orange difference fill and the heatmap)
+    and either way clear of the orange difference outline and the heatmap)
     with the highlight colour inside it. It takes no mouse events."""
 
     def __init__(self, grid: "CompareGrid"):

@@ -1456,22 +1456,34 @@ def _open_new_doc(win, proj, ws=None):
 
 
 def open_ols(win, path, ws=None) -> bool:
-    """A WinOLS project opens as a new (unsaved) project: its binary, its
-    maps as the binary's definition, and the vehicle details entered in
-    WinOLS as the project information."""
+    """A WinOLS project opens as a new (unsaved) project, saved as an .ovt
+    one: its binaries (Options > Projects and saving > Opening a WinOLS
+    project: by default every one as the versions WinOLS lists, each a
+    branch of its own), its maps as the binary's definition (by default the
+    only maps shown, placed where WinOLS has them), and the vehicle details
+    entered in WinOLS as the project information."""
     from .project import importers as _imp
     from . import gui_olsversions as _ov
     name = os.path.splitext(os.path.basename(path))[0]
     with open(path, "rb") as fh:
         data = fh.read()
-    which = _ov.choose(win, path, data)         # several versions: which?
-    if which == _ov.CANCEL:
-        return False
+    from . import options as _opt
+    how = _opt.get("ols/open")
+    stored = how == "stored"
+    if stored:
+        which = "all"                           # every binary, as stored
+    elif how == "ask":
+        which = _ov.choose(win, path, data)     # several versions: which?
+        if which == _ov.CANCEL:
+            return False
+    else:
+        which = None                            # the original only
     QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
     try:
         proj = Project(name)
         _imp.import_bytes(proj, data, os.path.basename(path),
-                          ols_versions=which)
+                          ols_versions=which, ols_layout=_opt.get("ols/layout"),
+                          ols_stored=stored)
     except Exception as ex:
         QtWidgets.QApplication.restoreOverrideCursor()
         QtWidgets.QMessageBox.critical(
@@ -1559,7 +1571,9 @@ def _import_paths(win, proj, paths) -> list:
         if which == _ov.CANCEL:
             continue
         try:
-            _p, s = _imp.import_file(path, proj, ols_versions=which)
+            from . import options as _opt
+            _p, s = _imp.import_file(path, proj, ols_versions=which,
+                                     ols_layout=_opt.get("ols/layout"))
             sets.append(s)
         except Exception as ex:
             problems.append("%s: %s" % (os.path.basename(path), ex))
@@ -2330,6 +2344,39 @@ def fill_version_menu(win, menu, ws) -> None:
     menu.addAction("Project panel...", lambda: show_panel(win, focus=True))
 
 
+_FLASH_ICONS: dict = {}
+
+
+def flashed_icon(on: bool) -> QtGui.QIcon:
+    """The flag in front of a version that was flashed to the ECU (a
+    lightning bolt), or -- ``on`` False -- an empty square of the same size,
+    so the version names line up whether or not one carries it."""
+    key = bool(on)
+    ic = _FLASH_ICONS.get(key)
+    if ic is not None:
+        return ic
+    pm = QtGui.QPixmap(16, 16)
+    pm.fill(QtCore.Qt.GlobalColor.transparent)
+    if on:
+        p = QtGui.QPainter(pm)
+        try:
+            p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            path = QtGui.QPainterPath()
+            pts = [(9.5, 0.5), (3.0, 9.0), (7.2, 9.0), (6.0, 15.5),
+                   (13.0, 6.5), (8.6, 6.5)]
+            path.moveTo(*pts[0])
+            for pt in pts[1:]:
+                path.lineTo(*pt)
+            path.closeSubpath()
+            p.setPen(QtGui.QPen(QtGui.QColor(120, 80, 0), 1))
+            p.setBrush(QtGui.QColor(255, 196, 0))
+            p.drawPath(path)
+        finally:
+            p.end()
+    ic = _FLASH_ICONS[key] = QtGui.QIcon(pm)
+    return ic
+
+
 def _ck_text(c) -> str:
     when = (c.ts or "").replace("T", " ")[:16]
     kind = {"read": "read", "import": "imported", "revert": "revert",
@@ -3007,16 +3054,24 @@ class ProjectPanel(AutoHideDock):
                     flashed = d.project.last_flashed(s.id) or {}
                     for c in s.lineage(b.head):
                         text = _ck_text(c)
-                        if flashed.get("checkpoint") == c.id:
-                            text += "   ⚡ flashed %s" % (
-                                flashed.get("ts") or "").replace("T", " ")[:16]
+                        is_flashed = flashed.get("checkpoint") == c.id
                         badge = setup_badge(d.project, s.id, c.id)
                         if badge:
                             text += "   " + badge
                         ci = QtWidgets.QTreeWidgetItem([text])
                         ci.setData(0, _ROLE, ("ck", d, s.id, b.id, c.id))
+                        # the flag leads the row, in a column of its own that
+                        # every version keeps, so it shows however long the
+                        # name is and the names stay in line
+                        ci.setIcon(0, flashed_icon(is_flashed))
+                        tips = []
+                        if is_flashed:
+                            tips.append("Flashed to the ECU %s" % (
+                                flashed.get("ts") or "").replace("T", " ")[:16])
                         if badge:
-                            ci.setToolTip(0, badge)
+                            tips.append(badge)
+                        if tips:
+                            ci.setToolTip(0, "\n".join(tips))
                         if c.id in bad:
                             ci.setForeground(0, QtGui.QBrush(QtGui.QColor("red")))
                         bi.addChild(ci)
@@ -3228,6 +3283,12 @@ class ProjectPanel(AutoHideDock):
         elif kind == "set":
             sid = data[2]
             m.addAction("Rename...", lambda: self._rename_set(d, sid))
+            from . import gui_original as _orig
+            io_ = m.addAction("Import a new original...",
+                              lambda: _orig.import_original(self.win, d, sid))
+            io_.setToolTip("Make another file of the same software the "
+                           "original of this binary; the original it has "
+                           "becomes a version based on it.")
             main = _sb._main_member(d.project, sid)
             if main is not None:
                 m.addSeparator()

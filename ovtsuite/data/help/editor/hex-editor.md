@@ -31,13 +31,13 @@ printable character).
 | Colour | Meaning |
 |---|---|
 | Green | The byte belongs to a parameter the module identified (its values or its axes). |
-| Orange | You changed the byte (shown only when no comparison is open). |
-| Red | The byte differs from the comparison (when one is open). |
+| Orange fill | You changed the byte (shown only when no comparison is open). |
+| Orange outline | The byte differs from the comparison (when one is open). It lies over the green of a byte in a parameter, so both show. |
 
-A project tab starts out compared with the original as read, so red usually
-marks every byte changed since the read. Close the comparison (**File >
+A project tab starts out compared with the original as read, so the outline
+usually marks every byte changed since the read. Close the comparison (**File >
 Close comparison**; an open hex editor follows) to see the bytes you changed in
-this tab in orange instead.
+this tab filled in orange instead.
 
 Click a byte to read it in the line at the bottom: its offset in hex and
 decimal, its value, the 16-bit value of it and the next byte (this byte

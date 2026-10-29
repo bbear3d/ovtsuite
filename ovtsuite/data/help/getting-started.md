@@ -86,7 +86,7 @@ any change. See [Tables and editing values](editor/tables-and-editing.md).
 A project tab starts out compared with the original as imported or read;
 to compare with another file, use **File > Import as comparison...**. The
 comparison's copy of each table appears under yours, with every differing
-cell in orange; tick **Show only parameters that differ from the
+cell outlined in orange; tick **Show only parameters that differ from the
 comparison** above the tree to see everything you have changed. See
 [Comparing files](editor/comparison.md).
 
