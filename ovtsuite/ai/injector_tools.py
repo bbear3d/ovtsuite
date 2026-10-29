@@ -79,7 +79,8 @@ def _catalogue():
 def _preset_row(cat, p):
     c = cat.char_of(p)
     return {"id": p.id, "name": p.name, "kind": p.kind, "confidence": p.confidence,
-            "listed_for": p.listed_for, "cam": p.cam, "body": p.body, "nozzle": p.nozzle,
+            "listed_for": p.listed_for, "vag_part_numbers": p.vag or None,
+            "bosch_part_numbers": p.bosch or None, "cam": p.cam, "body": p.body, "nozzle": p.nozzle,
             "base": p.base or None, "flow_factor": num(round(p.flow, 3)) if p.base else None,
             "flow_basis": p.basis or None,
             "mg_per_degree_10btdc_3000rpm_45mg": num(round(c.mg_per_degree(10, 3000, 45), 3))

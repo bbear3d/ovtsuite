@@ -806,6 +806,13 @@ class InjectorDialog(QtWidgets.QDialog):
         bits = []
         if p.listed_for:
             bits.append("Listed for: " + ", ".join(p.listed_for))
+        parts = p.part_numbers()
+        if not parts and p.derived:
+            base = self.cat.get(p.base)
+            if base is not None and base.part_numbers():
+                parts = "%s (%s)" % (base.part_numbers(), base.name)
+        if parts:
+            bits.append("OEM part numbers: " + parts)
         if p.body or p.nozzle:
             bits.append("; ".join(x for x in (p.body and "Body: " + p.body,
                                               p.nozzle and "Nozzle: " + p.nozzle) if x))
