@@ -830,6 +830,28 @@ if HAVE_QT:
             self._ndiff = None              # see _diff_count
             self._ax_diff = frozenset()     # ("x"|"y", i) breakpoints differing
             self._crheads = None            # comparison's own row labels
+            #: the comparison shown at its original size
+            #: (:mod:`ovtsuite.gui_cmpsize`): ``outline_all`` -- the two
+            #: tables differ in size, so no cell is compared with another
+            #: and every cell, axes included, has the difference outline
+            #: (and the difference view and tint are off); ``outline_cells``
+            #: -- ``(z cells, axis points)`` outlined, for a table that holds
+            #: no comparison of its own to tell
+            self.outline_all = False
+            self.outline_cells = None
+
+        def _outline_at(self, k, a, b):
+            """The outline of a cell of a table that is not compared with
+            its own comparison block (see ``outline_all``)."""
+            if k == "z":
+                if self._at(self._vals, a, b) is None:
+                    return None
+                if self.outline_all or (a, b) in self.outline_cells[0]:
+                    return True
+            elif k in ("x", "y"):
+                if self.outline_all or (k, a) in self.outline_cells[1]:
+                    return True
+            return None
 
         def _cmp_axes(self):
             """(X, Y) breakpoints the comparison block's cells sit at.
@@ -878,7 +900,7 @@ if HAVE_QT:
                 return True if differs else None
             heat = self._heatmap and self._vmax > self._vmin
             tint = (differs and not heat and self._delta[2]
-                    and not self._delta_hold)
+                    and not self._delta_hold and not self.outline_all)
             if role == _R_BG:
                 if heat:
                     return self._heat((v - self._vmin) / (self._vmax - self._vmin))
@@ -1101,13 +1123,13 @@ if HAVE_QT:
         def primary_delta(self) -> str:
             """The mode this file's table shows in ("abs" with no
             comparison, or while a copy is made)."""
-            if self._delta_hold or not self._cmp:
+            if self._delta_hold or not self._cmp or self.outline_all:
                 return "abs"
             return self._delta[3]
 
         def delta_mode(self) -> str:
             """The comparison's mode now ("abs" while a copy is made)."""
-            return "abs" if self._delta_hold else self._delta[0]
+            return "abs" if self._delta_hold or self.outline_all else self._delta[0]
 
         def _delta_cell(self, v, pv, f, role, primary=False, hexed=False):
             """A value cell in a delta mode: ``v`` the comparison's, ``pv``
@@ -1364,6 +1386,9 @@ if HAVE_QT:
             if role not in _GRID_ROLES or not self.entity or not idx.isValid():
                 return None
             k, a, b = self._kind(idx.row(), idx.column())
+            if role == _R_OUTLINE and (self.outline_all
+                                       or self.outline_cells is not None):
+                return self._outline_at(k, a, b)
             tk = getattr(self.entity, "text_kind", "")
             if self.hl and (k, a, b) in self.hl:
                 if role == _R_BG:
@@ -5780,6 +5805,8 @@ if HAVE_QT:
             eb.addWidget(self.dyno_btn)
             from . import gui_compare_delta as _gcd     # comparison as a
             eb.addWidget(_gcd.make_button(self))        # difference (a menu)
+            from . import gui_cmpsize as _gcs2          # comparison size (a menu)
+            eb.addWidget(_gcs2.make_button(self))
 
             # the comparison (when loaded) is shown INSIDE this same grid,
             # under a banner row, so both share one set of scrollers and one
@@ -6222,6 +6249,8 @@ if HAVE_QT:
                                lambda: _gck.to_primary(self, self.table))
                 skip = ("Copy selected cells from comparison",)
             _gck.add_to_menu(self.win, menu, skip)  # revert actions
+            from . import gui_cmpsize as _gcs2
+            _gcs2.add_to_menu(self, menu)           # comparison size
             e = self.model.entity
             if e is not None and e.kind in ("map", "curve") and \
                     getattr(e, "source", "") != "user":
@@ -6887,7 +6916,7 @@ if HAVE_QT:
                 if t is cur:
                     active = len(out)
                 ref.update({"pinned": t.pinned, "heat": t.heat,
-                            "zmode": t.zmode})
+                            "zmode": t.zmode, "cmpsize": t.cmpsize})
                 out.append(ref)
             return {"tables": out, "table_active": active}
 
@@ -6912,7 +6941,8 @@ if HAVE_QT:
                         continue
                     t = _TableTab(e, pinned=bool(d.get("pinned", True)),
                                   heat=bool(d.get("heat", False)),
-                                  zmode=d.get("zmode") or None)
+                                  zmode=d.get("zmode") or None,
+                                  cmpsize=d.get("cmpsize") or None)
                     if not t.pinned and self._preview_index() >= 0:
                         t.pinned = True     # only one preview at a time
                     i = self.ttabs.addTab("")
@@ -7018,7 +7048,13 @@ if HAVE_QT:
                 lines.append("(no description)")
             banner = ""
             ov = self.model.overlay
-            if ov is not None:
+            nat = getattr(getattr(self, "cmp_grid", None), "native", None)
+            if nat is not None and nat.on:          # gui_cmpsize
+                banner = ("\ncomparison: shown at its original size, not "
+                          "resampled" + (" - same size, linked" if nat.linked()
+                                         else " - the sizes differ, so no cell "
+                                         "is compared with another"))
+            elif ov is not None:
                 tag = {"direct": "comparison: direct cell diff",
                        "axis-mismatch": "comparison: same size, "
                        "AXES DIFFER - cells are at different operating points",
@@ -8571,13 +8607,17 @@ if HAVE_QT:
 
     class _TableTab:
         """One open table in a file tab, and what it remembers."""
-        __slots__ = ("entity", "pinned", "heat", "zmode", "view")
+        __slots__ = ("entity", "pinned", "heat", "zmode", "view", "cmpsize")
 
-        def __init__(self, entity, pinned=False, heat=False, zmode=None):
+        def __init__(self, entity, pinned=False, heat=False, zmode=None,
+                     cmpsize=None):
             self.entity = entity
             self.pinned = pinned        # False: the preview tab
             self.heat = heat            # heatmap shading on
             self.zmode = zmode          # ZF "Show Z as" (None: not chosen)
+            #: the comparison's size here ("resampled" / "original"), or
+            #: None: the default (Options > Editor; gui_cmpsize)
+            self.cmpsize = cmpsize
             self.view = None            # scroll and selection, once left
 
     class TableTabBar(QtWidgets.QTabBar):
@@ -9719,6 +9759,8 @@ if HAVE_QT:
             _gpl.add_menu(self, view)
             from . import gui_compare_delta as _gcd
             _gcd.add_menu(self, view)           # View > Difference view
+            from . import gui_cmpsize as _gcs2
+            _gcs2.add_menu(self, view)          # View > Comparison size
             view.addSeparator()
             self._act(view, "Next tab", lambda: self._cycle_tab(1), "Ctrl+Tab")
             self._act(view, "Previous tab", lambda: self._cycle_tab(-1),

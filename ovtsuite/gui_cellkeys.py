@@ -239,6 +239,10 @@ def from_comparison(win):
     if ws is None or not _editable(ws):
         return
     m = ws.model
+    from . import gui_cmpsize as _gcs
+    if _gcs.original_active(ws):    # at its own size: cell for cell, no resampling
+        ws.cmp_grid.native.copy_from_comparison()
+        return
     if not m._cmp:
         _say(ws, "No comparison is open for this table.")
         return

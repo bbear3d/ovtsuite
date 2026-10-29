@@ -94,6 +94,47 @@ values were resampled. **Ctrl+C** in the comparison grid copies its selected
 cells. The default, **In the same grid, under the table**, is the layout
 described above.
 
+### Comparison size: resampled or original
+
+By default the comparison is put onto your table's rows and columns, cell for
+cell when the two tables have the same shape and **resampled** onto your
+table's axes when they do not (the banner says which). **Comparison size**
+shows it as it is stored instead: its own rows, columns, axes, labels and
+units, in a read-only grid of its own, so nothing is interpolated.
+
+Change it for the table in front with the **Comparison** button on the table's
+edit bar (beside *Difference view*), by right-clicking the table or the
+comparison and ticking **Show comparison at original size**, or in **View >
+Comparison size**. Each table remembers its own choice, as the heat map does;
+where it has none, the default applies: **Tools > Options > Editor >
+Comparison values**. **Use the default for this table** clears a table's own
+choice, and **Make this the default for all tables** sets the default and
+clears every table's.
+
+The original-size grid goes where the layout puts a comparison's own grid
+(below or beside the table); with *In the same grid, under the table* or
+*matching cells marked* it is under the table, since one grid cannot hold two
+shapes. Its heading says its size and whether it is linked.
+
+- **Same size**: the two grids are linked as in the layouts above -- they
+  scroll together, share column widths, and a cell or range selected in one is
+  selected in the other. A cell that differs has the orange outline in both.
+- **Different sizes**: no cell is compared with another, so **nothing is
+  linked** (each grid keeps its own selection and scrolling) and **every cell
+  of both tables, the axes included, has the orange outline**. The difference
+  view and the direction tint are off. Select comparison cells and a **dashed
+  frame** shows, in your table, the cells at the same row and column: where
+  **Copy comparison → primary** would write them.
+
+Copying never resamples. **Copy comparison → primary** (right-click the
+comparison, or **Ctrl+R** on your own selection, *Copy selected cells from
+the comparison*) writes each comparison cell, as stored, into your table's cell
+at the same row and column; cells your table has no counterpart for are left
+out, and the status bar says how many. **Paste at the primary's current cell**
+puts the selection's text in from your current cell, as Paste does. **Ctrl+C**
+copies the comparison's own cells. Each is one undo step. The difference view
+applies to your own table while the comparison is at its original size.
+
 ### Showing the difference
 
 Instead of values, the cells can show how the **primary** (the file you are

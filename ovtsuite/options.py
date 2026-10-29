@@ -152,6 +152,18 @@ OPTIONS: Tuple[Option, ...] = (
                     ("below", "Below the table, scrolled with it"),
                     ("beside", "Beside the table, scrolled with it"),
                     ("mark", "In the same grid, matching cells marked"))),
+    Option("ui/compare_size", "resampled", "Comparison values", EDITOR,
+           "choice", "How a comparison's table is shown. Resampled: put onto "
+           "the primary's rows and columns (cell for cell when they match). "
+           "Original size: as stored -- its own rows, columns and axes -- in "
+           "a grid of its own; the two tables are linked (scroll, "
+           "selection) only when they have the same size, and when they "
+           "differ every cell is outlined, nothing being compared cell for "
+           "cell. Copying from it never resamples. This is the default: each "
+           "table can have its own (the Comparison button on the edit bar, "
+           "right-click, View > Comparison size).",
+           choices=(("resampled", "Resampled onto the primary's axes"),
+                    ("original", "Original size"))),
     Option("ui/compare_delta", "abs", "Difference view: show as", EDITOR,
            "choice", "While a comparison is loaded, the cells as their own "
            "values, or as the difference between the primary and the "
