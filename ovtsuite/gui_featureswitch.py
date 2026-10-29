@@ -37,6 +37,7 @@ from typing import Dict, List, Optional
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .featureswitch import model as M, engine as E, ents as _E
+from .gui_fsform import FormBox
 
 KEEP = None                                  # Set to: Keep as is
 CUSTOM = "__custom__"                         # Set to: values edited by hand
@@ -447,6 +448,12 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         row.addWidget(self.choice_lbl)
         row.addWidget(self.choice_sel)
         right.addLayout(row)
+        # and its form, when the setting is several typed numbers (the gear
+        # ratios): see gui_fsform
+        self.form = FormBox()
+        self.form.changed.connect(self._opt_changed)
+        self._form_spec = None
+        right.addWidget(self.form)
 
         self.preview = QtWidgets.QTableWidget(0, len(_COLS))
         self.preview.setHorizontalHeaderLabels(_COLS)
@@ -700,7 +707,8 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         if words is not None:
             t = words(self.session, g)
             if t:
-                return "Now: <b>%s</b> (no preset matches)" % t
+                return "Now: <b>%s</b>%s" % (
+                    t, "" if getattr(hook, "FS_FORM", None) else " (no preset matches)")
         if hook is None or not hasattr(hook, "state"):
             best, ok, n = E.match_info(self.session, b, g)
             if best is not None and ok:
@@ -755,6 +763,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             self.chk.blockSignals(False)
         self.chk.setVisible(bool(chk))
         self._load_choice(b, p)
+        self._load_form(b, p)
         self._loading = False
         self._sync_buttons()
         self._refresh_preview()
@@ -768,7 +777,39 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         cs = self._choice_spec
         if cs and cs.get("key") and self.choice_sel.currentData() is not None:
             out[cs["key"]] = self.choice_sel.currentData()
+        if self._form_spec:
+            out.update(self.form.values())
         return out
+
+    def _load_form(self, b, p):
+        """The hook's form (``FS_FORM``), started from what the pending
+        setting holds or the hook's ``fs_form_defaults`` for the file."""
+        hook = self._hook(b)
+        spec = getattr(hook, "FS_FORM", None)
+        self._form_spec = spec
+        vals = {}
+        if spec and hasattr(hook, "fs_form_defaults"):
+            try:
+                vals = dict(hook.fs_form_defaults(
+                    self.session, (self._view_copies(b) or [""])[0]) or {})
+            except Exception:                             # noqa: BLE001
+                vals = {}
+        if spec and p is not None:
+            vals.update({k: v for k, v in p.opts.items() if k in self.form.keys()
+                         or k in {f["key"] for f in spec.get("fields", ())}})
+        self.form.load(spec, vals)
+
+    def _sync_form(self, b):
+        """The form is live only for the settings it applies to."""
+        spec = self._form_spec
+        if not spec:
+            return
+        pend = self.pending.get(b.id)
+        only = spec.get("states")
+        on = not only or (pend is not None and any(
+            pend.copies[c].state in only for c in self._view_copies(b)
+            if c in pend.copies))
+        self.form.set_live(on and not _view_only(self.ws))
 
     def _load_choice(self, b, p):
         """The hook's choice (``FS_CHOICE``, its items from
@@ -1190,6 +1231,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
     def _sync_opt(self, b):
         """The hook's number is live only for the settings it applies to."""
         self._sync_choice(b)
+        self._sync_form(b)
         spec = self._opt_spec
         if not spec:
             return

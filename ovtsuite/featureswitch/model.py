@@ -117,6 +117,11 @@ class FeatureSet:
 #: ``tip`` and ``states``; its items are ``fs_choices(session)`` -> ``[(key,
 #: text)]``, and it is shown only when there are two or more (the first is
 #: the default; without the choice the key is not passed).
+#: An optional ``FS_FORM`` dict adds a box of typed numbers and tick boxes for
+#: a setting that is several values (the gear ratios): see
+#: :mod:`ovtsuite.gui_fsform` for its spec; the values arrive in ``opts`` by
+#: key, and an optional ``fs_form_defaults(session, group)`` -> ``{key:
+#: value}`` starts the form from what the file holds.
 #: ``fs_preview(session, group, target, first, **opts)`` lists what a setting changes (rows of
 #: ``engine.write_rows`` / ``engine.fault_rows``) and ``state_text(session,
 #: group)`` says in words what the file holds when no setting matches.

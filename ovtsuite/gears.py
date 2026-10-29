@@ -86,6 +86,48 @@ _GEAR_NAMES = ({n for _, n in _ABS_ROWS}
 _RTRANS = ["Gearbx_rTrans%d_C" % i for i in range(1, 7)]
 
 
+def vn_values(R, circ_m, tc=1.0, reverse=None):
+    """The v/n band edges for overall ratios ``R`` ({gear: ratio}), rolling
+    circumference ``circ_m`` (m) and transfer-case reduction ``tc``, as
+    ``{"values": [(symbol, value)], "true", "gears", "placeholders"}``:
+    v/n[g] = 0.06*C/(R[g]*tc), the L/H band edges at the geometric mean of
+    adjacent gears' v/n (the ECU's crossover layout); the 1st-gear floor and
+    top-gear ceiling are left as they are. ``reverse`` (the reverse ratio)
+    gets a band around its own v/n, one typical gear step wide.
+
+    Only the real gears count: overall ratios strictly decrease with gear, so
+    a gear whose ratio is not meaningfully lower than the previous one is an
+    unused placeholder (e.g. 6th on a 5-speed, where R6 ~= R5) and is left
+    out -- a crossover against a duplicate ratio would collapse the top real
+    gear's band."""
+    C = float(circ_m)
+    allg = sorted(R)
+    gears = []
+    for g in allg:
+        if gears and R[g] >= R[gears[-1]] * 0.99:
+            break
+        gears.append(g)
+    if not gears:
+        return {"values": [], "true": {}, "gears": [], "placeholders": allg}
+    true = {g: 0.06 * C / (R[g] * tc) for g in gears}
+    steps = [true[a] / true[b] for a, b in zip(gears, gears[1:])
+             if true[b] > 0 and true[a] > true[b]]
+    step = sorted(steps)[len(steps) // 2] if steps else 1.6
+    values = []
+    for idx, g in enumerate(gears):
+        if idx > 0:
+            values.append(("Gearbx_rVn%dL_C" % g, math.sqrt(true[gears[idx - 1]] * true[g])))
+        if idx < len(gears) - 1:
+            values.append(("Gearbx_rVn%dH_C" % g, math.sqrt(true[g] * true[gears[idx + 1]])))
+    if isinstance(reverse, (int, float)) and abs(reverse) > 0.1:
+        tR = 0.06 * C / (abs(reverse) * tc)
+        half = math.sqrt(step)
+        values.append(("Gearbx_rVnRL_C", tR / half))
+        values.append(("Gearbx_rVnRH_C", tR * half))
+    return {"values": values, "true": true, "gears": gears,
+            "placeholders": [g for g in allg if g not in gears]}
+
+
 @dataclass
 class GearCopy:
     """One physical copy of the drivetrain-ratio set (a table column).
@@ -303,47 +345,16 @@ class GearRatios:
             source = "can" if can else "tyre"
         tc = self.transfer_case(copy) if fold_transfer else 1.0
         R = self._ratios(copy)
-        allg = sorted(R)
-        # keep only the REAL gears: overall ratios strictly decrease with gear,
-        # so a gear whose ratio is not meaningfully lower than the previous one
-        # is an unused placeholder (e.g. 6th on a 5-speed, where R6 ~= R5). Those
-        # are left untouched -- generating a crossover against a duplicate ratio
-        # would otherwise collapse the top real gear's band.
-        gears = []
-        for g in allg:
-            if gears and R[g] >= R[gears[-1]] * 0.99:
-                break
-            gears.append(g)
-        if not gears:
-            return {"writes": [], "circ": C, "source": source,
-                    "transfer_case": tc, "true": {},
-                    "gears": [], "placeholders": allg}
-        true = {g: 0.06 * C / (R[g] * tc) for g in gears}
-        steps = [true[a] / true[b] for a, b in zip(gears, gears[1:])
-                 if true[b] > 0 and true[a] > true[b]]
-        step = sorted(steps)[len(steps) // 2] if steps else 1.6
-        writes = []
-        for idx, g in enumerate(gears):
-            if idx > 0:
-                e = self._ent(copy, "Gearbx_rVn%dL_C" % g)
-                if e is not None:
-                    writes.append((e, math.sqrt(true[gears[idx - 1]] * true[g])))
-            if idx < len(gears) - 1:
-                e = self._ent(copy, "Gearbx_rVn%dH_C" % g)
-                if e is not None:
-                    writes.append((e, math.sqrt(true[g] * true[gears[idx + 1]])))
         rr = _phys(self.session, self._ent(copy, _TRANSR))
-        if isinstance(rr, (int, float)) and abs(rr) > 0.1:
-            tR = 0.06 * C / (abs(rr) * tc)
-            half = math.sqrt(step)
-            for name, val in (("Gearbx_rVnRL_C", tR / half),
-                              ("Gearbx_rVnRH_C", tR * half)):
-                e = self._ent(copy, name)
-                if e is not None:
-                    writes.append((e, val))
+        plan = vn_values(R, C, tc, rr)
+        writes = []
+        for name, val in plan["values"]:
+            e = self._ent(copy, name)
+            if e is not None:
+                writes.append((e, val))
         return {"writes": writes, "circ": C, "source": source,
-                "transfer_case": tc, "true": true, "gears": gears,
-                "placeholders": [g for g in allg if g not in gears]}
+                "transfer_case": tc, "true": plan["true"], "gears": plan["gears"],
+                "placeholders": plan["placeholders"]}
 
     def apply_vn(self, writes):
         """Apply plan_vn()['writes'] as ONE undoable step; returns the count."""
