@@ -245,6 +245,9 @@ its strip.
 
 ![The Project panel: a project, its set, branches and kept files](images/project-panel.png)
 
+- **Hover** a version for its whole name and date (a long name is cut by a
+  narrow panel); the same tooltip is in **Version history** and in the
+  **Compare with saved version** menu.
 - **Resize** it by dragging the edge between it and the rest of the window.
 - **Collapse** it with the arrow in its title bar, or with **View > Project
   panel**: it shrinks to a narrow strip labelled *Project*, and the window

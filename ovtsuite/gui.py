@@ -5255,7 +5255,10 @@ if HAVE_QT:
                 cells = [when, self._history.display_label(ver),
                          str(ver.get("n_bytes", 0)),
                          "pending (unsaved)" if ver.get("pending") else "saved"]
-                tip = ["Automatic label: %s" % ver.get("label", "")]
+                # the whole name and date first: the column is narrower than
+                # a long name
+                tip = ["%s   %s" % (when, cells[1]), "",
+                       "Automatic label: %s" % ver.get("label", "")]
                 if ver.get("regions"):
                     tip.append("Also changed: %s" % ", ".join(
                         sorted(ver["regions"])))
@@ -9425,6 +9428,7 @@ if HAVE_QT:
                 return
             shown = cur.cmp_version["id"] if cur.cmp_version else None
             from . import options as _opt
+            menu.setToolTipsVisible(True)       # a long name is cut: tip has it whole
             cap = _opt.get("history/version_menu_max")   # VERSION_MENU_MAX
             for i, ver in enumerate(versions[:cap]):
                 when = ver.get("ts", "").replace("T", " ")[:16]

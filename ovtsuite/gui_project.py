@@ -2333,8 +2333,10 @@ def fill_version_menu(win, menu, ws) -> None:
     chain = s.lineage(ref.branch.head)
     shown = ws.cmp_version["id"] if ws.cmp_version else None
     from . import options as _opt
+    menu.setToolTipsVisible(True)
     for c in chain[:_opt.get("history/version_menu_max")]:
         a = menu.addAction(_ck_text(c))
+        a.setToolTip(_ck_text(c))               # a long name, whole
         if c.id == shown:
             a.setCheckable(True)
             a.setChecked(True)
@@ -3064,14 +3066,12 @@ class ProjectPanel(AutoHideDock):
                         # every version keeps, so it shows however long the
                         # name is and the names stay in line
                         ci.setIcon(0, flashed_icon(is_flashed))
-                        tips = []
+                        # the whole row, so a long name can be read
+                        tips = [text]
                         if is_flashed:
                             tips.append("Flashed to the ECU %s" % (
                                 flashed.get("ts") or "").replace("T", " ")[:16])
-                        if badge:
-                            tips.append(badge)
-                        if tips:
-                            ci.setToolTip(0, "\n".join(tips))
+                        ci.setToolTip(0, "\n".join(tips))
                         if c.id in bad:
                             ci.setForeground(0, QtGui.QBrush(QtGui.QColor("red")))
                         bi.addChild(ci)

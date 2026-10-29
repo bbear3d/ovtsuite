@@ -138,6 +138,32 @@ def test_the_flashed_flag_leads_the_version_row(win, tab):
         assert "Flashed" not in item.toolTip(0)
 
 
+def test_a_long_version_name_can_be_read_in_every_version_list(win, tab):
+    """The Project panel's row, the Version history row and the Compare with
+    saved version menu entry each carry the whole name in a tooltip, however
+    long the name and however narrow the list."""
+    from ovtsuite import gui
+    from ovtsuite import gui_project as gp
+    ref = tab.project_ref
+    cid = ref.branch.head
+    long_name = "Stage 2 with the long name that no narrow list can show " * 2
+    gp.rename_version(win, ref.doc, ref.sid, cid, long_name.strip())
+    panel = gp.panel(win)
+    panel.refresh()
+    row = _ck_items(panel, gp)[cid]
+    assert long_name.strip() in row.toolTip(0)
+    # the history dialog's row: the name and its time, then the automatic name
+    dlg = gui.VersionHistoryDialog(tab.primary, tab, on_compare=None)
+    names = [dlg.tbl.item(r, dlg.NAME).toolTip() for r in range(dlg.tbl.rowCount())]
+    assert any(long_name.strip() in t and "Automatic label:" in t for t in names)
+    # the menu: project tabs and plain ones alike
+    menu = QtWidgets.QMenu()
+    win.fill_version_menu(menu)
+    assert menu.toolTipsVisible()
+    assert any(long_name.strip() in a.toolTip() for a in menu.actions())
+    dlg.close()
+
+
 def test_the_panel_offers_rename_on_a_version(win, tab, monkeypatch):
     from ovtsuite import gui_project as gp
     panel = gp.panel(win)
