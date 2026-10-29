@@ -976,16 +976,21 @@ class EoiDialog(QtWidgets.QDialog):
         return menu
 
     def _size_window(self, with_comparison: Optional[bool] = None) -> None:
-        """A size that fits a laptop screen without being dragged larger: the
-        window's usual size, taller when the comparison grid is below the
-        primary's, never more than the screen's usable area."""
+        """A size that fits a laptop screen without being dragged smaller or
+        larger: the window's usual size, a little taller when the comparison
+        grid is below the primary's -- but never more than 82 % of the
+        screen's usable height (the grids scroll, and the bar between them
+        shares the room)."""
         scr = self.screen() or QtWidgets.QApplication.primaryScreen()
         avail = scr.availableGeometry() if scr is not None else QtCore.QRect(0, 0, 1366, 728)
         cmp_on = self.cmpv.wanted() if with_comparison is None else with_comparison
-        w, h = (980, 900) if cmp_on else (940, 680)
+        if cmp_on:
+            w, h = 960, min(720, int(avail.height() * 0.82))
+        else:
+            w, h = 940, min(680, avail.height() - 60)
         w = max(640, min(w, avail.width() - 40))
-        h = max(480, min(h, avail.height() - 60))
-        if cmp_on:                      # grow, never shrink what the user set
+        h = max(480, h)
+        if cmp_on:                      # a window you made larger stays so
             w, h = max(w, self.width()), max(h, self.height())
             h = min(h, avail.height() - 60)
         self.resize(w, h)

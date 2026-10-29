@@ -157,6 +157,35 @@ def test_window_fits_a_laptop_screen(dlg):
     assert dlg.height() >= 480
 
 
+@pytest.mark.parametrize("w,h", [(1366, 728), (1536, 824), (1920, 1040)],
+                         ids=["1366x768", "1536x864", "1920x1080"])
+def test_the_window_with_the_comparison_is_not_taller_than_the_screen_allows(
+        app, monkeypatch, w, h):
+    """On a laptop screen the usable height is about 728 px; with the
+    comparison shown the window takes at most 82 % of what a screen has, on
+    any screen, and never less than it needs."""
+    from ovtsuite import gui_eoi
+    prim = Session(_grid(8.0), _grid(12.0), "tuned.bin")
+    comp = Session(_grid(8.0, [(0, 1, -2.0)]), _grid(12.0), "stock.bin")
+    monkeypatch.setattr(_eoi, "models", lambda s: [s.model])
+    scr = QtCore.QRect(0, 0, w, h)
+    monkeypatch.setattr(gui_eoi.EoiDialog, "screen", lambda self: type(
+        "S", (), {"availableGeometry": lambda _s: scr})())
+    ws = QtWidgets.QWidget()
+    ws.primary, ws.comparison, ws.view_only = prim, comp, None
+    d = gui_eoi.EoiDialog(ws, parent=ws)
+    d.show()
+    app.processEvents()
+    try:
+        assert d.cmpv.box.isVisibleTo(d)
+        assert d.height() <= int(h * 0.82) + 1 and d.height() <= 720
+        assert d.height() >= d.minimumSizeHint().height()
+        assert d.width() <= w - 40
+    finally:
+        d.close()
+        ws.deleteLater()
+
+
 def test_the_switch_hides_the_comparison(dlg, app):
     dlg.cmpv.check.setChecked(False)
     app.processEvents()
