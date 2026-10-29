@@ -370,6 +370,11 @@ before you confirm, and the change is kept when you save the project. The file
 has to be the same software -- the same parts and sizes -- as the original it
 replaces; for another software, add it as a binary of its own.
 
+An EDC16 **calibration-only file** (512 KB) is the 2 MB image it is a window of
+once imported. As a new original it replaces only that window of the original's
+image: the boot and program areas stay as the original has them, so the other
+versions keep the bytes they share with it.
+
 ## WinOLS projects and definitions
 
 **A WinOLS project** (`.ols`) holds a binary *and* its map definitions.

@@ -5,7 +5,8 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Export members of an ``.ovt`` project (spec section 8).
 
-* :func:`export_raw` -- a member's bytes at any branch/checkpoint (``.bin``).
+* :func:`export_raw` -- a member's bytes at any branch/checkpoint (``.bin``);
+  an EDC16 calibration-only file (512 KB) comes out as the full 2 MB image.
 * :func:`export_original` -- back into the delivery container it was imported
   from. Unchanged content returns the original bytes exactly; changed content
   is rebuilt for ``.dim`` (untouched chunks carried through) and ``.sgo``
@@ -39,6 +40,12 @@ def export_raw(project: Project, sid: str, mid: str, *,
                                 checkpoint=_cid(project, sid, branch, checkpoint))
     if data is None:
         raise ExportRefused("member %r does not exist at that point" % mid)
+    # a project that still holds an EDC16 calibration-only file (512 KB, from
+    # before imports made it the full image) exports the full 2 MB image
+    if project.set(sid).platform == "edc16" and mid == "flash":
+        from ..platforms import edc16 as _e16
+        if _e16.is_cal_only(data):
+            return _e16.pad_cal_only(data)
     return data
 
 

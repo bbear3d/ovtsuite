@@ -398,6 +398,21 @@ def _import_backup15(project, data, filename, into_set, branch):
     return s
 
 
+def _full_image(ident, data: bytes, source: dict, keep_size: bool = False):
+    """``(data, source)`` with an EDC16 calibration-only file (512 KB) made
+    the full 2 MB image it is a window of, as the flasher writes it: always,
+    so the project holds the image the module's tables are placed in and
+    exports and flashes agree. ``source`` records it. Nothing else is padded
+    (a 1 MB file is an EDC16U1's whole flash)."""
+    from ..platforms import edc16 as _e16
+    if (not keep_size and ident.platform == "edc16"
+            and _e16.is_cal_only(data)):
+        source = dict(source, padded_from=len(data),
+                      padded="calibration at 0x%X, 0xFF below" % _e16.CAL_START)
+        return _e16.pad_cal_only(data), source
+    return data, source
+
+
 def _import_raw(project, data, filename, into_set, branch, sidecar_log,
                 definition):
     ident = _identify(data)
@@ -421,9 +436,14 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
         project.add_member(s.id, _member(mid, role, ident.platform,
                                          name="" if ident.known else
                                          os.path.basename(filename)))
+    # (a change log written beside a 512 KB file speaks of its offsets: that
+    # history is kept as it is, the file unpadded)
+    data, src = _full_image(ident, bytes(data),
+                            {"file": filename, "format": "bin"},
+                            keep_size=bool(sidecar_log))
     _add_history(project, s.id, {mid: bytes(data)}, sidecar_log or "",
                  root_kind="import", root_label="Imported %s" % filename,
-                 source={"file": filename, "format": "bin"}, branch=branch)
+                 source=src, branch=branch)
     if definition is not None:
         dname, ddata = definition
         project.add_definition(s.id, mid, dname, ddata,
@@ -592,6 +612,57 @@ def _import_ols(project, data, filename, into_set, branch, which=None,
     return s
 
 
+def original_images(project: Project, sid: str, data: bytes, filename: str
+                    ) -> Tuple[Images, dict, list]:
+    """``(images, source, originals)`` of file ``data`` read the way importing
+    it into a project would, with its parts named as set ``sid`` names its
+    own, ready for :meth:`Project.rebase_original`. ``originals`` are the
+    container files the import kept byte for byte (``(filename, format,
+    bytes, member ids)``). ImportRefused says why a file will not do.
+
+    An EDC16 calibration-only file (512 KB, which an import makes the full
+    2 MB image) carries nothing outside its calibration window: where the
+    set's original is the full image, the file replaces that window and the
+    rest stays as the original has it -- no 0xFF over the boot and program
+    areas, and the history's other versions keep the bytes they share."""
+    from ..platforms import edc16 as _e16
+    from .sessionbridge import _main_member
+    scratch = Project("scratch")
+    s2 = import_bytes(scratch, data, filename)
+    roots = s2.roots()
+    if not roots:
+        raise ImportRefused("%s holds no binary." % filename)
+    root = roots[0]
+    images = dict(scratch.state(s2.id, root.id))
+    here = project.set(sid)
+    old = here.root_of(here.active.head) if here.active is not None else None
+    mine, theirs = _main_member(project, sid), _main_member(scratch, s2.id)
+    if old is not None and set(images) != set(old.sizes) and mine is not None \
+            and theirs is not None and theirs.id in images \
+            and mine.id in old.sizes and mine.id != theirs.id:
+        # one main image either way (a module names it "flash", the base app
+        # "raw"): the same part under the other's name
+        images[mine.id] = images.pop(theirs.id)
+    source = dict(root.source or {})
+    source.setdefault("file", filename)
+    mid = mine.id if mine is not None else None
+    if (old is not None and mid in images and source.get("padded_from")
+            == _e16.CAL_SIZE):
+        cur = project.state(sid, old.id).get(mid)
+        if cur is not None and len(cur) == _e16.FULL_SIZE:
+            merged = bytearray(cur)
+            merged[_e16.CAL_START:] = images[mid][_e16.CAL_START:]
+            images[mid] = bytes(merged)
+            source["merged"] = ("calibration window into the original's "
+                                "image")
+        elif cur is not None and len(cur) == _e16.CAL_SIZE:
+            images[mid] = images[mid][_e16.CAL_START:]   # a calibration-only original
+            source.pop("padded_from", None)
+    originals = [(o.filename, o.format, scratch.original_bytes(s2.id, o.id),
+                  list(o.members)) for o in s2.originals]
+    return images, source, originals
+
+
 def definition_type(data: bytes) -> Optional[str]:
     """The definition type of ``data`` (xdf / a2l / kp / ols / dam) from its
     structure, or None."""
@@ -693,6 +764,7 @@ def import_read(project: Project, data: bytes, name: str, *,
     role = "flash" if ident.known else "raw"
     specs = [_member("flash", role, ident.platform,
                      name="" if ident.known else name)]
+    data, src = _full_image(ident, bytes(data), src)     # a 512 KB read: 2 MB
     images = {"flash": bytes(data)}
     if eeprom is not None:
         specs.append(_member("eeprom", "eeprom", ident.platform))
@@ -745,6 +817,6 @@ def import_file(path: str, project: Optional[Project] = None, *,
     return project, s
 
 
-__all__ = ["import_bytes", "import_file", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
+__all__ = ["import_bytes", "import_file", "original_images", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
            "OLS_LAYOUTS", "OLS_STORED_PLACEMENT",
            "DEFINITION_EXTS", "definition_type", "new_id"]

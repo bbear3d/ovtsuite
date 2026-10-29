@@ -32,39 +32,16 @@ Images = dict
 
 def images_for(project: Project, sid: str, path: str, data: Optional[bytes] = None
                ) -> Tuple[Images, dict, list]:
-    """``(images, source, originals)`` of the file at ``path`` read the way
-    importing it into a project would, with its parts named as set ``sid``
-    names its own: ``originals`` are the container files the import kept
-    byte for byte (``(filename, format, bytes, member ids)``). ValueError
-    says why a file will not do."""
+    """``(images, source, originals)`` of the file at ``path`` as a new
+    original of set ``sid`` (:func:`ovtsuite.project.importers.original_images`)."""
     from .project import importers as _imp
-    from .project.sessionbridge import _main_member
     if data is None:
         with open(path, "rb") as fh:
             data = fh.read()
-    scratch = Project("scratch")
     try:
-        s2 = _imp.import_bytes(scratch, data, os.path.basename(path))
+        return _imp.original_images(project, sid, data, os.path.basename(path))
     except _imp.ImportRefused as ex:
         raise ValueError(str(ex))
-    roots = s2.roots()
-    if not roots:
-        raise ValueError("%s holds no binary." % os.path.basename(path))
-    images = dict(scratch.state(s2.id, roots[0].id))
-    here = project.set(sid)
-    old = here.root_of(here.active.head) if here.active is not None else None
-    if old is not None and set(images) != set(old.sizes):
-        # one main image either way (a module names it "flash", the base app
-        # "raw"): the same part under the other's name
-        mine, theirs = _main_member(project, sid), _main_member(scratch, s2.id)
-        if mine is not None and theirs is not None and theirs.id in images \
-                and mine.id in old.sizes and mine.id != theirs.id:
-            images[mine.id] = images.pop(theirs.id)
-    originals = [(o.filename, o.format, scratch.original_bytes(s2.id, o.id),
-                  list(o.members)) for o in s2.originals]
-    source = dict(roots[0].source or {})
-    source.setdefault("file", os.path.basename(path))
-    return images, source, originals
 
 
 def differing_bytes(project: Project, sid: str, images: Images) -> Tuple[int, int]:

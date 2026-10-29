@@ -271,8 +271,8 @@ class Project:
             if len(data) != old.sizes[mid]:
                 m = s.member(mid)
                 return ("The file's %s is %d bytes; the original's is %d. A "
-                        "file of another size is another software, not "
-                        "another copy of this one."
+                        "file of another size is usually another software, "
+                        "not another copy of this one."
                         % (m.label if m else mid, len(data), old.sizes[mid]))
         cur = self.state(s.id, old.id)
         if all(bytes(images[m]) == cur[m] for m in images):
