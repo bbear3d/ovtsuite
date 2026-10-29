@@ -33,7 +33,10 @@ to rewrite both blocks regardless.
 
 The file may be 512 KB, 1 MB or 2 MB; its last 512 KB must be a recognisable
 EDC16 calibration. With the EDC16 module installed the checksums are
-corrected before the write.
+corrected before the write, content digest included (the digest is always
+checked and written; it is not an option). An image the editor has already
+found correct, or that you saved with its checksums corrected, is not worked
+out again when you press Write.
 
 When it finishes: **Turn off the ignition for 5 seconds.** The ECU does not
 restart itself after a write; the ignition cycle does that.

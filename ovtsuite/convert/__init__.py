@@ -1261,7 +1261,7 @@ def _correct_checksums(img, warnings: List[str]):
     if not prov.is_supported(flat):
         warnings.append("Checksums not corrected: %s" % prov.unsupported_text(flat))
         return img
-    fixed = bytes(prov.correct(flat))
+    fixed = bytes(prov.correct(flat, digest=True))
     warnings.append("Checksums corrected (%s)." % pid if fixed != flat else
                     "Checksums already correct (%s)." % pid)
     return _image.Image([(img.start, fixed)], img.fill, img.source)

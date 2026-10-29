@@ -33,6 +33,7 @@ from . import vdo_cluster as _vdo
 from . import keepawake as _keepawake
 from .transport import KLine, KLineError
 from .. import branding
+from .. import checksum_memo as _memo
 from .. import platforms as _platforms
 from ..modules import api as _modapi
 from ..modules import registry as _registry
@@ -3688,6 +3689,7 @@ class FlashDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         opts.update(extra or {})
+        opts["digest"] = True       # never optional: the ECU refuses a stale one
         return opts
 
     def _correct_and_check(self, name, cs, raw, extra=None):
@@ -3701,18 +3703,32 @@ class FlashDialog(QtWidgets.QDialog):
         correction writes instead), so its report never reads "all valid"
         though the write is accepted."""
         opts = self._checksum_opts(extra)
+        raw = bytes(raw)
+        if _memo.settled(cs, raw, opts):
+            # already found right -- by the editor's background check, a save or
+            # an earlier write of this very image: summing 2 MB twice more on
+            # the window's thread is all that Write would add
+            return raw
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            fixed = bytes(cs.correct(bytes(raw), **opts))
-            again = bytes(cs.correct(fixed, **opts))
+            self.stage.setText("Checking the %s checksums..." % name)
+            self.stage.repaint()
+            fixed = bytes(cs.correct(raw, **opts))
+            # an image the correction leaves as it is has settled; only a
+            # changed one needs the second pass to show the result is stable
+            again = fixed if fixed == raw else bytes(cs.correct(fixed, **opts))
         except Exception as ex:                       # noqa: BLE001 - said, not swallowed
             raise RuntimeError(
                 "The %s checksums of this image could not be corrected (%s), so it "
                 "is not written: the unit would reject it, or not start." % (name, ex))
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
         if again != fixed:
             raise RuntimeError(
                 "The %s checksums of this image do not come out the same when "
                 "corrected twice, so it is not written: the correction cannot be "
                 "trusted for this file." % name)
+        _memo.mark(cs, fixed, opts)
         return fixed
 
     def _checksum_or_confirm(self, pid):

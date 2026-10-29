@@ -58,7 +58,7 @@ def supports(platform: str) -> bool:
 #: Session attributes that are infrastructure, not part of the definition.
 _SKIP = frozenset({
     "binfile", "path", "undo_stack", "change_log", "original", "last_checksum",
-    "write_digest", "correct_program_area", "sgo_warning", "load_note", "entities", "by_key", "kb", "platform",
+    "correct_program_area", "sgo_warning", "load_note", "entities", "by_key", "kb", "platform",
     "defn_state", "defn_skipped", "has_definition_file", "definition_notes",
 })
 

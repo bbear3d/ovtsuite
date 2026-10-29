@@ -913,7 +913,8 @@ def cmd_checksum(args):
             print("checksum: %s -- %s" % (ident.name, registry.missing_text(
                 ident.platform, "checksum correction")))
         return 1
-    opts = {}
+    opts = {"digest": True}       # EDC16: always (a verify without it passes
+    #                               an image the ECU's own check refuses)
     if getattr(args, "key_image", None):
         # The internal-flash (.MPC) image carries a block signature but not the
         # modulus that verifies/re-signs it -- that lives in the paired external

@@ -28,6 +28,7 @@ from . import platforms as _platforms
 from .platforms.identify import Identity as _Identity, identify as _identify
 from .modules import api as _modapi
 from .modules import registry as _registry
+from . import checksum_memo as _memo
 
 _REF_DIR = None   # resolved lazily; overridable for tests/packaging
 
@@ -580,13 +581,11 @@ class TunerSession:
         self.change_log: List[str] = []
         self._txn = None              # open transaction(), see transaction()
         self.last_checksum = None
-        # When True, EDC16 2 MB save/correct also regenerates the content digest
-        # required to flash edited blocks over KWP2000/OBD (see checksum.correct(
-        # ..., digest=True)). Defaults True so saved tunes are flash-ready: an
-        # edited calibration block gets the canonical MPPS-identical trailer
-        # (harmless on the bench/BDM path); an unedited one keeps its genuine
-        # OEM signature. Set False to leave the trailer untouched.
-        self.write_digest = True
+        # (The EDC16 content digest -- needed to flash edited blocks over
+        # KWP2000/OBD -- is always checked and regenerated: an edited
+        # calibration block gets the canonical MPPS-identical trailer, harmless
+        # on the bench/BDM path; an unedited one keeps its genuine OEM
+        # signature. See _checksum_opts.)
         # When True a ZF 6HP save/correct ALSO rewrites the program/boot-area
         # descriptor self-CRCs (zlib CRC-32), not just the calibration checksum.
         # Off by default: a calibration tune never changes a 28-byte descriptor
@@ -900,11 +899,12 @@ class TunerSession:
                 text = "%s %s" % (text, why)
         return text
 
-    def _checksum_opts(self, write_digest=None, program_area=None) -> dict:
+    def _checksum_opts(self, program_area=None) -> dict:
         """The options every provider understands (each ignores the rest):
-        EDC16 regenerates the KWP2000 content digest, ZF 6HP also rewrites
-        the program/boot descriptor self-CRCs."""
-        return {"digest": self.write_digest if write_digest is None else write_digest,
+        EDC16 always checks and regenerates the KWP2000 content digest (a
+        verify without it passes an image the ECU's own check refuses), ZF 6HP
+        also rewrites the program/boot descriptor self-CRCs."""
+        return {"digest": True,
                 "program_area": (self.correct_program_area if program_area is None
                                  else program_area)}
 
@@ -932,12 +932,15 @@ class TunerSession:
         if cached is not None and cached[0] == key:
             return cached[1]
         rep = None
+        opts = self._checksum_opts()
         try:
             if cs.is_supported(self.binfile.data):
-                rep = cs.verify(self.binfile.data, **self._checksum_opts())
+                rep = cs.verify(self.binfile.data, **opts)
         except _modapi.ChecksumError:
             rep = None
         self._checksum_cache = (key, rep)
+        if rep is not None and getattr(rep, "ok", False):
+            _memo.mark(cs, self.binfile.data, opts)     # the flasher need not
         return rep
 
     def checksum_status_known(self) -> bool:
@@ -969,26 +972,32 @@ class TunerSession:
         except Exception:
             return []
 
-    def correct_checksums(self, write_digest: Optional[bool] = None,
-                          program_area: Optional[bool] = None):
+    def correct_checksums(self, program_area: Optional[bool] = None):
         """Recompute the flash checksums in place; return (report_before,
         changed). No-op (changed=False) when unsupported or already valid --
         including when the platform's module is not installed.
 
-        For 2 MB EDC16 images the content digest is also regenerated when
-        ``write_digest`` (or, if not given, ``self.write_digest``) is True --
+        For 2 MB EDC16 images the content digest is always regenerated too --
         needed to flash edited blocks over KWP2000/OBD.
         """
         cs = self.checksum_provider()
         if cs is None:
             return None, False
-        opts = self._checksum_opts(write_digest, program_area)
+        opts = self._checksum_opts(program_area)
         try:
             if not cs.is_supported(self.binfile.data):
                 return None, False
+            if _memo.settled(cs, self.binfile.data, opts):
+                # found to need nothing already (the background verify, a
+                # save, a write): the report is all that is left to give
+                rep = self.checksum_status()
+                self.last_checksum = rep
+                return rep, False
             before = cs.verify(self.binfile.data, **opts)
             fixed = bytes(cs.correct(self.binfile.data, **opts))
             changed = bytes(self.binfile.data) != fixed
+            if not changed:
+                _memo.mark(cs, self.binfile.data, opts)  # a fixed point
             if changed:
                 if len(fixed) == len(self.binfile.data):
                     self.binfile.data = bytearray(fixed)
@@ -996,6 +1005,8 @@ class TunerSession:
                     n = min(len(self.binfile.data), len(fixed))
                     self.binfile.data[:n] = fixed[:n]
             self.last_checksum = cs.verify(self.binfile.data, **opts)
+            if getattr(self.last_checksum, "ok", False):
+                _memo.mark(cs, self.binfile.data, opts)
             return before, changed
         except _modapi.ChecksumError:
             return None, False

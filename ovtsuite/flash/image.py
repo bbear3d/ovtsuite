@@ -62,7 +62,7 @@ def checksum_summary(image: bytes) -> str:
         return "checksum: not checked (%s)" % _registry.missing_text(
             "edc16", "checksum correction").rstrip(".")
     try:
-        rep = cs.verify(image)
+        rep = cs.verify(image, digest=True)
     except Exception:
         return "checksum: not checked (unrecognized layout)"
     return "checksum: valid" if rep.ok else "checksum: MISMATCH (auto-corrected on write)"
