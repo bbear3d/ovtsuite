@@ -174,6 +174,20 @@ def _colors() -> Dict[str, str]:
             "cell_bg": "#cfe8ff", "cell_fg": "#000000", "axis": "#707070"}
 
 
+def _warn_colors() -> Dict[str, str]:
+    """The warning banner's text, background and border: amber, readable on
+    either theme."""
+    if _dark():
+        return {"fg": "#ffd68a", "bg": "#3d3018", "bd": "#e0a040"}
+    return {"fg": "#6b4200", "bg": "#fff1d6", "bd": "#d08a00"}
+
+
+def _warn_html(lines) -> str:
+    """The banner's text: a bold lead-in, then one bullet per warning."""
+    return ("<b>&#9888; Check before relying on this</b><br>"
+            + "<br>".join("&bull; " + html.escape(x) for x in lines))
+
+
 def _grid_tip(row, limit: int = 24) -> str:
     """A row's table as a grid for its tooltip: every cell, a changed one
     as old → new in bold. "" for a row with no table."""
@@ -454,6 +468,16 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.form.changed.connect(self._opt_changed)
         self._form_spec = None
         right.addWidget(self.form)
+        # and its warnings (``fs_warnings``): what to check before relying on
+        # the setting picked, in a banner of their own above the table
+        self.warn = QtWidgets.QLabel()
+        self.warn.setWordWrap(True)
+        self.warn.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self.warn.setStyleSheet(
+            "QLabel { color: %(fg)s; background: %(bg)s; border: 1px solid %(bd)s;"
+            " border-radius: 4px; padding: 6px 10px; }" % _warn_colors())
+        self.warn.setVisible(False)
+        right.addWidget(self.warn)
 
         self.preview = QtWidgets.QTableWidget(0, len(_COLS))
         self.preview.setHorizontalHeaderLabels(_COLS)
@@ -1456,6 +1480,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         pend = self.pending.get(b.id)
         hook = self._hook(b)
         self.hook_info.clear()
+        self.warn.setVisible(False)
         if hook is None:
             self._size_columns()
             return
@@ -1464,7 +1489,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         picked = [(c, pend.copies[c].state) for c in cps
                   if pend is not None and c in pend.copies
                   and pend.copies[c].state is not None]
-        rows, infos = [], []
+        rows, infos, warnings = [], [], []
         for i, (c, st) in enumerate(picked):
             try:
                 rows += [self._tag(x, multi) for x in (self._hooked(
@@ -1474,6 +1499,9 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                 info = "(Could not work out the table changes: %s)" % ex
             if info and info not in infos:
                 infos.append(info)
+            for w_ in self._warnings(b, c, st):
+                if w_ not in warnings:
+                    warnings.append(w_)
         # every table and fault path the feature works through, all of the
         # time: those the setting (or a fault path's own choice) changes in
         # blue, with their new values; the rest grey, as they are
@@ -1531,12 +1559,25 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             if not rows:
                 info = ("No table or fault path needs to change. " + info).strip()
             self.hook_info.setText(info.strip())
+            if warnings:
+                self.warn.setText(_warn_html(warnings))
+                self.warn.setVisible(True)
         elif not b.readonly:
             self.hook_info.setText(
                 "The tables and fault paths this feature works through. Pick a "
                 "setting to see what it changes; a fault path can also be "
                 "switched on or off on its own in the New column.")
         self._size_columns()
+
+    def _warnings(self, b, c, st) -> List[str]:
+        """What the hook's ``fs_warnings`` says to check before relying on
+        setting ``st`` of copy ``c`` ([] without one)."""
+        if not hasattr(self._hook(b), "fs_warnings"):
+            return []
+        try:
+            return list(self._hooked(b, "fs_warnings", c, st, **self._opts()) or [])
+        except Exception:                                 # noqa: BLE001
+            return []
 
     def _tag(self, row, multi):
         """A hook row from one copy: named with its dataset when several are
@@ -1637,6 +1678,15 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                 b.title, target, ", ".join(bits) or "nothing to change",
                 (" [%s]" % ", ".join(copies)) if copies else ""))
         text = "Write these changes as one undo step?\n\n" + "\n".join(lines)
+        check = []
+        for b, _live, _w, hook, pend, hooked in work:
+            for g, st in hooked:
+                for x in self._warnings(b, g, st):
+                    if x not in check:
+                        check.append(x)
+        if check:
+            text += ("\n\n\u26a0 Check before relying on this:\n"
+                     + "\n".join("  \u2022 " + x for x in check))
         if warns:
             text += "\n\nNot written:\n" + "\n".join("  " + w for w in dict.fromkeys(warns))
         if QtWidgets.QMessageBox.question(

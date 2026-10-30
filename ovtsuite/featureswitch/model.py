@@ -137,6 +137,10 @@ class FeatureSet:
 #: worked out from): the window greys them out, with why in the tooltip and
 #: under the feature, and the hook's own ``fs_apply`` / ``fs_preview`` write
 #: and list nothing for them.
+#: ``fs_warnings(session, group, target, **opts)`` (optional) -> ``[str]``:
+#: what to check before relying on the setting picked. The window shows them
+#: in an amber banner above the table and again in the Apply confirmation;
+#: nothing is blocked.
 #: ``fs_absent_why(session)`` (optional) says why the feature cannot be
 #: offered on this file ("" when it can): the feature is then left out and
 #: the window lists it, with that reason, under the features it offers.
