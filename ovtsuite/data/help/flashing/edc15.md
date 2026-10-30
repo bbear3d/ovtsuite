@@ -17,17 +17,23 @@ reads and writes always run at the low speed.
 
 ## Flash
 
-**Read flash** reads the whole 512 KB flash into a project (see
-[Reading](reading.md#where-the-read-goes)).
+**Read flash** reads the whole flash into a project (see
+[Reading](reading.md#where-the-read-goes)). The flasher detects the flash size
+on the ECU first, so a 512 KB (Am29F400BT) part reads 512 KB and a 1 MB
+(Am29F800BT) part — the 2.5 V6 TDI and similar — reads 1 MB, with no setting to
+choose.
 
 **Write flash** writes the binary in the active tab. The flasher loads a small program into
-the ECU's RAM, has it compute a checksum of each of the 11 flash sectors, and
+the ECU's RAM, has it compute a checksum of each flash sector, and
 erases and programs only the sectors that differ from the file. Afterwards
 every written sector is checked again; a mismatch stops with an error naming
-the sector. **Force full write** skips that comparison and rewrites all 11
-sectors.
+the sector. **Force full write** skips that comparison and rewrites every
+sector (11 on a 512 KB part, 19 on a 1 MB part).
 
-The image must be exactly 512 KB and recognisable as an EDC15 image. With the
+The image must be a recognisable EDC15 image and its size must match the ECU's
+flash: 512 KB or 1 MB. The size is detected on the ECU (by checking whether it
+decodes the extra address line a 1 MB part needs), so writing a 512 KB file to a
+1 MB ECU, or the reverse, stops before anything is erased. With the
 EDC15 module installed its checksums are corrected first, and a file whose
 checksum ranges cannot be read is refused rather than written with guessed
 ones.
@@ -104,7 +110,9 @@ setting is never hidden. Untick it to go back to normal reads and writes.
 
 With a paired head unit, **Run on the head unit** is offered for flash reads
 and writes, EEPROM reads and writes, **Read flash + EEPROM**, **Write flash +
-EEPROM** and boot mode. See [Head units](head-unit.md).
+EEPROM** and boot mode. See [Head units](head-unit.md). The head unit drives a
+512 KB EDC15 only; a 1 MB EDC15 must be read or written over a direct
+connection, which detects the size itself.
 
 ## See also
 

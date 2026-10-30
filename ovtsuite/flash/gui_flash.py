@@ -1541,13 +1541,27 @@ class _Worker(QtCore.QThread):
                 self.finished_ok.emit(None)
             return
         flash = _edc15.Edc15Flash(link, log=lambda s: self.stage.emit(s))
+
+        def size_guard(image):
+            """Stop before writing a file whose size doesn't match the chip
+            the ECU actually has, rather than writing the wrong half."""
+            if len(image) != flash.layout.size:
+                raise _edc15.KLineError(
+                    "This ECU has a %s flash, but the file to write is %d KB "
+                    "(0x%X). Open a matching %d KB image."
+                    % (flash.layout.name, len(image) // 1024, len(image),
+                       flash.layout.size // 1024))
+
         if self._op == "read":
             flash.connect("V", self._speed, loader="flash", is_stop=stop)
+            flash.detect_layout(is_stop=stop)
             img = flash.read_flash(on_percent=self.percent.emit,
                                    on_stage=self.stage.emit, is_stop=stop)
             self.finished_ok.emit(img)
         elif self._op == "write":
             flash.connect("V", self._speed, loader="sector", is_stop=stop)
+            flash.detect_layout(is_stop=stop)
+            size_guard(self._image)
             flash.write_flash_sectors(
                 self._image, verify=True, force_full=self._force_full,
                 on_percent=self.percent.emit, on_stage=self.stage.emit, is_stop=stop)
@@ -1573,6 +1587,8 @@ class _Worker(QtCore.QThread):
         elif self._op == "restore":
             flash_img, ee = self._image
             flash.connect("V", self._speed, loader="sector", is_stop=stop)
+            flash.detect_layout(is_stop=stop)
+            size_guard(flash_img)
             flash.write_flash_sectors(
                 flash_img, verify=True, force_full=self._force_full,
                 on_percent=lambda p: self.percent.emit(p * 80 // 100),
@@ -1590,6 +1606,7 @@ class _Worker(QtCore.QThread):
         elif self._op == "backup":
             # KWHack full backup: flash first, let the ECU reboot, then EEPROM.
             flash.connect("V", self._speed, loader="flash", is_stop=stop)
+            flash.detect_layout(is_stop=stop)
             img = flash.read_flash(on_percent=lambda p: self.percent.emit(p * 90 // 100),
                                    on_stage=self.stage.emit, is_stop=stop)
             for i in range(50):
@@ -3574,10 +3591,11 @@ class FlashDialog(QtWidgets.QDialog):
                     "EDC15VM+ / EDC15P ECUs (512 KB) only; write an MSA15 / EDC15V "
                     "file with your own programmer. Save it first: saving corrects "
                     "its checksums.")
-            if len(raw) != _edc15.FLASH_SIZE:
+            if len(raw) not in (_edc15.LAYOUT_512.size, _edc15.LAYOUT_1M.size):
                 raise RuntimeError(
-                    "An EDC15 flash image must be exactly 512 KB (0x80000 bytes); this "
-                    "file is %d bytes. If it's an EDC16 file, pick ECU: EDC16." % len(raw))
+                    "An EDC15 flash image must be 512 KB (0x80000) or 1 MB (0x100000 "
+                    "bytes); this file is %d bytes. If it's an EDC16 file, pick ECU: "
+                    "EDC16." % len(raw))
             if not getattr(prim, "is_edc15", False) and not _platforms.edc15.detect(raw):
                 raise RuntimeError(
                     "The current file isn't recognized as an EDC15 (V4.1) image.")

@@ -226,9 +226,14 @@ def build_edc15_write_job(image, job_id="write", speed="Medium", variant=EDC15_V
     ``force_full`` marks every sector to be written without changing the shape, so
     the head unit runs one path and not two.
     """
-    if len(image) < EDC15_FLASH_SIZE:
-        raise ValueError("EDC15 write needs a %d-byte image; got %d"
-                         % (EDC15_FLASH_SIZE, len(image)))
+    if len(image) != EDC15_FLASH_SIZE:
+        # The head unit runs the job autonomously with the sector geometry baked
+        # into this descriptor, so it cannot detect a 1 MB part and adapt. A 1 MB
+        # EDC15 must be written over a direct connection (which does detect size);
+        # refuse here rather than ship 512 KB of geometry for a 1 MB image.
+        raise ValueError(
+            "Run on the head unit supports 512 KB (0x80000) EDC15 images only; this "
+            "image is %d bytes. Write a 1 MB EDC15 over a direct connection." % len(image))
 
     loader = _loaders.sector_loader()
     described = []

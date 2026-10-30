@@ -25,7 +25,7 @@ def _ck(data):
 
 class MockEdc15:
     def __init__(self, flash=None, eeprom=None, soft_brick=False, refuse_speed=False,
-                 seed=None, irom=None):
+                 seed=None, irom=None, size=E.FLASH_SIZE):
         self.seed = seed              # 4-byte seed -> the ECU demands a real LVL41 key
         self.rx = bytearray()
         self.parse = bytearray()
@@ -35,8 +35,17 @@ class MockEdc15:
         self.rts = False
         self.break_condition = False
         self._broke = False
+        #: physical flash size (0x80000 Am29F400 / 0x100000 Am29F800) and its
+        #: erase-sector table. Addresses from the tester are mapped to this chip
+        #: by ``chip = cpu & (size - 1)`` wherever a flash window decodes them,
+        #: which is exactly the real part's address aliasing.
+        self.size = size
+        self.sectors = (E.SECTORS_1M if size == 0x100000 else E.SECTORS)
+        # the ``i >> 13`` term makes the content vary across the chip (the two
+        # 512 KB halves differ, as real flash halves do), so the size probe
+        # isn't fooled by a byte pattern that happens to repeat every 256 B.
         self.flash = bytearray(flash if flash is not None else bytes(
-            (i * 7 + 1) & 0xFF for i in range(E.FLASH_SIZE)))
+            (i * 7 + 1 + (i >> 13)) & 0xFF for i in range(size)))
         self.eeprom = bytearray(eeprom if eeprom is not None else bytes(
             (i * 3) & 0xFF for i in range(512)))
         # The C167 internal boot ROM, as the running ECU maps it at
@@ -288,13 +297,14 @@ class MockEdc15:
             self.rx += bytes([0x01, 0x76, 0x77, 0x55])
             self.mode = "idle"
         elif svc == 0xB2:
-            s = ((data[0] << 16) | (data[1] << 8) | data[2]) - E.SECTOR_READ_BASE
-            e = ((data[3] << 16) | (data[4] << 8) | data[5]) - E.SECTOR_READ_BASE
-            c = E.sector_checksum(self.flash[s:e])
+            cs = (data[0] << 16) | (data[1] << 8) | data[2]
+            ce = (data[3] << 16) | (data[4] << 8) | data[5]
+            s = self._chip(cs)                             # map start; end is exclusive
+            c = E.sector_checksum(self.flash[s:s + (ce - cs)])
             self._lreply(0xB2, bytes([c >> 8, c & 0xFF]))
         elif svc == 0xB0:
-            a = ((data[0] << 16) | (data[1] << 8) | data[2]) - E.SECTOR_WRITE_BASE
-            for s, e in E.SECTORS:
+            a = self._chip((data[0] << 16) | (data[1] << 8) | data[2])
+            for s, e in self.sectors:
                 if s == a:
                     self.flash[s:e] = b"\xFF" * (e - s)
                     self.erased.append(s)
@@ -304,7 +314,7 @@ class MockEdc15:
             self._lreply(0x76, b"")
             self._lreply(0x76, b"")                            # post-erase ACK
         elif svc == 0x36 and self.loader == "sector":
-            a = ((data[0] << 16) | (data[1] << 8) | data[2]) - E.SECTOR_WRITE_BASE
+            a = self._chip((data[0] << 16) | (data[1] << 8) | data[2])
             payload = data[3:]
             for i, b in enumerate(payload):
                 self.flash[a + i] &= b                          # NOR: only 1->0
@@ -322,16 +332,26 @@ class MockEdc15:
             raise AssertionError("unexpected loader command 0x%02X" % svc)
         return True
 
+    # flash windows the global chip-select decodes: the 512 KB read window at
+    # 0x080000 and the 1/2 MB programming window at 0x200000. Within either,
+    # the chip aliases by ``cpu & (size - 1)`` -- exactly how a smaller part
+    # ignores the high address line a bigger one decodes.
+    _FLASH_WINDOWS = ((0x080000, 0x100000), (0x200000, 0x400000))
+
+    def _chip(self, cpu):
+        for lo, hi in self._FLASH_WINDOWS:
+            if lo <= cpu < hi:
+                return cpu & (self.size - 1)
+        raise AssertionError("address 0x%06X not in a flash window" % cpu)
+
     def _cpu_read(self, cpu, n):
-        """Serve the CPU-bus address space the running ECU maps: the external
-        flash at SECTOR_READ_BASE and the internal boot ROM at IROM_BASE."""
-        if E.SECTOR_READ_BASE <= cpu < E.SECTOR_READ_BASE + E.FLASH_SIZE:
-            o = cpu - E.SECTOR_READ_BASE
-            return bytes(self.flash[o:o + n])
+        """Serve the CPU-bus address space the running ECU maps: the internal
+        boot ROM at IROM_BASE, and the external flash at either window."""
         if E.IROM_BASE <= cpu < E.IROM_BASE + E.IROM_SIZE:
             o = cpu - E.IROM_BASE
             return bytes(self.irom[o:o + n])
-        raise AssertionError("loader read outside mapped memory: 0x%06X" % cpu)
+        o = self._chip(cpu)
+        return bytes(self.flash[o:o + n])
 
     def _lreply(self, svc, data):
         out = bytearray([1 + len(data), svc]) + bytes(data)
@@ -348,17 +368,17 @@ class MockEdc15:
         assert frame[-1] == _ck(frame[:-1])
         svc, data = frame[1], frame[2:-1]
         if svc == 0x23:
-            a = ((data[0] - 0x08) << 16) | (data[1] << 8) | data[2]
+            a = self._chip((data[0] << 16) | (data[1] << 8) | data[2])
             chunk = bytes(self.flash[a:a + data[3]])
             out = bytearray([len(chunk) + 1, 0x36]) + chunk
             out.append(_ck(out))
             self.rx += out
         elif svc == 0xA5:
-            self.flash[:] = b"\xFF" * E.FLASH_SIZE
+            self.flash[:] = b"\xFF" * self.size
             self.erased.append("chip")
             self.rx += bytes([0x01, 0x76, 0x77, 0x01, 0x76, 0x77])
         elif svc == 0x36:
-            a = ((data[0] - 0x20) << 16) | (data[1] << 8) | data[2]
+            a = self._chip((data[0] << 16) | (data[1] << 8) | data[2])
             payload = data[3:]
             for i, b in enumerate(payload):
                 self.flash[a + i] &= b
@@ -665,3 +685,80 @@ def test_read_irom_reports_progress_and_can_be_stopped():
     with pytest.raises(E.StopRequested):
         f.read_irom(on_percent=seen.append, is_stop=lambda: len(seen) >= 3)
     assert seen and max(seen) < 100
+
+
+# ------------------------------------------------- 512 KB vs 1 MB detection
+def test_detect_layout_512_with_sector_loader():
+    f, _ = _make()                                    # default 512 KB part
+    f.connect("V", "Low", loader="sector")
+    assert f.detect_layout() is E.LAYOUT_512
+    assert f.layout.size == 0x80000
+
+
+def test_detect_layout_512_with_flash_loader():
+    f, _ = _make()
+    f.connect("V", "Low", loader="flash")
+    assert f.detect_layout() is E.LAYOUT_512
+
+
+def test_detect_layout_1m_with_sector_loader():
+    f, _ = _make(size=0x100000)
+    f.connect("V", "Low", loader="sector")
+    assert f.detect_layout() is E.LAYOUT_1M
+    assert f.layout.size == 0x100000
+
+
+def test_detect_layout_1m_with_flash_loader():
+    f, _ = _make(size=0x100000)
+    f.connect("V", "Low", loader="flash")
+    assert f.detect_layout() is E.LAYOUT_1M
+
+
+def test_detect_is_signature_free_blank_lower_bank():
+    """A 1 MB part whose lower bank is blank (0xFF) still detects as 1 MB:
+    the top sector (populated) differs from its blank lower-half alias."""
+    flash = bytearray(b"\xFF" * 0x80000 + bytes((i * 7 + 1) & 0xFF for i in range(0x80000)))
+    f, _ = _make(size=0x100000, flash=bytes(flash))
+    f.connect("V", "Low", loader="sector")
+    assert f.detect_layout() is E.LAYOUT_1M
+
+
+# ------------------------------------------------- 1 MB flash read / write
+def test_read_flash_1m_roundtrip():
+    f, ecu = _make(size=0x100000)
+    f.connect("V", "High", loader="flash")
+    f.detect_layout()
+    img = f.read_flash()
+    assert img == bytes(ecu.flash) and len(img) == 0x100000
+    assert ecu.closed == 1
+
+
+def test_per_sector_write_1m_force_full():
+    f, ecu = _make(size=0x100000)
+    image = bytes((i * 11 + 5) & 0xFF for i in range(0x100000))
+    f.connect("V", "Low", loader="sector")
+    f.detect_layout()
+    written = f.write_flash_sectors(image, force_full=True)
+    assert written == list(range(len(E.SECTORS_1M)))
+    assert bytes(ecu.flash) == image
+
+
+def test_per_sector_write_1m_only_changed():
+    f, ecu = _make(size=0x100000)
+    image = bytearray(ecu.flash)
+    image[0x90000:0x90010] = b"\x00" * 16             # a 64 KB sector (index 9)
+    image[0xFD000] ^= 0xFF                            # the top 16 KB boot sector (index 18)
+    f.connect("V", "Medium", loader="sector")
+    f.detect_layout()
+    written = f.write_flash_sectors(bytes(image))
+    assert written == [9, 18]
+    assert ecu.erased == [0x90000, 0xFC000]
+    assert bytes(ecu.flash) == bytes(image)
+
+
+def test_write_1m_rejects_512k_image():
+    f, _ = _make(size=0x100000)
+    f.connect("V", "Low", loader="sector")
+    f.detect_layout()
+    with pytest.raises(ValueError):
+        f.write_flash_sectors(b"\x00" * 0x80000)      # a 512 KB file on a 1 MB ECU
