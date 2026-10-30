@@ -845,8 +845,10 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             except Exception:                             # noqa: BLE001
                 vals = {}
         if spec and p is not None:
-            vals.update({k: v for k, v in p.opts.items() if k in self.form.keys()
-                         or k in {f["key"] for f in spec.get("fields", ())}})
+            keys = {f["key"] for f in spec.get("fields", ())}
+            # (a field's own choices travel as <key>_mode, <key>_w ...)
+            vals.update({k: v for k, v in p.opts.items()
+                         if k in keys or any(k.startswith(x + "_") for x in keys)})
         self.form.load(spec, vals)
 
     def _sync_form(self, b):

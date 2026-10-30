@@ -2276,8 +2276,8 @@ if HAVE_QT:
             out.setStyleSheet("font-weight:600")
 
             def circ():
-                dia = rsp.value() * 25.4 + 2.0 * wsp.value() * asp.value() / 100.0
-                return _m.pi * dia / 1000.0
+                from .gears import tyre_circumference
+                return tyre_circumference(wsp.value(), asp.value(), rsp.value())
 
             def upd():
                 out.setText("Rolling circumference: %.3f m" % circ())

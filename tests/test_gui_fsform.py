@@ -71,3 +71,57 @@ def test_the_vn_generator_puts_crossovers_between_adjacent_gears():
     assert "Gearbx_rVn1L_C" not in got and "Gearbx_rVn5H_C" not in got   # floor and ceiling
     assert plan["gears"] == [1, 2, 3, 4, 5] and plan["placeholders"] == [6]
     assert "Gearbx_rVnRL_C" in got and got["Gearbx_rVnRL_C"] < got["Gearbx_rVnRH_C"]
+
+
+SPEC_TYRE = {"title": "Gears", "states": ("set",), "fields": [
+    {"key": "circ", "label": "Tyre", "kind": "tyre"},
+    {"key": "vn", "label": "Also the bands", "kind": "check", "default": True},
+]}
+
+
+def test_the_tyre_picker_gives_the_rolling_circumference_of_the_marking(app):
+    from ovtsuite.gui_fsform import FormBox
+    from ovtsuite import gears
+    box = FormBox()
+    box.load(SPEC_TYRE)
+    assert box.values()["circ"] == 0.0                       # nothing picked: not set
+    t = box._widgets["circ"]
+    t.mode.setCurrentIndex(t.mode.findData("size"))
+    t.w.setValue(205)
+    t.a.setValue(55)
+    t.r.setValue(16)
+    v = box.values()
+    assert v["circ"] == pytest.approx(gears.tyre_circumference(205, 55, 16))
+    assert v["circ"] == pytest.approx(2.0, abs=0.02)         # 205/55 R16: about 2.0 m
+    assert (v["circ_mode"], v["circ_w"], v["circ_a"], v["circ_r"]) == ("size", 205, 55, 16)
+    assert "= %.3f m" % v["circ"] in t.out.text()
+
+
+def test_the_tyre_picker_offers_the_files_tyre_and_remembers_its_choices(app):
+    from ovtsuite.gui_fsform import FormBox
+    box = FormBox()
+    box.load(SPEC_TYRE, {"circ": 1.95, "circ_file": 1.95})
+    t = box._widgets["circ"]
+    assert t.mode.currentData() == "file" and box.values()["circ"] == pytest.approx(1.95)
+    assert [t.mode.itemData(i) for i in range(t.mode.count())] == ["off", "file", "size"]
+    # a choice made earlier comes back as it was left
+    box.load(SPEC_TYRE, {"circ": 2.0, "circ_file": 1.95, "circ_mode": "size",
+                         "circ_w": 225, "circ_a": 45, "circ_r": 17})
+    assert (t.mode.currentData(), t.w.value(), t.a.value(), t.r.value()) == (
+        "size", 225, 45, 17)
+
+
+def test_without_a_file_tyre_there_is_no_such_choice_and_it_starts_not_set(app):
+    from ovtsuite.gui_fsform import FormBox
+    box = FormBox()
+    box.load(SPEC_TYRE, {})
+    t = box._widgets["circ"]
+    assert [t.mode.itemData(i) for i in range(t.mode.count())] == ["off", "size"]
+    assert t.mode.currentData() == "off" and box.values()["circ"] == 0.0
+
+
+def test_the_tyre_circumference_formula():
+    from ovtsuite import gears
+    # 195/65 R15 -- the gear-ratio editor's default tyre
+    assert gears.tyre_circumference(195, 65, 15) == pytest.approx(
+        3.141592653589793 * (15 * 25.4 + 2 * 195 * 0.65) / 1000.0)

@@ -86,6 +86,12 @@ _GEAR_NAMES = ({n for _, n in _ABS_ROWS}
 _RTRANS = ["Gearbx_rTrans%d_C" % i for i in range(1, 7)]
 
 
+def tyre_circumference(width_mm: float, aspect_pct: float, rim_in: float) -> float:
+    """The rolling circumference (m) of a tyre marked ``width/aspect Rrim``
+    (205/55 R16): the circle through the rim diameter plus two sidewalls."""
+    return math.pi * (rim_in * 25.4 + 2.0 * width_mm * aspect_pct / 100.0) / 1000.0
+
+
 def vn_values(R, circ_m, tc=1.0, reverse=None):
     """The v/n band edges for overall ratios ``R`` ({gear: ratio}), rolling
     circumference ``circ_m`` (m) and transfer-case reduction ``tc``, as
