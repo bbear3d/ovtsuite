@@ -106,8 +106,10 @@ OPTIONS: Tuple[Option, ...] = (
     Option("ols/open", "stored", "Opening a WinOLS project (.ols)", PROJECTS,
            "choice", "What File > Open does with a WinOLS project. As stored: "
            "every binary it holds, as the versions it lists, and only the "
-           "maps the project has (the module's maps are left out; the module "
-           "still corrects the checksums). Ask: pick the binaries to take, "
+           "maps the project has (the module's maps are left out, and so is its "
+           "family search and parameter tree, so it opens at once; the module "
+           "still corrects the checksums, and File > Load the module's "
+           "built-in maps adds its maps later). Ask: pick the binaries to take, "
            "with the module's maps beside the project's. Original only: the "
            "first binary, with the module's maps beside the project's. "
            "Add files and New project always ask. The project is saved as an "
@@ -119,7 +121,7 @@ OPTIONS: Tuple[Option, ...] = (
            PROJECTS, "choice", "WinOLS keeps its versions as a flat list of "
            "whole binaries. Each a branch of its own: every version is a "
            "branch off the original, opened and compared like any other, and "
-           "the version WinOLS had open is the one the project opens on. One "
+           "the most recent version is the one the project opens on. One "
            "chain: each version is saved on top of the one before it, on a "
            "single branch.",
            choices=(("star", "Each version a branch of its own, from the "

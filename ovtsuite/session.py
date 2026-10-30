@@ -281,7 +281,14 @@ class CommandStack:
 
 class TunerSession:
     def __init__(self, path: str, family: Optional[str] = None,
-                 ref_path: Optional[str] = None, progress=None):
+                 ref_path: Optional[str] = None, progress=None,
+                 definition_only: bool = False):
+        # ``definition_only``: a project's own definition is to be given to
+        # this binary INSTEAD of the module's parameters (a WinOLS project
+        # opened "as stored"): the module's family search and parameter tree
+        # are skipped -- they would be built and thrown away -- and the
+        # session is the module's checksum support only, until the definition
+        # is applied (xdf_session.apply_definition).
         # A .dim (Dimsport BDM-dump container, see ovtsuite.dim) bundles the
         # external flash we tune ALONGSIDE internal flash + EEPROM chunks we
         # don't touch. Detected by content (the container's own magic), not
@@ -532,6 +539,10 @@ class TunerSession:
         # Size the bar before the first report: the platforms take a different
         # number of steps, and a dialog that starts at /13 and switches to /7
         # jumps backwards in front of the user.
+        if definition_only and self.support == "full":
+            self.support = ("checksum" if self._module_checks(platform, data)
+                            else "none")
+            self._definition_only = True
         rep = Reporter(progress, STEPS.get(platform, 1)
                        if self.support == "full" else 1)
         rep.step("Reading %s" % os.path.basename(path))
@@ -551,7 +562,12 @@ class TunerSession:
         #: or the reason a stored definition was passed over.
         self.defn_state = "none"
         restored = False
-        if self.support != "full":
+        if self.support != "full" and getattr(self, "_definition_only", False):
+            self.unsupported_reason = (
+                "%s. The module's own maps are not loaded: this binary uses "
+                "its project's definition instead of them." %
+                self.binary_identity.describe())
+        elif self.support != "full":
             self.unsupported_reason = (
                 "%s. %s" % (self.binary_identity.describe(),
                             self._limited_text(platform, data)))

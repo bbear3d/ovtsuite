@@ -422,21 +422,31 @@ def test_an_ols_lays_its_versions_out_as_branches_off_the_original():
         assert c.parent == root.id          # all of them from the original
     assert [c.label for c in s.checkpoints] == [
         "WinOLS: Original", "WinOLS: Stage 1", "WinOLS: Stage 2"]
-    assert s.active.name == "Stock"        # the project's own current version
+    assert s.active.name == "Stage 2"      # opens on the most recent version
 
 
-def test_an_ols_opens_on_the_version_winols_had_current(monkeypatch):
+def test_an_ols_opens_on_its_most_recent_version_not_the_original(monkeypatch):
     from ovtsuite.definitions import winols as W
     from ovtsuite.project import Project, importers
+    # equal or unknown times: the later one in WinOLS's list
+    s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
+                               ols_versions="all")
+    assert s.active.name == "Stage 2"
     real = W.parse
 
     def parse(data):
         wf = real(data)
-        wf.header.current_version = "Stage 2"
+        wf.header.current_version = "Original"          # what WinOLS had open: ignored
+        for v, t in zip(wf.versions, (1000, 3000, 2000)):
+            v.changed = t
         return wf
     monkeypatch.setattr(W, "parse", parse)
     s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
                                ols_versions="all")
+    assert s.active.name == "Stage 1"                   # the newest Changed time
+    # only the versions taken count: Stage 1 not taken, Stage 2 is the newest
+    s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",
+                               ols_versions=[0, 2])
     assert s.active.name == "Stage 2"
     # a chain has one branch: nothing to choose
     s = importers.import_bytes(Project(""), _ols_with_versions(), "car.ols",

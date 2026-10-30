@@ -404,7 +404,7 @@ it a set of a project you already have:
   version named *WinOLS: <name>*, dated as WinOLS dates it, with WinOLS's
   comment kept. WinOLS keeps its versions as a flat list of whole binaries, so
   by default **each is a branch of its own** off the original (named after the
-  version; the one WinOLS had open is the branch the project opens on), and
+  version; the most recent one is the branch the project opens on), and
   you can compare them and go back to any of them. **Tools > Options >
   Projects and saving > Versions of a WinOLS project in the history** can
   chain them instead: one branch, each version saved on top of the one before;
@@ -413,8 +413,11 @@ it a set of a project you already have:
   axes, units and conversions -- in the main view. **File > Open** shows
   *only* these maps, placed at the addresses WinOLS has them (nothing is
   searched for in the binary, the module's maps are left out, and the module
-  still corrects the checksums; **Hide the module's built-in maps** on the set
-  turns that on or off afterwards). Importing, or **Tools > Options >
+  still corrects the checksums). The module does not even identify the binary
+  or build its parameter tree then, so the project opens at once instead of
+  after a few seconds. **File > Load the module's built-in maps** has the
+  module do that afterwards, listing its maps beside WinOLS's (**Hide the
+  module's built-in maps** on the set turns it off again). Importing, or **Tools > Options >
   Projects and saving > Opening a WinOLS project** set to *Ask* or *The
   original only*, adds WinOLS's maps beside a module's tree, under **From
   <file>.ols**. German descriptions and categories are shown in English;

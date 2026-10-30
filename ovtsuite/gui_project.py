@@ -344,9 +344,13 @@ def load_into(ws, doc, sid, bid) -> bool:
             ws, "Open from project", "That branch can't be opened: %s" % ex)
         return False
     log = _sb.history_text(proj, sid, b.head)
-    defn = _sb.definition_for(proj, sid, bid, state)
+    # a set whose own definition replaces the module's maps (a WinOLS project
+    # opened as stored): the module would identify the binary and build a
+    # parameter tree that is thrown away, so it is not asked to
+    only = _definition_only(proj, sid)
+    defn = None if only else _sb.definition_for(proj, sid, bid, state)
     located, reshaped = None, []
-    if not _defn_fits(proj, sid, state, defn):
+    if not only and not _defn_fits(proj, sid, state, defn):
         located = _locate_on_original(ws, doc, sid, b, state, reshaped)
         if located is not None:
             defn = located
@@ -354,7 +358,9 @@ def load_into(ws, doc, sid, bid) -> bool:
     work = _sb.write_working_file(doc.tmpdir, _work_name(doc, s),
                                   ext, data, log=log)
     try:
-        loaded = ws._load_session(work, title="Opening %s" % s.name)
+        loaded = ws._load_session(
+            work, title="Opening %s" % s.name,
+            loader=_definition_only_loader(work) if only else None)
     except Exception as ex:
         QtWidgets.QMessageBox.critical(ws, "Open from project", str(ex))
         return False
@@ -398,11 +404,53 @@ def load_into(ws, doc, sid, bid) -> bool:
         compare_with_checkpoint(ws, root.id, quiet=True)
     ws.win._workspace_changed(ws)
     ws.statusBar().showMessage(why or
-        "Opened %s ▸ %s · %s%s" % (
+        "Opened %s ▸ %s · %s%s%s" % (
             doc.title, s.name, b.name,
             " (parameters located on the original version)"
-            if getattr(loaded, "_defn_from_original", False) else ""), 8000)
+            if getattr(loaded, "_defn_from_original", False) else "",
+            " -- the module's built-in maps are not loaded (File > Load the "
+            "module's built-in maps)" if only and module_defines(ws.win, doc, sid)
+            else ""), 8000)
     return True
+
+
+def _definition_only(proj, sid) -> bool:
+    """Whether set ``sid`` shows its own definition INSTEAD of the module's
+    maps (``definition["use"] == "instead"``): the module's family search and
+    parameter tree are then not built when it opens."""
+    main = _sb._main_member(proj, sid)
+    return bool(main is not None and main.definition
+                and main.definition.get("use") == "instead")
+
+
+def _definition_only_loader(path):
+    """A ``Workspace._load_session`` loader: the session without the module's
+    parameter tree (``TunerSession(definition_only=True)``)."""
+    from .session import TunerSession
+    return lambda report: TunerSession(path, progress=report, definition_only=True)
+
+
+def builtin_maps_hidden(win, ws) -> bool:
+    """Whether tab ``ws`` shows its project's definition without the module's
+    built-in maps, which the module could list (File > Load the module's
+    built-in maps)."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is None or getattr(ws, "primary", None) is None:
+        return False
+    if not _definition_only(ref.doc.project, ref.sid):
+        return False
+    return module_defines(win, ref.doc, ref.sid)
+
+
+def load_builtin_maps(win, ws) -> bool:
+    """File > Load the module's built-in maps: the module identifies the
+    binary and builds its parameter tree, listed beside the project's
+    definition (what the open as stored left out). A few seconds; the set's
+    tabs reopen."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is None:
+        return False
+    return hide_builtin_maps(win, ref.doc, ref.sid, False)
 
 
 def _defn_fits(proj, sid, state, blob) -> bool:
@@ -513,7 +561,10 @@ def _session_at(ws, cid, label):
         proj, ref.sid, state,
         defn=_sb.definition_for(proj, ref.sid, ref.bid, state))
     path = _sb.write_working_file(ref.doc.tmpdir, label, ext, blob)
-    sess = ws._load_session(path, title="Loading %s" % label)
+    sess = ws._load_session(
+        path, title="Loading %s" % label,
+        loader=_definition_only_loader(path) if _definition_only(proj, ref.sid)
+        else None)
     _apply_definition(proj, ref.sid, sess)
     sess.binfile.name = label           # not the working file's name
     return sess

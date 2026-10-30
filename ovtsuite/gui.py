@@ -9835,6 +9835,16 @@ if HAVE_QT:
                       enabled_when=lambda: cw().project_ref is not None
                       ).setToolTip("The vehicle this project is for: make, "
                                    "model, chassis, model year, VIN ...")
+            self._act(m, "Load the module's built-in maps",
+                      lambda: _gp.load_builtin_maps(self, cw()),
+                      needs_file=True,
+                      enabled_when=lambda: _gp.builtin_maps_hidden(self, cw())
+                      ).setToolTip(
+                "This binary opens with its project's definition only (a "
+                "WinOLS project as stored). The module identifies it and "
+                "lists its own maps beside the project's: a few seconds. "
+                "Project panel > the binary > Hide the module's built-in maps "
+                "turns them off again.")
             self.cmpinfo_act = self._act(
                 m, "Comparison information...",
                 lambda: cw().show_file_info(cw().comparison),

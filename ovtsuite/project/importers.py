@@ -509,8 +509,7 @@ def _import_ols(project, data, filename, into_set, branch, which=None,
     (default), ``"all"``, or the indexes of the ones to import. The first
     of them is the set's root; each later one is a version (a checkpoint) on
     a branch of its own off the root (``layout`` ``"star"``, named after the
-    WinOLS version; the one WinOLS had current is the branch the project
-    opens on), or on one branch after the version before it (``"chain"``),
+    WinOLS version; the most recent one is the branch the project opens on), or on one branch after the version before it (``"chain"``),
     in the order WinOLS holds them.
 
     ``stored``: use only the project's own maps -- the definition replaces
@@ -590,11 +589,11 @@ def _import_ols(project, data, filename, into_set, branch, which=None,
                              source=src(i)), i)
         heads[i] = at
     if fresh_set and layout != "chain" and len(picks) > 1:
-        # the version WinOLS had open is the one to open
-        cur = (wf.header.current_version or "").strip()
-        at = next((br for i, br in heads.items() if vname(i) == cur), None)
-        if at is not None:
-            project.set_active(s.id, at.id)
+        # the project opens on the most recent version: the newest *Changed*
+        # time WinOLS lists, the later one in its list when they are equal (or
+        # not known) -- not on the original, which comes first
+        newest = max(picks, key=lambda i: (wf.versions[i].changed or 0, picks.index(i)))
+        project.set_active(s.id, heads[newest].id)
     project.add_definition(s.id, "flash", filename, data, "ols",
                            instead_of_module=stored)
     if stored:
