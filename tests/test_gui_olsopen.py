@@ -67,13 +67,43 @@ def test_a_stored_winols_project_opens_without_building_the_modules_tree(G, tmp_
         assert ws.primary.support == "definition"
         assert len(ws.primary.entities) < 50         # the OLS maps, not ~10,000
         from ovtsuite import gui_project as gp
+        from ovtsuite import gui_paramenu as pm
         assert gp.builtin_maps_hidden(win, ws)
+        acts = [a.text() for a in pm.build_menu(ws, None).actions()]
+        assert "Load the module's built-in maps" in acts
         # and the checksum support is still the module's
         assert ws.primary.checksum_status() is not None
-        # File > Load the module's built-in maps: the module builds its tree
+        # the tree's right-click Load the module's built-in maps: the module builds its tree
         assert gp.load_builtin_maps(win, ws)
         ws = next(w for w in win.workspaces() if w.project_ref is not None)
         assert ws.primary.support == "full" and len(ws.primary.entities) > 1000
         assert not gp.builtin_maps_hidden(win, ws)
+        assert "Load the module's built-in maps" not in [
+            a.text() for a in pm.build_menu(ws, None).actions()]
     finally:
         win.close_discarding()
+
+
+def test_the_trees_menu_offers_it_only_when_the_maps_are_hidden_and_runs_it(G, monkeypatch):
+    from PySide6 import QtWidgets
+    from ovtsuite import gui_paramenu as pm
+    from ovtsuite import gui_project as gp
+    called = []
+    monkeypatch.setattr(gp, "load_builtin_maps", lambda win, ws: called.append(ws) or True)
+    ws = type("WS", (), {})()
+    ws.primary, ws.win, ws.view_only, ws.comparison = object(), object(), None, None
+    ws.tree = QtWidgets.QTreeWidget()
+    monkeypatch.setattr(gp, "builtin_maps_hidden", lambda win, w: False)
+    assert "Load the module's built-in maps" not in [
+        a.text() for a in pm.build_menu(ws, None).actions()]
+    monkeypatch.setattr(gp, "builtin_maps_hidden", lambda win, w: True)
+    act = next(a for a in pm.build_menu(ws, None).actions()
+               if a.text() == "Load the module's built-in maps")
+    assert act.isEnabled()
+    act.trigger()
+    assert called == [ws]
+    # not in a read-only tab
+    ws.view_only = True
+    act = next(a for a in pm.build_menu(ws, None).actions()
+               if a.text() == "Load the module's built-in maps")
+    assert not act.isEnabled()

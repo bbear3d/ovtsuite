@@ -408,7 +408,7 @@ def load_into(ws, doc, sid, bid) -> bool:
             doc.title, s.name, b.name,
             " (parameters located on the original version)"
             if getattr(loaded, "_defn_from_original", False) else "",
-            " -- the module's built-in maps are not loaded (File > Load the "
+            " -- the module's built-in maps are not loaded (right-click in the parameter tree > Load the "
             "module's built-in maps)" if only and module_defines(ws.win, doc, sid)
             else ""), 8000)
     return True
@@ -432,7 +432,7 @@ def _definition_only_loader(path):
 
 def builtin_maps_hidden(win, ws) -> bool:
     """Whether tab ``ws`` shows its project's definition without the module's
-    built-in maps, which the module could list (File > Load the module's
+    built-in maps, which the module could list (right-click in the parameter tree > Load the module's
     built-in maps)."""
     ref = getattr(ws, "project_ref", None)
     if ref is None or getattr(ws, "primary", None) is None:
@@ -443,7 +443,7 @@ def builtin_maps_hidden(win, ws) -> bool:
 
 
 def load_builtin_maps(win, ws) -> bool:
-    """File > Load the module's built-in maps: the module identifies the
+    """The parameter tree's right-click Load the module's built-in maps: the module identifies the
     binary and builds its parameter tree, listed beside the project's
     definition (what the open as stored left out). A few seconds; the set's
     tabs reopen."""

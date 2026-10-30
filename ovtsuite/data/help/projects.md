@@ -415,7 +415,7 @@ it a set of a project you already have:
   searched for in the binary, the module's maps are left out, and the module
   still corrects the checksums). The module does not even identify the binary
   or build its parameter tree then, so the project opens at once instead of
-  after a few seconds. **File > Load the module's built-in maps** has the
+  after a few seconds. **Load the module's built-in maps** in the parameter tree's right-click menu has the
   module do that afterwards, listing its maps beside WinOLS's (**Hide the
   module's built-in maps** on the set turns it off again). Importing, or **Tools > Options >
   Projects and saving > Opening a WinOLS project** set to *Ask* or *The
