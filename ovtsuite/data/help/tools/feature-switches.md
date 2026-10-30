@@ -227,6 +227,11 @@ temperature (the last coolant breakpoint is often about 51 °C), so a line at
   clear, the two warmest breakpoints are raised instead (the second to a
   degree below the set temperature, so the cut is as sudden), and those two
   OEM breakpoints are overwritten.
+- A map that was **cut already** keeps the cut's own two breakpoints (the
+  warmest, and the one a degree below it): a different **Cut above:** moves
+  them, up or down, and the fill follows. It stops above the warmest OEM
+  breakpoint it would otherwise overwrite, and says so ("cannot move below
+  ... °C"). The map is not grown a second time.
 - Some EDC15 maps already end in spare breakpoints far above any coolant
   temperature (about 148, 149 and 150 °C) whose lines hold the same as the
   warmest real one. Those are used instead: the first becomes the breakpoint
