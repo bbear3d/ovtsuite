@@ -66,6 +66,16 @@ On EDC15 the same is done in quantity: torque = (q − `mrwREI_KF`) /
 falls back to fuel energy at the **efficiency** set in the window (default
 40 %), which reads about 12 % high.
 
+On an EDC15 **unit-injector (PD)** file the torque is also held to the brake
+thermal efficiency the stock 130 to 160 PS calibrations of that engine reach
+at each engine speed (about 43 % at 2000 to 2500 rpm, falling to 35.8 % at 4000 rpm).
+The 100, 105 and 115 PS calibrations carry a `mrwKFVB_KF` that gives more
+torque per mg than that from 3000 rpm up -- 11 % more at 4000 rpm, so a stock
+115 PS file read about 132 hp -- although their rating and fuel quantity agree
+with the others'. A file under the ceiling (the 130 PS and stronger ones) is
+not changed; one above it is held to it, and the chart's notes say how far
+and where. A tuned file still gains in proportion to its fuel.
+
 Checked against 79 stock files of known rating: with the ECU's own torque
 model the calculated peak power is within 5 % of the rating on 26 of 41 and
 within 10 % on 31.

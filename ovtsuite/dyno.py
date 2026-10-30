@@ -245,6 +245,14 @@ class DynoModel:
     has_conversion = False
     #: what turns quantity into torque, in words ("torque-to-fuel map")
     conversion_name = "torque-to-fuel map"
+
+    def conversion_begin(self) -> None:
+        """Called before a curve's torque conversions (a model that notes
+        what its conversion limited starts counting here)."""
+
+    def conversion_notes(self) -> List[str]:
+        """Notes on what the conversion limited in the curve just made."""
+        return []
     #: the calibration has a time-limited overboost limit
     #: (:attr:`Conditions.overboost` applies it)
     has_overboost = False
@@ -458,6 +466,8 @@ def calculate(model: DynoModel, cond: Optional[Conditions] = None,
         return Curve(label or model.label, [], dict(model.limiters), "",
                      notes + ["Not calculated -- no engine-speed range: the "
                               "file's maps give %.0f to %.0f rpm." % (lo, hi)])
+    if conv is not None:
+        conv.conversion_begin()
     for rpm in rpm_grid(lo, hi, cond.step):
         fl = model.full_load(rpm, cond)
         ext = False
@@ -492,6 +502,8 @@ def calculate(model: DynoModel, cond: Optional[Conditions] = None,
                                   else lim)])
     if fuel is not None:
         src = "duration maps, then " + src
+    if conv is not None:
+        notes.extend(conv.conversion_notes())
     if any(p.extrapolated for p in pts):
         notes.append("Past the reference's last breakpoint (duration or "
                      "torque-to-fuel map) the value is extended in "
