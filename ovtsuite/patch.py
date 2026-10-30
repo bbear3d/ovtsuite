@@ -31,6 +31,15 @@ caller says so via ``dispositions``: per entry this is a discard / apply /
 in ``dispositions`` individually rather than relying on the patch-wide
 default.
 
+A file with coding variants (EDC16) holds a second copy of some tables and
+values, read by other codings. A copy is a parameter of its own -- the one the
+ECU reads once the coding selects it, and the only place an edit for that
+coding lands -- so the diff pairs each copy with the copy the SAME coding
+selects in the comparison (``TunerSession.counterpart``) and carries it as an
+entry named after the copy, with the codings that select it in
+``PatchEntry.coding``. Applied to a target, the entry finds its copy by that
+name where the target has the same layout, else by the coding.
+
 Undefined-data blocks carry no KB identity -- there is nothing else to key
 them on -- so they are always address-literal. Applying one to a target of a
 DIFFERENT detected family is allowed (the caller may know two families share
@@ -111,8 +120,14 @@ class PatchEntry:
     total_cells: int = 0
     first_change: str = ""
     selected: bool = True
+    #: a coding-variant copy: the codings that select it ("coding 150034
+    #: (automatic (TC))"). Empty for a parameter every coding reads.
+    coding: str = ""
 
     def title(self) -> str:
+        if self.coding:
+            return "%s [%s]" % (self.label or self.name.split(" (variant @", 1)[0],
+                                self.coding)
         return self.label or self.name
 
     def to_dict(self) -> dict:
@@ -221,14 +236,15 @@ def diff_entities(primary, comparison, entities=None) -> List[PatchEntry]:
     counterpart in ``comparison``, paired by KB identity
     (``TunerSession.counterpart`` -- never by address).
 
-    ``entities`` defaults to ``primary.entities`` only. Variant/secondary
-    entities are deliberately excluded by default: their names embed the
-    address they were found at (``"<name> (variant @0x...)"``), which breaks
-    the whole cross-binary identity model a patch depends on -- a caller that
-    passes them explicitly is responsible for that.
+    ``entities`` defaults to ``primary.entities`` plus its coding-variant
+    copies (``variant_entities``). A copy's name embeds the address it was
+    found at (``"<name> (variant @0x...)"``), so it is paired with the copy
+    the same coding selects in ``comparison`` rather than by name, and the
+    entry records those codings (``PatchEntry.coding``) for :func:`find_entity`
+    to find the copy again in a target of another layout.
     """
     if entities is None:
-        entities = list(primary.entities)
+        entities = list(primary.entities) + _variants(primary)
     out = []
     for e in entities:
         cp = primary.counterpart(comparison, e)
@@ -236,8 +252,33 @@ def diff_entities(primary, comparison, entities=None) -> List[PatchEntry]:
             continue
         entry = _candidate(e, cp)
         if entry is not None:
+            if _is_variant(e):
+                entry.coding = getattr(e, "coding", "") or ""
             out.append(entry)
     return out
+
+
+def _is_variant(e) -> bool:
+    return getattr(e, "source", "") == "variant"
+
+
+def _variants(session) -> list:
+    """The coding-variant copies of ``session`` (none where it has no such
+    thing)."""
+    fn = getattr(session, "variant_entities", None)
+    if fn is None:
+        return []
+    try:
+        return list(fn() or ())
+    except Exception:
+        return []
+
+
+def trusted(e) -> bool:
+    """Whether ``e`` may be written without asking: its address established
+    (``model.TRUSTED_PLACEMENT``) or a coding-variant copy, which is located
+    by the file's own pointer array / a verbatim copy of its main table."""
+    return placement_trusted(e) or _is_variant(e)
 
 
 def _candidate(e: Entity, cp: Entity) -> Optional[PatchEntry]:
@@ -414,21 +455,25 @@ def diff_gaps(primary, comparison, *,
         return []
     region = getattr(primary, "region", (0, len(a)))
     from .diff import _byte_ranges
-    spans = sorted((e.addr, e.end) for e in primary.entities
+    # (a coding-variant copy is a parameter too: its change is that
+    # parameter's, not undefined data)
+    p_ents = list(primary.entities) + _variants(primary)
+    c_ents = list(comparison.entities) + _variants(comparison)
+    spans = sorted((e.addr, e.end) for e in p_ents
                    if getattr(e, "addr", None) is not None)
     # An entity's axes are stored outside [addr, end) -- before the map on
     # EDC16 and ZF -- and belong to it just the same: a changed breakpoint
     # is that parameter's change (diff_entities), not undefined data.
-    spans = sorted(spans + _axis_spans(primary.entities))
+    spans = sorted(spans + _axis_spans(p_ents))
     # A table's header (its point counts) is the table's too, and so is
     # whatever the COMPARISON's tables cover: a table resized in one of the
     # two has a new count and a grown (or shrunk) tail outside the other's
     # span. Carried as raw bytes, those would rewrite the target's header
     # under cells laid out for its old size.
     spans += _header_spans(primary) + _header_spans(comparison)
-    spans += [(e.addr, e.end) for e in comparison.entities
+    spans += [(e.addr, e.end) for e in c_ents
               if getattr(e, "addr", None) is not None]
-    spans = sorted(spans + _axis_spans(comparison.entities))
+    spans = sorted(spans + _axis_spans(c_ents))
     merged: List[Tuple[int, int]] = []
     for s0, s1 in spans:                # overlapping spans as one, for bisect
         if merged and s0 <= merged[-1][1]:
@@ -591,13 +636,31 @@ class _Snapshot:
         return self._values[r][c]
 
 
-def find_entity(session, name: str) -> Optional[Entity]:
+def find_entity(session, name: str, coding: str = "") -> Optional[Entity]:
     """The entity named ``name`` on ``session``, or ``None``. Public so a
     caller (the GUI's apply dialog, chiefly) can show target-resolution
-    status before actually applying."""
+    status before actually applying.
+
+    A coding-variant copy (``"<name> (variant @0x...)"``) is the copy of that
+    name where ``session`` has the same layout, else the copy the codings in
+    ``coding`` select (the table every coding reads where the target does not
+    switch it)."""
     for e in session.entities:
         if e.name == name:
             return e
+    if " (variant @" in name:
+        for v in _variants(session):
+            if v.name == name:
+                return v
+        pair = getattr(session, "_coding_counterpart", None)
+        if pair is not None:
+            import types
+            try:
+                return pair(session, types.SimpleNamespace(
+                    name=name, coding=coding, source="variant"))
+            except Exception:
+                return None
+        return None
     # A signature-located constant found more than once is "<name>#<n>"
     # (signatures.resolve). Hand-written patches from before that spelling
     # settled call the same instance "<name>_i<n>" -- the A/C start-condition
@@ -764,12 +827,12 @@ def apply_patch(patch: Patch, target, *,
         for pe in patch.entries:
             if not pe.selected:
                 continue
-            te = find_entity(target, pe.name)
+            te = find_entity(target, pe.name, pe.coding)
             if te is None:
                 res.skipped.append((pe.name, "not identified in this target"))
                 continue
             disp = dispositions.get(pe.name, default_disposition)
-            if not placement_trusted(te) and disp != APPLY:
+            if not trusted(te) and disp != APPLY:
                 res.skipped.append(
                     (pe.name, "target address is %r (not established) and "
                               "was not confirmed" % te.source))
@@ -795,7 +858,7 @@ def apply_patch(patch: Patch, target, *,
                 note = _apply_axes(te, pe, target)
                 if note:
                     res.warnings.append(note)
-            if not placement_trusted(te):
+            if not trusted(te):
                 res.warnings.append(
                     "%s applied at a %r (unestablished) target address, "
                     "confirmed by the caller" % (pe.name, te.source))

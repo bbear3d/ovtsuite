@@ -57,6 +57,14 @@ The top list has every parameter that differs:
 | **First change** | The first changed cell: its value in the binary the patch goes from → in the one it goes to. |
 | **Grade** | How firmly the parameter was located in the binary the patch goes to (for example `anchored`). |
 
+A file with **coding variants** (an EDC16 that holds a second copy of the
+gear ratios, the heater outputs and other values for the other codings) is
+listed copy by copy: a changed second copy is its own line, shown with the
+coding that selects it — `Gearbx_rTrans1_C [coding 150031/158031 (5-speed
+manual)]`. Each copy is compared with the copy the same coding selects in
+the other binary, and applied to the copy the target's coding selects, so
+an edit made for one transmission does not land on the other's.
+
 Untick the parameters you do not want to carry; **Check all** and **Check
 none** set every box.
 

@@ -5169,9 +5169,8 @@ if HAVE_QT:
         def __init__(self, target, pt, title, parent=None):
             super().__init__(parent)
             from . import patch as _patch
-            from .model import placement_trusted
             self._patch = _patch
-            self._trusted = placement_trusted
+            self._trusted = _patch.trusted
             self.target = target
             self.pt = pt
             self._title = title
@@ -5199,7 +5198,7 @@ if HAVE_QT:
             for e in entries:
                 self._check_item(row, e.selected)
                 self.tbl.setItem(row, 1, QtWidgets.QTableWidgetItem(e.title()))
-                te = _patch.find_entity(target, e.name)
+                te = _patch.find_entity(target, e.name, e.coding)
                 if te is None:
                     status = "not found in this binary"
                     combo = None
