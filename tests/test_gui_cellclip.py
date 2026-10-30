@@ -339,3 +339,37 @@ def test_vss16_table_fits_its_headings_and_hides_the_text_under_the_drop_down(ap
     for c in range(d.tbl.columnCount()):
         head = d.tbl.horizontalHeaderItem(c).text()
         assert d.tbl.columnWidth(c) >= fm.horizontalAdvance(head), head
+
+
+def test_the_source_drop_down_leaves_the_cells_outline_showing(app, monkeypatch):
+    """A source that differs from the comparison is outlined in orange; the
+    drop-down sits inset in its cell so the outline is not covered."""
+    from ovtsuite import gui
+    rows = [dict(primary=True, addr=0x10, imp_m=2.669, imp_km=2669, src_val=1,
+                 src_addr=1, src="CAN")]
+    cmp_rows = [dict(rows[0], src="HW sensor")]
+    holder = {}
+
+    class S:
+        platform, is_edc15, entities = "edc16", False, []
+
+        def variant_entities(self):
+            return []
+    cmp_session = S()
+    monkeypatch.setattr(gui, "vss_pulse_settings",
+                        lambda s: cmp_rows if s is cmp_session else rows)
+    monkeypatch.setattr(gui.VssDialog, "_recalc", lambda self: None)
+    monkeypatch.setattr(gui.VssDialog, "_primary", lambda self: rows[0])
+    d = gui.VssDialog(S(), None, compare=cmp_session)
+    holder["d"] = d
+    d.show()
+    app.processEvents()
+    cell = d.tbl.cellWidget(0, 4)
+    combo = cell.findChild(QtWidgets.QComboBox)
+    assert combo is not None and d._src_combos[0] is combo
+    assert combo.geometry().left() > 0 and combo.geometry().top() > 0      # inset
+    img = d.tbl.viewport().grab().toImage()
+    r = d.tbl.visualRect(d.tbl.model().index(0, 4))
+    # the outline's pixels, just inside the cell's top edge
+    col = img.pixelColor(r.center().x(), r.top() + 1)
+    assert (col.red(), col.green(), col.blue()) == (255, 140, 0)

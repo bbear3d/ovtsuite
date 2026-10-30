@@ -3669,7 +3669,15 @@ if HAVE_QT:
                 combo.currentIndexChanged.connect(
                     lambda _ix, row=i: self._source_changed16(row))
                 self._src_combos.append(combo)
-                self.tbl.setCellWidget(i, 4, combo)
+                # inset in a holder, so the cell's orange outline (differs
+                # from the comparison) shows around the drop-down
+                from .gui_cellmarks import OUTLINE_WIDTH
+                holder = QtWidgets.QWidget()
+                hl = QtWidgets.QHBoxLayout(holder)
+                m = OUTLINE_WIDTH + 1
+                hl.setContentsMargins(m, m, m, m)
+                hl.addWidget(combo)
+                self.tbl.setCellWidget(i, 4, holder)
                 # the source's text under the drop-down, so Copy has it
                 srcown = QtWidgets.QTableWidgetItem(combo.currentText())
                 srcown.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
