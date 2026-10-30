@@ -64,17 +64,19 @@ SECTORS_1M = ([(i << 16, (i + 1) << 16) for i in range(15)]
 class FlashLayout:
     """Everything that differs between the 512 KB and 1 MB EDC15 flash parts.
 
-    The whole 1 MB chip is a single linear window at the CPU-bus programming
-    base (``SECTOR_WRITE_BASE`` = 0x200000): ``chip_byte = cpu & (size - 1)``,
-    so the 1 MB part is addressed exactly like the 512 KB one, just over 1 MB
-    instead of 512 KB. No bank-switch pin is involved (confirmed from the C167
-    internal ROM: the firmware uses only a global chip-select and never drives
-    an address line beyond this window). See docs/edc15-1mb.md.
+    Bench-proven on a 512 KB ECU: the flash answers reads at every external CPU
+    address except the 0x200000-0x3FFFFF block, which is the write-only
+    programming window (reads return an open-bus pattern). The chip simply sees
+    the CPU address lines, so ``chip_byte = cpu & (size - 1)``: a 512 KB part
+    ignores A19, a 1 MB part decodes it. Hence
 
-    ``read_base`` is where the whole-chip *read* loop reads: the 512 KB part
-    keeps its historical 0x080000 window (bench-proven, byte-identical);
-    the 1 MB part reads through the 0x200000 window so the lower half is
-    reachable too.
+    * 512 KB: ``read_base`` 0x080000 (historical, bench-proven) -- the whole chip.
+    * 1 MB:  ``read_base`` 0x100000 -- A19 is then ``pos`` bit 19, so one linear
+      window covers the whole chip (0x080000 shows only the upper half).
+
+    ``write_base`` is the programming window for erase/program (both sizes).
+    The 1 MB read window and 1 MB programming reach are inferred from that
+    aliasing and not yet bench-proven on a 1 MB ECU. See docs/edc15-1mb.md.
     """
     name: str
     size: int
@@ -88,18 +90,23 @@ class FlashLayout:
 LAYOUT_512 = FlashLayout("512 KB (Am29F400BT)", FLASH_SIZE, tuple(SECTORS),
                          BOOT_START, BOOT_END, SECTOR_READ_BASE)
 LAYOUT_1M = FlashLayout("1 MB (Am29F800BT)", 0x100000, tuple(SECTORS_1M),
-                        0xFC000, 0xFFFFF, SECTOR_WRITE_BASE)
+                        0xFC000, 0xFFFFF, 0x100000)
 
 #: Span the A19-decode size probe compares (small; decisive and quick).
 PROBE_LEN = 0x1000
 
-#: CPU addresses the window survey samples (each is 0x70000 into a 512 KB
-#: window, clear of the 0x07F000 peripheral and the internal ROM). Where one of
-#: these shows the same bytes as the proven read window it is an alias of the
-#: same flash cell; where it shows an upper/lower-half difference the window
-#: reaches the other half of a 1 MB part.
-SURVEY_ADDRS = (0x070000, 0x170000, 0x1F0000, 0x270000, 0x2F0000, 0x370000,
-                0x3F0000, 0x470000, 0x870000, 0x8F0000)
+#: CPU addresses the window survey samples, 0x70000 into each 512 KB window:
+#: A19=0 windows (lower half of a 1 MB part), A19=1 windows (upper half), and the
+#: write-only programming block.
+SURVEY_ADDRS = (0x070000, 0x0F0000, 0x170000, 0x1F0000, 0x270000, 0x2F0000,
+                0x470000, 0x4F0000, 0x870000, 0x8F0000)
+
+#: Read windows used to test CPU A19. All are bench-proven aliases of the same
+#: flash cell on a 512 KB ECU. ``A19_HI`` have A19=1, ``A19_LO`` have A19=0; each
+#: is 0x70000 into a 512 KB window, clear of the internal ROM and the 0x07F000
+#: peripheral.
+A19_HI = (0x0F0000, 0x1F0000, 0x8F0000)
+A19_LO = (0x170000, 0x470000, 0x870000)
 
 # The C167's own 32 KB internal boot ROM, as the RUNNING ECU maps it. Much of
 # the firmware lives here rather than in the flash: each reference image makes
@@ -737,25 +744,21 @@ class Edc15Flash:
 
     # -------------------------------------------------- 512 KB vs 1 MB detect
     def detect_layout(self, is_stop=None):
-        """Pick :attr:`layout` (512 KB vs 1 MB) by probing whether the flash
-        decodes CPU bit A19, with no content signature.
+        """Pick :attr:`layout` (512 KB vs 1 MB) by testing whether CPU A19
+        reaches the flash, with no content signature.
 
-        Two windows are involved. ``SECTOR_READ_BASE`` (0x080000) is the
-        proven read window: it shows the chip's top 512 KB (the whole chip on a
-        512 KB part, the upper half on a 1 MB part). 0x200000 is the programming
-        window; whether it can also be *read* is not a given -- on a 512 KB ECU
-        it returns an open-bus pattern (``<segment> 00`` repeated), not flash.
-        A probe that trusted it would see two different patterns and call the
-        part 1 MB (it did), so the window is validated first:
+        The flash answers reads in many aliased windows (see :class:`FlashLayout`).
+        Windows that differ only in A19 show the *same* cell on a 512 KB part
+        (it ignores A19) and the two *halves* on a 1 MB part. So:
 
-        * the candidate (0x2F0000) must read the same as the proven window at
-          the matching chip cell (chip 0x70000 on 512 KB, 0xF0000 on 1 MB --
-          the same window offset 0x70000 either way). If it doesn't, 0x200000
-          is not a usable read window here and the part is taken to be 512 KB,
-          the behaviour proven on the bench.
-        * only then is A19 tested: 0x270000 vs 0x2F0000 (and 0x200000 vs
-          0x280000). Equal means A19 isn't decoded (512 KB); any difference
-          means 1 MB.
+        1. the A19=1 windows must read identically (proves they alias the proven
+           read window) and look like flash;
+        2. the A19=0 windows must read identically to each other;
+        3. A19=0 equal to A19=1 means 512 KB, different means 1 MB.
+
+        Any step that fails (no flash-like data, inconsistent aliases) is
+        inconclusive and keeps 512 KB, the bench-proven behaviour. A 1 MB part on
+        which A19 never reaches the chip is therefore also taken as 512 KB.
 
         The sector loader compares on the ECU with its checksum command (only
         16-bit results cross the wire); the flash loader reads short spans.
@@ -763,30 +766,31 @@ class Edc15Flash:
         if self._loader not in ("sector", "flash"):
             raise KLineError("size detection needs the sector or flash loader")
         self.layout = LAYOUT_512
-        w = SECTOR_WRITE_BASE
-        known = SECTOR_READ_BASE + 0x70000
-        sample = self._probe_sample(known)
-        self.log("Size probe: read window 0x%06X -> %s" % (known, sample[:8].hex(" ")))
+        hi, lo = A19_HI, A19_LO
+        sample = self._probe_sample(hi[0])
+        self.log("Size probe: A19=1 window 0x%06X -> %s" % (hi[0], sample[:8].hex(" ")))
         if not _plausible_flash(sample):
-            self.log("Size probe: the read window returned no usable data; "
-                     "assuming a 512 KB flash.")
-            self._survey_windows(known, sample)
-            return self.layout
+            return self._inconclusive("the read window returned no flash data", hi[0], sample)
+        for name, group in (("A19=1", hi), ("A19=0", lo)):
+            for other in group[1:]:
+                self._stop(is_stop)
+                if not self._probe_equal(group[0], other):
+                    return self._inconclusive(
+                        "%s windows 0x%06X and 0x%06X disagree" % (name, group[0], other),
+                        hi[0], sample)
         self._stop(is_stop)
-        if not self._probe_equal(known, w + 0xF0000):
-            self.log("Size probe: 0x%06X is not a readable flash window on this ECU "
-                     "(%s); assuming a 512 KB flash."
-                     % (w + 0xF0000, self._probe_sample(w + 0xF0000)[:8].hex(" ")))
-            self._survey_windows(known, sample)
-            return self.layout
-        one_mb = False
-        for lo, hi in ((w + 0x70000, w + 0xF0000), (w, w + 0x80000)):
-            self._stop(is_stop)
-            if not self._probe_equal(lo, hi):
-                one_mb = True
-                break
-        self.layout = LAYOUT_1M if one_mb else LAYOUT_512
+        same = self._probe_equal(lo[0], hi[0])
+        self.layout = LAYOUT_512 if same else LAYOUT_1M
+        self.log("Size probe: A19=0 window 0x%06X -> %s (%s the A19=1 window)"
+                 % (lo[0], self._probe_sample(lo[0])[:8].hex(" "), "same as" if same else "differs from"))
         self.log("Detected EDC15 flash: %s." % self.layout.name)
+        if not same:
+            self._survey_windows(hi[0], sample)
+        return self.layout
+
+    def _inconclusive(self, why, known, sample):
+        self.log("Size probe inconclusive (%s); assuming a 512 KB flash." % why)
+        self._survey_windows(known, sample)
         return self.layout
 
     def _survey_windows(self, known, ref):

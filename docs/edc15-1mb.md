@@ -15,50 +15,55 @@ run the **same** C167 internal boot ROM (IROM): 16-bit sum 0x3796, reset vector
 `JMPS 00H,0374H`. The KWP2000 boot stub lives in the chip's top 16 KB sector —
 0x7C000 on the 512 KB part, 0xFC000 on the 1 MB part.
 
-## How the 1 MB chip is addressed -- what is and is not known
+## How the flash is addressed (bench-proven on a 512 KB ECU)
 
-Disassembling the IROM (`ovtsuite/c166dis.py`) shows a **global external
-chip-select** and firmware that only addresses segments <= 0x0F, reading code and
-calibration from the CPU window **0x80000-0xFFFFF** (the chip's top 512 KB on a
-1 MB part; the whole chip on a 512 KB part). That window is bench-proven.
+A survey of a 512 KB ECU (bench log) shows the flash answers reads at **every
+external CPU address except the 0x200000-0x3FFFFF block**, which returns an
+open-bus pattern (`<segment> 00` repeated): that block is the write-only
+programming window the loader erases/programs through. Everywhere else the chip
+simply sees the CPU address lines:
 
-An earlier version of this note claimed the programming window **0x200000**
-also exposes the whole chip for *reading*. **That was wrong for 512 KB ECUs and
-is unverified for 1 MB ones.** A bench log of a 512 KB ECU showed every read at
-0x2xxxxx returning an open-bus pattern (`<segment> 00` repeated), not flash:
-0x200000 is a programming (erase/program) window. A detector that trusted it
-called that 512 KB ECU "1 MB" and produced a 1 MB file of pattern.
+| CPU address read | 512 KB ECU shows |
+|---|---|
+| 0x070000, 0x170000, 0x470000, 0x870000 (A19 = 0) | the flash (chip 0x70000) |
+| 0x0F0000, 0x1F0000, 0x8F0000 (A19 = 1) | the same flash cell |
+| 0x270000, 0x2F0000, 0x370000, 0x3F0000 | open bus (programming block) |
 
-What is therefore **not known**: how to *read* the lower 512 KB of a 1 MB part.
-It is not reachable at 0x080000 (that shows the upper half) and 0x2xxxxx did not
-read as flash on the ECU tried. The size probe now logs what each window returns
-so a bench run on a 1 MB ECU can answer this.
+So `chip_byte = cpu & (size - 1)`. A 512 KB part ignores A19 (all of the above
+alias). A 1 MB part decodes it: A19 = 0 windows show the **lower** half, A19 = 1
+windows the **upper** half. The firmware reads from 0x080000 (A19 = 1), which is
+why it only ever sees the upper half of a 1 MB part. Boot mode already reads at
+0x800000 (A19 = 0).
+
+An earlier version of this note said the 0x200000 programming window could be
+read; it cannot, and a detector built on that called a 512 KB ECU "1 MB".
+
+**Inferred, not yet bench-proven on a 1 MB ECU:** that A19 reaches the 1 MB chip
+as a CPU address line (the firmware shows no bank-switch GPIO), so that
+**0x100000** is a linear read window for the whole chip (A19 = pos bit 19), and
+that the 0x200000 programming block reaches the full 1 MB.
 
 ## Implementation
 
-`FlashLayout` captures everything that differs: `size`, the erase-sector table
-(`SECTORS` / `SECTORS_1M`), the boot block, and the read/write windows. The
-write/erase/checksum path already addressed flash at `SECTOR_WRITE_BASE`
-(0x200000), so it generalises to 1 MB by extending the sector table and the
-range only. The whole-chip read loop reads at `layout.read_base` (0x080000 for
-512 KB — byte-identical to before; 0x200000 for 1 MB so the lower half is
-reachable).
+`FlashLayout` captures size, erase-sector table (`SECTORS` / `SECTORS_1M`), boot
+block and windows: 512 KB reads at 0x080000 (unchanged, bench-proven), 1 MB at
+0x100000; both erase/program through 0x200000.
 
 ### Size detection -- `Edc15Flash.detect_layout()`
 
-The A19 aliasing idea is sound (a 512 KB part does not decode A19, so addresses
-differing only in A19 alias), but it needs a *readable* window that reaches both
-halves, so the probe first **proves the candidate window is real flash**: the
-candidate (0x2F0000) must read identically to the proven 0x080000 window at the
-matching chip cell. If it does not, 0x200000 is not a read window on this ECU
-and the part is taken to be 512 KB (the bench-proven behaviour), with the raw
-probe bytes logged. Only when the window is proven does it test A19. Sector
-loader: compared on the ECU with CmdB2; flash loader: short reads.
-`read_flash` also refuses an image with fewer than 64 distinct byte values (an
-unmapped read) instead of handing back a bogus file.
+Signature-free test of whether CPU A19 reaches the chip, using only windows
+proven to alias on a real ECU (`A19_HI` 0x0F0000/0x1F0000/0x8F0000, `A19_LO`
+0x170000/0x470000/0x870000):
 
-Consequence: until a 1 MB ECU is benched, a 1 MB part whose lower half is not
-reachable is treated as 512 KB and yields only its upper half.
+1. the A19=1 windows must read identically and look like flash;
+2. the A19=0 windows must read identically to each other;
+3. A19=0 equal to A19=1 -> 512 KB; different -> 1 MB.
+
+Anything inconclusive keeps 512 KB (the bench-proven behaviour) and logs a window
+survey. A 1 MB part on which A19 never reaches the chip is therefore also taken
+as 512 KB. Sector loader: compared on the ECU with CmdB2 (only 16-bit results
+cross the wire); flash loader: short reads. `read_flash` also refuses an image
+with fewer than 64 distinct byte values.
 
 ## Not covered
 

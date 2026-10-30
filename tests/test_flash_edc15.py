@@ -25,7 +25,7 @@ def _ck(data):
 
 class MockEdc15:
     def __init__(self, flash=None, eeprom=None, soft_brick=False, refuse_speed=False,
-                 seed=None, irom=None, size=E.FLASH_SIZE, prog_window_readable=True):
+                 seed=None, irom=None, size=E.FLASH_SIZE, prog_window_readable=False):
         self.seed = seed              # 4-byte seed -> the ECU demands a real LVL41 key
         self.rx = bytearray()
         self.parse = bytearray()
@@ -348,14 +348,14 @@ class MockEdc15:
         raise AssertionError("address 0x%06X not in a flash window" % cpu)
 
     def _read_bytes(self, cpu, n):
-        """What a read of ``n`` bytes at ``cpu`` returns: flash in the read
-        window (and the programming window if readable), else the open-bus
-        pattern ``<segment> 00`` repeated, as the bench log showed."""
-        if (0x080000 <= cpu < 0x100000) or (
-                0x200000 <= cpu < 0x400000 and self.prog_window_readable):
-            o = cpu & (self.size - 1)
-            return bytes(self.flash[o:o + n])
-        return bytes([(cpu >> 16) & 0xFF, 0x00] * ((n + 1) // 2))[:n]
+        """What a read of ``n`` bytes at ``cpu`` returns. Bench-proven on a
+        512 KB ECU: the flash answers at every external address (aliased by
+        ``cpu & (size - 1)``) except the 0x200000-0x3FFFFF programming block,
+        which returns the open-bus pattern ``<segment> 00`` repeated."""
+        if 0x200000 <= cpu < 0x400000 and not self.prog_window_readable:
+            return bytes([(cpu >> 16) & 0xFF, 0x00] * ((n + 1) // 2))[:n]
+        o = cpu & (self.size - 1)
+        return bytes(self.flash[o:o + n])
 
     def _cpu_read(self, cpu, n):
         """Serve the CPU-bus address space the running ECU maps: the internal
@@ -792,19 +792,40 @@ def test_detect_512_when_programming_window_is_open_bus_sector_loader():
 
 
 def test_read_refuses_a_pattern_image():
-    f, ecu = _make(prog_window_readable=False)
+    import dataclasses
+    f, ecu = _make()
     f.connect("V", "Low", loader="flash")
-    f.layout = E.LAYOUT_1M                    # forced wrong layout: reads the open bus
+    # a layout that reads the write-only block returns the open-bus pattern
+    f.layout = dataclasses.replace(E.LAYOUT_512, read_base=0x200000)
     with pytest.raises(Exception, match="no flash data"):
         f.read_flash()
 
 
-def test_window_survey_is_logged_when_the_programming_window_is_unreadable():
+def test_512_is_detected_from_aliased_windows_with_no_survey():
+    """The real 512 KB ECU: A19=0 and A19=1 windows alias the same flash."""
     logs = []
-    ecu = MockEdc15(prog_window_readable=False)
+    ecu = MockEdc15()
     f = E.Edc15Flash(_Link(ecu), log=logs.append)
     f.connect("V", "Low", loader="sector")
     assert f.detect_layout() is E.LAYOUT_512
-    survey = [l for l in logs if l.startswith("  0x")]
-    assert len(survey) == len(E.SURVEY_ADDRS)
-    assert any("open bus" in l for l in survey)
+    assert any("same as the A19=1 window" in l for l in logs)
+    assert not any(l.startswith("  0x") for l in logs)
+
+
+def test_1m_is_detected_when_A19_selects_the_other_half():
+    f, ecu = _make(size=0x100000)
+    f.connect("V", "Low", loader="flash")
+    assert f.detect_layout() is E.LAYOUT_1M
+    assert f.layout.read_base == 0x100000
+    assert f.read_flash() == bytes(ecu.flash)           # lower half comes first
+
+
+def test_inconclusive_probe_keeps_512_and_logs_a_survey():
+    logs = []
+    ecu = MockEdc15()
+    ecu._read_bytes = lambda cpu, n: bytes([cpu >> 16, 0] * n)[:n]      # open bus everywhere
+    f = E.Edc15Flash(_Link(ecu), log=logs.append)
+    f.connect("V", "Low", loader="sector")
+    assert f.detect_layout() is E.LAYOUT_512
+    assert any("inconclusive" in l for l in logs)
+    assert len([l for l in logs if l.startswith("  0x")]) == len(E.SURVEY_ADDRS)
