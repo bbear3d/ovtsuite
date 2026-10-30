@@ -158,6 +158,12 @@ def sector_checksum(data) -> int:
     return acc
 
 
+def _plausible_flash(data) -> bool:
+    """Real flash/code has many distinct byte values; an unmapped bus returns
+    one or two (e.g. the high address byte and 0x00, repeated)."""
+    return len(set(bytes(data))) >= 8
+
+
 def eeprom_info(ee) -> dict:
     """Decode the well-known EDC15 EEPROM fields (KWHack Edc15VM.GetEepromInfo)."""
     ee = bytes(ee)
@@ -537,6 +543,10 @@ class Edc15Flash:
             self.try_close()
         if len(out) != lay.size:
             raise KLineError("EDC15 read returned %d bytes, expected %d" % (len(out), lay.size))
+        if len(set(out)) < 64:
+            raise KLineError(
+                "EDC15 read returned no flash data (only %d distinct byte values): "
+                "the window read is unmapped. The image was NOT produced." % len(set(out)))
         if on_percent:
             on_percent(100)
         return bytes(out)
@@ -720,26 +730,47 @@ class Edc15Flash:
     # -------------------------------------------------- 512 KB vs 1 MB detect
     def detect_layout(self, is_stop=None):
         """Pick :attr:`layout` (512 KB vs 1 MB) by probing whether the flash
-        decodes CPU bit A19, with no content signature at all.
+        decodes CPU bit A19, with no content signature.
 
-        On a 512 KB part A19 is not decoded, so two addresses that differ only
-        in A19 read the *same* cell; on a 1 MB part they read the two different
-        halves. The probe works in the 0x200000 programming window, where both
-        halves are reachable, and compares the chip's top sector against its
-        lower-half alias (the top sector always holds the boot stub / cal on a
-        1 MB part and so is guaranteed to differ -- a 512 KB part cannot
-        produce a difference). Must be called with a loader running; the
-        sector loader hashes on the ECU (only the result crosses the wire), the
-        flash loader falls back to a short read compare.
+        Two windows are involved. ``SECTOR_READ_BASE`` (0x080000) is the
+        proven read window: it shows the chip's top 512 KB (the whole chip on a
+        512 KB part, the upper half on a 1 MB part). 0x200000 is the programming
+        window; whether it can also be *read* is not a given -- on a 512 KB ECU
+        it returns an open-bus pattern (``<segment> 00`` repeated), not flash.
+        A probe that trusted it would see two different patterns and call the
+        part 1 MB (it did), so the window is validated first:
+
+        * the candidate (0x2F0000) must read the same as the proven window at
+          the matching chip cell (chip 0x70000 on 512 KB, 0xF0000 on 1 MB --
+          the same window offset 0x70000 either way). If it doesn't, 0x200000
+          is not a usable read window here and the part is taken to be 512 KB,
+          the behaviour proven on the bench.
+        * only then is A19 tested: 0x270000 vs 0x2F0000 (and 0x200000 vs
+          0x280000). Equal means A19 isn't decoded (512 KB); any difference
+          means 1 MB.
+
+        The sector loader compares on the ECU with its checksum command (only
+        16-bit results cross the wire); the flash loader reads short spans.
         """
         if self._loader not in ("sector", "flash"):
             raise KLineError("size detection needs the sector or flash loader")
-        base = SECTOR_WRITE_BASE
-        # (lower-half, upper-half) address pairs = A19 toggled; the first spans
-        # the top sector group (decisive), the second the chip start.
-        pairs = ((base + 0x70000, base + 0xF0000), (base + 0x00000, base + 0x80000))
+        self.layout = LAYOUT_512
+        w = SECTOR_WRITE_BASE
+        known = SECTOR_READ_BASE + 0x70000
+        sample = self._probe_sample(known)
+        self.log("Size probe: read window 0x%06X -> %s" % (known, sample[:8].hex(" ")))
+        if not _plausible_flash(sample):
+            self.log("Size probe: the read window returned no usable data; "
+                     "assuming a 512 KB flash.")
+            return self.layout
+        self._stop(is_stop)
+        if not self._probe_equal(known, w + 0xF0000):
+            self.log("Size probe: 0x%06X is not a readable flash window on this ECU "
+                     "(%s); assuming a 512 KB flash."
+                     % (w + 0xF0000, self._probe_sample(w + 0xF0000)[:8].hex(" ")))
+            return self.layout
         one_mb = False
-        for lo, hi in pairs:
+        for lo, hi in ((w + 0x70000, w + 0xF0000), (w, w + 0x80000)):
             self._stop(is_stop)
             if not self._probe_equal(lo, hi):
                 one_mb = True
@@ -747,6 +778,12 @@ class Edc15Flash:
         self.layout = LAYOUT_1M if one_mb else LAYOUT_512
         self.log("Detected EDC15 flash: %s." % self.layout.name)
         return self.layout
+
+    def _probe_sample(self, cpu) -> bytes:
+        """A short real read at ``cpu`` (a few dozen bytes) for inspection."""
+        if self._loader == "sector":
+            return self.read_cpu_range(cpu, READ_CHUNK)
+        return self._flash_read_cpu(cpu, 0x40)
 
     def _probe_equal(self, a, b) -> bool:
         """Do the ``PROBE_LEN`` spans at CPU ``a`` and ``b`` read identical?"""

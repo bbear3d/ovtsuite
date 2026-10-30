@@ -25,7 +25,7 @@ def _ck(data):
 
 class MockEdc15:
     def __init__(self, flash=None, eeprom=None, soft_brick=False, refuse_speed=False,
-                 seed=None, irom=None, size=E.FLASH_SIZE):
+                 seed=None, irom=None, size=E.FLASH_SIZE, prog_window_readable=True):
         self.seed = seed              # 4-byte seed -> the ECU demands a real LVL41 key
         self.rx = bytearray()
         self.parse = bytearray()
@@ -40,6 +40,10 @@ class MockEdc15:
         #: by ``chip = cpu & (size - 1)`` wherever a flash window decodes them,
         #: which is exactly the real part's address aliasing.
         self.size = size
+        #: False reproduces a real 512 KB ECU (bench log): the 0x200000
+        #: programming window is write-only, a read returns the open-bus
+        #: pattern <segment> 00 repeated, not flash.
+        self.prog_window_readable = prog_window_readable
         self.sectors = (E.SECTORS_1M if size == 0x100000 else E.SECTORS)
         # the ``i >> 13`` term makes the content vary across the chip (the two
         # 512 KB halves differ, as real flash halves do), so the size probe
@@ -299,8 +303,7 @@ class MockEdc15:
         elif svc == 0xB2:
             cs = (data[0] << 16) | (data[1] << 8) | data[2]
             ce = (data[3] << 16) | (data[4] << 8) | data[5]
-            s = self._chip(cs)                             # map start; end is exclusive
-            c = E.sector_checksum(self.flash[s:s + (ce - cs)])
+            c = E.sector_checksum(self._read_bytes(cs, ce - cs))
             self._lreply(0xB2, bytes([c >> 8, c & 0xFF]))
         elif svc == 0xB0:
             a = self._chip((data[0] << 16) | (data[1] << 8) | data[2])
@@ -344,14 +347,20 @@ class MockEdc15:
                 return cpu & (self.size - 1)
         raise AssertionError("address 0x%06X not in a flash window" % cpu)
 
+    def _read_bytes(self, cpu, n):
+        """What a read of ``n`` bytes at ``cpu`` returns."""
+        if cpu >= 0x200000 and not self.prog_window_readable:
+            return bytes([(cpu >> 16) & 0xFF, 0x00] * ((n + 1) // 2))[:n]
+        o = self._chip(cpu)
+        return bytes(self.flash[o:o + n])
+
     def _cpu_read(self, cpu, n):
         """Serve the CPU-bus address space the running ECU maps: the internal
         boot ROM at IROM_BASE, and the external flash at either window."""
         if E.IROM_BASE <= cpu < E.IROM_BASE + E.IROM_SIZE:
             o = cpu - E.IROM_BASE
             return bytes(self.irom[o:o + n])
-        o = self._chip(cpu)
-        return bytes(self.flash[o:o + n])
+        return self._read_bytes(cpu, n)
 
     def _lreply(self, svc, data):
         out = bytearray([1 + len(data), svc]) + bytes(data)
@@ -368,8 +377,7 @@ class MockEdc15:
         assert frame[-1] == _ck(frame[:-1])
         svc, data = frame[1], frame[2:-1]
         if svc == 0x23:
-            a = self._chip((data[0] << 16) | (data[1] << 8) | data[2])
-            chunk = bytes(self.flash[a:a + data[3]])
+            chunk = self._read_bytes((data[0] << 16) | (data[1] << 8) | data[2], data[3])
             out = bytearray([len(chunk) + 1, 0x36]) + chunk
             out.append(_ck(out))
             self.rx += out
@@ -762,3 +770,27 @@ def test_write_1m_rejects_512k_image():
     f.detect_layout()
     with pytest.raises(ValueError):
         f.write_flash_sectors(b"\x00" * 0x80000)      # a 512 KB file on a 1 MB ECU
+
+
+# ----------------------- regression: real 512 KB ECU, write-only 0x200000 window
+def test_detect_512_when_programming_window_is_open_bus_flash_loader():
+    """Bench log: reads at 0x2xxxxx returned '<seg> 00' repeated. The first
+    1 MB detector saw two different patterns and called the ECU 1 MB."""
+    f, ecu = _make(prog_window_readable=False)
+    f.connect("V", "Low", loader="flash")
+    assert f.detect_layout() is E.LAYOUT_512
+    assert f.read_flash() == bytes(ecu.flash)
+
+
+def test_detect_512_when_programming_window_is_open_bus_sector_loader():
+    f, _ = _make(prog_window_readable=False)
+    f.connect("V", "Low", loader="sector")
+    assert f.detect_layout() is E.LAYOUT_512
+
+
+def test_read_refuses_a_pattern_image():
+    f, ecu = _make(prog_window_readable=False)
+    f.connect("V", "Low", loader="flash")
+    f.layout = E.LAYOUT_1M                    # forced wrong layout: reads the open bus
+    with pytest.raises(Exception, match="no flash data"):
+        f.read_flash()
