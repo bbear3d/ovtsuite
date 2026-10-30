@@ -47,6 +47,7 @@ module — see [Linux](#linux).
    | **Create a desktop shortcut** | off | A desktop shortcut to OVT-Suite. |
    | **Open OVT projects (.ovt) with OVT-Suite** | on | Double-clicking a project opens it in the app (in the window already open, when the app is running), and projects show the OVT project icon. The extension belongs to OVT-Suite alone. |
    | **Associate .bin files with OVT-Suite** | off | Adds OVT-Suite as the program for `.bin` files. `.bin` is used by many programs, so it is off unless you want it. |
+   | **Offer OVT-Suite for WinOLS projects (.ols)** | off | Lists OVT-Suite under **Open with** for `.ols` files; opening one follows **Tools > Options > Projects and saving > Opening a WinOLS project**. `.ols` belongs to WinOLS, so nothing of WinOLS's own registration is changed: pick OVT-Suite as the default in Windows (**Open with > Choose another app > Always**) if you want double-click to use it. |
    | **Download the EDC16 boot-sector database ...** | off | See [The boot-sector database](#the-boot-sector-database). Offered only when the installer was built with it. |
 
    Module packages (`.ovtmod`) are always associated: opening one installs
