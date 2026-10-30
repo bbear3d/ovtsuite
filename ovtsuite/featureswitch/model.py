@@ -132,6 +132,11 @@ class FeatureSet:
 #: window lists them before a setting is picked. A table row carries its
 #: ``entity`` (and ``axis``, ``cells``); a fault row its path's ``key`` and
 #: ``target`` class, which the window lets the user override path by path.
+#: ``fs_unavailable(session, group)`` (optional) -> ``{state: why}`` for the
+#: settings this copy cannot be set to (the file lacks what the change is
+#: worked out from): the window greys them out, with why in the tooltip and
+#: under the feature, and the hook's own ``fs_apply`` / ``fs_preview`` write
+#: and list nothing for them.
 #: ``fs_absent_why(session)`` (optional) says why the feature cannot be
 #: offered on this file ("" when it can): the feature is then left out and
 #: the window lists it, with that reason, under the features it offers.

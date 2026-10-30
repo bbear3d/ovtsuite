@@ -723,7 +723,10 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self._loading = True
         self.title.setText(b.title)
         self.summary.setText(b.summary)
-        self.notes.setText("\n".join(b.notes))
+        gone = self._unavailable(b)
+        self.notes.setText("\n".join(list(b.notes) + [
+            "%s is not available on this file: %s." % (b.label(s), why)
+            for s, why in gone.items()]))
         p = self.pending.get(b.id)
         self.cur_lbl.setText(self._now_label(b))
         # Set to: Keep as is, the presets, and Custom when edited
@@ -732,7 +735,11 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.state.addItem("Keep as is (no change)", KEEP)
         if not b.readonly:
             for s in E.states(self.session, b):
-                self.state.addItem(b.label(s), s)
+                self.state.addItem(b.label(s) + (" (not available)" if s in gone else ""), s)
+                if s in gone:               # greyed out, with why
+                    i = self.state.count() - 1
+                    self.state.model().item(i).setEnabled(False)
+                    self.state.setItemData(i, gone[s], QtCore.Qt.ItemDataRole.ToolTipRole)
         self.state.blockSignals(False)
         self._show_choice(b)
         self.state.setEnabled(not b.readonly and not _view_only(self.ws))
@@ -767,6 +774,25 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self._loading = False
         self._sync_buttons()
         self._refresh_preview()
+
+    def _unavailable(self, b) -> Dict[str, str]:
+        """``{state: why}`` the hook's ``fs_unavailable`` gives for the
+        copies in view: a setting the file cannot be set to (the hook found it
+        lacking what the change is worked out from)."""
+        fn = getattr(self._hook(b), "fs_unavailable", None)
+        if fn is None:
+            return {}
+        cps = self._view_copies(b)
+        out: Dict[str, List[str]] = {}
+        for c in cps:
+            try:
+                got = fn(self.session, c) or {}
+            except Exception:                             # noqa: BLE001
+                got = {}
+            for st, why in got.items():
+                out.setdefault(st, []).append(
+                    ("%s: " % self._short(c) if len(cps) > 1 else "") + why)
+        return {st: "; ".join(ws) for st, ws in out.items()}
 
     def _opts(self) -> Dict[str, float]:
         spec, chk = self._opt_spec, self._chk_spec
