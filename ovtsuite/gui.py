@@ -3593,24 +3593,18 @@ if HAVE_QT:
 
         def _role_labels16(self, rows):
             """Each row named as the gear-ratio dialog names its copies: the
-            transmission the coding selecting it stands for ("Automatic . main
-            block", "Manual"). Only where the structure gives one per row and
-            they differ; else "primary" / "variant"."""
+            transmission the coding selecting it stands for ("Automatic (TC)
+            . main block", "5-speed manual"). Only where the coding arrays
+            give one per row and they differ; else "primary" / "variant"."""
             plain = ["primary" if r["primary"] else "variant" for r in rows]
             try:
-                from .variant import copy_codings
-                by = copy_codings(self.session, "VSSCD_ImpPerDist_C")
+                from .variant import row_transmissions
+                txs = row_transmissions(self.session, rows)
             except Exception:
                 return plain
-            txs = []
-            for r in rows:
-                hit = by.get(r["addr"])
-                if not hit or not hit[1]:
-                    return plain
-                txs.append(hit[1][:1].upper() + hit[1][1:])
-            if len(set(txs)) != len(txs):
+            if not txs:
                 return plain
-            return [tx + (" \u00b7 main block" if r["primary"] else "")
+            return [tx[:1].upper() + tx[1:] + (" \u00b7 main block" if r["primary"] else "")
                     for tx, r in zip(txs, rows)]
 
         def _vss_src_entities(self):

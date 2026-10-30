@@ -279,9 +279,9 @@ def test_vss16_rows_are_named_by_the_transmission_their_coding_selects(app, monk
     from ovtsuite import variant
     d = _vss_dialog(app, [])
     rows = [dict(addr=0x10, primary=True), dict(addr=0x20, primary=False)]
-    monkeypatch.setattr(variant, "copy_codings", lambda s, name: {
-        0x10: (1, "automatic (TC)"), 0x20: (2, "manual")} if name == "VSSCD_ImpPerDist_C" else {})
-    assert d._role_labels16(rows) == ["Automatic (TC) · main block", "Manual"]
+    monkeypatch.setattr(variant, "row_transmissions",
+                        lambda s, r: ["automatic (TC)", "5-speed manual"])
+    assert d._role_labels16(rows) == ["Automatic (TC) \u00b7 main block", "5-speed manual"]
 
 
 def test_vss16_rows_keep_primary_and_variant_when_the_coding_is_not_resolved(app, monkeypatch):
@@ -289,18 +289,49 @@ def test_vss16_rows_keep_primary_and_variant_when_the_coding_is_not_resolved(app
     d = _vss_dialog(app, [])
     rows = [dict(addr=0x10, primary=True), dict(addr=0x20, primary=False)]
     plain = ["primary", "variant"]
-    monkeypatch.setattr(variant, "copy_codings", lambda s, n: {})
+    monkeypatch.setattr(variant, "row_transmissions", lambda s, r: None)
     assert d._role_labels16(rows) == plain
-    monkeypatch.setattr(variant, "copy_codings", lambda s, n: {0x10: (1, "manual")})
-    assert d._role_labels16(rows) == plain                     # one row unresolved
-    monkeypatch.setattr(variant, "copy_codings", lambda s, n: {
-        0x10: (1, "manual"), 0x20: (2, "manual")})
-    assert d._role_labels16(rows) == plain                     # not told apart
 
-    def boom(s, n):
+    def boom(s, r):
         raise RuntimeError("no coding arrays")
-    monkeypatch.setattr(variant, "copy_codings", boom)
+    monkeypatch.setattr(variant, "row_transmissions", boom)
     assert d._role_labels16(rows) == plain
+
+
+def _rows():
+    return [dict(addr=0x1E2F34, primary=True), dict(addr=0x189AB0, primary=False)]
+
+
+def test_row_transmissions_follow_the_codings_that_select_each_copy(monkeypatch):
+    from ovtsuite import variant
+    # 158034: automatic (TC), 158031: 5-speed manual
+    monkeypatch.setattr(variant, "copy_codings", lambda s, tables: {
+        0x1E2F34: [158034], 0x189AB0: [158031]})
+    assert variant.row_transmissions(None, _rows()) == ["automatic (TC)", "5-speed manual"]
+
+
+def test_row_transmissions_are_not_given_when_the_arrays_do_not_say(monkeypatch):
+    from ovtsuite import variant
+    for got in ({},                                              # not resolved
+                {0x1E2F34: [158034]},                            # variant unresolved
+                {0x189AB0: [158031]},                            # primary unresolved
+                {0x1E2F34: [158031], 0x189AB0: [158031]},        # not told apart
+                {0x1E2F34: [158034, 158031], 0x189AB0: [158031]}):   # primary is both
+        monkeypatch.setattr(variant, "copy_codings", lambda s, tables, got=got: got)
+        assert variant.row_transmissions(None, _rows()) is None, got
+    assert variant.row_transmissions(None, _rows()[:1]) is None        # no variant
+
+
+def test_row_transmissions_keep_only_the_codings_every_variant_leaves_on_the_primary(monkeypatch):
+    from ovtsuite import variant
+    rows = _rows() + [dict(addr=0x18B000, primary=False)]
+    answers = {0x189AB0: {0x1E2F34: [158034, 158031], 0x189AB0: [158031]},
+               0x18B000: {0x1E2F34: [158034], 0x18B000: [158032]}}
+    monkeypatch.setattr(variant, "copy_codings",
+                        lambda s, tables: answers[tables[0].sec_z])
+    # 158032 is the "6-speed manual" coding of a third copy
+    got = variant.row_transmissions(None, rows)
+    assert got[0] == "automatic (TC)" and got[1] == "5-speed manual"
 
 
 def test_a_column_under_a_widget_draws_no_text_of_its_own(app):
@@ -373,3 +404,14 @@ def test_the_source_drop_down_leaves_the_cells_outline_showing(app, monkeypatch)
     # the outline's pixels, just inside the cell's top edge
     col = img.pixelColor(r.center().x(), r.top() + 1)
     assert (col.red(), col.green(), col.blue()) == (255, 140, 0)
+
+
+def test_variant_keeps_one_copy_codings_taking_a_session_and_tables():
+    """A second ``copy_codings`` once shadowed this one and broke the gear
+    dialog's transmission labels (gear_copy_codings called the wrong one)."""
+    import inspect
+    from ovtsuite import variant
+    src = inspect.getsource(variant)
+    assert src.count("\ndef copy_codings(") == 1
+    assert list(inspect.signature(variant.copy_codings).parameters) == ["session", "tables"]
+    assert 'copy_codings(session, "' not in inspect.getsource(variant.gear_copy_codings)
