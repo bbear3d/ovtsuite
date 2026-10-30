@@ -869,10 +869,18 @@ def gear_copy_codings(session):
     Returns ``{rTrans1_data_addr: (coding_value, transmission)}`` mapping each
     gear copy (identified by its ``Gearbx_rTrans1_C`` data address) to a coding.
     """
+    return copy_codings(session, "Gearbx_rTrans1_C")
+
+
+def copy_codings(session, name):
+    """:func:`gear_copy_codings` for any coding-switched parameter ``name``
+    (the VSS pulses, say): ``{data address of a copy: (coding_value,
+    transmission)}``, structurally from the coding pointer array, or {} when
+    it cannot be resolved."""
     data = bytes(session.binfile.data)
     main_lo, main_hi = session.region
     by = {e.name: e for e in session.entities}
-    gear_e = by.get("Gearbx_rTrans1_C")
+    gear_e = by.get(name)
     tbl_e = by.get("USAp_dCodeTbl_C")
     default, active = _locate_arrays(data)
     if gear_e is None or active is None:
@@ -904,7 +912,7 @@ def gear_copy_codings(session):
         return {}
     sec_addr = None
     for vt in find_variant_tables(session):
-        if vt.name == "Gearbx_rTrans1_C":
+        if vt.name == name:
             sec_addr = vt.sec_z
             break
     cur_code = _read_code_at(data, tbl_e.addr)

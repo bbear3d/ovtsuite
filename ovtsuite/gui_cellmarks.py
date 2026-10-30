@@ -267,6 +267,16 @@ class CellDelegate(QtWidgets.QStyledItemDelegate):
         draw_outline(painter, option, index)
 
 
+class NoTextDelegate(CellDelegate):
+    """:class:`CellDelegate` that draws no text: for a column whose cells a
+    widget (a combo box) sits on, the item keeping the text only so Copy has
+    it -- drawn under the widget it shows through."""
+
+    def initStyleOption(self, opt, index):
+        super().initStyleOption(opt, index)
+        opt.text = ""
+
+
 class OutlineDelegate(QtWidgets.QStyledItemDelegate):
     """The stock drawing plus the outline of a cell that differs from the
     comparison (:func:`draw_outline`): what a table that needs nothing

@@ -273,3 +273,69 @@ def test_vss15_paste_is_one_undo_step_and_skips_what_is_not_editable(app):
     n = d._paste15(0, 3, [["x", "100", "200", "2"], ["y", "1", "2", "3"]])
     assert n == 3 and d.session.txn == ["VSS: paste"]
     assert {a for a, _ in d.session.writes} == {0x12, 0x18, 0x22}
+
+
+def test_vss16_rows_are_named_by_the_transmission_their_coding_selects(app, monkeypatch):
+    from ovtsuite import variant
+    d = _vss_dialog(app, [])
+    rows = [dict(addr=0x10, primary=True), dict(addr=0x20, primary=False)]
+    monkeypatch.setattr(variant, "copy_codings", lambda s, name: {
+        0x10: (1, "automatic (TC)"), 0x20: (2, "manual")} if name == "VSSCD_ImpPerDist_C" else {})
+    assert d._role_labels16(rows) == ["Automatic (TC) · main block", "Manual"]
+
+
+def test_vss16_rows_keep_primary_and_variant_when_the_coding_is_not_resolved(app, monkeypatch):
+    from ovtsuite import variant
+    d = _vss_dialog(app, [])
+    rows = [dict(addr=0x10, primary=True), dict(addr=0x20, primary=False)]
+    plain = ["primary", "variant"]
+    monkeypatch.setattr(variant, "copy_codings", lambda s, n: {})
+    assert d._role_labels16(rows) == plain
+    monkeypatch.setattr(variant, "copy_codings", lambda s, n: {0x10: (1, "manual")})
+    assert d._role_labels16(rows) == plain                     # one row unresolved
+    monkeypatch.setattr(variant, "copy_codings", lambda s, n: {
+        0x10: (1, "manual"), 0x20: (2, "manual")})
+    assert d._role_labels16(rows) == plain                     # not told apart
+
+    def boom(s, n):
+        raise RuntimeError("no coding arrays")
+    monkeypatch.setattr(variant, "copy_codings", boom)
+    assert d._role_labels16(rows) == plain
+
+
+def test_a_column_under_a_widget_draws_no_text_of_its_own(app):
+    from ovtsuite.gui_cellmarks import CellDelegate, NoTextDelegate
+    model = QtGui.QStandardItemModel(1, 1)
+    model.setItem(0, 0, QtGui.QStandardItem("CAN"))
+    opt = QtWidgets.QStyleOptionViewItem()
+    for cls, text in ((CellDelegate, "CAN"), (NoTextDelegate, "")):
+        cls(None).initStyleOption(opt, model.index(0, 0))
+        assert opt.text == text
+
+
+def test_vss16_table_fits_its_headings_and_hides_the_text_under_the_drop_down(app):
+    from ovtsuite import gui
+    from ovtsuite.gui_cellmarks import NoTextDelegate
+    rows = [dict(primary=True, addr=0x10, imp_m=2.669, imp_km=2669, src_val=1,
+                 src_addr=1, src="CAN")]
+    d = gui.VssDialog.__new__(gui.VssDialog)
+    QtWidgets.QDialog.__init__(d)
+    d._v = QtWidgets.QVBoxLayout(d)
+    d._has_cmp, d._cmp_rows16 = True, rows
+    d._desc = lambda html: QtWidgets.QLabel(html)
+    d._cell_changed16 = d._copy_to_variants16 = lambda *a: None
+    d._paste16 = lambda *a: None
+    d._vss_menu16 = lambda *a: None
+    try:
+        d._build_edc16()
+    except AttributeError:
+        pass                                    # the rest of the dialog needs a session
+    assert isinstance(d.tbl.itemDelegateForColumn(4), NoTextDelegate)
+    hh = d.tbl.horizontalHeader()
+    assert hh.sectionResizeMode(0) == QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+    d.show()
+    app.processEvents()
+    fm = hh.fontMetrics()
+    for c in range(d.tbl.columnCount()):
+        head = d.tbl.horizontalHeaderItem(c).text()
+        assert d.tbl.columnWidth(c) >= fm.horizontalAdvance(head), head

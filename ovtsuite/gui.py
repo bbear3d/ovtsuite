@@ -3460,7 +3460,7 @@ if HAVE_QT:
                 self.resize(620, 560)
                 self._build_edc15()
             else:
-                self.resize(460, 520)
+                self.resize(820 if self._has_cmp else 560, 520)
                 self._build_edc16()
             btns = QtWidgets.QHBoxLayout()
             btns.addStretch(1)
@@ -3510,11 +3510,18 @@ if HAVE_QT:
             self.tbl = QtWidgets.QTableWidget(0, len(_cols))
             self.tbl.setHorizontalHeaderLabels(_cols)
             self.tbl.verticalHeader().setVisible(False)
-            self.tbl.horizontalHeader().setSectionResizeMode(
-                QtWidgets.QHeaderView.ResizeMode.Stretch)
+            hh = self.tbl.horizontalHeader()
+            # every column as wide as its heading (and the drop-down) needs;
+            # the last one takes what is left
+            hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+            hh.setStretchLastSection(True)
+            hh.setMinimumSectionSize(70)
             self.tbl.itemChanged.connect(self._cell_changed16)
             self._style_table(self.tbl, paste=self._paste16,
                               extra=self._vss_menu16 if self._has_cmp else None)
+            # the source column's text lives under the drop-down, for Copy
+            from .gui_cellmarks import NoTextDelegate
+            self.tbl.setItemDelegateForColumn(4, NoTextDelegate(self.tbl))
             v.addWidget(self.tbl)
 
             cav = QtWidgets.QHBoxLayout()
@@ -3584,6 +3591,28 @@ if HAVE_QT:
                 QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
             install_clipboard(tbl, paste=paste, extra=extra)
 
+        def _role_labels16(self, rows):
+            """Each row named as the gear-ratio dialog names its copies: the
+            transmission the coding selecting it stands for ("Automatic . main
+            block", "Manual"). Only where the structure gives one per row and
+            they differ; else "primary" / "variant"."""
+            plain = ["primary" if r["primary"] else "variant" for r in rows]
+            try:
+                from .variant import copy_codings
+                by = copy_codings(self.session, "VSSCD_ImpPerDist_C")
+            except Exception:
+                return plain
+            txs = []
+            for r in rows:
+                hit = by.get(r["addr"])
+                if not hit or not hit[1]:
+                    return plain
+                txs.append(hit[1][:1].upper() + hit[1][1:])
+            if len(set(txs)) != len(txs):
+                return plain
+            return [tx + (" \u00b7 main block" if r["primary"] else "")
+                    for tx, r in zip(txs, rows)]
+
         def _vss_src_entities(self):
             ents = {e.name: e for e in list(self.session.entities)
                     + list(self.session.variant_entities())}
@@ -3602,9 +3631,9 @@ if HAVE_QT:
             self._rows16 = rows
             self._src_combos = []
             self.tbl.setRowCount(len(rows))
+            roles = self._role_labels16(rows)
             for i, r in enumerate(rows):
-                role = QtWidgets.QTableWidgetItem(
-                    "primary" if r["primary"] else "variant")
+                role = QtWidgets.QTableWidgetItem(roles[i])
                 role.setFlags(QtCore.Qt.ItemIsEnabled)
                 self.tbl.setItem(i, 0, role)
                 ad = QtWidgets.QTableWidgetItem("0x%X" % r["addr"])
