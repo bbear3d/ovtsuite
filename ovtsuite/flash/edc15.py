@@ -93,6 +93,14 @@ LAYOUT_1M = FlashLayout("1 MB (Am29F800BT)", 0x100000, tuple(SECTORS_1M),
 #: Span the A19-decode size probe compares (small; decisive and quick).
 PROBE_LEN = 0x1000
 
+#: CPU addresses the window survey samples (each is 0x70000 into a 512 KB
+#: window, clear of the 0x07F000 peripheral and the internal ROM). Where one of
+#: these shows the same bytes as the proven read window it is an alias of the
+#: same flash cell; where it shows an upper/lower-half difference the window
+#: reaches the other half of a 1 MB part.
+SURVEY_ADDRS = (0x070000, 0x170000, 0x1F0000, 0x270000, 0x2F0000, 0x370000,
+                0x3F0000, 0x470000, 0x870000, 0x8F0000)
+
 # The C167's own 32 KB internal boot ROM, as the RUNNING ECU maps it. Much of
 # the firmware lives here rather than in the flash: each reference image makes
 # ~1000 `CALLS 00H, <off>` into it, 99.4-99.8% at offsets <= 0x7FFF. The V4.1
@@ -762,12 +770,14 @@ class Edc15Flash:
         if not _plausible_flash(sample):
             self.log("Size probe: the read window returned no usable data; "
                      "assuming a 512 KB flash.")
+            self._survey_windows(known, sample)
             return self.layout
         self._stop(is_stop)
         if not self._probe_equal(known, w + 0xF0000):
             self.log("Size probe: 0x%06X is not a readable flash window on this ECU "
                      "(%s); assuming a 512 KB flash."
                      % (w + 0xF0000, self._probe_sample(w + 0xF0000)[:8].hex(" ")))
+            self._survey_windows(known, sample)
             return self.layout
         one_mb = False
         for lo, hi in ((w + 0x70000, w + 0xF0000), (w, w + 0x80000)):
@@ -778,6 +788,23 @@ class Edc15Flash:
         self.layout = LAYOUT_1M if one_mb else LAYOUT_512
         self.log("Detected EDC15 flash: %s." % self.layout.name)
         return self.layout
+
+    def _survey_windows(self, known, ref):
+        """Log what each candidate CPU window returns (read-only), so a bench
+        log shows which windows are flash, which half of a 1 MB part they
+        reach, and which are open bus. ``ref`` is the sample read at ``known``
+        through the proven window."""
+        self.log("Window survey (reference 0x%06X = %s):" % (known, ref[:8].hex(" ")))
+        for cpu in SURVEY_ADDRS:
+            try:
+                got = self._probe_sample(cpu)
+            except (KLineError, KLineTimeout) as ex:
+                self.log("  0x%06X: no reply (%s)" % (cpu, ex))
+                continue
+            kind = ("same as the read window" if got[:len(ref)] == ref[:len(got)]
+                    else "flash-like, differs" if _plausible_flash(got)
+                    else "open bus / pattern")
+            self.log("  0x%06X: %s  [%s]" % (cpu, got[:8].hex(" "), kind))
 
     def _probe_sample(self, cpu) -> bytes:
         """A short real read at ``cpu`` (a few dozen bytes) for inspection."""

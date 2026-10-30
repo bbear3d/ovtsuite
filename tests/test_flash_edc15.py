@@ -348,11 +348,14 @@ class MockEdc15:
         raise AssertionError("address 0x%06X not in a flash window" % cpu)
 
     def _read_bytes(self, cpu, n):
-        """What a read of ``n`` bytes at ``cpu`` returns."""
-        if cpu >= 0x200000 and not self.prog_window_readable:
-            return bytes([(cpu >> 16) & 0xFF, 0x00] * ((n + 1) // 2))[:n]
-        o = self._chip(cpu)
-        return bytes(self.flash[o:o + n])
+        """What a read of ``n`` bytes at ``cpu`` returns: flash in the read
+        window (and the programming window if readable), else the open-bus
+        pattern ``<segment> 00`` repeated, as the bench log showed."""
+        if (0x080000 <= cpu < 0x100000) or (
+                0x200000 <= cpu < 0x400000 and self.prog_window_readable):
+            o = cpu & (self.size - 1)
+            return bytes(self.flash[o:o + n])
+        return bytes([(cpu >> 16) & 0xFF, 0x00] * ((n + 1) // 2))[:n]
 
     def _cpu_read(self, cpu, n):
         """Serve the CPU-bus address space the running ECU maps: the internal
@@ -794,3 +797,14 @@ def test_read_refuses_a_pattern_image():
     f.layout = E.LAYOUT_1M                    # forced wrong layout: reads the open bus
     with pytest.raises(Exception, match="no flash data"):
         f.read_flash()
+
+
+def test_window_survey_is_logged_when_the_programming_window_is_unreadable():
+    logs = []
+    ecu = MockEdc15(prog_window_readable=False)
+    f = E.Edc15Flash(_Link(ecu), log=logs.append)
+    f.connect("V", "Low", loader="sector")
+    assert f.detect_layout() is E.LAYOUT_512
+    survey = [l for l in logs if l.startswith("  0x")]
+    assert len(survey) == len(E.SURVEY_ADDRS)
+    assert any("open bus" in l for l in survey)
