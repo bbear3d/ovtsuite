@@ -829,3 +829,34 @@ def test_inconclusive_probe_keeps_512_and_logs_a_survey():
     assert f.detect_layout() is E.LAYOUT_512
     assert any("inconclusive" in l for l in logs)
     assert len([l for l in logs if l.startswith("  0x")]) == len(E.SURVEY_ADDRS)
+
+
+def test_1m_reads_lower_half_at_0x100000_and_upper_half_at_the_firmware_window():
+    f, ecu = _make(size=0x100000)
+    f.connect("V", "Low", loader="flash")
+    f.detect_layout()
+    seen = []
+    real = f._flash_read_cpu
+    f._flash_read_cpu = lambda cpu, n: (seen.append((cpu, n)), real(cpu, n))[1]
+    img = f.read_flash()
+    assert img == bytes(ecu.flash)
+    assert seen[0][0] == 0x100000                        # lower half, A19 = 0
+    upper = [c for c, n in seen if c < 0x100000]
+    assert upper[0] == 0x080000                          # upper half, the proven window
+    assert max(c + n for c, n in seen if c >= 0x100000) <= 0x100000 + 0x80000
+    # no packet straddles the two windows: the first upper read follows the last lower one
+    lower_end = max(c + n for c, n in seen if c >= 0x100000)
+    assert lower_end == 0x100000 + 0x80000
+
+
+def test_1m_sector_checksums_use_the_same_split_windows():
+    f, ecu = _make(size=0x100000)
+    f.connect("V", "Low", loader="sector")
+    f.detect_layout()
+    asked = []
+    real = f._checksum_cpu
+    f._checksum_cpu = lambda a, b: (asked.append((a, b)), real(a, b))[1]
+    f._sector_checksum_ecu(0x70000, 0x80000)             # last lower sector
+    f._sector_checksum_ecu(0x80000, 0x90000)             # first upper sector
+    f._sector_checksum_ecu(0xFC000, 0x100000)            # boot sector
+    assert asked == [(0x170000, 0x180000), (0x080000, 0x090000), (0x0FC000, 0x100000)]

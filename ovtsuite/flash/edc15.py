@@ -71,12 +71,16 @@ class FlashLayout:
     ignores A19, a 1 MB part decodes it. Hence
 
     * 512 KB: ``read_base`` 0x080000 (historical, bench-proven) -- the whole chip.
-    * 1 MB:  ``read_base`` 0x100000 -- A19 is then ``pos`` bit 19, so one linear
-      window covers the whole chip (0x080000 shows only the upper half).
+    * 1 MB: the lower half (chip 0x00000-0x7FFFF, A19 = 0) is read through
+      ``read_base`` 0x100000 and the upper half (A19 = 1) through the window the
+      firmware itself uses, 0x080000 (``split_base``), so the upper half takes
+      the proven path and only the lower half depends on an inferred window.
 
-    ``write_base`` is the programming window for erase/program (both sizes).
-    The 1 MB read window and 1 MB programming reach are inferred from that
-    aliasing and not yet bench-proven on a 1 MB ECU. See docs/edc15-1mb.md.
+    ``cpu_read(off)`` gives the CPU address to read chip offset ``off`` at.
+    ``write_base`` is the programming window for erase/program (both sizes): the
+    1 MB lower half programs at 0x200000-0x27FFFF, the upper at 0x280000-0x2FFFFF.
+    The 1 MB windows are inferred from the aliasing and not yet bench-proven on a
+    1 MB ECU. See docs/edc15-1mb.md.
     """
     name: str
     size: int
@@ -85,12 +89,21 @@ class FlashLayout:
     boot_end: int
     read_base: int
     write_base: int = SECTOR_WRITE_BASE
+    split: int = 0              # chip offset where a second read window starts (0: none)
+    split_base: int = 0         # CPU address that chip offset ``split`` is read at
+
+    def cpu_read(self, off: int) -> int:
+        """CPU address to read chip offset ``off`` at."""
+        if self.split and off >= self.split:
+            return self.split_base + (off - self.split)
+        return self.read_base + off
 
 
 LAYOUT_512 = FlashLayout("512 KB (Am29F400BT)", FLASH_SIZE, tuple(SECTORS),
                          BOOT_START, BOOT_END, SECTOR_READ_BASE)
 LAYOUT_1M = FlashLayout("1 MB (Am29F800BT)", 0x100000, tuple(SECTORS_1M),
-                        0xFC000, 0xFFFFF, 0x100000)
+                        0xFC000, 0xFFFFF, 0x100000, split=0x80000,
+                        split_base=SECTOR_READ_BASE)
 
 #: Span the A19-decode size probe compares (small; decisive and quick).
 PROBE_LEN = 0x1000
@@ -548,7 +561,9 @@ class Edc15Flash:
             while pos < lay.size:
                 self._stop(is_stop)
                 n = min(0xFE, lay.size - pos)
-                out += self._flash_read_cpu(lay.read_base + pos, n)
+                if lay.split and pos < lay.split:
+                    n = min(n, lay.split - pos)        # never straddle the two windows
+                out += self._flash_read_cpu(lay.cpu_read(pos), n)
                 pos += n
                 pct = min(100, pos * 100 // lay.size)
                 if pct != before and on_percent:
@@ -676,8 +691,8 @@ class Edc15Flash:
         return (data[0] << 8) | data[1]
 
     def _sector_checksum_ecu(self, start, end):
-        base = self.layout.read_base
-        return self._checksum_cpu(start + base, end + base)
+        cs = self.layout.cpu_read(start)
+        return self._checksum_cpu(cs, cs + (end - start))
 
     def _erase_sector(self, cpu_addr):
         self._loader_cmd(0xB0, bytes([(cpu_addr >> 16) & 0xFF, (cpu_addr >> 8) & 0xFF,
