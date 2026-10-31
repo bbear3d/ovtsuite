@@ -243,6 +243,10 @@ class ModuleSpec:
         fn = self.resolve(hook)
         if fn is None:
             return None
+        from ..moduleview import ENTITY_HOOKS, viewed
+        if hook in ENTITY_HOOKS and args:
+            # the module's own datasets, not a definition file's loose tables
+            args = (viewed(args[0]),) + tuple(args[1:])
         return fn(*args, **accepted(fn, kw))
 
 

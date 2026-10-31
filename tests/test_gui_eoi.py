@@ -156,6 +156,7 @@ def test_every_view_fills_its_cells_and_go_to_soi_works_without_a_selection(win)
     ws = win.current
     d = gui_eoi.open_for(ws)
     QtWidgets.QApplication.processEvents()
+    d.edit.heat.setChecked(True)            # plain cells until the Heatmap is on
     for i in range(4):
         d.mode_group.button(i).click()
         QtWidgets.QApplication.processEvents()

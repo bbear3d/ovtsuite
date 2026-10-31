@@ -81,8 +81,20 @@ The window does exactly this with the tables in your file.
   white cells are used alone at this coolant temperature, shaded ones are
   blended with a neighbouring table, grey ones are not used at all.
 
-EOI cells are coloured from before TDC (green) to late (red). An *italic*
-value is one where the SOI limiter (EDC16 `InjCrv_phiMIMax_MAP`) caps the SOI.
+Cells are plain until you tick **Heatmap** (at the right of the **Modify
+selection** bar, as in the table editor): then every cell is shaded by its
+value with the table editor's ramp, blue (low) to red (high), scaled over the
+grid and the comparison. The setting is remembered. The one view that keeps
+its own shading is a **Duration table**, where white, shaded and grey show
+how much the ECU uses each cell (with the Heatmap on, that is in the
+tooltip). An *italic* value is one where the SOI limiter (EDC16
+`InjCrv_phiMIMax_MAP`) caps the SOI.
+
+**Reset conditions** (beside the conditions) puts **Coolant**, **SOI set**,
+**Intake air**, **Air pressure**, **Fuel temperature** and **Start quantity**
+back to their defaults (the warm coolant temperature, the base set, 20 °C,
+1013 hPa, Reference and 40 mg/stroke). It is greyed out while they already
+are, and a changed box is in bold.
 
 Click a cell to see how it was worked out: which SOI tables were blended, the
 selector value, the two duration tables and their weights, and the result.
@@ -92,9 +104,6 @@ selected, just the table). **Go to duration table** lists the duration tables
 the clicked cell reads and opens one with the cells it uses marked. The line
 under the buttons says what was opened.
 
-**SOI** and **Duration** cells are shaded from light (low) to darker blue
-(high) across the grid.
-
 The grid follows the app's table conventions: rows alternate, and a selected
 cell shows in the solid accent colour (the band or shade comes back when you
 select elsewhere). **Right-click** a cell for **Copy** (the selected cells as
@@ -103,6 +112,47 @@ clipboard, from the top-left selected cell, or one value over the whole
 selection -- as typing them, so it is one undo step; a copy made with **Copy
 table** pastes without its headers), **Set target EOI for the selection...**,
 **Go to SOI table** and **Go to duration table**.
+
+### Editing like the table editor
+
+The **Modify selection** bar works as the table editor's: **Set**, **Add**,
+**Subtract**, **Multiply** (1.05 to start with) or **Divide** the selected
+cells by a number and click **Apply** (or press Enter); with nothing selected
+it applies to the whole grid. **Fill** (**↔**, **↕**, **▦**) interpolates the
+selection and **Smooth** averages each selected cell with its neighbours. It
+works on what the grid shows -- EOI, SOI or Duration, or a duration table's
+own cells -- and is as typing the new values: one undo step, the same SOI
+limit, and the question before the fuel quantity is touched. The line under
+the grids says how many cells changed and how many stopped at the limiter
+or could not reach the wanted EOI. **Table no.** is read only.
+
+The table editor's keyboard shortcuts (**Edit > Cells**, changed in
+**Tools > Options > Keyboard shortcuts**) work in the grids and the 3D
+surface: **Alt+Up / Alt+Down** step the selected cells (**Alt+Shift** ten
+steps), **Alt+PgUp / PgDn** change them by 1 %, **Ctrl+Shift+L** interpolates,
+**Ctrl+Shift+M** smooths, **Ctrl+R** copies the selected cells from the
+comparison, **Ctrl+Shift+R** puts them back to the values they had when the
+file was read and **F11** to the last saved ones. The step is 0.5° in EOI and
+SOI and 0.1° in Duration and in a duration table; **Set step...** (right-click
+or **Advanced**) changes it for the view shown. **Ctrl+arrow** jumps to the end
+of the data, **=** opens a box for a sum over the selection (`+5`, `*1.05`,
+`=120`, `+3%`, `x*1.1+2`), and **Ctrl+Z / Ctrl+Y** are the tab's undo and redo.
+
+Going back to the read or saved values works on what is shown: the tables
+are read from that earlier image, the EOI, SOI or duration worked out from
+them, and written as typed values, so a cell that shares tables with a
+neighbour can land close to, not exactly on, its old value. In a duration
+table the cells themselves go back exactly.
+
+**3D surface** (**Ctrl+3**) opens the table editor's surface to the left of the
+grids, one beside each grid at the same height (the comparison's too,
+read only, turning and zooming with it). Drag empty space to orbit, use the
+wheel to zoom, **Reset view** and **Home** go back to the starting angle,
+**Wireframe** draws the lines only and **Height** stretches the surface. Click
+a point to select that cell (in both grids too), **Shift** extends, **Ctrl+click**
+adds or removes, and **Ctrl+drag** raises or lowers every selected point by
+the view's step; the arrow keys move the current point. Edits are the same
+as typing them.
 
 ### Comparing
 
@@ -115,6 +165,13 @@ cell or range selected in one is selected in the other. A cell that differs
 from the comparison has an **orange outline** in both, over the EOI band or
 the shade it keeps. The window opens large enough for both grids on a
 laptop-size screen, and the bar between them shares out the height.
+
+**Difference view** (at the right of the **Modify selection** bar, the same
+menu as the table editor's) shows the comparison grid -- and, if you choose,
+the primary grid, which is then read only -- as the difference between the
+two instead of values: this file − comparison, comparison − this file,
+percent change or ratio, with unchanged cells optionally blank and a tint by
+direction. Copying still copies the real values.
 
 Right-click either grid for **Copy comparison → primary** (the selected
 cells: the primary is changed as if you had typed the comparison's values,

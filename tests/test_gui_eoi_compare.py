@@ -97,6 +97,11 @@ def dlg(app, monkeypatch):
     prim = Session(_grid(8.0), _grid(12.0), "tuned.bin")
     comp = Session(_grid(8.0, [(0, 1, -2.0), (2, 2, 3.0)]), _grid(12.0), "stock.bin")
     monkeypatch.setattr(_eoi, "models", lambda s: [s.model])
+    # nothing remembered between runs: heatmap off, surface hidden
+    from ovtsuite import gui_eoi_edit
+    monkeypatch.setattr(gui_eoi_edit, "remembered", lambda k, default=False: False)
+    monkeypatch.setattr(gui_eoi_edit, "remember", lambda k, on: None)
+    monkeypatch.setattr(gui_eoi, "remembered", lambda k, default=False: False)
     ws = QtWidgets.QWidget()
     ws.primary, ws.comparison, ws.view_only = prim, comp, None
     d = gui_eoi.EoiDialog(ws, parent=ws)
@@ -116,7 +121,9 @@ def test_grid_follows_the_app_table_conventions(dlg):
     for g in (dlg.grid, dlg.cmpv.grid):
         assert g.alternatingRowColors()
         assert isinstance(g.itemDelegate(), CellDelegate)
-    # the explicit shading the view is designed around is still there
+    # plain cells, as the table editor's, until the Heatmap is switched on
+    assert dlg.grid.item(1, 1).background().style() == QtCore.Qt.BrushStyle.NoBrush
+    dlg.edit.heat.setChecked(True)
     assert dlg.grid.item(1, 1).background().style() != QtCore.Qt.BrushStyle.NoBrush
 
 
@@ -125,9 +132,11 @@ def test_comparison_grid_is_below_with_the_same_rows_and_outlines_the_difference
     assert cv.box.isVisibleTo(dlg) and dlg.prim_head.isVisibleTo(dlg)
     assert "tuned.bin" in dlg.prim_head.text() and "stock.bin" in cv.head.text()
     assert dlg.split.orientation() == QtCore.Qt.Orientation.Vertical
-    assert dlg.split.widget(1) is cv.box                      # under the primary
+    assert dlg.split.widget(1) is dlg.row2                    # under the primary
+    assert cv.box.parentWidget() is dlg.row2
     assert (cv.grid.rowCount(), cv.grid.columnCount()) == (3, 3)
     assert dlg.mode() == "eoi"
+    dlg.edit.heat.setChecked(True)          # shaded cells keep their outline
     # EOI = duration - SOI: primary 4 everywhere on the diagonal bands; the
     # comparison's SOI differs at (0, 1) and (2, 2)
     diff = {(r, c) for r in range(3) for c in range(3)
@@ -283,6 +292,11 @@ def test_no_comparison_no_second_grid(app, monkeypatch):
     from ovtsuite import gui_eoi
     prim = Session(_grid(8.0), _grid(12.0), "tuned.bin")
     monkeypatch.setattr(_eoi, "models", lambda s: [s.model])
+    # nothing remembered between runs: heatmap off, surface hidden
+    from ovtsuite import gui_eoi_edit
+    monkeypatch.setattr(gui_eoi_edit, "remembered", lambda k, default=False: False)
+    monkeypatch.setattr(gui_eoi_edit, "remember", lambda k, on: None)
+    monkeypatch.setattr(gui_eoi, "remembered", lambda k, default=False: False)
     ws = QtWidgets.QWidget()
     ws.primary, ws.comparison, ws.view_only = prim, None, None
     d = gui_eoi.EoiDialog(ws, parent=ws)

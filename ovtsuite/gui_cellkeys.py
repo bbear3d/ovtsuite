@@ -663,6 +663,19 @@ def fill(ws, text: str) -> int:
 
 
 # ---------------------------------------------------------------- wiring
+def _to_host(text: str) -> bool:
+    """A window with its own grids (the End of injection window) marks them
+    with ``cell_host``; an action fired while one has the focus is that
+    window's to run (``host.cell_action(text)``), not the main table's."""
+    w = QtWidgets.QApplication.focusWidget()
+    while w is not None:
+        host = getattr(w, "cell_host", None)
+        if host is not None:
+            return bool(host.cell_action(text))
+        w = w.parentWidget()
+    return False
+
+
 #: (menu text, default shortcut, handler(win))
 ACTIONS = [
     ("Step up", "Alt+Up", lambda w: step(w, 1)),
@@ -696,7 +709,7 @@ def add_menu(win, edit_menu) -> QtWidgets.QMenu:
         if keys:
             a.setShortcut(keys)
         a.setShortcutContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        a.triggered.connect(lambda _c=False, f=fn: f(win))
+        a.triggered.connect(lambda _c=False, f=fn, t=text: _to_host(t) or f(win))
         sub.addAction(a)
         acts.append(a)
         win._needs_file.append(a)
