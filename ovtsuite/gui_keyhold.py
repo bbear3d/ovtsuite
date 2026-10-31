@@ -30,7 +30,7 @@ from PySide6 import QtCore, QtWidgets
 #: a shortcut fires within this long of the key press that caused it
 PRESS_WINDOW = 0.25
 #: a hold with no repeat for this long is ended (the release was lost)
-EXPIRY_MS = 2500
+EXPIRY_MS = 5000
 
 
 class _Watch(QtCore.QObject):

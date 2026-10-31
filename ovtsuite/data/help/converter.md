@@ -188,6 +188,14 @@ other languages a newer project keeps beside each text, and folders inside
 folders (each is listed at the top). *Potential maps* is WinOLS's own
 search: WinOLS shows it for the map pack as it does for any.
 
+A WinOLS map converts its values by a factor and an offset only, and holds no
+text. Converting a definition (a DAMOS, an XDF, an A2L) to a map pack, a map
+whose conversion is not of that kind (`100/X`, `500000/(X+1)`) is written
+**raw** -- factor 1, its own unit -- as WinOLS's own DAMOS import keeps it, and
+a text constant is written as a row of **hexadecimal bytes**; the report names
+each one ("written raw", "written as 11 bytes in hexadecimal"). A map whose
+values are not 8, 16 or 32 bits is left out and said so.
+
 ## Port a definition to another software version
 
 A definition is made for one software version. On another version of the

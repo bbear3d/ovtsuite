@@ -347,18 +347,30 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
             blob: Optional[bytearray] = None) -> bool:
     lin = _linear(e.equation)
     org = _org(e.bits, little, bool(getattr(e, "is_float", False)))
-    if lin is None or org is None or getattr(e, "text_kind", ""):
-        warnings.append("%s: left out (%s)" % (
-            e.name, "text" if getattr(e, "text_kind", "") else
-            "conversion %s is not linear" % e.equation if lin is None
-            else "%d-bit data" % e.bits))
+    text = bool(getattr(e, "text_kind", ""))
+    if org is None:
+        warnings.append("%s: left out (%d-bit data)" % (e.name, e.bits))
         return False
+    if text:
+        # WinOLS has no text map: the bytes, as a row of hexadecimal values
+        lin = (1.0, 0.0)
+        warnings.append("%s: written as %d bytes in hexadecimal (a WinOLS map "
+                        "does not hold text)" % (e.name, e.cols * max(1, e.rows)))
+    elif lin is None:
+        # a WinOLS map converts by a factor and an offset only; its own DAMOS
+        # import keeps such a map raw (factor 1) with its unit, so does this
+        warnings.append("%s: written raw, conversion %s is not linear (a "
+                        "WinOLS map converts by a factor and an offset only)"
+                        % (e.name, e.equation))
+        lin = (1.0, 0.0)
     new = fmt >= 503
     blob = blob if blob is not None else bytearray()
     size = max(1, e.bits // 8)
     x, y = e.x, e.y
     cols, rows = e.cols, e.rows
-    if e.kind == "constant":
+    if text:
+        typ, cols, rows, x, y = 3, max(1, e.cols * max(1, e.rows)), 1, None, None
+    elif e.kind == "constant":
         typ, cols, rows, x, y = 2, 1, 1, None, None
     elif e.kind in ("curve", "indexed"):
         typ, cols, rows, y = 3, e.cols * max(1, e.rows), 1, None
@@ -376,7 +388,7 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
     w.u8(0)
     # the description WinOLS lists the map by: never empty in the samples
     w.mlstr(e.title if e.title != e.name else (e.description or e.name))
-    for v in (typ, 2, org, size, 10, folder):
+    for v in (typ, 2, org, size, 16 if text else 10, folder):
         w.u32(v)
     w.str(e.name)
     pre = bytearray(_PRE503 if new else _PRE)
