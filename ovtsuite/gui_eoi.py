@@ -19,6 +19,10 @@ What it shows, over the start-of-injection map's own breakpoints:
   the selector, as the ECU does;
 * **Table no.** -- which duration table(s) it reads, with the blend.
 
+**Units** shows the angles (all but Table no.) as crank degrees or as
+microseconds at each cell's own engine speed; typing, copying and Set target
+EOI follow it.
+
 Typing a value edits what you see: an EOI moves the SOI (the fuelling stays
 calibrated), an SOI moves the SOI tables, a duration moves the duration
 tables the ECU blends there (that is fuel quantity on a PD engine, so it asks
@@ -36,6 +40,12 @@ from . import eoi as _eoi
 
 MODES = (("eoi", "EOI"), ("soi", "SOI"), ("dur", "Duration"),
          ("idx", "Table no."))
+
+#: how angles are shown: crank degrees, or time at the cell's own engine speed
+UNITS = (("deg", "Degrees", "Crank degrees."),
+         ("us", "µs", "Microseconds at each cell's engine speed: the same "
+                      "angle is a longer time at a lower speed, so every cell "
+                      "converts at its own rpm (no time at 0 rpm)."))
 
 #: EOI bands (deg ATDC): before TDC, then later and later
 _EOI_BANDS = ((0.0, "#E1F5EE"), (4.0, "#F1EFE8"), (8.0, "#FAEEDA"),
@@ -200,6 +210,19 @@ class EoiDialog(QtWidgets.QDialog):
             self.mode_group.addButton(b, i)
             top.addWidget(b)
         top.addSpacing(12)
+        top.addWidget(QtWidgets.QLabel("Units"))
+        self.unit_group = QtWidgets.QButtonGroup(self)
+        self.unit_group.setExclusive(True)
+        for i, (key, text, tip) in enumerate(UNITS):
+            b = QtWidgets.QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setCheckable(True)
+            b.setChecked(i == 0)
+            b.setProperty("unit", key)
+            self.unit_group.addButton(b, i)
+            top.addWidget(b)
+        top.addSpacing(12)
         top.addWidget(QtWidgets.QLabel("View"))
         self.view = QtWidgets.QComboBox()
         self.view.setMinimumContentsLength(24)
@@ -290,6 +313,7 @@ class EoiDialog(QtWidgets.QDialog):
         self.soi_box.currentIndexChanged.connect(lambda _i: self._set_changed())
         self.coolant.valueChanged.connect(lambda _v: self.rebuild())
         self.mode_group.idClicked.connect(lambda _i: self.rebuild())
+        self.unit_group.idClicked.connect(lambda _i: self.rebuild())
         self.view.currentIndexChanged.connect(lambda _i: self.rebuild())
         self.grid.currentCellChanged.connect(
             lambda r, c, _r, _c: self._show_info(r, c))
@@ -366,6 +390,32 @@ class EoiDialog(QtWidgets.QDialog):
         b = self.mode_group.checkedButton()
         return b.property("mode") if b is not None else "eoi"
 
+    def unit(self) -> str:
+        b = self.unit_group.checkedButton()
+        return b.property("unit") if b is not None else "deg"
+
+    def _angles_shown(self) -> bool:
+        """True when the grid holds angles (every view but Table no.)."""
+        return self.table_view() is not None or self.mode() != "idx"
+
+    def _in_us(self) -> bool:
+        return self.unit() == "us" and self._angles_shown()
+
+    def _show(self, deg: float, rpm: float) -> Optional[float]:
+        """An angle as the grid shows it: degrees, or µs at ``rpm`` (None
+        where there is no time, at 0 rpm)."""
+        return _eoi.deg_to_us(deg, rpm) if self._in_us() else deg
+
+    def _shown_text(self, deg: float, rpm: float, nd: int = 2) -> str:
+        v = self._show(deg, rpm)
+        if v is None:
+            return "-"
+        return _num(v, 0 if self._in_us() else nd)
+
+    def _to_deg(self, typed: float, rpm: float) -> Optional[float]:
+        """What was typed into a cell, as degrees."""
+        return _eoi.us_to_deg(typed, rpm) if self._in_us() else typed
+
     def table_view(self) -> Optional[int]:
         """Duration table number shown on its own axes, or None (the grid)."""
         k = self.view.currentData()
@@ -391,7 +441,8 @@ class EoiDialog(QtWidgets.QDialog):
         self.when.setVisible(False)
         self._sync_inputs()
         notes = list(m.notes) + [
-            "EOI in degrees ATDC: negative = before TDC. SOI in degrees BTDC."]
+            "EOI in degrees ATDC: negative = before TDC. SOI in degrees BTDC. "
+            "Units: Degrees, or µs at each cell's own engine speed."]
         self.notes.setText(" ".join(notes))
         self.rebuild()
 
@@ -439,6 +490,8 @@ class EoiDialog(QtWidgets.QDialog):
         k = self.table_view()
         for b in self.mode_group.buttons():
             b.setEnabled(k is None)
+        for b in self.unit_group.buttons():
+            b.setEnabled(self._angles_shown())
         self.target_btn.setEnabled(k is None and not self._read_only())
         self.go_soi.setEnabled(k is None)
         self.more_btn.setEnabled(not self._read_only())
@@ -483,18 +536,23 @@ class EoiDialog(QtWidgets.QDialog):
                 cell = calc.cell(cool, rpm, q, mem)
                 self._cells[(r, c)] = cell
                 if mode == "eoi":
-                    val, txt = cell.eoi, _num(cell.eoi, 2)
+                    deg = cell.eoi
                 elif mode == "soi":
-                    val, txt = cell.soi_btdc, _num(cell.soi_btdc, 2)
+                    deg = cell.soi_btdc
                 elif mode == "dur":
-                    val, txt = cell.duration, _num(cell.duration, 2)
+                    deg = cell.duration
                 else:
-                    val, txt = cell.index, "%.2f" % cell.index
+                    deg = cell.index
+                if mode == "idx":
+                    val, txt = deg, "%.2f" % deg
+                else:
+                    val, txt = self._show(deg, rpm), self._shown_text(deg, rpm)
                 it = QtWidgets.QTableWidgetItem(txt)
                 it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 it.setForeground(_INK)
                 if mode == "eoi":
-                    bg = next(col for lim, col in _EOI_BANDS if val <= lim)
+                    # the bands are crank angles, whatever the grid shows
+                    bg = next(col for lim, col in _EOI_BANDS if deg <= lim)
                     it.setBackground(QtGui.QColor(bg))
                 elif mode == "idx":
                     it.setBackground(QtGui.QColor(_IDX[min(int(val), len(_IDX) - 1)]))
@@ -505,7 +563,7 @@ class EoiDialog(QtWidgets.QDialog):
                     it.setToolTip("SOI capped by %s" % calc.model.limiter.name)
                 flags = QtCore.Qt.ItemFlag.ItemIsSelectable | \
                     QtCore.Qt.ItemFlag.ItemIsEnabled
-                if mode != "idx" and not self._read_only():
+                if mode != "idx" and val is not None and not self._read_only():
                     flags |= QtCore.Qt.ItemFlag.ItemIsEditable
                 it.setFlags(flags)
                 it.setData(QtCore.Qt.ItemDataRole.UserRole, val)
@@ -514,11 +572,12 @@ class EoiDialog(QtWidgets.QDialog):
             vals = [it.data(QtCore.Qt.ItemDataRole.UserRole)
                     for it in (self.grid.item(r, c) for r in range(self.grid.rowCount())
                                for c in range(self.grid.columnCount())) if it is not None]
+            vals = [v for v in vals if v is not None] or [0.0]
             lo, hi = min(vals), max(vals)
             for r in range(self.grid.rowCount()):
                 for c in range(self.grid.columnCount()):
                     it = self.grid.item(r, c)
-                    if it is None:
+                    if it is None or it.data(QtCore.Qt.ItemDataRole.UserRole) is None:
                         continue
                     f = 0.0 if hi <= lo else (it.data(QtCore.Qt.ItemDataRole.UserRole) - lo) / (hi - lo)
                     it.setBackground(QtGui.QColor(_SEQ[min(int(f * len(_SEQ)), len(_SEQ) - 1)]))
@@ -533,7 +592,9 @@ class EoiDialog(QtWidgets.QDialog):
         for r in range(len(t.vals)):
             for c in range(len(t.vals[0])):
                 w = use[r][c]
-                it = QtWidgets.QTableWidgetItem(_num(t.vals[r][c], 2))
+                rpm = t.point(r, c)[0]
+                val = self._show(t.vals[r][c], rpm)
+                it = QtWidgets.QTableWidgetItem(self._shown_text(t.vals[r][c], rpm))
                 it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 if w <= 0:
                     it.setBackground(_UNUSED_BG)
@@ -550,10 +611,10 @@ class EoiDialog(QtWidgets.QDialog):
                     it.setToolTip("Used alone at %.0f °C" % cool)
                 flags = QtCore.Qt.ItemFlag.ItemIsSelectable | \
                     QtCore.Qt.ItemFlag.ItemIsEnabled
-                if not self._read_only():
+                if val is not None and not self._read_only():
                     flags |= QtCore.Qt.ItemFlag.ItemIsEditable
                 it.setFlags(flags)
-                it.setData(QtCore.Qt.ItemDataRole.UserRole, t.vals[r][c])
+                it.setData(QtCore.Qt.ItemDataRole.UserRole, val)
                 it.setData(QtCore.Qt.ItemDataRole.UserRole + 1, w)
                 self.grid.setItem(r, c, it)
 
@@ -575,9 +636,11 @@ class EoiDialog(QtWidgets.QDialog):
             rpm, q = t.point(r, c)
             it = self.grid.item(r, c)
             w = it.data(QtCore.Qt.ItemDataRole.UserRole + 1) if it else 0
+            us = _eoi.deg_to_us(t.vals[r][c], rpm)
             self.info.setText(
-                "<b>%s</b> at %s rpm, %s mg: %s° &nbsp; used %s at %.0f °C" % (
+                "<b>%s</b> at %s rpm, %s mg: %s° %s&nbsp; used %s at %.0f °C" % (
                     t.e.name, _num(rpm, 0), _num(q, 1), _num(t.vals[r][c], 2),
+                    "(%s µs) " % _num(us, 0) if us is not None else "",
                     "alone" if w >= 0.999 else ("with weight %.0f %%" % (100 * w)
                                                 if w > 0 else "not at all"),
                     self.coolant.value()))
@@ -621,12 +684,24 @@ class EoiDialog(QtWidgets.QDialog):
                 m.duration.selector.name, _num(cell.soi, 2), cell.index,
                 dur_names, _num(cell.duration, 2),
                 _num(cell.duration, 2), _num(cell.soi_btdc, 2),
-                _eoi.fmt_angle(cell.eoi, 2)))
+                _eoi.fmt_angle(cell.eoi, 2)) + self._time_line(cell))
         for i, _w in cell.dur_members:
             e = calc.dur_t[i].e
             cells = [(rr, cc) for rr, cc, _ in calc.dur_t[i].weights(
                 cell.rpm, cell.q_dur if cell.q_dur is not None else cell.q)]
             menu.addAction(e.name, lambda e=e, cl=cells: self._goto(e, cl))
+
+    def _time_line(self, cell: _eoi.Cell) -> str:
+        """The cell's three angles as time at its own speed (µs view only)."""
+        if not self._in_us():
+            return ""
+        if _eoi.deg_to_us(1.0, cell.rpm) is None:
+            return "<br><span style='color:gray'>No time at %s rpm.</span>" % _num(cell.rpm, 0)
+        f = lambda d: _num(_eoi.deg_to_us(d, cell.rpm), 0)         # noqa: E731
+        return ("<br><span style='color:gray'>At %s rpm: SOI %s µs BTDC, "
+                "duration %s µs, EOI %s µs %s TDC.</span>" % (
+                    _num(cell.rpm, 0), f(cell.soi_btdc), f(cell.duration),
+                    f(abs(cell.eoi)), "after" if cell.eoi >= 0 else "before"))
 
     # --------------------------------------------------------------- go to
     def _goto(self, e, cells) -> None:
@@ -694,13 +769,21 @@ class EoiDialog(QtWidgets.QDialog):
             return
         calc = self.calc
         try:
-            new = float(it.text().replace(",", ".").replace("°", "").strip())
+            new = float(it.text().replace(",", ".").replace("°", "")
+                        .replace("µs", "").replace("us", "").strip())
         except ValueError:
             self.rebuild()
             return
         r, c = it.row(), it.column()
         cool = self.coolant.value()
         k = self.table_view()
+        # a time typed in is an angle at this cell's own engine speed
+        rpm = calc.dur_t[k].point(r, c)[0] if k is not None else \
+            self._cells[(r, c)].rpm
+        new = self._to_deg(new, rpm)
+        if new is None:                                 # no time at 0 rpm
+            self.rebuild()
+            return
         try:
             if k is not None:
                 plan = _eoi.plan_table(calc.dur_t[k].e, [(r, c, new)])
@@ -745,15 +828,22 @@ class EoiDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------- actions
     def _copy(self) -> None:
         g = self.grid
-        hdr = {"eoi": "EOI deg ATDC (negative = BTDC)", "soi": "SOI deg BTDC",
-               "dur": "Duration deg", "idx": "Duration table no."}[self.mode()]
+        if self._in_us():
+            hdr = {"eoi": "EOI us ATDC (negative = BTDC)", "soi": "SOI us BTDC",
+                   "dur": "Duration us"}.get(self.mode())
+        else:
+            hdr = {"eoi": "EOI deg ATDC (negative = BTDC)", "soi": "SOI deg BTDC",
+                   "dur": "Duration deg", "idx": "Duration table no."}[self.mode()]
         if self.table_view() is not None:
-            hdr = "Duration table %d" % self.table_view()
+            hdr = "Duration table %d%s" % (self.table_view(),
+                                           " (us)" if self._in_us() else "")
         lines = ["%s at %.0f C\t%s" % (hdr, self.coolant.value(), "\t".join(
             g.horizontalHeaderItem(c).text() for c in range(g.columnCount())))]
         for r in range(g.rowCount()):
             lines.append("\t".join([g.verticalHeaderItem(r).text()] + [
-                _num(g.item(r, c).data(QtCore.Qt.ItemDataRole.UserRole), 3)
+                ("-" if g.item(r, c).data(QtCore.Qt.ItemDataRole.UserRole) is None
+                 else _num(g.item(r, c).data(QtCore.Qt.ItemDataRole.UserRole),
+                           1 if self._in_us() else 3))
                 for c in range(g.columnCount())]))
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
 
@@ -764,8 +854,9 @@ class EoiDialog(QtWidgets.QDialog):
         calc = self.calc
         if calc is None:
             return
+        us = self.unit() == "us"
         d = TargetDialog(self, calc, self.coolant.value(),
-                         bool(len(self.selected_points()) > 1))
+                         bool(len(self.selected_points()) > 1), us)
         if d.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         target, only_late, sel_only, tables = d.result_values()
@@ -776,9 +867,13 @@ class EoiDialog(QtWidgets.QDialog):
                        if (cl.rpm, cl.q) == (rpm, q)), None)
             if pts is not None and rc not in pts:
                 return None
-            if only_late and rc is not None and self._cells[rc].eoi <= target:
+            # a time target is a different angle at every speed
+            deg = _eoi.us_to_deg(target, rpm) if us else target
+            if deg is None:                              # no time at 0 rpm
                 return None
-            return target
+            if only_late and rc is not None and self._cells[rc].eoi <= deg:
+                return None
+            return deg
         plan = _eoi.plan_target_eoi(calc, self.coolant.value(), want, tables)
         if not plan.n_cells:
             QtWidgets.QMessageBox.information(self, "Set target EOI",
@@ -810,18 +905,29 @@ class TargetDialog(QtWidgets.QDialog):
     keeping the ECU's duration selection (so the fuelling stays as it is)."""
 
     def __init__(self, parent, calc: _eoi.Calculator, coolant: float,
-                 has_selection: bool):
+                 has_selection: bool, microseconds: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Set target EOI")
         self.calc = calc
         f = QtWidgets.QFormLayout(self)
         self.target = QtWidgets.QDoubleSpinBox()
-        self.target.setRange(-20.0, 30.0)
-        self.target.setSingleStep(0.5)
-        self.target.setDecimals(1)
-        self.target.setSuffix("° ATDC")
-        self.target.setValue(8.0)
-        self.target.setToolTip("Degrees after TDC; a negative value is before TDC.")
+        if microseconds:
+            self.target.setRange(-5000.0, 10000.0)
+            self.target.setSingleStep(25.0)
+            self.target.setDecimals(0)
+            self.target.setSuffix(" µs ATDC")
+            self.target.setValue(500.0)
+            self.target.setToolTip(
+                "Microseconds after TDC; a negative value is before TDC. "
+                "The same time is a different angle at each engine speed, so "
+                "every point gets the angle that is this time at its own rpm.")
+        else:
+            self.target.setRange(-20.0, 30.0)
+            self.target.setSingleStep(0.5)
+            self.target.setDecimals(1)
+            self.target.setSuffix("° ATDC")
+            self.target.setValue(8.0)
+            self.target.setToolTip("Degrees after TDC; a negative value is before TDC.")
         f.addRow("End of injection", self.target)
         self.only_late = QtWidgets.QCheckBox("Only where it ends later than this")
         self.only_late.setChecked(True)

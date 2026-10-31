@@ -76,6 +76,14 @@ The window does exactly this with the tables in your file.
 - **Dataset** (EDC15): the dataset to show.
 - **Show**: **EOI**, **SOI** (degrees before TDC), **Duration**, or
   **Table no.** (which duration tables are read, with the fraction).
+- **Units**: **Degrees** (crank degrees, the default) or **µs**. In µs the
+  EOI, SOI and Duration grids, a duration table in the **View** list, the
+  breakdown line, **Copy table** and **Set target EOI...** all show time instead
+  of angle. A time depends on engine speed (one degree is 1,000,000 / (6 × rpm)
+  µs), so every cell is converted at **its own rpm**: the same 4° is about
+  667 µs at 1000 rpm and 333 µs at 2000 rpm. A cell at 0 rpm has no time and shows
+  "-" (it cannot be edited there). **Table no.** has no unit. The colours
+  stay on the crank angle, so a cell keeps its colour when you change units.
 - **View**: *What the ECU uses* is the grid over the SOI table's own
   breakpoints. A **Duration table** entry shows that table on its own axes:
   white cells are used alone at this coolant temperature, shaded ones are
@@ -97,7 +105,9 @@ under the buttons says what was opened.
 
 ## Changing it
 
-Type a value into a cell. What changes depends on what is shown:
+Type a value into a cell. What changes depends on what is shown. In **µs** the
+value you type is a time at that cell's rpm; it is turned back into degrees
+there and then does exactly what the degree value would:
 
 | Show | Typing a value | Fuelling |
 |---|---|---|
@@ -107,7 +117,9 @@ Type a value into a cell. What changes depends on what is shown:
 
 In a **Duration table** view, a value is written into that table only.
 
-**Set target EOI...** does the first row for many cells at once: one target,
+**Set target EOI...** does the first row for many cells at once: one target
+(in degrees ATDC, or in µs ATDC when **Units** is **µs**; a time target becomes
+a different angle at each rpm),
 optionally only where the injection ends later than it, for the selected cells
 or the whole grid, and for the SOI tables you tick. Each change is one undo
 step.

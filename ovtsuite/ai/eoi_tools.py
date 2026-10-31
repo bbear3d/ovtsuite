@@ -28,7 +28,31 @@ H = {"type": "string", "description": "Target handle from open_file / list_open 
 
 _CONVENTION = ("Angles in crank degrees. start_btdc: degrees before TDC (negative = after TDC). "
                "eoi: degrees ATDC (negative = before TDC), the same convention as Tune from logs. "
-               "duration: crank degrees.")
+               "duration: crank degrees. With units='microseconds' these angles are times at the point's "
+               "own rpm instead (start_btdc: µs before TDC, eoi: µs after TDC, duration: µs).")
+
+
+_UNITS = {"type": "string", "enum": ["degrees", "microseconds"],
+          "description": "Unit of the angles: 'degrees' (default) or 'microseconds', the time at each "
+                         "point's own rpm (no time at 0 rpm: null). Applies to start, duration and "
+                         "EOI values, and to target_eoi."}
+
+
+def _units(units):
+    u = (units or "degrees").lower()
+    if u in ("degrees", "degree", "deg"):
+        return False
+    if u in ("microseconds", "microsecond", "us", "µs"):
+        return True
+    raise ToolError("units must be 'degrees' or 'microseconds'")
+
+
+def _conv(us, v, rpm, nd=2):
+    """``v`` degrees as the requested unit at ``rpm`` (None: no time there)."""
+    if not us:
+        return _round(v, nd)
+    t = E.deg_to_us(v, float(rpm))
+    return None if t is None else _round(t, 0 if nd >= 1 else nd)
 
 
 _SET = {"type": "string", "description": "SOI table set: 'base' (default) or a key from "
@@ -130,15 +154,17 @@ def register(reg: Registry) -> None:
                   "quantity": {"type": "number", "description": "Injected quantity mg/stroke for one point."},
                   "values": {"type": "string", "enum": ["eoi", "start", "duration", "all"],
                              "description": "Grid only: which values to return (default eoi)."},
-                  "soi_set": _SET, **_COND}},
+                  "soi_set": _SET, "units": _UNITS, **_COND}},
               title="End of injection")
     def end_of_injection(ctx, handle, dataset=None, coolant=None, rpm=None, quantity=None,
                          values="eoi", soi_set=None, intake_air=None, air_pressure=None,
-                         start_quantity=None, fuel_temperature=None):
+                         start_quantity=None, fuel_temperature=None, units=None):
+        us = _units(units)
         t, m, labels = _model(ctx, handle, dataset)
         calc = _calc(m, soi_set, intake_air, air_pressure, start_quantity, fuel_temperature)
         clt = float(coolant if coolant is not None else m.coolant_warm)
         out = {"dataset": m.label, "datasets": labels, "platform": m.platform,
+               "units": "microseconds" if us else "degrees",
                "coolant": num(clt), "convention": _CONVENTION, "assumes": list(m.notes),
                "soi_set": calc.soi_key, "soi_sets": _sets(m),
                "conditions": {_COND_NAME[k]: (num(calc.conditions[k])
@@ -157,17 +183,20 @@ def register(reg: Registry) -> None:
                 c = calc.cell(clt, float(rpm), float(quantity))
                 out["point"] = {
                     "rpm": num(rpm), "quantity": num(quantity),
-                    "start_btdc": _round(c.soi_btdc), "start_limited": c.soi_limited,
+                    "start_btdc": _conv(us, c.soi_btdc, rpm), "start_limited": c.soi_limited,
                     "start_tables": _members(t, calc.soi_ts.tables, c.soi_members),
                     "start_selector": (t.index.eid(calc.soi_ts.selector)
                                        if calc.soi_ts.selector is not None else None),
-                    "start_corrections_btdc": _round(calc.btdc(c.soi_cor)),
+                    "start_corrections_btdc": _conv(us, calc.btdc(c.soi_cor), rpm),
                     "duration_selector": t.index.eid(m.duration.selector),
                     "duration_table_number": _round(c.index, 3),
                     "duration_tables": _members(t, m.duration.tables, c.dur_members),
                     "duration_quantity": _round(c.q_dur) if c.q_dur is not None else None,
-                    "duration": _round(c.duration), "eoi": _round(c.eoi),
+                    "duration": _conv(us, c.duration, rpm), "eoi": _conv(us, c.eoi, rpm),
                     "eoi_text": E.fmt_angle(c.eoi)}
+                if us:
+                    out["point"]["degrees"] = {"start_btdc": _round(c.soi_btdc),
+                                               "duration": _round(c.duration), "eoi": _round(c.eoi)}
                 if m.limiter is not None:
                     out["point"]["limiter"] = t.index.eid(m.limiter)
                 return out
@@ -180,16 +209,19 @@ def register(reg: Registry) -> None:
                 "layout": "[rpm index][%s index]" % ("coolant" if calc.by_coolant else "quantity"), "axes_from": t.index.eid(g.ref.e)}
         pick = {"eoi": lambda c: c.eoi, "start": lambda c: c.soi_btdc,
                 "duration": lambda c: c.duration}
+        if us:
+            grid["note"] = "values are microseconds at each row's rpm (null at 0 rpm)"
         for k in want:
             if k not in pick:
                 raise ToolError("values must be eoi, start, duration or all")
             grid[k if k != "start" else "start_btdc"] = [
-                [_round(pick[k](c), 1) for c in row] for row in g.cells]
+                [_conv(us, pick[k](c), c.rpm, 1) for c in row] for row in g.cells]
         lim = [[c.rpm, c.q] for row in g.cells for c in row if c.soi_limited]
         if lim:
             grid["start_limited_at"] = [[num(a), num(b)] for a, b in lim]
-        flat = [c.eoi for row in g.cells for c in row]
-        grid["eoi_range"] = [_round(min(flat), 1), _round(max(flat), 1)]
+        flat = [_conv(us, c.eoi, c.rpm, 1) for row in g.cells for c in row]
+        flat = [v for v in flat if v is not None]
+        grid["eoi_range"] = [min(flat), max(flat)] if flat else None
         out["grid"] = grid
         return out
 
@@ -204,19 +236,21 @@ def register(reg: Registry) -> None:
               {"type": "object", "required": ["handle", "target_eoi"], "properties": {
                   "handle": H,
                   "target_eoi": {"type": "number", "description": "Wanted end of injection, deg ATDC "
-                                                                  "(negative = before TDC)."},
+                                                                  "(negative = before TDC); with "
+                                                                  "units='microseconds', µs ATDC."},
                   "dataset": {"type": "string"},
                   "coolant": {"type": "number", "description": "°C the change is made for (default 90)."},
                   "rpm_min": {"type": "number"}, "rpm_max": {"type": "number"},
                   "quantity_min": {"type": "number"}, "quantity_max": {"type": "number"},
                   "only_later": {"type": "boolean", "description": "Only change points whose EOI is now "
                                                                    "later than the target (default false)."},
-                  "soi_set": _SET, **_COND}},
+                  "soi_set": _SET, "units": _UNITS, **_COND}},
               title="End of injection changes")
     def end_of_injection_changes(ctx, handle, target_eoi, dataset=None, coolant=None,
                                  rpm_min=None, rpm_max=None, quantity_min=None, quantity_max=None,
                                  only_later=False, soi_set=None, intake_air=None, air_pressure=None,
-                                 start_quantity=None, fuel_temperature=None):
+                                 start_quantity=None, fuel_temperature=None, units=None):
+        us = _units(units)
         t, m, _labels = _model(ctx, handle, dataset)
         calc = _calc(m, soi_set, intake_air, air_pressure, start_quantity, fuel_temperature)
         clt = float(coolant if coolant is not None else m.coolant_warm)
@@ -231,9 +265,13 @@ def register(reg: Registry) -> None:
         def target(rpm, q):
             if not inside(rpm, q):
                 return None
-            if only_later and calc.cell(clt, rpm, q).eoi <= goal + 1e-6:
+            # a time target is a different angle at every speed
+            deg = E.us_to_deg(goal, rpm) if us else goal
+            if deg is None:                              # no time at 0 rpm
                 return None
-            return goal
+            if only_later and calc.cell(clt, rpm, q).eoi <= deg + 1e-6:
+                return None
+            return deg
 
         try:
             plan = E.plan_target_eoi(calc, clt, target)
@@ -251,6 +289,7 @@ def register(reg: Registry) -> None:
                 maps.append({"map": t.index.eid(x), "cells": len(rows),
                              "copy_of": t.index.eid(e) if x is not e else None})
         return {"dataset": m.label, "coolant": num(clt), "target_eoi": num(goal),
+                "units": "microseconds" if us else "degrees",
                 "soi_set": calc.soi_key,
                 "changes": changes, "maps": maps,
                 "limited_points": [[num(a), num(b)] for a, b in plan.limited],

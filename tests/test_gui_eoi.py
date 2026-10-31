@@ -172,3 +172,61 @@ def test_every_view_fills_its_cells_and_go_to_soi_works_without_a_selection(win)
     QtWidgets.QApplication.processEvents()
     assert ("z", 6, 6) in ws.model.hl
     d.close()
+
+
+# ---------------------------------------------------------------- units
+def _unit(d, key):
+    b = next(b for b in d.unit_group.buttons() if b.property("unit") == key)
+    b.click()
+    QtWidgets.QApplication.processEvents()
+
+
+def test_microseconds_view_converts_each_cell_at_its_own_rpm(win):
+    from ovtsuite import eoi, gui_eoi
+    d = gui_eoi.open_for(win.current)
+    r, c, cell = _cell(d, 2000.0, 20.0)
+    for mode, deg in (("eoi", cell.eoi), ("soi", cell.soi_btdc),
+                      ("dur", cell.duration)):
+        next(b for b in d.mode_group.buttons() if b.property("mode") == mode).click()
+        _unit(d, "deg")
+        assert float(d.grid.item(r, c).text()) == pytest.approx(deg, abs=0.01)
+        _unit(d, "us")
+        assert float(d.grid.item(r, c).text()) == pytest.approx(
+            eoi.deg_to_us(deg, 2000.0), abs=0.6)
+    # Table no. has no unit
+    next(b for b in d.mode_group.buttons() if b.property("mode") == "idx").click()
+    assert not d.unit_group.buttons()[0].isEnabled()
+
+
+def test_typing_microseconds_moves_soi_like_the_same_degrees(win):
+    from ovtsuite import eoi, gui_eoi
+    ws = win.current
+    d = gui_eoi.open_for(ws)
+    _unit(d, "us")
+    r, c, cell = _cell(d, 2000.0, 20.0)
+    soi0 = cell.soi_btdc
+    want = eoi.deg_to_us(4.0, 2000.0)                 # 4 deg ATDC at 2000 rpm
+    d.grid.item(r, c).setText("%.0f" % want)
+    QtWidgets.QApplication.processEvents()
+    r, c, cell = _cell(d, 2000.0, 20.0)
+    assert cell.eoi == pytest.approx(4.0, abs=0.05)
+    assert cell.soi_btdc > soi0
+    assert float(d.grid.item(r, c).text()) == pytest.approx(want, abs=1.0)
+    ws.primary.undo()
+    d.refresh_from_session()
+    assert _cell(d, 2000.0, 20.0)[2].soi_btdc == pytest.approx(soi0)
+
+
+def test_microseconds_in_a_duration_table_and_copy(win):
+    from ovtsuite import eoi, gui_eoi
+    d = gui_eoi.open_for(win.current)
+    _unit(d, "us")
+    d.view.setCurrentIndex(d.view.findData(3))
+    QtWidgets.QApplication.processEvents()
+    t = d.calc.dur_t[3]
+    rpm = t.point(2, 2)[0]
+    assert float(d.grid.item(2, 2).text()) == pytest.approx(
+        eoi.deg_to_us(t.vals[2][2], rpm), abs=0.6)
+    assert d.unit_group.buttons()[0].isEnabled()
+    d._copy()
+    assert "us" in QtWidgets.QApplication.clipboard().text().splitlines()[0]

@@ -115,3 +115,31 @@ def test_lq_fuel_temperature(env):
     assert r["conditions"]["fuel_temperature"] == 20
     r = call(env, "end_of_injection", handle=h, rpm=2000, quantity=20)
     assert r["conditions"]["fuel_temperature"] == "reference"
+
+
+def test_units_microseconds_for_a_point_and_the_grid(env):
+    h = _open(env, LQ)
+    from ovtsuite import eoi
+    deg = call(env, "end_of_injection", handle=h, rpm=2000, quantity=20)["point"]
+    us = call(env, "end_of_injection", handle=h, rpm=2000, quantity=20,
+              units="microseconds")
+    assert us["units"] == "microseconds"
+    for k in ("start_btdc", "duration", "eoi"):
+        assert us["point"][k] == pytest.approx(eoi.deg_to_us(deg[k], 2000.0), abs=0.6)
+        assert us["point"]["degrees"][k] == pytest.approx(deg[k])
+    g = call(env, "end_of_injection", handle=h, values="all",
+             units="microseconds")["grid"]
+    gd = call(env, "end_of_injection", handle=h, values="all")["grid"]
+    r, q = len(g["rpm"]) // 2, len(g["quantity"]) // 2
+    assert g["eoi"][r][q] == pytest.approx(
+        eoi.deg_to_us(gd["eoi"][r][q], float(g["rpm"][r])), abs=1.0)
+
+
+def test_units_microseconds_target_is_per_rpm(env):
+    h = _open(env, LQ)
+    ok, r = env[0].call("end_of_injection_changes", env[1],
+                        {"handle": h, "target_eoi": 500, "units": "microseconds"})
+    assert ok, r
+    assert r["units"] == "microseconds"
+    ok, bad = env[0].call("end_of_injection", env[1], {"handle": h, "units": "furlongs"})
+    assert not ok
