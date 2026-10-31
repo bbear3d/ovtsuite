@@ -50,6 +50,10 @@ UNITS = (("deg", "Degrees", "Crank degrees."),
 #: EOI bands (deg ATDC): before TDC, then later and later
 _EOI_BANDS = ((0.0, "#E1F5EE"), (4.0, "#F1EFE8"), (8.0, "#FAEEDA"),
               (12.0, "#FAC775"), (1e9, "#F09595"))
+#: the same bands in microseconds ATDC (200 / 400 / 600 µs are 4 / 8 / 12° at
+#: 3000 rpm), used when the grid shows time
+_EOI_BANDS_US = ((0.0, "#E1F5EE"), (200.0, "#F1EFE8"), (400.0, "#FAEEDA"),
+                 (600.0, "#FAC775"), (1e12, "#F09595"))
 #: light sequential shades for the SOI and Duration views, low to high. Every
 #: view gives its cells a light background, so the dark text reads the same
 #: under a light or a dark application theme.
@@ -551,9 +555,11 @@ class EoiDialog(QtWidgets.QDialog):
                 it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 it.setForeground(_INK)
                 if mode == "eoi":
-                    # the bands are crank angles, whatever the grid shows
-                    bg = next(col for lim, col in _EOI_BANDS if deg <= lim)
-                    it.setBackground(QtGui.QColor(bg))
+                    # the bands follow the unit the grid shows
+                    if val is not None:
+                        bands = _EOI_BANDS_US if self._in_us() else _EOI_BANDS
+                        it.setBackground(QtGui.QColor(
+                            next(col for lim, col in bands if val <= lim)))
                 elif mode == "idx":
                     it.setBackground(QtGui.QColor(_IDX[min(int(val), len(_IDX) - 1)]))
                 if cell.soi_limited:

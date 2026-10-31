@@ -122,12 +122,17 @@ def test_window_shows_types_and_copies_microseconds():
     with pytest.MonkeyPatch.context() as mp:
         d, gui_eoi = _stub_window(mp, QtWidgets)
         assert d.grid.item(1, 0).text() == "4"                   # degrees
+        assert d.grid.item(1, 0).background().color().name().upper() == "#F1EFE8"
         b = next(b for b in d.unit_group.buttons() if b.property("unit") == "us")
         b.click()
         # 4 deg at 1000 rpm = 666.7 us; at 2000 rpm 333.3 us; no time at 0 rpm
         assert d.grid.item(1, 0).text() == "667"
         assert d.grid.item(2, 0).text() == "333"
         assert d.grid.item(0, 0).text() == "-"
+        # EOI 4 deg = 667 us at 1000 rpm: late in the us bands (> 600), but
+        # 333 us at 2000 rpm is the 200-400 band
+        col = lambda r: d.grid.item(r, 0).background().color().name().upper()  # noqa: E731
+        assert col(1) == "#F09595" and col(2) == "#FAEEDA"
         assert not d.grid.item(0, 0).flags() & QtCore.Qt.ItemFlag.ItemIsEditable
         assert d.grid.item(1, 0).flags() & QtCore.Qt.ItemFlag.ItemIsEditable
         # typing 1000 us at 2000 rpm asks for EOI = 12 deg

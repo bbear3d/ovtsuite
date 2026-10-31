@@ -83,7 +83,9 @@ The window does exactly this with the tables in your file.
   µs), so every cell is converted at **its own rpm**: the same 4° is about
   667 µs at 1000 rpm and 333 µs at 2000 rpm. A cell at 0 rpm has no time and shows
   "-" (it cannot be edited there). **Table no.** has no unit. The colours
-  stay on the crank angle, so a cell keeps its colour when you change units.
+  follow the unit: EOI bands change at 0, 4, 8 and 12° in degrees and at 0,
+  200, 400 and 600 µs in µs (about the same at 3000 rpm), so a cell can change
+  colour when you change units.
 - **View**: *What the ECU uses* is the grid over the SOI table's own
   breakpoints. A **Duration table** entry shows that table on its own axes:
   white cells are used alone at this coolant temperature, shaded ones are
