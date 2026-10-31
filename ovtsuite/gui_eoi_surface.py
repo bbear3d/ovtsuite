@@ -257,7 +257,7 @@ class EoiSurface(QtCore.QObject):
 
     def sync_rows(self) -> None:
         """The comparison's surface is shown while the comparison grid is."""
-        self.cbox.setVisible(self.shown and self.d.cmpv.box.isVisibleTo(self.d))
+        self.cbox.setVisible(self.shown and not self.d.cmpv.box.isHidden())
 
     def _reset_range(self) -> None:
         self._zkeep = None
@@ -282,7 +282,7 @@ class EoiSurface(QtCore.QObject):
         vals = [[pv[(r, c)] for c in range(cols)] for r in range(rows)]
         cv = d._cmp_vals
         cmp_vals = [[cv[(r, c)] for c in range(cols)] for r in range(rows)] \
-            if cv and len(cv) >= rows * cols and d.cmpv.box.isVisibleTo(d) else None
+            if cv and len(cv) >= rows * cols and not d.cmpv.box.isHidden() else None
         flat = [x for row in vals for x in row]
         if cmp_vals:
             flat += [x for row in cmp_vals for x in row]

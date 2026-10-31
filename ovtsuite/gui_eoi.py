@@ -348,7 +348,6 @@ class EoiDialog(QtWidgets.QDialog):
         v.addWidget(self.split, 1)
         from .gui_cmpscroll import ViewLink
         self.cmpv.attach(ViewLink)
-        self._size_window()
         self.missing = QtWidgets.QLabel()
         self.missing.setWordWrap(True)
         self.missing.setVisible(False)
@@ -448,6 +447,7 @@ class EoiDialog(QtWidgets.QDialog):
         if remembered(SHOWN_KEY):
             self.surf.set_shown(True, remember_it=False)
         self.edit.refresh_reset()
+        self._size_window()
 
     # ------------------------------------------------------------ state
     def say(self, text: str) -> None:
@@ -608,6 +608,8 @@ class EoiDialog(QtWidgets.QDialog):
             self.axes_lbl.setText("")
             self.info.setText("")
             self.cmpv.show(False)
+            self.row2.setVisible(False)
+            self.surf.sync_rows()
             self.prim_head.setVisible(False)
             return
         k = self.table_view()
@@ -679,6 +681,7 @@ class EoiDialog(QtWidgets.QDialog):
         cv.check.setToolTip(why or cv.check.toolTip().split("\n\n")[0])
         if why:
             self.status.setText("Comparison not shown: %s" % why)
+        self.row2.setVisible(not cv.box.isHidden())      # no empty row below
         self.surf.sync_rows()
         if shown and not self._sized_for_comparison:
             self._sized_for_comparison = True
@@ -1189,25 +1192,20 @@ class EoiDialog(QtWidgets.QDialog):
         return menu
 
     def _size_window(self, with_comparison: Optional[bool] = None) -> None:
-        """A size that fits a laptop screen without being dragged smaller or
-        larger: the window's usual size, a little taller when the comparison
-        grid is below the primary's -- but never more than 82 % of the
-        screen's usable height (the grids scroll, and the bar between them
-        shares the room)."""
+        """The size the window opens at: the least its layout allows (wide
+        enough for its rows and no wider, tall enough for what is shown), and
+        never more than the screen has. Showing the comparison grid, or the
+        surface, takes it up to the new minimum; a window you made larger
+        stays so."""
         scr = self.screen() or QtWidgets.QApplication.primaryScreen()
         avail = scr.availableGeometry() if scr is not None else QtCore.QRect(0, 0, 1366, 728)
-        cmp_on = self.cmpv.wanted() if with_comparison is None else with_comparison
-        if cmp_on:
-            w, h = 960, min(720, int(avail.height() * 0.82))
-        else:
-            w, h = 940, min(680, avail.height() - 60)
-        if getattr(self, "surf", None) is not None and self.surf.shown:
-            w += SURF_W + 8
-        w = max(640, min(w, avail.width() - 40))
-        h = max(480, h)
-        if cmp_on:                      # a window you made larger stays so
+        lay = self.layout()
+        hint = lay.totalMinimumSize() if lay is not None else self.minimumSizeHint()
+        w, h = hint.width(), hint.height()
+        if self.isVisible() or with_comparison:
             w, h = max(w, self.width()), max(h, self.height())
-            h = min(h, avail.height() - 60)
+        w = max(hint.width(), min(w, avail.width() - 40))
+        h = max(hint.height(), min(h, avail.height() - 60))
         self.resize(w, h)
         if self.isVisible():
             fg = self.frameGeometry()

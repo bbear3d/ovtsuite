@@ -163,7 +163,7 @@ def test_the_two_grids_select_together(dlg, app):
 def test_window_fits_a_laptop_screen(dlg):
     scr = dlg.screen().availableGeometry()
     assert dlg.height() <= scr.height() - 60 and dlg.width() <= scr.width() - 40
-    assert dlg.height() >= 480
+    assert dlg.height() >= dlg.minimumSizeHint().height()
 
 
 @pytest.mark.parametrize("w,h", [(1366, 728), (1536, 824), (1920, 1040)],

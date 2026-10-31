@@ -217,3 +217,21 @@ def test_the_surface_follows_the_grid_and_edits_through_it(dlg, app):
 def test_the_surface_cannot_edit_a_read_only_view(dlg, monkeypatch):
     dlg.mode_group.button(3).click()                    # Table no.
     assert not dlg.surf.view.editor.can_edit()
+
+
+# ---------------------------------------------------------- window size
+def test_the_window_opens_at_the_least_its_layout_allows(dlg):
+    need = dlg.layout().totalMinimumSize()
+    assert dlg.width() <= need.width() + 2 and dlg.width() >= need.width()
+    assert dlg.height() >= need.height()
+
+
+def test_hiding_the_comparison_gives_its_room_to_the_primary_grid(dlg, app):
+    assert dlg.row2.isVisibleTo(dlg)
+    dlg.cmpv.check.setChecked(False)
+    app.processEvents()
+    assert not dlg.row2.isVisibleTo(dlg)                # no empty row below
+    assert dlg.row1.height() >= dlg.split.height() - 2  # the primary fills it
+    dlg.cmpv.check.setChecked(True)
+    app.processEvents()
+    assert dlg.row2.isVisibleTo(dlg) and dlg.row1.height() < dlg.split.height()
