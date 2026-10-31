@@ -249,7 +249,7 @@ def test_both_grids_get_the_same_height_by_default(dlg, app):
     assert abs(dlg.row1.height() - dlg.row2.height()) <= 2
 
 
-def test_without_a_comparison_the_window_is_tall_enough_to_read_the_grid(app, monkeypatch):
+def test_the_window_is_tall_enough_to_read_the_grid_with_or_without_a_comparison(app, monkeypatch):
     from types import SimpleNamespace as NS
     from test_gui_eoi_compare import Session, _grid
     from ovtsuite import eoi as _eoi, gui_eoi, gui_eoi_edit
@@ -259,13 +259,18 @@ def test_without_a_comparison_the_window_is_tall_enough_to_read_the_grid(app, mo
     scr = QtCore.QRect(0, 0, 1920, 1080)
     monkeypatch.setattr(gui_eoi.EoiDialog, "screen", lambda self: NS(
         availableGeometry=lambda: scr))
-    ws = QtWidgets.QWidget()
-    ws.primary, ws.comparison, ws.view_only = Session(_grid(8.0), _grid(12.0), "a.bin"), None, None
-    d = gui_eoi.EoiDialog(ws, parent=ws)
-    d.show()
-    app.processEvents()
-    try:
-        assert d.height() >= 680 and d.width() <= d.layout().totalMinimumSize().width() + 2
-    finally:
-        d.close()
-        ws.deleteLater()
+    for comp, want in ((None, 680), (Session(_grid(8.0), _grid(12.0), "b.bin"), 720)):
+        ws = QtWidgets.QWidget()
+        ws.primary, ws.comparison, ws.view_only = (
+            Session(_grid(8.0), _grid(12.0), "a.bin"), comp, None)
+        d = gui_eoi.EoiDialog(ws, parent=ws)
+        d.show()
+        app.processEvents()
+        try:
+            assert d.height() >= want
+            if comp is not None:
+                assert d.height() <= int(1080 * 0.82) + 1
+            assert d.width() <= d.layout().totalMinimumSize().width() + 2
+        finally:
+            d.close()
+            ws.deleteLater()
