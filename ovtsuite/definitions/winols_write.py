@@ -348,12 +348,15 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
     lin = _linear(e.equation)
     org = _org(e.bits, little, bool(getattr(e, "is_float", False)))
     text = bool(getattr(e, "text_kind", ""))
+    #: what the description says about a value WinOLS cannot convert
+    note = ""
     if org is None:
         warnings.append("%s: left out (%d-bit data)" % (e.name, e.bits))
         return False
     if text:
         # WinOLS has no text map: the bytes, as a row of hexadecimal values
         lin = (1.0, 0.0)
+        note = "text, shown as hexadecimal bytes"
         warnings.append("%s: written as %d bytes in hexadecimal (a WinOLS map "
                         "does not hold text)" % (e.name, e.cols * max(1, e.rows)))
     elif lin is None:
@@ -363,6 +366,7 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
                         "WinOLS map converts by a factor and an offset only)"
                         % (e.name, e.equation))
         lin = (1.0, 0.0)
+        note = "value = %s, where X is the number shown here" % e.equation
     new = fmt >= 503
     blob = blob if blob is not None else bytearray()
     size = max(1, e.bits // 8)
@@ -387,7 +391,10 @@ def _record(w: _W, e, folder: int, image_size: int, little: bool,
     w.mlstr("")                                 # bit texts
     w.u8(0)
     # the description WinOLS lists the map by: never empty in the samples
-    w.mlstr(e.title if e.title != e.name else (e.description or e.name))
+    desc = e.title if e.title != e.name else (e.description or e.name)
+    if note:                                    # how to read what WinOLS shows
+        desc = "%s [%s]" % (desc, note)
+    w.mlstr(desc)
     for v in (typ, 2, org, size, 16 if text else 10, folder):
         w.u32(v)
     w.str(e.name)

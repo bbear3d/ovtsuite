@@ -193,7 +193,7 @@ text. Converting a definition (a DAMOS, an XDF, an A2L) to a map pack, a map
 whose conversion is not of that kind (`100/X`, `500000/(X+1)`) is written
 **raw** -- factor 1, its own unit -- as WinOLS's own DAMOS import keeps it, and
 a text constant is written as a row of **hexadecimal bytes**; the report names
-each one ("written raw", "written as 11 bytes in hexadecimal"). A map whose
+each one ("written raw", "written as 11 bytes in hexadecimal"), and the map's description ends with how to read it (`[value = 100/X, where X is the number shown here]`). A map whose
 values are not 8, 16 or 32 bits is left out and said so.
 
 ## Port a definition to another software version

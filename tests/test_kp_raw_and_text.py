@@ -38,6 +38,7 @@ def test_a_linear_conversion_is_written_as_it_is():
     recs, warns = _pack(_ent("lin", equation="X*0.1+2", units="mV"))
     r = recs["lin"]
     assert (r.factor, r.offset, r.units) == (0.1, 2.0, "mV") and not warns
+    assert "[" not in r.description
 
 
 def test_a_conversion_that_is_not_linear_is_written_raw_and_said():
@@ -45,6 +46,7 @@ def test_a_conversion_that_is_not_linear_is_written_raw_and_said():
     r = recs["xcwFreq"]
     assert (r.factor, r.offset, r.units, r.addr) == (1.0, 0.0, "Hz", 0x100)
     assert any("xcwFreq: written raw" in w and "100/X" in w for w in warns)
+    assert r.description.endswith("[value = 100/X, where X is the number shown here]")
     assert not any("left out" in w for w in warns)
 
 
@@ -55,6 +57,7 @@ def test_text_is_a_row_of_hexadecimal_bytes():
     assert (r.type, r.size, r.cols, r.rows, r.numbase) == (3, 1, 11, 1, 16)
     assert r.addr == 0x200
     assert any("xcwBHardNr: written as 11 bytes" in w for w in warns)
+    assert r.description.endswith("[text, shown as hexadecimal bytes]")
 
 
 def test_what_has_no_stored_form_is_still_left_out():
