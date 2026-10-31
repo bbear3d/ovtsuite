@@ -1210,15 +1210,20 @@ class EoiDialog(QtWidgets.QDialog):
 
     def _size_window(self, with_comparison: Optional[bool] = None) -> None:
         """The size the window opens at: the least its layout allows (wide
-        enough for its rows and no wider, tall enough for what is shown), and
-        never more than the screen has. Showing the comparison grid, or the
-        surface, takes it up to the new minimum; a window you made larger
+        enough for its rows and no wider), and never more than the screen has.
+        With the comparison grids shown that is the height too; a single grid
+        gets a height to read most of it in. Showing the comparison grid, or
+        the surface, takes it up to the new minimum; a window you made larger
         stays so."""
         scr = self.screen() or QtWidgets.QApplication.primaryScreen()
         avail = scr.availableGeometry() if scr is not None else QtCore.QRect(0, 0, 1366, 728)
         lay = self.layout()
         hint = lay.totalMinimumSize() if lay is not None else self.minimumSizeHint()
         w, h = hint.width(), hint.height()
+        cmp_on = self.cmpv.wanted() if with_comparison is None else with_comparison
+        if not cmp_on:
+            # one grid has the whole window: tall enough to read most of it
+            h = max(h, min(680, avail.height() - 60))
         if self.isVisible() or with_comparison:
             w, h = max(w, self.width()), max(h, self.height())
         w = max(hint.width(), min(w, avail.width() - 40))
