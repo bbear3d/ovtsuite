@@ -125,6 +125,8 @@ class Definition:
     #: own place in an image from what the image structurally holds (a
     #: DAMOS: every map header starts with its input's RAM address)
     locate: Optional[object] = field(default=None, repr=False, compare=False)
+    #: said when :meth:`base_by_evidence` chose the base over the guess
+    base_note: str = field(default="", repr=False, compare=False)
     #: the image the definition was made for, when the file carries it (a
     #: WinOLS project): ``(bytes, base)``, definition address - base = offset
     reference: Optional[tuple] = field(default=None, repr=False, compare=False)
@@ -153,7 +155,44 @@ class Definition:
                 b = None
             if b is not None:
                 return int(b)
-        return self.base_of(len(data))
+        return self.base_by_evidence(len(data))
+
+    def tables_inside(self, base: int, size: int) -> int:
+        """How many tables have their stored values inside an image of
+        ``size`` bytes whose offset 0 is definition address ``base``."""
+        n = 0
+        for t in self.tables:
+            a = t.z.addr
+            if a is not None and 0 <= a - base < size:
+                n += 1
+        return n
+
+    def base_by_evidence(self, size: int) -> int:
+        """The base for an image of ``size`` bytes when nothing in it says:
+        the one the definition's memory segments give (:meth:`base_of`),
+        unless that leaves most of the tables outside the image while the
+        definition's own base (addresses are image offsets) puts them in --
+        a guess about where an image sits (an A2L / DAMOS stating no
+        segments: "a 512 KB image at 0x80000") must not throw away tables
+        the addresses place inside it."""
+        guess = self.base_of(size)
+        total = sum(1 for t in self.tables if t.z.addr is not None)
+        if not total or guess == self.base:
+            return guess
+        have = self.tables_inside(guess, size)
+        if have >= 0.9 * total:
+            return guess
+        alt = self.tables_inside(self.base, size)
+        if alt > have:
+            self.base_note = (
+                "Offset 0 of the image is definition address 0x%X: the "
+                "definition does not say where an image of 0x%X bytes sits, "
+                "and the usual guess (0x%X) would leave %d of its %d tables "
+                "outside it, against %d inside at 0x%X. Give the base to "
+                "override." % (self.base, size, guess, total - have, total,
+                               alt, self.base))
+            return self.base
+        return guess
 
     def base_of(self, size: int) -> int:
         if self.base_for is not None:

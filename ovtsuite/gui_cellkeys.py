@@ -663,7 +663,7 @@ def fill(ws, text: str) -> int:
 
 
 # ---------------------------------------------------------------- wiring
-def _to_host(text: str) -> bool:
+def _host():
     """A window with its own grids (the End of injection window) marks them
     with ``cell_host``; an action fired while one has the focus is that
     window's to run (``host.cell_action(text)``), not the main table's."""
@@ -671,9 +671,25 @@ def _to_host(text: str) -> bool:
     while w is not None:
         host = getattr(w, "cell_host", None)
         if host is not None:
-            return bool(host.cell_action(text))
+            return host
         w = w.parentWidget()
-    return False
+    return None
+
+
+def _run(win, text: str, fn) -> None:
+    """Run Edit > Cells action ``text``: on the window that has the focus if
+    it is one of its own (:func:`_host`), else ``fn(win)`` on the table. The
+    repeats of a shortcut held down are one undo step (gui_keyhold)."""
+    from . import gui_keyhold
+    host = _host()
+    if host is not None:
+        gui_keyhold.begin(host.undo_stack())
+        if host.cell_action(text):
+            return
+    else:
+        ws = _ws(win)
+        gui_keyhold.begin(getattr(getattr(ws, "primary", None), "undo_stack", None))
+    fn(win)
 
 
 #: (menu text, default shortcut, handler(win))
@@ -709,7 +725,7 @@ def add_menu(win, edit_menu) -> QtWidgets.QMenu:
         if keys:
             a.setShortcut(keys)
         a.setShortcutContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        a.triggered.connect(lambda _c=False, f=fn, t=text: _to_host(t) or f(win))
+        a.triggered.connect(lambda _c=False, f=fn, t=text: _run(win, t, f))
         sub.addAction(a)
         acts.append(a)
         win._needs_file.append(a)

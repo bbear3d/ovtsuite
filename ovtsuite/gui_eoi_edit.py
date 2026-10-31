@@ -536,6 +536,10 @@ class EoiEditing(QtCore.QObject):
         return True
 
     # ------------------------------------------------- the action dispatch
+    def undo_stack(self):
+        """The undo stack the window's edits go to (for the key-hold group)."""
+        return getattr(self.d.session, "undo_stack", None)
+
     def cell_action(self, text: str) -> bool:
         """Run Edit > Cells action ``text`` on this window (True: it was
         ours to run -- the main table's handler must not also run)."""

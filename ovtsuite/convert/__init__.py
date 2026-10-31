@@ -260,6 +260,8 @@ def place(defn: Definition, data: Optional[bytes], base: Optional[int],
         size = size or len(data)
         if base is None:
             base = defn.base_in(data)
+            if defn.base_note:
+                warnings.append(defn.base_note)
         return base, size, data
     if not size:
         try:

@@ -115,6 +115,35 @@ def _apply(win, key: str) -> None:
             pass
 
 
+
+class _FolderBox(QtWidgets.QWidget):
+    """A folder path with a Browse button (an option of kind "folder")."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self._title = title
+        h = QtWidgets.QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        self.edit = QtWidgets.QLineEdit()
+        self.edit.setMinimumWidth(260)
+        self.edit.setPlaceholderText("a folder")
+        btn = QtWidgets.QPushButton("Browse...")
+        btn.clicked.connect(self._browse)
+        h.addWidget(self.edit, 1)
+        h.addWidget(btn)
+
+    def text(self) -> str:
+        return self.edit.text()
+
+    def setText(self, t: str) -> None:
+        self.edit.setText(t)
+
+    def _browse(self) -> None:
+        d = QtWidgets.QFileDialog.getExistingDirectory(
+            self, self._title, self.edit.text().strip() or "")
+        if d:
+            self.edit.setText(d)
+
 class _CloseWatcher(QtCore.QObject):
     """Remembers the window's size and position as it closes."""
 
@@ -288,6 +317,10 @@ class OptionsDialog(QtWidgets.QDialog):
             box.setSuffix(o.suffix)
             box.setValue(int(val))
             widget, label = box, o.label + ":"
+        elif o.kind == "folder":
+            box = _FolderBox(o.label)
+            box.setText(str(val or ""))
+            widget, label = box, o.label + ":"
         else:
             box = QtWidgets.QComboBox()
             for v, text in o.choices:
@@ -295,10 +328,18 @@ class OptionsDialog(QtWidgets.QDialog):
             box.setCurrentIndex(max(0, box.findData(val)))
             widget, label = box, o.label + ":"
         self.widgets[o.key] = widget
-        if not isinstance(widget, QtWidgets.QCheckBox):
+        if isinstance(widget, _FolderBox):
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                                 QtWidgets.QSizePolicy.Policy.Fixed)
+        elif not isinstance(widget, QtWidgets.QCheckBox):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
                                  QtWidgets.QSizePolicy.Policy.Fixed)
         form.addRow(label, widget)
+        if o.key == "projects/default_dir":          # follows the switch above
+            sw = self.widgets.get("projects/default_dir_on")
+            if sw is not None:
+                widget.setEnabled(sw.isChecked())
+                sw.toggled.connect(widget.setEnabled)
         help_text = o.help + (" Takes effect the next time the app starts."
                               if o.restart else "")
         if help_text:
@@ -311,6 +352,8 @@ class OptionsDialog(QtWidgets.QDialog):
             return w.isChecked()
         if isinstance(w, QtWidgets.QSpinBox):
             return w.value()
+        if isinstance(w, _FolderBox):
+            return w.text().strip()
         return w.currentData()
 
     def _set_value(self, key, val) -> None:
@@ -319,6 +362,8 @@ class OptionsDialog(QtWidgets.QDialog):
             w.setChecked(bool(val))
         elif isinstance(w, QtWidgets.QSpinBox):
             w.setValue(int(val))
+        elif isinstance(w, _FolderBox):
+            w.setText(str(val or ""))
         else:
             w.setCurrentIndex(max(0, w.findData(val)))
 

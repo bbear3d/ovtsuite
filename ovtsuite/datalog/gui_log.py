@@ -270,6 +270,9 @@ ABORT_WAIT_S = 1.5
 class LogWorker(QtCore.QThread):
     connected = QtCore.Signal(str, int)              # identity, baud
     browsed = QtCore.Signal(int, list)               # group, [(field, text, value)]
+    #: [(channel key, text)] -- the readings of the ticked cells while not
+    #: logging (see set_watch), so each shows its value as soon as it is ticked
+    watched = QtCore.Signal(list)
     #: generation, stamp, texts, values -- the generation is the recording the
     #: row belongs to (start_logging's return), so a row that was already on
     #: its way when Stop was pressed is recognised and dropped
@@ -292,6 +295,7 @@ class LogWorker(QtCore.QThread):
         self._can = None
         self._lock = threading.Lock()
         self._browse_group = 1
+        self._watch: List[_lf.Channel] = []
         self._channels: List[_lf.Channel] = []
         self._writer: Optional[_lf.KwhackWriter] = None
         self._fh = None
@@ -307,6 +311,14 @@ class LogWorker(QtCore.QThread):
     def set_browse_group(self, g):
         with self._lock:
             self._browse_group = int(g)
+
+    def set_watch(self, channels):
+        """The ticked cells to read while browsing (not logging): their groups
+        are read with the browsed one, and their readings come back as
+        ``watched``. Cells read from memory are not (they need the probe
+        logging does)."""
+        with self._lock:
+            self._watch = [c for c in channels if not c.is_memory]
 
     def request_probe(self, token, groups):
         """Read ``groups`` once, before the next browse read, and answer with
@@ -377,6 +389,40 @@ class LogWorker(QtCore.QThread):
         self._writer = None
 
     # -- thread body --
+    def _browse_read(self, sess, group):
+        """One read while not logging: the browsed group, and with it the
+        groups of the ticked cells (``watched``)."""
+        with self._lock:
+            watch = list(self._watch)
+        want = {c.group for c in watch if not c.is_derived}
+        if want:
+            # the browsed group and the ticked cells' groups,
+            # in one read, as logging does
+            res = sess.read_groups(sorted(want | {group}),
+                                   is_stop=lambda: self._stop)
+            cells = res.get(group)
+        else:
+            res = None
+            cells = sess.read_group(group)
+        out = []
+        if cells:
+            for f, cell in enumerate(cells):
+                out.append((f, cell.text, cell.value))
+        self.browsed.emit(group, out)
+        if res is not None:
+            texts, values = [], []
+            for c in watch:
+                got = None if c.is_derived else res.get(c.group)
+                if got and c.field < len(got):
+                    texts.append(got[c.field].text)
+                    values.append(got[c.field].value)
+                else:
+                    texts.append("N/A")
+                    values.append(None)
+            _derived.fill(watch, texts, values)
+            self.watched.emit([(c.key, t) for c, t
+                               in zip(watch, texts)])
+
     def run(self):
         # A drive log is many minutes with nobody touching the laptop -- what
         # the OS idle timer waits for. Once the screen blanks and the machine
@@ -504,12 +550,7 @@ class LogWorker(QtCore.QThread):
                         if current:
                             self.logged.emit(gen, stamp, texts, values)
                     else:
-                        cells = sess.read_group(group)
-                        out = []
-                        if cells:
-                            for f, cell in enumerate(cells):
-                                out.append((f, cell.text, cell.value))
-                        self.browsed.emit(group, out)
+                        self._browse_read(sess, group)
                 except _diag.StopRequested:
                     break
                 except (KLineError, OSError, _j2534.J2534Error) as ex:
@@ -2056,6 +2097,7 @@ class ConnPane(QtWidgets.QWidget):
             fast_init=self.conn.fast_init())
         self._worker.connected.connect(self._on_connected)
         self._worker.browsed.connect(self._on_browsed)
+        self._worker.watched.connect(self._on_watched)
         self._worker.logged.connect(self._on_logged)
         self._worker.status.connect(self._say)
         self._worker.failed.connect(self._on_failed)
@@ -2063,6 +2105,7 @@ class ConnPane(QtWidgets.QWidget):
         self._worker.mem_probed.connect(self._on_mem_probed)
         self._worker.probed.connect(self._on_probed)
         self._worker.set_browse_group(self._current_group())
+        self._push_watch()
         self.connect_btn.setText("Connecting...")
         self.connect_btn.setEnabled(False)
         self.conn.set_enabled_all(False)
@@ -2131,6 +2174,7 @@ class ConnPane(QtWidgets.QWidget):
         self.ident.setText("Not connected.")
         self._hz.reset()
         self.rate.setText("")
+        self._clear_sel_values()
         # the next ECU may have other software: ask it again
         self._probe_state.clear()
         self._probe_unserved.clear()
@@ -2645,6 +2689,31 @@ class ConnPane(QtWidgets.QWidget):
             self.sel.setItem(r, 2, QtWidgets.QTableWidgetItem(""))
         # the widths stay as set (or as the user dragged them)
         self._sync_preset_buttons()          # Save as... needs a cell to keep
+        self._push_watch()                   # a ticked cell reads at once
+
+    def _push_watch(self):
+        """Tell the connection which cells are ticked, so each shows its
+        live value now rather than when logging starts."""
+        w = getattr(self, "_worker", None)
+        if w is not None:
+            w.set_watch(list(self._channels))
+
+    def _on_watched(self, pairs):
+        """Live readings of the ticked cells while not logging."""
+        if self._logging:
+            return                      # the rows being logged fill them
+        rows = {c.key: r for r, c in enumerate(self._channels)}
+        for key, text in pairs:
+            r = rows.get(key)
+            it = self.sel.item(r, 2) if r is not None else None
+            if it is not None:
+                it.setText(text)
+
+    def _clear_sel_values(self):
+        for r in range(self.sel.rowCount()):
+            it = self.sel.item(r, 2)
+            if it is not None:
+                it.setText("")
 
     def _remove_selected(self):
         rows = sorted({i.row() for i in self.sel.selectedItems()}, reverse=True)

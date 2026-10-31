@@ -41,7 +41,7 @@ class Option:
     default: Any
     label: str
     page: str
-    #: "bool", "int" or "choice"
+    #: "bool", "int", "choice" or "folder" (a path, "" for none)
     kind: str = "bool"
     help: str = ""
     minimum: int = 0
@@ -94,6 +94,15 @@ OPTIONS: Tuple[Option, ...] = (
            "How often unsaved changes are put aside, so they can be recovered "
            "if the app does not close properly.",
            minimum=10, maximum=3600, suffix=" s"),
+    Option("projects/default_dir_on", False, "Save new projects in a default "
+           "folder", PROJECTS,
+           help="Off (the default): Save project opens in the folder of the "
+           "last file you opened or saved. On: it opens in the folder below "
+           "whenever the project has no file yet. A project that already has "
+           "a file is saved where it is."),
+    Option("projects/default_dir", "", "Default project folder", PROJECTS,
+           "folder", "Used only while the option above is on; if the folder "
+           "is not there, the last folder is used."),
     Option("projects/watch_disk", True, "Notice when another program changes "
            "an open project's file", PROJECTS,
            help="Off: changes are still found before saving (nothing is ever "
@@ -258,6 +267,8 @@ def _convert(opt: Option, raw):
         if opt.kind == "choice":
             v = str(raw)
             return v if v in {c for c, _l in opt.choices} else opt.default
+        if opt.kind == "folder":
+            return str(raw).strip()
     except (TypeError, ValueError):
         return opt.default
     return raw

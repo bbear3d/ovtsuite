@@ -131,3 +131,31 @@ def test_the_winols_options_match_the_importer():
     assert options.BY_KEY["ols/open"].default == "stored"
     assert {c for c, _l in options.BY_KEY["ols/open"].choices} == {
         "stored", "ask", "original"}
+
+
+def test_default_project_folder_is_off_until_chosen(tmp_path, monkeypatch):
+    from ovtsuite import options as opt
+    from ovtsuite import gui_project
+    store = {}
+
+    class _S:
+        def value(self, k, d=None):
+            return store.get(k, d)
+
+        def setValue(self, k, v):
+            store[k] = v
+
+        def sync(self):
+            pass
+
+        def remove(self, k):
+            store.pop(k, None)
+    monkeypatch.setattr(opt, "_store", lambda: _S())
+    assert opt.get("projects/default_dir_on") is False and opt.get("projects/default_dir") == ""
+    assert gui_project.default_project_dir() == ""
+    store["projects/default_dir"] = str(tmp_path)
+    assert gui_project.default_project_dir() == ""        # still off
+    store["projects/default_dir_on"] = "true"
+    assert gui_project.default_project_dir() == str(tmp_path)
+    store["projects/default_dir"] = str(tmp_path / "gone")
+    assert gui_project.default_project_dir() == ""        # not there: the last folder

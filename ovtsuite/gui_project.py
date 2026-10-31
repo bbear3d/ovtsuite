@@ -836,11 +836,22 @@ def merge_versions(win, doc, sid, cids, label="") -> str:
     return c.id
 
 
+def default_project_dir() -> str:
+    """The folder Save project opens in for a project with no file yet, when
+    the option is on and the folder is there; else ``""``."""
+    from . import options as _opt
+    if not _opt.get("projects/default_dir_on"):
+        return ""
+    d = os.path.expanduser(_opt.get("projects/default_dir") or "")
+    return d if d and os.path.isdir(d) else ""
+
+
 def _ask_path(win, name, current) -> Optional[str]:
     """Where to save a project (``.ovt`` only: raw and native formats are
     exports)."""
     from .recent import get_last_dir, set_last_dir
-    start = current or os.path.join(get_last_dir(), name + _ar.EXT)
+    start = current or os.path.join(default_project_dir() or get_last_dir(),
+                                    name + _ar.EXT)
     path, _f = QtWidgets.QFileDialog.getSaveFileName(
         win, "Save project", start, "OVT project (*%s)" % _ar.EXT)
     if not path:

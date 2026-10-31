@@ -130,6 +130,15 @@ class CompoundCommand(Command):
         return len(self.commands)
 
 
+class HeldCommand(CompoundCommand):
+    """The edits a key held down made (one per repeat), undone as one step:
+    :meth:`CommandStack.hold`."""
+
+    def add(self, cmd: Command) -> None:
+        self.commands.append(cmd)
+        self.writes.extend(cmd.writes)
+
+
 class RegionCommand(Command):
     """An undoable byte edit into a region working buffer (MPC / EEPROM),
     rather than the external image.
@@ -185,6 +194,22 @@ class CommandStack:
         self._clean: Optional[Command] = None      # None == the empty state
         self._clean_lost = False
         self.revision = 0                          # bumps on every change
+        self._holding = False                      # see hold()
+        self._held: Optional[Command] = None
+
+    # -- holding a key ---------------------------------------------------
+    def hold(self) -> None:
+        """From now until :meth:`release`, the commands pushed one after the
+        other become ONE undo step: a shortcut held down repeats its edit
+        many times a second, and walking back through every repeat with
+        Ctrl+Z is no way to take back one keypress. A command pushed after
+        anything else (an undo, a save) starts a new step."""
+        self._holding = True
+        self._held = None
+
+    def release(self) -> None:
+        self._holding = False
+        self._held = None
 
     # -- state ---------------------------------------------------------
     @property
@@ -247,6 +272,16 @@ class CommandStack:
         if self._undone and self._clean is not None                 and any(c is self._clean for c in self._undone):
             self._clean_lost = True
         self._undone.clear()
+        if self._holding:
+            top = self._done[-1] if self._done else None
+            if self._held is not None and top is self._held \
+                    and top is not self._clean:
+                if not isinstance(top, HeldCommand):
+                    top = HeldCommand(top.label, [top])
+                    self._done[-1] = top
+                    self._held = top
+                top.add(cmd)
+                return top
         if coalesce and self._done:
             prev = self._done[-1]
             # never merge across a save, or undoing to the clean state
@@ -254,6 +289,8 @@ class CommandStack:
             if prev is not self._clean and prev.merge(cmd):
                 return prev
         self._done.append(cmd)
+        if self._holding:
+            self._held = cmd
         if len(self._done) > self.limit:
             dropped = self._done.pop(0)
             if dropped is self._clean:
