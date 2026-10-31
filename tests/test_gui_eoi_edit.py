@@ -235,3 +235,15 @@ def test_hiding_the_comparison_gives_its_room_to_the_primary_grid(dlg, app):
     dlg.cmpv.check.setChecked(True)
     app.processEvents()
     assert dlg.row2.isVisibleTo(dlg) and dlg.row1.height() < dlg.split.height()
+
+
+def test_both_grids_get_the_same_height_by_default(dlg, app):
+    app.processEvents()
+    a, b = dlg.row1.height(), dlg.row2.height()
+    assert abs(a - b) <= 2, (a, b)
+    dlg.cmpv.check.setChecked(False)
+    app.processEvents()
+    dlg.cmpv.check.setChecked(True)                    # shown again: level again
+    app.processEvents()
+    app.processEvents()
+    assert abs(dlg.row1.height() - dlg.row2.height()) <= 2

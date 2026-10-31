@@ -642,6 +642,20 @@ class EoiDialog(QtWidgets.QDialog):
         self._show_info(r, c)
         self.surf.reload()
 
+    def _equal_rows(self) -> None:
+        """The primary and comparison grids get the same height (the bar
+        between them still moves)."""
+        if self.row2.isHidden() or self.split.height() < 40:
+            return
+        n = self.split.height() - self.split.handleWidth()
+        self.split.setSizes([n // 2, n - n // 2])
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        if not getattr(self, "_leveled", False):          # the first time only
+            self._leveled = True
+            QtCore.QTimer.singleShot(0, self._equal_rows)
+
     def _restore_selection(self, sel, cur, shape) -> None:
         """What was selected is still selected after the grid is filled again
         (an edit, an undo, another condition), when it has the same shape."""
@@ -681,7 +695,10 @@ class EoiDialog(QtWidgets.QDialog):
         cv.check.setToolTip(why or cv.check.toolTip().split("\n\n")[0])
         if why:
             self.status.setText("Comparison not shown: %s" % why)
+        was_hidden = self.row2.isHidden()
         self.row2.setVisible(not cv.box.isHidden())      # no empty row below
+        if was_hidden and not self.row2.isHidden():      # shown again: level
+            QtCore.QTimer.singleShot(0, self._equal_rows)
         self.surf.sync_rows()
         if shown and not self._sized_for_comparison:
             self._sized_for_comparison = True
