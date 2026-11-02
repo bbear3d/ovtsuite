@@ -120,7 +120,8 @@ def platform_tag() -> str:
 _OS_WORDS = {"win_amd64": "Windows (64-bit)", "win32": "Windows (32-bit)",
              "win_arm64": "Windows (ARM)", "linux_x86_64": "Linux (x86-64)",
              "linux_aarch64": "Linux (ARM64)", "macosx_arm64": "macOS (Apple silicon)",
-             "macosx_x86_64": "macOS (Intel)"}
+             "macosx_x86_64": "macOS (Intel)",
+             "macosx_universal2": "macOS (Apple silicon and Intel)"}
 
 
 def tag_words(py: str, plat: str) -> str:

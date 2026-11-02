@@ -22,7 +22,7 @@ from . import sgo as _sgo
 from . import catalogue as _catalogue
 from . import groups as _groups
 from . import container as _cont
-from . import pcmflash as _pcmflash
+from . import pcmflash_edc16 as _pcmflash
 from . import frf as _frf_mod
 from . import defn as _defn
 from . import platforms as _platforms
@@ -355,7 +355,7 @@ class TunerSession:
         # becomes binfile, the rest is kept here so the flasher and the hex
         # editor can reach internal flash and EEPROM too.
         self._container = None
-        #: the layout of a PCMFlash one-file read (ovtsuite.pcmflash) this
+        #: the layout of a PCMFlash one-file read (ovtsuite.pcmflash_edc16) this
         #: session was opened from: its parts are in ``_container`` and the
         #: file is saved back whole, in the same layout
         self._pcm = None

@@ -64,7 +64,7 @@ SRC_PKG = os.path.join(ROOT, PKG)
 #: repository paths). The package itself goes by build.ownership().
 BASE_FILES = [
     "LICENSE", "LEGAL.md", "README.md", "CONTRIBUTING.md", "AGENTS.md",
-    "pyproject.toml", "build.ps1", "build_linux.sh",
+    "pyproject.toml", "build.ps1", "build_linux.sh", "build_mac.sh",
     ".gitattributes", ".gitignore", ".github/FUNDING.yml",
     "packaging/*",
     "addons/README.md", "addons/addons.json",

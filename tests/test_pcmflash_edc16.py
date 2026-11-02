@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""ovtsuite.pcmflash: PCMFlash's one-file EDC16 reads (external flash +
+"""ovtsuite.pcmflash_edc16: PCMFlash's one-file EDC16 reads (external flash +
 internal flash [+ EEPROM]) taken apart, imported and put back."""
 
 import os
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
-from ovtsuite import pcmflash as P  # noqa: E402
+from ovtsuite import pcmflash_edc16 as P  # noqa: E402
 from ovtsuite.project import exporters as ex  # noqa: E402
 from ovtsuite.project import importers as imp  # noqa: E402
 from ovtsuite.project.project import Project  # noqa: E402

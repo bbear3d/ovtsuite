@@ -276,7 +276,7 @@ def _import_dim(project, data, filename, into_set, branch):
 
 def _import_pcmflash(project, data, parts, filename, into_set, branch):
     """A PCMFlash EDC16 read saved as one file (external flash + internal
-    flash [+ EEPROM], :mod:`ovtsuite.pcmflash`): each part a member of its
+    flash [+ EEPROM], :mod:`ovtsuite.pcmflash_edc16`): each part a member of its
     own, and the file kept as an original so it exports whole again."""
     images: Images = parts.parts()
     ident = _identify(images["flash"])
@@ -764,7 +764,7 @@ def import_bytes(project: Project, data: bytes, filename: str, *,
         return _import_sgo(project, data, filename, into_set, branch)
     if _frf.detect(data[:4]):
         return _import_frf(project, data, filename, into_set, branch)
-    from .. import pcmflash as _pcm
+    from .. import pcmflash_edc16 as _pcm
     parts = _pcm.split(data)
     if parts is not None:
         return _import_pcmflash(project, data, parts, filename, into_set,

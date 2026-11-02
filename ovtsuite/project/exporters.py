@@ -57,7 +57,7 @@ def export_pcmflash(project: Project, sid: str, *, branch: Optional[str] = None,
     internal flash cut to the length PCMFlash's own micro files have (0x80200),
     the EEPROM behind them when asked for and the set has one. Works for any
     EDC16 set that holds both flash parts, whatever it was imported from."""
-    from .. import pcmflash as _pcm
+    from .. import pcmflash_edc16 as _pcm
     cid = _cid(project, sid, branch, checkpoint)
     want = project.state(sid, cid)
     flash, mpc = want.get("flash"), want.get("mpc")
@@ -110,8 +110,8 @@ def export_original(project: Project, sid: str, oid: str, *,
         return _dim.build(chunks)
     if o.format == "pcmflash":
         # the combined file again: the saved parts in the order and lengths
-        # the file came with (ovtsuite.pcmflash)
-        from .. import pcmflash as _pcm
+        # the file came with (ovtsuite.pcmflash_edc16)
+        from .. import pcmflash_edc16 as _pcm
         lay = _pcm.detect(raw)
         if lay is None or want.get("flash") is None or want.get("mpc") is None:
             raise ExportRefused("the original PCMFlash file can no longer be "

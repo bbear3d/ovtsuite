@@ -16,6 +16,15 @@ Two environment switches let the one spec serve both layouts and debugging:
     OVTSUITE_ONEFILE=1   bundle everything into a single .exe
     OVTSUITE_CONSOLE=1   keep a console window (shows tracebacks / output)
 
+and, on macOS only (build_mac.sh sets them):
+
+    OVTSUITE_ARCH=arm64|x86_64|universal2   the bundle's architecture (default:
+                         the machine's); universal2 needs every binary fat
+    OVTSUITE_CODESIGN_IDENTITY=ID   sign with this identity (default: left to
+                         PyInstaller, which signs ad hoc on Apple silicon)
+
+On macOS the one-folder build is wrapped in OVT-Suite.app (BUNDLE).
+
 It freezes the BASE app only: a copy of the package without any module's
 files, staged by ``tools/build_modules.py stage-base`` into build/base (or
 ``OVTSUITE_BASE_DIR``). The modules are packaged separately (.ovtmod) and
@@ -317,6 +326,10 @@ if sys.platform.startswith("linux"):
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+ARCH = os.environ.get("OVTSUITE_ARCH", "") if sys.platform == "darwin" else ""
+CODESIGN = (os.environ.get("OVTSUITE_CODESIGN_IDENTITY", "")
+            if sys.platform == "darwin" else "")
+
 exe_kwargs = dict(
     name="OVTSuite",
     debug=False,
@@ -326,8 +339,8 @@ exe_kwargs = dict(
     console=CONSOLE,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
+    target_arch=ARCH or None,
+    codesign_identity=CODESIGN or None,
     entitlements_file=None,
     icon=str(ICON) if ICON.exists() else None,
     version=str(VERSION_FILE) if VERSION_FILE.exists() else None,
@@ -345,6 +358,34 @@ else:
         exe, a.binaries, a.zipfiles, a.datas,
         strip=False, upx=False, upx_exclude=[],
         name="OVTSuite",
+    )
+
+if sys.platform == "darwin" and not ONEFILE:
+    # OVT-Suite.app: the one-folder build inside a bundle. The executable keeps
+    # its place (Contents/MacOS/OVTSuite), so the modules folder the build
+    # script installs beside it is where installer.system_dir() looks. The
+    # bundle is signed AFTER the modules are in (build_mac.sh).
+    app = BUNDLE(
+        coll,
+        name=_branding.APP_NAME + ".app",
+        icon=str(ICON) if ICON.exists() else None,
+        bundle_identifier="com.bbear3d." + _branding.PKG,
+        version=APP_VERSION,
+        info_plist={
+            "CFBundleName": _branding.APP_NAME,
+            "CFBundleDisplayName": _branding.APP_LONG,
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+            "LSMinimumSystemVersion": "11.0",
+            "NSHighResolutionCapable": True,
+            "NSHumanReadableCopyright": "Copyright (c) 2026 Blair Campbell",
+            "CFBundleDocumentTypes": [{
+                "CFBundleTypeName": _branding.APP_NAME + " project",
+                "CFBundleTypeRole": "Editor",
+                "LSHandlerRank": "Owner",
+                "CFBundleTypeExtensions": ["ovt"],
+            }],
+        },
     )
 
 # THIRD-PARTY-NOTICES.txt beside the executable, where every installer (full,

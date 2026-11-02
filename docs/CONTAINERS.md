@@ -243,12 +243,12 @@ native container makes no `.bak`; a plain image saved over itself, or a
 legacy `.hvac` upgraded in place, still keeps one.
 
 
-### PCMFlash one-file reads (`ovtsuite/pcmflash.py`)
+### PCMFlash one-file reads (`ovtsuite/pcmflash_edc16.py`)
 
 PCMFlash saves an MPC564 / M58BW016 EDC16 read both as separate files
 (`_ext_` 2 MB, `_micro_` 0x80200, `_eeprom_` 4 KB) and as one `_flash_`
 file: the external flash then the internal flash (the EEPROM too when the
-file has it), nothing marking the join. `pcmflash.split` finds the parts by
+file has it), nothing marking the join. `pcmflash_edc16.split` finds the parts by
 length and the `FADECAFE CAFEAFFE` program descriptors (0x4003C in the
 external flash, 0x403C in the internal flash). The internal flash is held as
 the 0x81000 image the checksum code and the flasher use (padded with 0xFF);
