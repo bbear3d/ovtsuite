@@ -913,7 +913,8 @@ def cmd_checksum(args):
             print("checksum: %s -- %s" % (ident.name, registry.missing_text(
                 ident.platform, "checksum correction")))
         return 1
-    opts = {}
+    opts = {"digest": True}       # EDC16: always (a verify without it passes
+    #                               an image the ECU's own check refuses)
     if getattr(args, "key_image", None):
         # The internal-flash (.MPC) image carries a block signature but not the
         # modulus that verifies/re-signs it -- that lives in the paired external
@@ -966,7 +967,8 @@ def cmd_frf_info(args):
             "matches the already-solved ZF6HP_WRITE_TAPE" if known
             else "DIFFERENT from ZF6HP_WRITE_TAPE -- do not assume it works, verify separately"))
     if c.platform:
-        print("platform: %s" % {"zf6hp": "ZF 6HP", "zf8hp": "ZF 8HP"}.get(c.platform, c.platform))
+        print("platform: %s" % {"zf6hp": "ZF 6HP", "zf8hp": "ZF 8HP",
+                                     "edc17": "Bosch EDC17", "med17": "Bosch MED17"}.get(c.platform, c.platform))
     print("\n  block     scheme  crc_ok  len        base       calibration")
     for b in c.blocks:
         print("  %-9s %-7s %-7s %-10d %-10s %s" % (
@@ -976,6 +978,53 @@ def cmd_frf_info(args):
     if c.unrecognized:
         print("\n%d block(s) did not decode/verify -- see ovtsuite/frf.py's module docstring "
               "before trusting anything about them." % len(c.unrecognized))
+    return 0
+
+
+def cmd_sgm_info(args):
+    from . import sgm
+    data = open(args.sgm, "rb").read()
+    if not sgm.detect(data):
+        print("not a SW-CNT (.sgm) container")
+        return 1
+    c = sgm.parse(data, name=os.path.basename(args.sgm))
+    print("file  : %s" % os.path.basename(args.sgm))
+    print("part  : %s   software: %s   container: %s %s" % (
+        c.part_number or "-", c.software or "-", c.ident.get("version_type", "-"),
+        c.ident.get("version", "")))
+    for k in ("bosch_sw", "bosch_hw"):
+        if c.ident.get(k):
+            print("%-6s: %s" % (k.replace("bosch_", ""), c.ident[k]))
+    if c.sa2_tape is not None:
+        print("SA2 tape: %s" % c.sa2_tape.hex())
+    print("\n  block       start      format  len        erase                  crc16   scheme")
+    for b, sec in zip([b for b in c.blocks if not b.problem], c.sections):
+        er = ("0x%06X-0x%06X" % b.erase) if b.erase else "-"
+        print("  %-11s 0x%06X   0x%02X    %-10d %-22s %-7s %s" % (
+            b.name, b.start, b.fmt, b.declared_len, er,
+            ("0x%04X" % b.checksum) if b.checksum is not None else "-",
+            sec.scheme or "UNRECOGNIZED"))
+    for b in c.blocks:
+        if b.problem:
+            print("  %-11s not read: %s" % (b.name, b.problem))
+    if c.unrecognized:
+        print("\n%d block(s) did not decode/verify." % len(c.unrecognized))
+    return 0
+
+
+def cmd_sgm_image(args):
+    from . import sgm
+    c = sgm.parse(open(args.sgm, "rb").read(), name=os.path.basename(args.sgm))
+    _base, flat = sgm.image(c)
+    if not flat:
+        print("no decoded block to place")
+        return 1
+    with open(args.out, "wb") as fh:
+        fh.write(flat)
+    print("wrote %s: %d KB flash image (%s)" % (args.out, len(flat) // 1024,
+                                                c.part_number or c.name))
+    if c.unrecognized:
+        print("  %d block(s) did not decode; their area is left 0xFF" % len(c.unrecognized))
     return 0
 
 
@@ -1501,6 +1550,102 @@ def cmd_vss(args):
     return 0
 
 
+def cmd_diag_defs(args):
+    """OVT Diag definition packs: check / build / schema (docs/OVT_DIAG.md)."""
+    from .diag import defs as D
+    if args.what == "schema":
+        import json as _json
+        kinds = [args.pack] if args.pack else list(D.KINDS)
+        for k in kinds:
+            if k not in D.KINDS:
+                print("no such kind: %s (one of %s)" % (k, ", ".join(D.KINDS)))
+                return 2
+            print(_json.dumps(D.json_schema(k), indent=1))
+        return 0
+    if args.what == "list":
+        errors = []
+        for p in D.load_all(errors):
+            print("%-10s %-28s %-10s %s" % (p.origin, p.id, p.version, p.path))
+        for path, msg in errors:
+            print("skipped    %s: %s" % (path, msg))
+        print("user packs folder: %s" % D.user_dir())
+        return 0
+    if not args.pack:
+        print("usage: ovtsuite diag-defs check|build|install <pack dir|zip>, remove <pack id>, "
+              "schema [<kind>], import-odx <file>")
+        return 2
+    if args.what == "install":
+        try:
+            pack, dest, warnings = D.install_pack(args.pack, args.out, force=bool(args.force))
+        except D.InstallError as ex:
+            print("error: %s" % ex)
+            return 1
+        print("installed %s %s -> %s" % (pack.id, pack.version, dest))
+        for w in warnings:
+            print("warning: %s" % w)
+        return 0
+    if args.what == "remove":
+        if D.remove_pack(args.pack, args.out):
+            print("removed %s from %s" % (args.pack, args.out or D.user_dir()))
+            return 0
+        print("no installed pack %s in %s" % (args.pack, args.out or D.user_dir()))
+        return 1
+    if args.what == "check":
+        try:
+            pack = D.load_pack(args.pack, "user")
+        except D.DefsError as ex:
+            print("error: %s" % ex)
+            return 1
+        rep = D.validate_pack(pack)
+        print("%s %s: %d document(s)" % (pack.id, pack.version, len(pack.docs)))
+        print(rep.text())
+        return 0 if rep.ok else 1
+    if args.what == "build":
+        try:
+            out = D.compile_pack(args.pack, args.out)
+        except (D.DefsError, ValueError) as ex:
+            print("error: %s" % ex)
+            return 1
+        print("wrote %s" % out)
+        return 0
+    if args.what == "import-odx":
+        from .diag.uds_odx import import_odx
+        from .diag.defs import yamlio
+        import os as _os
+        if not args.pack:
+            print("usage: ovtsuite diag-defs import-odx <file.odx|.frf> [-o <dir>] [--match addr=02,protocol=uds,part=8K0927158*]")
+            return 2
+        data = open(args.pack, "rb").read()
+        if args.pack.lower().endswith((".frf", ".sgo", ".zip")):
+            try:
+                from . import frf as _frf
+                data = _frf.unwrap(data)[0]
+            except Exception as ex:
+                print("could not unwrap %s (%s); treating it as a raw ODX" % (args.pack, ex))
+        match = {}
+        for part in (args.match or "").split(","):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                match[k.strip()] = v.strip()
+        try:
+            imp = import_odx(data, match=match or None, name=_os.path.basename(args.pack))
+        except ValueError as ex:
+            print("error: %s" % ex)
+            return 1
+        print(imp.summary())
+        outdir = args.out or _os.path.join(_os.path.dirname(_os.path.abspath(args.pack)), "imported-defs")
+        _os.makedirs(outdir, exist_ok=True)
+        for i, doc in enumerate(imp.docs):
+            fn = _os.path.join(outdir, "%02d-%s.yaml" % (i + 1, doc["kind"]))
+            with open(fn, "w", encoding="utf-8") as fh:
+                fh.write(yamlio.dump_yaml(doc))
+            print("  wrote %s" % fn)
+        if imp.docs:
+            print("Review the match block and merge these into a pack (ovtsuite diag-defs check <dir>).")
+        return 0
+    return 2
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -1524,6 +1669,14 @@ def main(argv=None):
         if argv[0] == "--simulator":
             return gui.run_simulator()
         return gui.run_logger(argv[1:])
+    if argv and argv[0] == "--diag":
+        # OVT Diag on its own: `ovtsuite --diag` (docs/OVT_DIAG.md)
+        from . import gui
+        if not gui.HAVE_QT:
+            print("PySide6 is not installed; run: pip install PySide6")
+            return 1
+        from .diag.standalone import run_diag
+        return run_diag(argv[1:])
     if argv and argv[0] == "--converter":
         # OVT Converter on its own: `ovtsuite --converter [file ...]`
         from . import gui
@@ -1685,6 +1838,28 @@ def main(argv=None):
                        parents=[_common])
     s.add_argument("frf")
     s.set_defaults(fn=cmd_frf_info)
+
+    s = sub.add_parser("diag-defs", help="OVT Diag definition packs: check, build (compile), install/remove/list, print a kind's JSON schema, or import an ODX",
+                       parents=[_common])
+    s.add_argument("what", choices=("check", "build", "install", "remove", "list", "schema", "import-odx"))
+    s.add_argument("pack", nargs="?", help="pack dir (check/build), pack dir, .zip or pack.json.gz (install), "
+                   "pack id (remove), kind (schema), or ODX/FRF file (import-odx)")
+    s.add_argument("-o", "--out", help="build: output file; install/remove: definitions folder (default: the user's); "
+                   "import-odx: output dir (default <file dir>/imported-defs)")
+    s.add_argument("--force", action="store_true", help="install: install a pack that has validation errors")
+    s.add_argument("--match", help="import-odx: match block, e.g. addr=02,protocol=uds,part=8K0927158*")
+    s.set_defaults(fn=cmd_diag_defs)
+
+    s = sub.add_parser("sgm-info", help="identify a VW SW-CNT (.sgm) container and list its blocks",
+                       parents=[_common])
+    s.add_argument("sgm")
+    s.set_defaults(fn=cmd_sgm_info)
+
+    s = sub.add_parser("sgm-image", help="assemble a .sgm into the flat flash image (.bin)",
+                       parents=[_common])
+    s.add_argument("sgm")
+    s.add_argument("out")
+    s.set_defaults(fn=cmd_sgm_image)
 
     s = sub.add_parser("frf-extract",
                        help="decode a .frf's recognized blocks to loose .bin files",

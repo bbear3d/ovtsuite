@@ -9,16 +9,21 @@ measuring blocks (:mod:`ovtsuite.gui_msblock`) and the shift / lock-up
 editors (:mod:`ovtsuite.gui_gearbox_compare`) -- so they read like the main
 table editor:
 
-* **differs from the comparison**: ``gui.DIFF_BG`` (opaque orange) with
-  ``gui.CELL_DARK_FG`` text, in the primary's cell and the comparison's
-  copy, the same in either theme (:func:`mark_differs`);
+* **differs from the comparison**: an orange outline (:data:`DIFF_OUTLINE`)
+  round the cell, in the primary's cell and the comparison's copy, the same
+  in either theme (:func:`mark_differs`). It is a frame, not a fill, so it
+  sits on top of whatever else the cell says -- a heat-map or band shade,
+  the direction tint, the pending yellow, a selection -- and none of them
+  has to give way to it. Every delegate that draws a table of the app
+  calls :func:`draw_outline` (the model side answers :data:`OUTLINE_ROLE`);
 * **changed, not applied yet**: :data:`PENDING_BG` (pale yellow), bold, dark
   text (:func:`mark_pending`). It takes the place of orange in the primary;
   the comparison's copy stays orange where it differs;
-* **a difference tinted by direction** (the comparison shown as a delta,
-  :mod:`ovtsuite.compare_delta`): ``gui.DELTA_UP_BG`` (this file higher) and
+* **a difference tinted by direction** (an option of the difference view,
+  :mod:`ovtsuite.compare_delta`): ``gui.DELTA_UP_BG`` (primary higher) and
   ``gui.DELTA_DOWN_BG`` (lower), opaque light fills with ``gui.CELL_DARK_FG``
-  text, the same in either theme; the main table's model draws them;
+  text, the same in either theme; the main table's model draws them, under
+  the outline;
 * **stored on the ECU** (the fault-code windows, after reading the codes
   from the car): :data:`STORED_BG` (light violet), dark text -- a meaning the
   rest of the app has no colour for, a hue apart from orange and yellow;
@@ -49,6 +54,12 @@ from typing import Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+#: the frame of a cell that differs from the comparison
+DIFF_OUTLINE = QtGui.QColor(255, 140, 0)
+#: its width in pixels (drawn inside the cell, over a selection too)
+OUTLINE_WIDTH = 2
+#: item data / model role: True on a cell that differs from the comparison
+OUTLINE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 0x0D17
 #: a cell changed in the window, not applied yet (bold, dark text)
 PENDING_BG = QtGui.QColor(255, 236, 170)
 #: a fault the car's ECU has stored (read with Read codes from ECU...)
@@ -57,22 +68,40 @@ STORED_BG = QtGui.QColor(218, 202, 255)
 OFF_FG = QtGui.QColor(150, 150, 150)
 
 
-def diff_colors():
-    """``(gui.DIFF_BG, gui.CELL_DARK_FG)``."""
-    from . import gui as _g
-    return _g.DIFF_BG, _g.CELL_DARK_FG
-
-
 def dark_fg() -> QtGui.QColor:
     from . import gui as _g
     return _g.CELL_DARK_FG
 
 
 def mark_differs(item: QtWidgets.QTableWidgetItem) -> None:
-    """``item`` as differing from the comparison: orange, dark text."""
-    bg, fg = diff_colors()
-    item.setBackground(QtGui.QBrush(bg))
-    item.setForeground(QtGui.QBrush(fg))
+    """``item`` as differing from the comparison: the orange outline, which
+    the table's delegate draws (the cell's own fill and text stay)."""
+    item.setData(OUTLINE_ROLE, True)
+
+
+def differs(index) -> bool:
+    """Is the model cell ``index`` marked as differing from the comparison?"""
+    return bool(index.data(OUTLINE_ROLE))
+
+
+def draw_outline(painter: QtGui.QPainter, option, index) -> None:
+    """Frame the cell in :data:`DIFF_OUTLINE` when it differs from the
+    comparison (:func:`mark_differs`, or a model answering
+    :data:`OUTLINE_ROLE`). Call it last in a delegate's ``paint``, so the
+    frame lies over the fill, the text and the selection."""
+    if not index.data(OUTLINE_ROLE):
+        return
+    w = OUTLINE_WIDTH
+    painter.save()
+    painter.setClipRect(option.rect)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, False)
+    painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+    painter.setPen(QtGui.QPen(DIFF_OUTLINE, w, QtCore.Qt.PenStyle.SolidLine,
+                              QtCore.Qt.PenCapStyle.FlatCap,
+                              QtCore.Qt.PenJoinStyle.MiterJoin))
+    painter.drawRect(option.rect.adjusted(w // 2, w // 2,
+                                          -(w + 1) // 2, -(w + 1) // 2))
+    painter.restore()
 
 
 def mark_pending(item: QtWidgets.QTableWidgetItem, font: QtGui.QFont) -> None:
@@ -206,8 +235,10 @@ def check_on_selection(opt: QtWidgets.QStyleOptionViewItem, index):
 
 
 class CellDelegate(QtWidgets.QStyledItemDelegate):
-    """The tables' delegate: :func:`selection_text` on the stock drawing, and
-    a selected cell's check box redrawn readable (:func:`check_on_selection`)."""
+    """The tables' delegate: :func:`selection_text` on the stock drawing, a
+    selected cell's check box redrawn readable (:func:`check_on_selection`),
+    and the outline of a cell that differs from the comparison
+    (:func:`draw_outline`)."""
 
     def initStyleOption(self, opt, index):
         super().initStyleOption(opt, index)
@@ -219,6 +250,7 @@ class CellDelegate(QtWidgets.QStyledItemDelegate):
         self.initStyleOption(opt, index)
         got = check_on_selection(opt, index)
         if got is None:
+            draw_outline(painter, option, index)
             return
         chip, ind = got
         w = opt.widget
@@ -232,6 +264,27 @@ class CellDelegate(QtWidgets.QStyledItemDelegate):
         style.drawPrimitive(
             QtWidgets.QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck,
             ind, painter, w)
+        draw_outline(painter, option, index)
+
+
+class NoTextDelegate(CellDelegate):
+    """:class:`CellDelegate` that draws no text: for a column whose cells a
+    widget (a combo box) sits on, the item keeping the text only so Copy has
+    it -- drawn under the widget it shows through."""
+
+    def initStyleOption(self, opt, index):
+        super().initStyleOption(opt, index)
+        opt.text = ""
+
+
+class OutlineDelegate(QtWidgets.QStyledItemDelegate):
+    """The stock drawing plus the outline of a cell that differs from the
+    comparison (:func:`draw_outline`): what a table that needs nothing
+    else of its delegate uses."""
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        draw_outline(painter, option, index)
 
 
 def follow_current(other, r, c) -> None:
@@ -318,3 +371,101 @@ def selection_tsv(table) -> str:
             line.append(it.text() if it is not None else "")
         out.append("\t".join(line))
     return "\n".join(out)
+
+
+# ------------------------------------------------------------ copy and paste
+def parse_tsv(text: str) -> list:
+    """Clipboard text as rows of cell texts: tab separated, a row a line (the
+    table editor's Paste). Blank lines are dropped; cells are not stripped."""
+    return [ln.split("\t") for ln in text.replace("\r", "").split("\n")
+            if ln != ""]
+
+
+def paste_anchor(table):
+    """Where a paste lands: the top-left of the selection, else the current
+    cell; ``(row, column)`` or None."""
+    idx = table.selectedIndexes()
+    if idx:
+        return min((i.row(), i.column()) for i in idx)
+    r, c = table.currentRow(), table.currentColumn()
+    return (r, c) if r >= 0 and c >= 0 else None
+
+
+def has_editable(table) -> bool:
+    """Does ``table`` hold a cell the user can edit (a paste has a use)?"""
+    for r in range(table.rowCount()):
+        for c in range(table.columnCount()):
+            it = table.item(r, c)
+            if it is not None and it.flags() & QtCore.Qt.ItemFlag.ItemIsEditable:
+                return True
+    return False
+
+
+def copy_to_clipboard(table) -> str:
+    """The selected cells of ``table`` to the clipboard (:func:`selection_tsv`);
+    the text, empty if nothing was selected."""
+    text = selection_tsv(table)
+    if text:
+        QtWidgets.QApplication.clipboard().setText(text)
+    return text
+
+
+def install_clipboard(table, paste=None, extra=None) -> None:
+    """Ctrl+C / Ctrl+V and a right-click menu (Copy, Paste, Select all) on
+    ``table`` -- what the main table editor and the measuring blocks have, for
+    the small tables of dialogs.
+
+    ``paste(row, col, grid)`` writes the clipboard's rows of text with their
+    top-left cell at ``(row, col)`` and returns how many cells it set (it
+    should make the whole paste one undo step); None for a read-only table, in
+    which case there is no Paste. ``extra(menu, pos)`` adds a window's own
+    entries above the standard ones. Qt's own Ctrl+C copies the current cell
+    only; this copies the whole selection."""
+    def do_copy():
+        return copy_to_clipboard(table)
+
+    def do_paste():
+        if paste is None:
+            return 0
+        at = paste_anchor(table)
+        grid = parse_tsv(QtWidgets.QApplication.clipboard().text())
+        if at is None or not grid:
+            return 0
+        return paste(at[0], at[1], grid) or 0
+
+    def add(key, slot):
+        a = QtGui.QAction(table)
+        a.setShortcut(QtGui.QKeySequence(key))
+        a.setShortcutContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        a.triggered.connect(slot)
+        table.addAction(a)
+
+    SK = QtGui.QKeySequence.StandardKey
+    add(SK.Copy, do_copy)
+    if paste is not None:
+        add(SK.Paste, do_paste)
+
+    def menu_at(pos):
+        menu = QtWidgets.QMenu(table)
+        if extra is not None:
+            n = len(menu.actions())
+            extra(menu, pos)
+            if len(menu.actions()) > n:
+                menu.addSeparator()
+        cp = menu.addAction("Copy")
+        cp.setShortcut(QtGui.QKeySequence(SK.Copy))
+        cp.setEnabled(bool(table.selectedIndexes()))
+        cp.triggered.connect(do_copy)
+        if paste is not None:
+            pa = menu.addAction("Paste")
+            pa.setShortcut(QtGui.QKeySequence(SK.Paste))
+            pa.setEnabled(bool(QtWidgets.QApplication.clipboard().text())
+                          and has_editable(table))
+            pa.triggered.connect(do_paste)
+        sa = menu.addAction("Select all")
+        sa.setShortcut(QtGui.QKeySequence(SK.SelectAll))
+        sa.triggered.connect(table.selectAll)
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+    table.customContextMenuRequested.connect(menu_at)

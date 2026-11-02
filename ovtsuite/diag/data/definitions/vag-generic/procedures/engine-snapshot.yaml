@@ -1,0 +1,15 @@
+# Every measuring group the engine serves, read once and kept in the
+# vehicle's journal -- a baseline to compare against later. Read-only; the
+# groups come from the module's factory catalogue when it has one, else
+# groups 1-25 are tried.
+kind: procedure
+id: procedure.engine.snapshot
+name: "Engine measuring-block snapshot"
+description: "Read every measuring group once and keep the reading in the journal as a baseline."
+applies: { addr: "01" }
+safety: read-only
+category: Diagnosis
+source: binary
+steps:
+  - read: { groups: catalogue, text: "Measuring groups as served now:" }
+  - log: { journal: true, note: "measuring-block snapshot" }

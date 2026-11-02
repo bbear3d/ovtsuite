@@ -419,6 +419,14 @@ class Surface3DView(QtWidgets.QWidget):
 
     def _draw_hint(self, p, W, H):
         p.setPen(self.palette().text().color())
+        if getattr(self, "compact", False):     # a small view: the point only
+            ed = self.editor
+            cur = ed.current() if ed is not None else None
+            if cur is not None:
+                p.drawText(8, 4 + p.fontMetrics().height(),
+                           "%s   %s" % (ed.describe(*cur),
+                                        _fmt(self.value(*cur), self.dec)))
+            return
         fm = p.fontMetrics()
         line = fm.height()
         ed = self.editor

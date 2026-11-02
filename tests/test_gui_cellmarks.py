@@ -12,7 +12,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
-from PySide6 import QtGui  # noqa: E402
+from PySide6 import QtCore, QtGui  # noqa: E402
 
 pytestmark = pytest.mark.slow
 
@@ -96,3 +96,76 @@ def test_contrast_ratio():
     from ovtsuite.gui_cellmarks import contrast
     black, white = QtGui.QColor(0, 0, 0), QtGui.QColor(255, 255, 255)
     assert round(contrast(black, white)) == 21 and contrast(white, white) == 1
+
+
+# -------------------------------------------------- the difference outline
+def _grab(t):
+    t.resize(260, 120)
+    t.show()
+    QtWidgets.QApplication.processEvents()
+    return t.viewport().grab().toImage()
+
+
+def _px(img, rect, dx, dy):
+    return QtGui.QColor(img.pixel(rect.x() + dx, rect.y() + dy))
+
+
+@pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
+def test_differing_cell_is_framed_not_filled(app, dark):
+    """mark_differs frames the cell in the orange outline and leaves its own
+    fill (a shade, the pending yellow) and text alone; a plain cell has no
+    frame; a selected cell keeps the frame over the accent."""
+    from ovtsuite.gui_cellmarks import (DIFF_OUTLINE, OUTLINE_ROLE, CellDelegate,
+                                        mark_differs)
+    t = QtWidgets.QTableWidget(2, 2)
+    t.setPalette(_palette(dark))
+    t.setItemDelegate(CellDelegate(t))
+    t.setAlternatingRowColors(True)
+    shade = QtGui.QColor(200, 230, 200)
+    for r in range(2):
+        for c in range(2):
+            it = QtWidgets.QTableWidgetItem("5")
+            it.setBackground(QtGui.QBrush(shade))
+            t.setItem(r, c, it)
+    mark_differs(t.item(0, 0))
+    assert t.item(0, 0).data(OUTLINE_ROLE) is True
+    assert t.item(0, 0).background().color() == shade          # fill stays
+    img = _grab(t)
+    r0 = t.visualRect(t.model().index(0, 0))
+    r1 = t.visualRect(t.model().index(0, 1))
+    assert _px(img, r0, 0, r0.height() // 2) == DIFF_OUTLINE   # left edge
+    assert _px(img, r0, r0.width() // 2, 0) == DIFF_OUTLINE     # top edge
+    assert _px(img, r1, r1.width() - 8, 6) == shade              # unmarked: fill
+    assert _px(img, r1, 0, r1.height() // 2) != DIFF_OUTLINE     # not framed
+    t.selectRow(0)
+    QtWidgets.QApplication.processEvents()
+    img = _grab(t)
+    assert _px(img, r0, 0, r0.height() // 2) == DIFF_OUTLINE     # over a selection
+    t.deleteLater()
+
+
+def test_outline_delegate_for_a_model_view(app):
+    """A model answering OUTLINE_ROLE gets the frame from OutlineDelegate."""
+    from ovtsuite.gui_cellmarks import DIFF_OUTLINE, OUTLINE_ROLE, OutlineDelegate
+
+    class M(QtCore.QAbstractTableModel):
+        def rowCount(self, _=QtCore.QModelIndex()):
+            return 1
+
+        def columnCount(self, _=QtCore.QModelIndex()):
+            return 2
+
+        def data(self, ix, role=QtCore.Qt.DisplayRole):
+            if role == OUTLINE_ROLE:
+                return True if ix.column() == 1 else None
+            return "1" if role == QtCore.Qt.DisplayRole else None
+
+    v = QtWidgets.QTableView()
+    v.setModel(M())
+    v.setItemDelegate(OutlineDelegate(v))
+    img = _grab(v)
+    a = v.visualRect(v.model().index(0, 0))
+    b = v.visualRect(v.model().index(0, 1))
+    assert _px(img, b, 0, b.height() // 2) == DIFF_OUTLINE
+    assert _px(img, a, 0, a.height() // 2) != DIFF_OUTLINE
+    v.deleteLater()

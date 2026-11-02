@@ -44,8 +44,8 @@ the unit's flash (or EEPROM) and programs them again from your binary.
 
 After a successful write — flash, block write, flash + EEPROM, EEPROM write,
 6HP28 UDS write or cluster write — the version written is marked in its
-project as **last flashed**. The Project panel shows *⚡ flashed <date>* on
-that version, and the set's and the tab's tooltips say *Last flashed <date>
+project as **last flashed**. The Project panel puts a **⚡ bolt in front of**
+that version (its tooltip says when), and the set's and the tab's tooltips say *Last flashed <date>
 (<branch>, saved version)*, or *unsaved edits* when it was written without
 saving.
 
@@ -106,7 +106,7 @@ The flasher refuses, before connecting, a file that cannot be right:
 | ECU | Refused when |
 |---|---|
 | **EDC16** | The file is not 512 KB, 1 MB or 2 MB, or its last 512 KB is not a recognisable EDC16 calibration. A 512 KB or 1 MB file is treated as the calibration region. |
-| **EDC15** | The file is not exactly 512 KB, or not recognised as an EDC15 (V4.1) image, or (with the EDC15 module) its checksum ranges cannot be read from the file. |
+| **EDC15** | The file is not 512 KB or 1 MB, or its size doesn't match the ECU's detected flash (a 512 KB file to a 1 MB ECU or the reverse), or it isn't recognised as an EDC15 (V4.1) image, or (with the EDC15 module) its checksum ranges cannot be read from the file. |
 | **ZF6HP** — 6HP19 / 6HP26 (TP 2.0) | The file is smaller than 1 MB. |
 | **ZF6HP** — 6HP28 (UDS) | The file is neither a full 2 MB image nor a 512 KB calibration. |
 | **Climatronic** | The file is not a `.sgo` / `.hvac` the flasher can parse, or it carries no flash loader (a raw `.bin` does not). |

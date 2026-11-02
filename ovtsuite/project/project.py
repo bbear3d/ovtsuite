@@ -248,6 +248,160 @@ class Project:
         self._touch()
         return c, b
 
+    def _original_of(self, s: BinarySet, root: Optional[str] = None):
+        old = s.checkpoint(root) if root else (
+            s.root_of(s.active.head) if s.active is not None else
+            (s.roots()[0] if s.roots() else None))
+        return old if old is not None and old.parent is None else None
+
+    def original_problem(self, sid: str, images: Images,
+                         root: Optional[str] = None,
+                         embed: Optional[Dict[str, int]] = None) -> str:
+        """Why ``images`` cannot be the set's new original (:meth:`
+        rebase_original`), or "" when they can: the same members and sizes
+        as the current original, and not the same bytes -- or, for a member
+        in ``embed`` (``{member: offset}``), an image the current original
+        fits into at that offset."""
+        embed = embed or {}
+        s = self.set(sid)
+        old = self._original_of(s, root)
+        if old is None:
+            return "%s has no original to replace." % s.name
+        if set(images) != set(old.sizes):
+            return ("The file holds %s; the original of %s holds %s."
+                    % (", ".join(sorted(images)) or "nothing", s.name,
+                       ", ".join(sorted(old.sizes))))
+        for mid, data in images.items():
+            if mid in embed:
+                at = int(embed[mid])
+                if at < 0 or at + old.sizes[mid] > len(data):
+                    return ("The original of %s (%d bytes) does not fit in "
+                            "the file's %d at 0x%X."
+                            % (s.name, old.sizes[mid], len(data), at))
+                continue
+            if len(data) != old.sizes[mid]:
+                m = s.member(mid)
+                return ("The file's %s is %d bytes; the original's is %d. A "
+                        "file of another size is usually another software, "
+                        "not another copy of this one."
+                        % (m.label if m else mid, len(data), old.sizes[mid]))
+        cur = self.state(s.id, old.id)
+        if not embed and all(bytes(images[m]) == cur[m] for m in images):
+            return "The file is the same as the original already."
+        return ""
+
+    def _widen_versions(self, s: BinarySet, old: Checkpoint,
+                        new_images: Images, embed: Dict[str, int]) -> None:
+        """The old original and every version after it, in the sizes
+        ``new_images`` has: the deltas' offsets move by ``embed``, the sizes
+        change. All checked before anything is changed."""
+        ids, stack = [], [old.id]
+        while stack:
+            cid = stack.pop()
+            ids.append(cid)
+            stack += [c.id for c in s.children(cid)]
+        moved = {}
+        for cid in ids:
+            if cid == old.id:
+                continue
+            recs = self._delta_of(s, cid)
+            if recs is None:
+                raise ValueError("The history of %s is damaged; its versions "
+                                 "cannot be moved." % s.name)
+            for r in recs:
+                if r.member in embed and r.op != _d.OP_PATCH:
+                    raise ValueError(
+                        "\"%s\" changes the size of %s, so the history "
+                        "cannot move into a larger image."
+                        % (s.checkpoint(cid).label or cid, r.member))
+            moved[cid] = recs
+        for cid, recs in moved.items():
+            for r in recs:
+                if r.member in embed:
+                    r.offset += embed[r.member]
+            self._blobs[self._delta_path(s.id, cid)] = _d.encode(recs)
+        for cid in ids:
+            c = s.checkpoint(cid)
+            for mid in embed:
+                if mid in c.sizes:
+                    c.sizes[mid] = len(new_images[mid])
+            self._states.pop((s.id, cid), None)
+        branches = {b.id for b in s.branches if b.head in set(ids)}
+        for bid in branches:                    # located on the old image
+            self._blobs.pop(self._cache_path(s.id, bid), None)
+        for mid, at in embed.items():
+            m = s.member(mid)
+            base = ((m.definition or {}).get("place") or {}).get("base") \
+                if m is not None else None
+            if base is not None:
+                m.definition["place"]["base"] = base - at
+
+    def rebase_original(self, sid: str, images: Images, *, label: str = "",
+                        source: Optional[dict] = None, kind: str = "import",
+                        root: Optional[str] = None,
+                        branch: str = "",
+                        embed: Optional[Dict[str, int]] = None) -> Checkpoint:
+        """Make ``images`` the set's original: a new root with the full
+        images, and the current original (``root``, default the root of the
+        active branch) becomes a version based on it -- its parent is the new
+        root, held as the delta between the two. Every version after it, every
+        branch head, comparison and flash record stays as it is: only what
+        the history starts from changes, so "compare with the original" is
+        now the new file.
+
+        Same members and sizes as the current original are required (a file
+        of another size is another software, not another copy of this one);
+        ``ValueError`` otherwise, or when the file is the original already.
+        ``branch`` names a branch to put on the new original (none by
+        default).
+
+        ``embed`` -- ``{member: offset}`` -- lets a member of the new original
+        be larger than the old one's: the old original (and every version
+        after it) then sits at that offset in the new image, the rest of each
+        version being the new original's (an EDC16 calibration-only original
+        replaced by the 2 MB image it is a window of). Every version's size
+        and delta moves with it; a version that changed the member's size
+        cannot move (ValueError). Returns the new root."""
+        s = self.set(sid)
+        old = self._original_of(s, root)
+        embed = {m: int(at) for m, at in (embed or {}).items()}
+        why = self.original_problem(sid, images, root, embed)
+        if why:
+            raise ValueError(why)
+        new_images = {k: bytes(v) for k, v in images.items()}
+        old_images = self.state(s.id, old.id)
+        if embed:
+            widened = dict(old_images)
+            for mid, at in embed.items():
+                base = bytearray(new_images[mid])
+                base[at:at + len(old_images[mid])] = old_images[mid]
+                widened[mid] = bytes(base)
+            self._widen_versions(s, old, new_images, embed)
+            old_images = widened
+        recs = _d.diff(new_images, old_images)
+        c = Checkpoint(id=new_id(), parent=None, kind=kind, ts=now(),
+                       label=label or "Imported original",
+                       source=dict(source or {}),
+                       sizes={m: len(b) for m, b in new_images.items()})
+        s.checkpoints.append(c)
+        self._store_images(s, c.id, new_images)
+        self._states[(s.id, c.id)] = dict(new_images)
+        # the old original: a version on top of the new one, held as a delta
+        self._blobs[self._delta_path(s.id, old.id)] = _d.encode(recs)
+        for mid in old.sizes:
+            p = self._img_path(s.id, old.id, mid)
+            self._blobs.pop(p, None)
+            self._damaged.discard(p)
+        old.parent = c.id
+        old.n_bytes = _d.changed_bytes(recs)
+        if not old.label.startswith("Previous original"):
+            old.label = "Previous original: %s" % (old.label or old.kind)
+        self._states[(s.id, old.id)] = dict(old_images)
+        if branch:
+            self._new_branch(s, branch, c.id)
+        self._touch()
+        return c
+
     def _new_branch(self, s: BinarySet, name: str, head: str) -> Branch:
         name = name or "Branch"
         taken = {b.name.lower() for b in s.branches}
@@ -328,9 +482,14 @@ class Project:
         heads, comparisons and flash records that name it stay valid) and
         now holds the net change from the oldest one's parent; the others
         go. Refused (ValueError) when a checkpoint inside the run is a
-        branch head, has another branch forking from it, or is what an
-        original file or a flash record refers to: removing it would lose a
-        version something else points at. A hardware record on a version
+        branch head, has another branch forking from it, is what an original
+        file refers to, or is the version last written to the ECU (the car
+        has it): removing it would lose a version something else points at.
+        An EARLIER flash (the history kept in ``set.extra["flash_log"]``) does
+        not stop a merge: its record keeps its time and sha1 and loses its
+        version (``checkpoint`` None, ``merged_into`` the newest), as a flash of
+        unsaved edits has none -- every save of a bring-up is flashed, and a
+        history that can never be tidied is no use. A hardware record on a version
         merged away moves to the newest (:meth:`_hardware_after_merge`);
         refused only when that would change what a version is set up for."""
         s = self.set(sid)
@@ -363,9 +522,9 @@ class Project:
         inner = chain[:-1]
         heads = {b.head: b.name for b in s.branches}
         refs = {o.checkpoint for o in s.originals}
-        flashed = [r for r in [s.extra.get("flashed")] +
-                   list(s.extra.get("flash_log") or []) if isinstance(r, dict)]
-        refs |= {r.get("checkpoint") for r in flashed}
+        last = s.extra.get("flashed")
+        last = last if isinstance(last, dict) else None
+        earlier = [r for r in (s.extra.get("flash_log") or []) if isinstance(r, dict)]
         hw = self._hardware_after_merge(s, chain)
         for c in inner:
             if c.id in heads:
@@ -377,9 +536,17 @@ class Project:
                 raise ValueError("Another branch starts at \"%s\"; it cannot "
                                  "be merged away." % (c.label or c.kind))
             if c.id in refs:
-                raise ValueError("\"%s\" is the version an original file or "
-                                 "a flash record refers to; it cannot be "
-                                 "merged away." % (c.label or c.kind))
+                raise ValueError("\"%s\" is the version an original file "
+                                 "refers to; it cannot be merged away."
+                                 % (c.label or c.kind))
+            if last is not None and last.get("checkpoint") == c.id:
+                raise ValueError(
+                    "\"%s\" is the version last written to the ECU (flashed "
+                    "%s), so it cannot be merged into a later one. Merge up to "
+                    "it instead -- it can be the newest of the run -- or flash "
+                    "the newer version first." % (
+                        c.label or c.kind,
+                        (last.get("ts") or "").replace("T", " ")[:16]))
         if hw is None:
             raise ValueError("Hardware records of the same kind are set up on "
                              "more than one of these versions; merged, which "
@@ -403,6 +570,11 @@ class Project:
         if label:
             newest.label = label
             newest.extra.pop("auto_label", None)    # the merge's own name
+        gone = {c.id for c in inner}
+        for r in earlier:                    # an earlier flash loses its version
+            if r.get("checkpoint") in gone:
+                r["merged_into"] = newest.id
+                r["checkpoint"] = None
         for c in inner:
             s.checkpoints.remove(c)
             self._blobs.pop(self._delta_path(s.id, c.id), None)

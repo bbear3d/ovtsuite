@@ -67,3 +67,45 @@ def test_one_byte_elements_of_an_unlisted_organisation_are_read():
     d = W.load(_data("org9_Renault_Valeo_V50.kp"))
     assert not any("organisation" in w for w in d.warnings)
     assert sum(1 for t in d.tables if t.z.bits == 8) > 2000
+
+
+# Format 834 (WinOLS 5.87: what an .olsx import is saved as), one project of
+# each of four EDC17 ECUs, kept with the DAMOS material (also git-ignored).
+DAMOS = os.path.join(ROOT, "Reference", "EDC17", "DAMOS")
+F834 = {
+    "EDC17CP14_P598_C598G3WB/WinOLS (VW Tiguan (Original) - G3WBPKBS1000-03L906022MK-8441-CAGA).ols": 31250,
+    "EDC17CP44_P1365_C1365DEAR/WinOLS (Audi Q7 DAMOS (Original) - -4H0907401N-X701-).ols": 72310,
+    "EDC17CP44_P1249_C1249CDG0/WinOLS (Audi A6 Allroad Quattro (Original) - -4G0907589B-1001-).ols": 111928,
+    "EDC17C74_P1274_C1274DT8K1/WinOLS (VW Transporter (Original) - 552579-04L906026DR-1135-BCDE).ols": 69590,
+}
+
+
+def _f834(name):
+    p = os.path.join(DAMOS, *name.split("/"))
+    if not os.path.isfile(p):
+        pytest.skip("sample missing: %s" % p)
+    with open(p, "rb") as fh:
+        return fh.read()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", sorted(F834))
+def test_834_parses_to_its_declared_count(name):
+    d = _f834(name)
+    wf = W.parse(d)
+    assert wf.header.version == 834
+    assert wf.problems == []
+    assert len(wf.records) == wf.declared == F834[name]
+    assert {r.profile for r in wf.records} == {"834"}
+
+
+@pytest.mark.slow
+def test_834_value_texts_and_list_end():
+    d = _f834([n for n in F834 if "Q7" in n][0])
+    wf = W.parse(d)
+    assert any(r.vtexts[:2] == [(0, "FALSE"), (1, "TRUE")] for r in wf.records)
+    h = W.read_header(d)
+    p = d.find(W.RECORDS_MAGIC, h.end)
+    count = struct.unpack_from("<I", d, p + 5)[0]
+    recs, end, prof, probs = W.read_records(d, p + 9, count, h.version)
+    assert not probs and d[end:end + 4] == W.FOLDERS_MAGIC

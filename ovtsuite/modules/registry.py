@@ -144,6 +144,7 @@ def checksum(pid: str, session=None, **kw) -> Optional[_api.ChecksumProvider]:
 #: "no supported checksum" message (platforms not listed get a generic line).
 _CHECKSUM_NEEDS = {
     "edc16": "a 1 MB EDC16U1 or 2 MB EDC16U31/U34 image with a 0xCAFECADE marker",
+    "edc17": "a Bosch EDC17 image whose FADECAFE/CAFEAFFE checksum blocks can be found",
     "edc15": "a 512 KB EDC15 V4.1 image",
     "zf6hp": "a ZF 6HP image whose data-block boundaries are mapped",
 }

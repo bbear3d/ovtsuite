@@ -78,6 +78,13 @@ KEY_BC4 = bytes.fromhex("24AA5A23842141E155B23F")
 #: (6 vs 11) differs, which :func:`decode`/:func:`encode` take from the key.
 KEY_5HP = b"GEHEIM"
 
+#: The Bosch EDC17 dialect's key: the fixed 10-byte ASCII string
+#: ``BiWbBuD101``. Used for the ``.sgo`` areas of EDC17 (TriCore) engine
+#: controllers (provenance banner ``BCB Type1 (C) R. Bosch GmbH 2000
+#: K3/EMW3-Ws``), and, with no provenance header, for the XOR layer of an
+#: EDC17 FRF's method-``A1`` blocks (:mod:`ovtsuite.frf`). Nothing to solve.
+KEY_EDC17 = b"BiWbBuD101"
+
 #: Marker of the codec in an area's cleartext provenance header. BOTH Bosch
 #: BCB Type1 dialects carry it, so it identifies the CODEC FAMILY and must not
 #: be used to tell them apart:
@@ -200,6 +207,19 @@ def _frame(body: bytes, dlen: int, k: Dict[int, int], keylen: int = KEYLEN):
     return None
 
 
+def _xor_run(body: bytes, off: int, ln: int, key: bytes) -> bytes:
+    """``body[off:off+ln]`` XORed with the repeating ``key`` as it stands at
+    stream position ``off`` (whole-number XOR, not a per-byte loop)."""
+    if ln <= 0:
+        return b""
+    kl = len(key)
+    ph = off % kl
+    rot = key[ph:] + key[:ph]
+    rep = (rot * (ln // kl + 1))[:ln]
+    return (int.from_bytes(body[off:off + ln], "big")
+            ^ int.from_bytes(rep, "big")).to_bytes(ln, "big")
+
+
 def decode(body: bytes, dlen: int, key: bytes) -> Optional[bytes]:
     """Decode one area's record body with a full key.
 
@@ -218,8 +238,7 @@ def decode(body: bytes, dlen: int, key: bytes) -> Optional[bytes]:
     for off, kind, ln in sorted([(o, "L", n) for o, n in lits] +
                                 [(o, "R", n) for o, n in rles]):
         if kind == "L":
-            out += bytes(body[off + j] ^ key[(off + j) % kl]
-                         for j in range(ln))
+            out += _xor_run(body, off, ln, key)
         else:
             out += bytes([body[off] ^ key[off % kl]]) * ln
     want = 0

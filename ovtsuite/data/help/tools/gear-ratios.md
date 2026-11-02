@@ -39,7 +39,15 @@ grey value changes the main block's value — and with it every copy that
 shares it.
 
 With a comparison open, **Ratio (cmp)**, **Min (cmp)** and **Max (cmp)**
-show the comparison's values; those that differ are highlighted.
+show the comparison's values; those that differ are orange, in the
+comparison's column and in yours, as in the table editor.
+
+**Copy and paste:** select cells and press Ctrl+C, or right-click for
+**Copy**, **Paste** and **Select all**. A paste lands with its top-left cell
+on the first selected cell and fills the value cells below and beside it
+(labels and comparison columns are skipped); it is one undo step, and
+**Copy edits to all copies** applies to it. The v/n bands paste in the units
+they are shown in.
 
 Every change is an ordinary edit: **Edit > Undo** (Ctrl+Z) takes it back.
 

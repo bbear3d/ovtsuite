@@ -116,6 +116,7 @@ class TunerProPlugin:
 TOOLS_EDITORS = "editors"      # with the table editors (shift map, lock-up ...)
 TOOLS_SETTINGS = "settings"    # with the unit's settings (gear ratios, VSS ...)
 TOOLS_FILES = "files"          # with ECU read / write and the converter
+TOOLS_LOGGING = "logging"      # under Build logging blocks (an older app puts it last)
 
 
 @dataclass(frozen=True)
@@ -243,6 +244,10 @@ class ModuleSpec:
         fn = self.resolve(hook)
         if fn is None:
             return None
+        from ..moduleview import ENTITY_HOOKS, viewed
+        if hook in ENTITY_HOOKS and args:
+            # the module's own datasets, not a definition file's loose tables
+            args = (viewed(args[0]),) + tuple(args[1:])
         return fn(*args, **accepted(fn, kw))
 
 

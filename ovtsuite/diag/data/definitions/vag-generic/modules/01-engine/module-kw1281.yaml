@@ -1,0 +1,20 @@
+# Engine control units that speak KW1281 only (EDC15, MSA15): identification
+# blocks on wake-up, measuring groups by block 0x29, faults by 0x07/0x05,
+# adaptation 0x10, login 0x2B, basic settings 0x28, actuator tests 0x04.
+kind: module
+match: { addr: "01", protocol: kw1281 }
+name: Engine (KW1281)
+identification:
+  record: kw1281_blocks
+  fields: { text: text, coding: coding, wsc: wsc }
+variants:
+  adaptation: kw1281
+  actuator_tests: kw1281
+  basic_settings: kw1281
+  coding: kw1281
+  login: kw1281
+  security_access: none
+security:
+  functions_needing_login: [adaptation, coding]
+source: binary
+note: "Service set from the EDC15 corpus disassembly (claude/edc15_kline_protocols.md): KW1281 at 9600 only, no application KWP2000 measuring blocks."

@@ -45,7 +45,7 @@ SHOW_ECU = "Stored on the ECU"
 #: the app's cell colours (:mod:`ovtsuite.gui_cellmarks`), as the engine
 #: fault-code window: a row changed since the last Apply (PENDING_BG, bold),
 #: the On and Cmp on cells of a row whose state differs from the comparison
-#: (orange), a fault the gearbox has stored (STORED_BG); an off fault grey
+#: (orange outline), a fault the gearbox has stored (STORED_BG); an off fault grey
 
 
 class _Item(QtWidgets.QTableWidgetItem):
@@ -347,28 +347,29 @@ class TcuDtcDialog(QtWidgets.QDialog):
             if pending:
                 tip += ("\nChanged here, not applied yet (Apply keeps it, "
                         "Cancel takes it back).")
-            # as the shift editor: not applied (whole row) > differs from
-            # the comparison (On and Cmp on: the primary's cell and the
-            # comparison's) > stored on the ECU (whole row) > off (grey)
+            # as the shift editor: the fill is not applied (whole row) >
+            # stored on the ECU (whole row) > off (grey); the outline of a
+            # difference from the comparison (On and Cmp on: the primary's
+            # cell and the comparison's) lies over any of them
             if pending:
                 mark_pending(chk, self.table.font())
-            elif differs:
-                mark_differs(chk)
             elif stored is not None:
                 mark_stored(chk)
+            if differs:
+                mark_differs(chk)
             for j, (txt, sk) in enumerate(cells):
                 it = _Item(txt)
                 it.setData(ROLE, r.key)
                 it.setData(SORT_ROLE, sk)
                 it.setToolTip(tip)
-                if differs and j == cmp_col:
-                    mark_differs(it)    # the comparison's: orange even when held
-                elif pending:
+                if pending:
                     mark_pending(it, self.table.font())
                 elif stored is not None:
                     mark_stored(it)
                 elif not r.on:
                     it.setForeground(OFF_FG)
+                if differs and j == cmp_col:
+                    mark_differs(it)    # the comparison's
                 self.table.setItem(i, j + 1, it)
         self.table.blockSignals(False)
         self.table.setSortingEnabled(sorting)

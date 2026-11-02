@@ -37,6 +37,7 @@ from typing import Dict, List, Optional
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .featureswitch import model as M, engine as E, ents as _E
+from .gui_fsform import FormBox
 
 KEEP = None                                  # Set to: Keep as is
 CUSTOM = "__custom__"                         # Set to: values edited by hand
@@ -171,6 +172,20 @@ def _colors() -> Dict[str, str]:
                 "cell_bg": "#1f4f80", "cell_fg": "#ffffff", "axis": "#a0a0a0"}
     return {"changed": "#0060a0", "same": "#555555", "note": "#a06000",
             "cell_bg": "#cfe8ff", "cell_fg": "#000000", "axis": "#707070"}
+
+
+def _warn_colors() -> Dict[str, str]:
+    """The warning banner's text, background and border: amber, readable on
+    either theme."""
+    if _dark():
+        return {"fg": "#ffd68a", "bg": "#3d3018", "bd": "#e0a040"}
+    return {"fg": "#6b4200", "bg": "#fff1d6", "bd": "#d08a00"}
+
+
+def _warn_html(lines) -> str:
+    """The banner's text: a bold lead-in, then one bullet per warning."""
+    return ("<b>&#9888; Check before relying on this</b><br>"
+            + "<br>".join("&bull; " + html.escape(x) for x in lines))
 
 
 def _grid_tip(row, limit: int = 24) -> str:
@@ -447,6 +462,22 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         row.addWidget(self.choice_lbl)
         row.addWidget(self.choice_sel)
         right.addLayout(row)
+        # and its form, when the setting is several typed numbers (the gear
+        # ratios): see gui_fsform
+        self.form = FormBox()
+        self.form.changed.connect(self._opt_changed)
+        self._form_spec = None
+        right.addWidget(self.form)
+        # and its warnings (``fs_warnings``): what to check before relying on
+        # the setting picked, in a banner of their own above the table
+        self.warn = QtWidgets.QLabel()
+        self.warn.setWordWrap(True)
+        self.warn.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self.warn.setStyleSheet(
+            "QLabel { color: %(fg)s; background: %(bg)s; border: 1px solid %(bd)s;"
+            " border-radius: 4px; padding: 6px 10px; }" % _warn_colors())
+        self.warn.setVisible(False)
+        right.addWidget(self.warn)
 
         self.preview = QtWidgets.QTableWidget(0, len(_COLS))
         self.preview.setHorizontalHeaderLabels(_COLS)
@@ -700,7 +731,8 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         if words is not None:
             t = words(self.session, g)
             if t:
-                return "Now: <b>%s</b> (no preset matches)" % t
+                return "Now: <b>%s</b>%s" % (
+                    t, "" if getattr(hook, "FS_FORM", None) else " (no preset matches)")
         if hook is None or not hasattr(hook, "state"):
             best, ok, n = E.match_info(self.session, b, g)
             if best is not None and ok:
@@ -715,7 +747,10 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self._loading = True
         self.title.setText(b.title)
         self.summary.setText(b.summary)
-        self.notes.setText("\n".join(b.notes))
+        gone = self._unavailable(b)
+        self.notes.setText("\n".join(list(b.notes) + [
+            "%s is not available on this file: %s." % (b.label(s), why)
+            for s, why in gone.items()]))
         p = self.pending.get(b.id)
         self.cur_lbl.setText(self._now_label(b))
         # Set to: Keep as is, the presets, and Custom when edited
@@ -724,7 +759,11 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         self.state.addItem("Keep as is (no change)", KEEP)
         if not b.readonly:
             for s in E.states(self.session, b):
-                self.state.addItem(b.label(s), s)
+                self.state.addItem(b.label(s) + (" (not available)" if s in gone else ""), s)
+                if s in gone:               # greyed out, with why
+                    i = self.state.count() - 1
+                    self.state.model().item(i).setEnabled(False)
+                    self.state.setItemData(i, gone[s], QtCore.Qt.ItemDataRole.ToolTipRole)
         self.state.blockSignals(False)
         self._show_choice(b)
         self.state.setEnabled(not b.readonly and not _view_only(self.ws))
@@ -755,9 +794,29 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             self.chk.blockSignals(False)
         self.chk.setVisible(bool(chk))
         self._load_choice(b, p)
+        self._load_form(b, p)
         self._loading = False
         self._sync_buttons()
         self._refresh_preview()
+
+    def _unavailable(self, b) -> Dict[str, str]:
+        """``{state: why}`` the hook's ``fs_unavailable`` gives for the
+        copies in view: a setting the file cannot be set to (the hook found it
+        lacking what the change is worked out from)."""
+        fn = getattr(self._hook(b), "fs_unavailable", None)
+        if fn is None:
+            return {}
+        cps = self._view_copies(b)
+        out: Dict[str, List[str]] = {}
+        for c in cps:
+            try:
+                got = fn(self.session, c) or {}
+            except Exception:                             # noqa: BLE001
+                got = {}
+            for st, why in got.items():
+                out.setdefault(st, []).append(
+                    ("%s: " % self._short(c) if len(cps) > 1 else "") + why)
+        return {st: "; ".join(ws) for st, ws in out.items()}
 
     def _opts(self) -> Dict[str, float]:
         spec, chk = self._opt_spec, self._chk_spec
@@ -768,7 +827,41 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         cs = self._choice_spec
         if cs and cs.get("key") and self.choice_sel.currentData() is not None:
             out[cs["key"]] = self.choice_sel.currentData()
+        if self._form_spec:
+            out.update(self.form.values())
         return out
+
+    def _load_form(self, b, p):
+        """The hook's form (``FS_FORM``), started from what the pending
+        setting holds or the hook's ``fs_form_defaults`` for the file."""
+        hook = self._hook(b)
+        spec = getattr(hook, "FS_FORM", None)
+        self._form_spec = spec
+        vals = {}
+        if spec and hasattr(hook, "fs_form_defaults"):
+            try:
+                vals = dict(hook.fs_form_defaults(
+                    self.session, (self._view_copies(b) or [""])[0]) or {})
+            except Exception:                             # noqa: BLE001
+                vals = {}
+        if spec and p is not None:
+            keys = {f["key"] for f in spec.get("fields", ())}
+            # (a field's own choices travel as <key>_mode, <key>_w ...)
+            vals.update({k: v for k, v in p.opts.items()
+                         if k in keys or any(k.startswith(x + "_") for x in keys)})
+        self.form.load(spec, vals)
+
+    def _sync_form(self, b):
+        """The form is live only for the settings it applies to."""
+        spec = self._form_spec
+        if not spec:
+            return
+        pend = self.pending.get(b.id)
+        only = spec.get("states")
+        on = not only or (pend is not None and any(
+            pend.copies[c].state in only for c in self._view_copies(b)
+            if c in pend.copies))
+        self.form.set_live(on and not _view_only(self.ws))
 
     def _load_choice(self, b, p):
         """The hook's choice (``FS_CHOICE``, its items from
@@ -1190,6 +1283,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
     def _sync_opt(self, b):
         """The hook's number is live only for the settings it applies to."""
         self._sync_choice(b)
+        self._sync_form(b)
         spec = self._opt_spec
         if not spec:
             return
@@ -1388,6 +1482,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         pend = self.pending.get(b.id)
         hook = self._hook(b)
         self.hook_info.clear()
+        self.warn.setVisible(False)
         if hook is None:
             self._size_columns()
             return
@@ -1396,7 +1491,7 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
         picked = [(c, pend.copies[c].state) for c in cps
                   if pend is not None and c in pend.copies
                   and pend.copies[c].state is not None]
-        rows, infos = [], []
+        rows, infos, warnings = [], [], []
         for i, (c, st) in enumerate(picked):
             try:
                 rows += [self._tag(x, multi) for x in (self._hooked(
@@ -1406,6 +1501,9 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                 info = "(Could not work out the table changes: %s)" % ex
             if info and info not in infos:
                 infos.append(info)
+            for w_ in self._warnings(b, c, st):
+                if w_ not in warnings:
+                    warnings.append(w_)
         # every table and fault path the feature works through, all of the
         # time: those the setting (or a fault path's own choice) changes in
         # blue, with their new values; the rest grey, as they are
@@ -1463,12 +1561,25 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             if not rows:
                 info = ("No table or fault path needs to change. " + info).strip()
             self.hook_info.setText(info.strip())
+            if warnings:
+                self.warn.setText(_warn_html(warnings))
+                self.warn.setVisible(True)
         elif not b.readonly:
             self.hook_info.setText(
                 "The tables and fault paths this feature works through. Pick a "
                 "setting to see what it changes; a fault path can also be "
                 "switched on or off on its own in the New column.")
         self._size_columns()
+
+    def _warnings(self, b, c, st) -> List[str]:
+        """What the hook's ``fs_warnings`` says to check before relying on
+        setting ``st`` of copy ``c`` ([] without one)."""
+        if not hasattr(self._hook(b), "fs_warnings"):
+            return []
+        try:
+            return list(self._hooked(b, "fs_warnings", c, st, **self._opts()) or [])
+        except Exception:                                 # noqa: BLE001
+            return []
 
     def _tag(self, row, multi):
         """A hook row from one copy: named with its dataset when several are
@@ -1569,6 +1680,15 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
                 b.title, target, ", ".join(bits) or "nothing to change",
                 (" [%s]" % ", ".join(copies)) if copies else ""))
         text = "Write these changes as one undo step?\n\n" + "\n".join(lines)
+        check = []
+        for b, _live, _w, hook, pend, hooked in work:
+            for g, st in hooked:
+                for x in self._warnings(b, g, st):
+                    if x not in check:
+                        check.append(x)
+        if check:
+            text += ("\n\n\u26a0 Check before relying on this:\n"
+                     + "\n".join("  \u2022 " + x for x in check))
         if warns:
             text += "\n\nNot written:\n" + "\n".join("  " + w for w in dict.fromkeys(warns))
         if QtWidgets.QMessageBox.question(

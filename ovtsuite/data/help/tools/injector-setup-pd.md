@@ -59,8 +59,10 @@ runs before fitting.
 **From logs** corrects the duration maps from logs (below).
 
 - **Fitting**: a factory injector set, an aftermarket nozzle or one of your
-  own presets. The line under it says what the preset is based on and how
-  sure it is:
+  own presets. The line under it lists the engines it is listed for, the
+  **OEM part numbers** of the injector body (VAG, then Bosch 0 414 720 ...;
+  an aftermarket nozzle shows its factory base's), and what the preset is
+  based on and how sure it is:
   - *exact (from a stock file)*: the duration maps of a factory file;
   - *starting point*: an aftermarket nozzle, worked out from its factory base
     nozzle with the extra flow its maker states. Refine it from logs.
@@ -107,7 +109,7 @@ this changes marked, and bring the main window forward; the line under the
 list says if it could not); and what was found. With a comparison, the
 **Comparison** column compares each table as it will be written with the
 comparison's table of the same name: *the same*, or how many cells differ and
-by how much (orange), or that the comparison does not have it. The list
+by how much (outlined in orange), or that the comparison does not have it. The list
 selects whole rows, as the other editing windows do. Drag the bar between the
 settings and the preview to share out the height; on a short screen the
 settings scroll. The window opens at the size you left it. A warning that the full-load quantity runs past the

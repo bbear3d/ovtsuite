@@ -61,9 +61,15 @@ way the main map editor does, using the shared helpers in
 `ovtsuite/gui_cellmarks.py` (read its docstring): alternating row colours so
 the selection is the solid accent colour, `CellDelegate` / `selection_text`
 so a selected cell's text stays legible with and without focus, in both
-themes, `DIFF_BG` orange for "differs from the
-comparison", `PENDING_BG` for changed-not-applied. Checkboxes and other
+themes, the **orange outline** for "differs from the
+comparison" (`mark_differs`, drawn by the delegate -- `CellDelegate` or
+`OutlineDelegate`, or `draw_outline` in a delegate of your own; a model
+answers `OUTLINE_ROLE`; never an orange *fill*, so it lies over a heat map,
+the direction tint and the pending yellow), `PENDING_BG` for
+changed-not-applied. Checkboxes and other
 indicators must stay clearly visible on a selected row in both themes.
 Where a window shows a comparison table beside the primary, selecting cells
 in the primary selects the same cells in the comparison -- all of them, not
-only the current one. Do not invent a window-local selection style.
+only the current one. (The one exception is the table editor's comparison at
+its original size when the two sizes differ: then nothing is linked and every
+cell is outlined -- `ovtsuite/gui_cmpsize.py`.) Do not invent a window-local selection style.

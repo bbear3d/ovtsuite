@@ -1167,6 +1167,45 @@ def _coding_redirects(data, arr_base, main_lo, main_hi, target, valid):
     return out
 
 
+class _Pair:
+    """A primary copy and one coding-selected copy of it, as
+    :func:`copy_codings` takes them (``main_z`` / ``sec_z``)."""
+    def __init__(self, main_z, sec_z):
+        self.main_z, self.sec_z = main_z, sec_z
+
+
+def row_transmissions(session, rows):
+    """The transmission each of ``rows`` (``vss_pulse_settings``' dicts) is
+    read for, in order -- ``["automatic (TC)", "5-speed manual"]`` -- or None
+    when the coding arrays do not give exactly one per row, or two rows
+    come out the same. Resolved as the gear ratios are (:func:`copy_codings`,
+    from the active pointer array, never from the values): a variant copy
+    belongs to the codings that point its block's slot there, the primary to
+    the codings every variant slot leaves in the main block."""
+    prim = next((r["addr"] for r in rows if r["primary"]), None)
+    variants = [r["addr"] for r in rows if not r["primary"]]
+    if prim is None or not variants:
+        return None
+    codes = {}
+    prim_codes = None
+    for a in variants:
+        got = copy_codings(session, [_Pair(prim, a)])
+        if a not in got or not got.get(prim):
+            return None
+        codes[a] = got[a]
+        mine = set(got[prim])
+        prim_codes = mine if prim_codes is None else prim_codes & mine
+    codes[prim] = sorted(prim_codes or ())
+
+    def tx(cs):
+        names = {decode_coding(c)[0] or "coding %d" % c for c in cs}
+        return next(iter(names)) if len(names) == 1 else None
+    out = [tx(codes.get(r["addr"], ())) for r in rows]
+    if None in out or len(set(out)) != len(out):
+        return None
+    return out
+
+
 def vss_pulse_settings(session) -> List[dict]:
     """The VSS pulse-scaling constant and every coding-selected variant copy.
 

@@ -117,6 +117,11 @@ class FeatureSet:
 #: ``tip`` and ``states``; its items are ``fs_choices(session)`` -> ``[(key,
 #: text)]``, and it is shown only when there are two or more (the first is
 #: the default; without the choice the key is not passed).
+#: An optional ``FS_FORM`` dict adds a box of typed numbers and tick boxes for
+#: a setting that is several values (the gear ratios): see
+#: :mod:`ovtsuite.gui_fsform` for its spec; the values arrive in ``opts`` by
+#: key, and an optional ``fs_form_defaults(session, group)`` -> ``{key:
+#: value}`` starts the form from what the file holds.
 #: ``fs_preview(session, group, target, first, **opts)`` lists what a setting changes (rows of
 #: ``engine.write_rows`` / ``engine.fault_rows``) and ``state_text(session,
 #: group)`` says in words what the file holds when no setting matches.
@@ -127,6 +132,15 @@ class FeatureSet:
 #: window lists them before a setting is picked. A table row carries its
 #: ``entity`` (and ``axis``, ``cells``); a fault row its path's ``key`` and
 #: ``target`` class, which the window lets the user override path by path.
+#: ``fs_unavailable(session, group)`` (optional) -> ``{state: why}`` for the
+#: settings this copy cannot be set to (the file lacks what the change is
+#: worked out from): the window greys them out, with why in the tooltip and
+#: under the feature, and the hook's own ``fs_apply`` / ``fs_preview`` write
+#: and list nothing for them.
+#: ``fs_warnings(session, group, target, **opts)`` (optional) -> ``[str]``:
+#: what to check before relying on the setting picked. The window shows them
+#: in an amber banner above the table and again in the Apply confirmation;
+#: nothing is blocked.
 #: ``fs_absent_why(session)`` (optional) says why the feature cannot be
 #: offered on this file ("" when it can): the feature is then left out and
 #: the window lists it, with that reason, under the features it offers.

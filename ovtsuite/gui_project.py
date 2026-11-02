@@ -344,9 +344,13 @@ def load_into(ws, doc, sid, bid) -> bool:
             ws, "Open from project", "That branch can't be opened: %s" % ex)
         return False
     log = _sb.history_text(proj, sid, b.head)
-    defn = _sb.definition_for(proj, sid, bid, state)
+    # a set whose own definition replaces the module's maps (a WinOLS project
+    # opened as stored): the module would identify the binary and build a
+    # parameter tree that is thrown away, so it is not asked to
+    only = _definition_only(proj, sid)
+    defn = None if only else _sb.definition_for(proj, sid, bid, state)
     located, reshaped = None, []
-    if not _defn_fits(proj, sid, state, defn):
+    if not only and not _defn_fits(proj, sid, state, defn):
         located = _locate_on_original(ws, doc, sid, b, state, reshaped)
         if located is not None:
             defn = located
@@ -354,7 +358,9 @@ def load_into(ws, doc, sid, bid) -> bool:
     work = _sb.write_working_file(doc.tmpdir, _work_name(doc, s),
                                   ext, data, log=log)
     try:
-        loaded = ws._load_session(work, title="Opening %s" % s.name)
+        loaded = ws._load_session(
+            work, title="Opening %s" % s.name,
+            loader=_definition_only_loader(work) if only else None)
     except Exception as ex:
         QtWidgets.QMessageBox.critical(ws, "Open from project", str(ex))
         return False
@@ -398,11 +404,53 @@ def load_into(ws, doc, sid, bid) -> bool:
         compare_with_checkpoint(ws, root.id, quiet=True)
     ws.win._workspace_changed(ws)
     ws.statusBar().showMessage(why or
-        "Opened %s ▸ %s · %s%s" % (
+        "Opened %s ▸ %s · %s%s%s" % (
             doc.title, s.name, b.name,
             " (parameters located on the original version)"
-            if getattr(loaded, "_defn_from_original", False) else ""), 8000)
+            if getattr(loaded, "_defn_from_original", False) else "",
+            " -- the module's built-in maps are not loaded (right-click in the parameter tree > Load the "
+            "module's built-in maps)" if only and module_defines(ws.win, doc, sid)
+            else ""), 8000)
     return True
+
+
+def _definition_only(proj, sid) -> bool:
+    """Whether set ``sid`` shows its own definition INSTEAD of the module's
+    maps (``definition["use"] == "instead"``): the module's family search and
+    parameter tree are then not built when it opens."""
+    main = _sb._main_member(proj, sid)
+    return bool(main is not None and main.definition
+                and main.definition.get("use") == "instead")
+
+
+def _definition_only_loader(path):
+    """A ``Workspace._load_session`` loader: the session without the module's
+    parameter tree (``TunerSession(definition_only=True)``)."""
+    from .session import TunerSession
+    return lambda report: TunerSession(path, progress=report, definition_only=True)
+
+
+def builtin_maps_hidden(win, ws) -> bool:
+    """Whether tab ``ws`` shows its project's definition without the module's
+    built-in maps, which the module could list (right-click in the parameter tree > Load the module's
+    built-in maps)."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is None or getattr(ws, "primary", None) is None:
+        return False
+    if not _definition_only(ref.doc.project, ref.sid):
+        return False
+    return module_defines(win, ref.doc, ref.sid)
+
+
+def load_builtin_maps(win, ws) -> bool:
+    """The parameter tree's right-click Load the module's built-in maps: the module identifies the
+    binary and builds its parameter tree, listed beside the project's
+    definition (what the open as stored left out). A few seconds; the set's
+    tabs reopen."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is None:
+        return False
+    return hide_builtin_maps(win, ref.doc, ref.sid, False)
 
 
 def _defn_fits(proj, sid, state, blob) -> bool:
@@ -513,7 +561,10 @@ def _session_at(ws, cid, label):
         proj, ref.sid, state,
         defn=_sb.definition_for(proj, ref.sid, ref.bid, state))
     path = _sb.write_working_file(ref.doc.tmpdir, label, ext, blob)
-    sess = ws._load_session(path, title="Loading %s" % label)
+    sess = ws._load_session(
+        path, title="Loading %s" % label,
+        loader=_definition_only_loader(path) if _definition_only(proj, ref.sid)
+        else None)
     _apply_definition(proj, ref.sid, sess)
     sess.binfile.name = label           # not the working file's name
     return sess
@@ -785,11 +836,22 @@ def merge_versions(win, doc, sid, cids, label="") -> str:
     return c.id
 
 
+def default_project_dir() -> str:
+    """The folder Save project opens in for a project with no file yet, when
+    the option is on and the folder is there; else ``""``."""
+    from . import options as _opt
+    if not _opt.get("projects/default_dir_on"):
+        return ""
+    d = os.path.expanduser(_opt.get("projects/default_dir") or "")
+    return d if d and os.path.isdir(d) else ""
+
+
 def _ask_path(win, name, current) -> Optional[str]:
     """Where to save a project (``.ovt`` only: raw and native formats are
     exports)."""
     from .recent import get_last_dir, set_last_dir
-    start = current or os.path.join(get_last_dir(), name + _ar.EXT)
+    start = current or os.path.join(default_project_dir() or get_last_dir(),
+                                    name + _ar.EXT)
     path, _f = QtWidgets.QFileDialog.getSaveFileName(
         win, "Save project", start, "OVT project (*%s)" % _ar.EXT)
     if not path:
@@ -1421,6 +1483,8 @@ def definition_kind(path) -> Optional[str]:
     content."""
     from .definitions import detect
     from .definitions import winols as _wo
+    if str(path).lower().endswith(".olsx"):
+        return "ols"                    # an encrypted WinOLS export: no structure to read
     try:
         with open(path, "rb") as fh:
             head = fh.read(65536)
@@ -1456,22 +1520,48 @@ def _open_new_doc(win, proj, ws=None):
 
 
 def open_ols(win, path, ws=None) -> bool:
-    """A WinOLS project opens as a new (unsaved) project: its binary, its
-    maps as the binary's definition, and the vehicle details entered in
-    WinOLS as the project information."""
+    """A WinOLS project opens as a new (unsaved) project, saved as an .ovt
+    one: its binaries (Options > Projects and saving > Opening a WinOLS
+    project: by default every one as the versions WinOLS lists, each a
+    branch of its own), its maps as the binary's definition (by default the
+    only maps shown, placed where WinOLS has them), and the vehicle details
+    entered in WinOLS as the project information."""
     from .project import importers as _imp
     from . import gui_olsversions as _ov
     name = os.path.splitext(os.path.basename(path))[0]
     with open(path, "rb") as fh:
         data = fh.read()
-    which = _ov.choose(win, path, data)         # several versions: which?
-    if which == _ov.CANCEL:
-        return False
+    if path.lower().endswith(".olsx"):
+        # an encrypted WinOLS export: the .ols inside, named as one
+        from .definitions import olsx as _olsx
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            data = _olsx.decrypt(data)
+        except Exception as ex:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(
+                win, "WinOLS project", "%s could not be opened: %s"
+                % (os.path.basename(path), ex))
+            return False
+        QtWidgets.QApplication.restoreOverrideCursor()
+        path = path[:-1]
+    from . import options as _opt
+    how = _opt.get("ols/open")
+    stored = how == "stored"
+    if stored:
+        which = "all"                           # every binary, as stored
+    elif how == "ask":
+        which = _ov.choose(win, path, data)     # several versions: which?
+        if which == _ov.CANCEL:
+            return False
+    else:
+        which = None                            # the original only
     QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
     try:
         proj = Project(name)
         _imp.import_bytes(proj, data, os.path.basename(path),
-                          ols_versions=which)
+                          ols_versions=which, ols_layout=_opt.get("ols/layout"),
+                          ols_stored=stored)
     except Exception as ex:
         QtWidgets.QApplication.restoreOverrideCursor()
         QtWidgets.QMessageBox.critical(
@@ -1544,7 +1634,7 @@ def open_definition(win, path, kind) -> bool:
     return _open_new_doc(win, proj) is not None
 
 
-_FILES_FILTER = ("Binaries and containers (*.bin *.ori *.sgo *.frf *.dim *.ols "
+_FILES_FILTER = ("Binaries and containers (*.bin *.ori *.sgo *.frf *.dim *.ols *.olsx "
                  "*.edc16 *.edc15 *.6hp *.8hp *.vdo);;All files (*)")
 
 
@@ -1559,7 +1649,9 @@ def _import_paths(win, proj, paths) -> list:
         if which == _ov.CANCEL:
             continue
         try:
-            _p, s = _imp.import_file(path, proj, ols_versions=which)
+            from . import options as _opt
+            _p, s = _imp.import_file(path, proj, ols_versions=which,
+                                     ols_layout=_opt.get("ols/layout"))
             sets.append(s)
         except Exception as ex:
             problems.append("%s: %s" % (os.path.basename(path), ex))
@@ -2319,8 +2411,10 @@ def fill_version_menu(win, menu, ws) -> None:
     chain = s.lineage(ref.branch.head)
     shown = ws.cmp_version["id"] if ws.cmp_version else None
     from . import options as _opt
+    menu.setToolTipsVisible(True)
     for c in chain[:_opt.get("history/version_menu_max")]:
         a = menu.addAction(_ck_text(c))
+        a.setToolTip(_ck_text(c))               # a long name, whole
         if c.id == shown:
             a.setCheckable(True)
             a.setChecked(True)
@@ -2328,6 +2422,39 @@ def fill_version_menu(win, menu, ws) -> None:
             lambda _c=False, cid=c.id: compare_with_checkpoint(win.current, cid))
     menu.addSeparator()
     menu.addAction("Project panel...", lambda: show_panel(win, focus=True))
+
+
+_FLASH_ICONS: dict = {}
+
+
+def flashed_icon(on: bool) -> QtGui.QIcon:
+    """The flag in front of a version that was flashed to the ECU (a
+    lightning bolt), or -- ``on`` False -- an empty square of the same size,
+    so the version names line up whether or not one carries it."""
+    key = bool(on)
+    ic = _FLASH_ICONS.get(key)
+    if ic is not None:
+        return ic
+    pm = QtGui.QPixmap(16, 16)
+    pm.fill(QtCore.Qt.GlobalColor.transparent)
+    if on:
+        p = QtGui.QPainter(pm)
+        try:
+            p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            path = QtGui.QPainterPath()
+            pts = [(9.5, 0.5), (3.0, 9.0), (7.2, 9.0), (6.0, 15.5),
+                   (13.0, 6.5), (8.6, 6.5)]
+            path.moveTo(*pts[0])
+            for pt in pts[1:]:
+                path.lineTo(*pt)
+            path.closeSubpath()
+            p.setPen(QtGui.QPen(QtGui.QColor(120, 80, 0), 1))
+            p.setBrush(QtGui.QColor(255, 196, 0))
+            p.drawPath(path)
+        finally:
+            p.end()
+    ic = _FLASH_ICONS[key] = QtGui.QIcon(pm)
+    return ic
 
 
 def _ck_text(c) -> str:
@@ -2366,14 +2493,52 @@ def export_member(ws) -> None:
     m = members[0]
     if len(members) > 1:
         names = [x.label for x in members]
+        every = "All parts (a file each)"
         pick, ok = QtWidgets.QInputDialog.getItem(
-            ws, "Export raw binary", "Which part of %s?" % s.name, names, 0, False)
+            ws, "Export raw binary", "Which part of %s?" % s.name,
+            names + [every], 0, False)
         if not ok:
             return
+        if pick == every:
+            return _export_all_members(ws, ref, s, members)
         m = members[names.index(pick)]
-    _write_export(ws, "%s %s %s.bin" % (ref.doc.title, s.name, m.label),
-                  "Binary files (*.bin)",
+    _write_member(ws, ref, s, m)
+
+
+def _member_file(ref, s, m) -> str:
+    """A part's export name: the internal flash is the plain 0x81000 (516 KB)
+    ``.mpc`` image the BDM tools take, everything else a ``.bin``."""
+    return "%s %s %s%s" % (ref.doc.title, s.name, m.label,
+                           ".mpc" if m.role == "mpc" else ".bin")
+
+
+def _write_member(ws, ref, s, m) -> None:
+    name = _member_file(ref, s, m)
+    ext = os.path.splitext(name)[1]
+    _write_export(ws, name, "Binary files (*%s)" % ext,
                   _ex.export_raw(ref.doc.project, s.id, m.id, branch=ref.bid))
+
+
+def _export_all_members(ws, ref, s, members) -> None:
+    """Every part of the set as a file of its own, in a folder picked once."""
+    from .recent import get_last_dir, set_last_dir
+    folder = QtWidgets.QFileDialog.getExistingDirectory(
+        ws, "Export every part to", get_last_dir())
+    if not folder:
+        return
+    done = []
+    try:
+        for m in members:
+            out = os.path.join(folder, _member_file(ref, s, m))
+            with open(out, "wb") as fh:
+                fh.write(_ex.export_raw(ref.doc.project, s.id, m.id,
+                                        branch=ref.bid))
+            done.append(os.path.basename(out))
+    except OSError as ex:
+        QtWidgets.QMessageBox.critical(ws, "Export", str(ex))
+        return
+    set_last_dir(folder)
+    ws.statusBar().showMessage("Exported %s" % ", ".join(done), 8000)
 
 
 def export_raw(ws) -> None:
@@ -2398,6 +2563,46 @@ def export_raw(ws) -> None:
     base = os.path.splitext(ws.display_name().replace(" (unsaved)", ""))[0]
     if _write_export(ws, base + ".bin", "Binary files (*.bin)", data) and note:
         ws.statusBar().showMessage("Exported%s." % note, 8000)
+
+
+def has_flash_and_mpc(ws) -> bool:
+    """Whether the tab's set holds both an external flash and an internal
+    flash (what a PCMFlash file is made of)."""
+    ref = getattr(ws, "project_ref", None)
+    if ref is None:
+        return False
+    p, s = ref.doc.project, ref.set
+    return all(p.member_bytes(s.id, m, branch=ref.bid) is not None
+               for m in ("flash", "mpc"))
+
+
+def export_pcmflash(ws) -> None:
+    """Export > PCMFlash file: the set's external flash + internal flash (and
+    the EEPROM, if you say so) as the one-file read PCMFlash makes."""
+    ref = ws.project_ref
+    if not _saved_first(ws):
+        return
+    s = ref.set
+    with_ee = False
+    have = ref.doc.project.member_bytes(s.id, "eeprom", branch=ref.bid)
+    if have is not None:
+        SB = QtWidgets.QMessageBox.StandardButton
+        r = QtWidgets.QMessageBox.question(
+            ws, "Export PCMFlash file",
+            "Put the EEPROM in the file too, behind the internal flash?"
+            "\n\nPCMFlash's own flash files hold the external and internal flash "
+            "only.", SB.No | SB.Yes | SB.Cancel, SB.No)
+        if r == SB.Cancel:
+            return
+        with_ee = r == SB.Yes
+    try:
+        data = _ex.export_pcmflash(ref.doc.project, s.id, branch=ref.bid,
+                                   with_eeprom=with_ee)
+    except _ex.ExportRefused as ex:
+        QtWidgets.QMessageBox.information(ws, "Export PCMFlash file", str(ex))
+        return
+    _write_export(ws, "%s %s flash.bin" % (ref.doc.title, s.name),
+                  "Binary files (*.bin)", data)
 
 
 def export_original(ws) -> None:
@@ -3007,16 +3212,22 @@ class ProjectPanel(AutoHideDock):
                     flashed = d.project.last_flashed(s.id) or {}
                     for c in s.lineage(b.head):
                         text = _ck_text(c)
-                        if flashed.get("checkpoint") == c.id:
-                            text += "   ⚡ flashed %s" % (
-                                flashed.get("ts") or "").replace("T", " ")[:16]
+                        is_flashed = flashed.get("checkpoint") == c.id
                         badge = setup_badge(d.project, s.id, c.id)
                         if badge:
                             text += "   " + badge
                         ci = QtWidgets.QTreeWidgetItem([text])
                         ci.setData(0, _ROLE, ("ck", d, s.id, b.id, c.id))
-                        if badge:
-                            ci.setToolTip(0, badge)
+                        # the flag leads the row, in a column of its own that
+                        # every version keeps, so it shows however long the
+                        # name is and the names stay in line
+                        ci.setIcon(0, flashed_icon(is_flashed))
+                        # the whole row, so a long name can be read
+                        tips = [text]
+                        if is_flashed:
+                            tips.append("Flashed to the ECU %s" % (
+                                flashed.get("ts") or "").replace("T", " ")[:16])
+                        ci.setToolTip(0, "\n".join(tips))
                         if c.id in bad:
                             ci.setForeground(0, QtGui.QBrush(QtGui.QColor("red")))
                         bi.addChild(ci)
@@ -3228,6 +3439,12 @@ class ProjectPanel(AutoHideDock):
         elif kind == "set":
             sid = data[2]
             m.addAction("Rename...", lambda: self._rename_set(d, sid))
+            from . import gui_original as _orig
+            io_ = m.addAction("Import a new original...",
+                              lambda: _orig.import_original(self.win, d, sid))
+            io_.setToolTip("Make another file of the same software the "
+                           "original of this binary; the original it has "
+                           "becomes a version based on it.")
             main = _sb._main_member(d.project, sid)
             if main is not None:
                 m.addSeparator()

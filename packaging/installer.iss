@@ -112,6 +112,9 @@ Name: "associate_ovt"; \
     GroupDescription: "File associations:"
 Name: "associate"; Description: "Associate &.bin files with {#AppName}"; \
     GroupDescription: "File associations:"; Flags: unchecked
+Name: "associate_ols"; \
+    Description: "Offer {#AppName} for WinOLS projects (.ols)"; \
+    GroupDescription: "File associations:"; Flags: unchecked
 Name: "shellmenu"; \
     Description: "Add ""Convert with {#ConverterName}"" to the right-click menu"; \
     GroupDescription: "Right-click menu:"; Flags: unchecked
@@ -119,7 +122,7 @@ Name: "shellmenu"; \
 [Files]
 ; The one-folder PyInstaller output -- the base app. Its modules\ folder is
 ; NOT taken whole: each module is a component of its own (below).
-Source: "{#SourceDir}\*"; Excludes: "\modules"; DestDir: "{app}"; \
+Source: "{#SourceDir}\*"; Excludes: "\modules,\{#DiagExe}"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; The .ovt project file's own icon (tools/make_file_icons.py builds it from
 ; ovtsuite/data/ovt_project.svg); the association below points at it.
@@ -127,6 +130,17 @@ Source: "ovt_project.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 #ifdef ModulesInclude
   #include ModulesInclude
+; OVT Diag (vehicle diagnostics) is its own product by default
+; (tool_installer.iss /DTool=diag); the full installer offers it as an
+; optional, unticked component. The base-only installer leaves it out.
+[Components]
+Name: "diag"; Description: "{#DiagName} -- vehicle diagnostics (also available as its own installer)"; \
+    Types: custom
+[Files]
+Source: "{#SourceDir}\{#DiagExe}"; DestDir: "{app}"; Flags: ignoreversion; Components: diag
+[Icons]
+Name: "{group}\{#DiagName}"; Filename: "{app}\{#DiagExe}"; \
+    AppUserModelID: "{#DiagAppId}"; Components: diag
 #endif
 
 [Icons]
@@ -207,6 +221,26 @@ Root: HKA; Subkey: "Software\Classes\OVTSuite.bin\shell\open\command"; \
 Root: HKA; Subkey: "Software\Classes\.bin\OpenWithProgids"; \
     ValueType: string; ValueName: "OVTSuite.bin"; ValueData: ""; \
     Flags: uninsdeletevalue; Tasks: associate
+
+; Opt-in WinOLS project (.ols) association. .ols belongs to WinOLS, so, like
+; .bin above, this adds a named ProgID and lists it under "Open with" -- it
+; does not take over WinOLS's own registration (which uninstalling could not
+; give back); the user makes it the default in Windows if they want. Opening
+; one runs Options > Opening a WinOLS project. The whole key is removed on
+; uninstall.
+Root: HKA; Subkey: "Software\Classes\OVTSuite.ols"; \
+    ValueType: string; ValueName: ""; ValueData: "WinOLS project"; \
+    Flags: uninsdeletekey; Tasks: associate_ols
+Root: HKA; Subkey: "Software\Classes\OVTSuite.ols\DefaultIcon"; \
+    ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName},0"; \
+    Flags: uninsdeletekey; Tasks: associate_ols
+Root: HKA; Subkey: "Software\Classes\OVTSuite.ols\shell\open\command"; \
+    ValueType: string; ValueName: ""; \
+    ValueData: """{app}\{#AppExeName}"" gui ""%1"""; \
+    Flags: uninsdeletekey; Tasks: associate_ols
+Root: HKA; Subkey: "Software\Classes\.ols\OpenWithProgids"; \
+    ValueType: string; ValueName: "OVTSuite.ols"; ValueData: ""; \
+    Flags: uninsdeletevalue; Tasks: associate_ols
 
 [Run]
 ; Closed modules ship compiled now (docs/MODULES_PLAN.md, "Packages"): once a

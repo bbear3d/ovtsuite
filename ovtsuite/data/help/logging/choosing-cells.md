@@ -34,6 +34,13 @@ from, so the fewer groups you use, the more rows per second you get.
 3. When connected, the **Value** column shows the live reading of the group
    you are browsing, so you can check a cell is alive before you log it.
 
+Each ticked cell shows its live reading in the **Value** column of **Selected
+cells** as soon as you tick it, while connected -- you do not have to start
+logging first. The ticked cells' groups are read together with the one you are
+browsing, so ticking cells from many groups slows the browse readings the way
+it slows logging (cells read from memory show their value once logging
+starts).
+
 The ticked cells are listed under **Selected cells**, each as **G**group**/**cell
 (for example G11/3) with its signal name. **Remove** takes out the rows you
 have selected in that list; **Clear** empties it.

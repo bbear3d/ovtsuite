@@ -4,7 +4,9 @@
 ; License, v. 2.0. If a copy of the MPL was not distributed with this
 ; file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ; Inno Setup script for the standalone tools WITHOUT the main OVT-Suite app:
-; one tool (flasher, sniffer, logger, converter), or all of them together (tools).
+; one tool (flasher, sniffer, logger, converter, diag), or all of them together
+; (tools -- which does NOT include OVT Diag: that one is its own product by
+; default, and an optional component of the full installer).
 ;
 ; build.ps1 -Installers flasher,sniffer,logger,converter,tools passes the tool and the
 ; usual version / folder / output defines:
@@ -50,6 +52,7 @@
 #define WithSniffer (Tool == "sniffer" || Tool == "tools")
 #define WithLogger  (Tool == "logger"  || Tool == "tools")
 #define WithConverter (Tool == "converter" || Tool == "tools")
+#define WithDiag (Tool == "diag")
 
 ; Per product: name, a stable AppId (never change one: it is what makes the
 ; next version an upgrade), the exe it is "about", and the setup's own icon.
@@ -73,13 +76,18 @@
   #define ProductGuid "6B1E3C52-9F4D-4A71-8E2B-3D5C7A90F1E4"
   #define ProductExe  ConverterExe
   #define ProductIcon "ovtsuite_converter.ico"
+#elif Tool == "diag"
+  #define ProductName DiagName
+  #define ProductGuid "A7C3E2F1-5B84-4D6E-9F2A-1C8D7B6E5A43"
+  #define ProductExe  DiagExe
+  #define ProductIcon "ovtsuite_diag.ico"
 #elif Tool == "tools"
   #define ProductName "OVT Tools"
   #define ProductGuid "F8C48995-BA97-43C5-AF25-531EE44B3A17"
   #define ProductExe  FlasherExe
   #define ProductIcon "ovtsuite.ico"
 #else
-  #error Tool must be flasher, sniffer, logger, converter or tools
+  #error Tool must be flasher, sniffer, logger, converter, diag or tools
 #endif
 
 #ifndef OutputName
@@ -109,6 +117,9 @@
 #endif
 #if !WithConverter
   #define Excl Excl + ",\" + ConverterExe
+#endif
+#if !WithDiag
+  #define Excl Excl + ",\" + DiagExe
 #endif
 ; (\modules above: the build's modules folder holds every FULL module; this
 ; product takes only their checksum variants, as components -- ModulesInclude)
@@ -202,6 +213,12 @@ Name: "{#ShortcutDir}\{#ConverterName}"; Filename: "{app}\{#ConverterExe}"; \
     AppUserModelID: "{#ConverterAppId}"
 Name: "{autodesktop}\{#ConverterName}"; Filename: "{app}\{#ConverterExe}"; \
     AppUserModelID: "{#ConverterAppId}"; Tasks: desktopicon
+#endif
+#if WithDiag
+Name: "{#ShortcutDir}\{#DiagName}"; Filename: "{app}\{#DiagExe}"; \
+    AppUserModelID: "{#DiagAppId}"
+Name: "{autodesktop}\{#DiagName}"; Filename: "{app}\{#DiagExe}"; \
+    AppUserModelID: "{#DiagAppId}"; Tasks: desktopicon
 #endif
 
 [Run]

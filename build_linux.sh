@@ -299,7 +299,8 @@ VPY="$VENV/bin/python"
 # cython + setuptools: the closed modules' packages ship compiled code
 # (ovtsuite/modules/native.py), built with the C compiler checked above
 DEPS=('PySide6>=6.6' 'numpy>=1.24' 'pyserial>=3.5' 'pyusb>=1.2' 'pyftdi>=0.55'
-      'cryptography>=41' 'pyinstaller>=6.6' 'pillow>=9' 'cython>=3.0' 'setuptools>=64')
+      'cryptography>=41' 'pyinstaller>=6.6' 'pillow>=9' 'cython>=3.0' 'setuptools>=64'
+      'pyyaml>=6')
 [ "$RUN_TESTS" = 1 ] && DEPS+=('pytest')
 
 step "build venv $VENV"
@@ -440,6 +441,23 @@ StartupWMClass=$B_EXE
 EOF
 chmod 0644 "$PAY/usr/share/applications/$B_PKG-converter.desktop"
 
+# OVT Diag on its own (vehicle diagnostics: scan, faults, live data,
+# adaptation, coding -- docs/OVT_DIAG.md).
+cat > "$PAY/usr/share/applications/$B_PKG-diag.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=OVT Diag
+GenericName=VAG vehicle diagnostics
+Comment=Scan a VW-group car: identify its modules, read and clear faults, live data
+Exec=/opt/$B_PKG/$B_EXE --diag
+Icon=$B_PKG-diag
+Terminal=false
+Categories=Development;Utility;
+Keywords=diagnostics;VAG;KW1281;KWP2000;OBD;scan;faults;
+StartupWMClass=$B_EXE
+EOF
+chmod 0644 "$PAY/usr/share/applications/$B_PKG-diag.desktop"
+
 # The .ovt project type: by extension, and by its content -- a ZIP whose first,
 # stored entry is "mimetype" holding application/x-ovt-project (byte 38 on;
 # docs/OVT_CONTAINER.md section 2.1), so a renamed project is still known.
@@ -462,7 +480,8 @@ chmod 0644 "$PAY/usr/share/mime/packages/$B_PKG.xml"
 
 ICO="$ROOT/packaging/$B_PKG.ico"
 if [ -f "$ICO" ]; then
-  for pair in "$ICO:$B_PKG" "$ROOT/packaging/${B_PKG}_converter.ico:$B_PKG-converter"; do
+  for pair in "$ICO:$B_PKG" "$ROOT/packaging/${B_PKG}_converter.ico:$B_PKG-converter" \
+              "$ROOT/packaging/${B_PKG}_diag.ico:$B_PKG-diag"; do
     [ -f "${pair%%:*}" ] || continue
     "$VPY" - "${pair%%:*}" "$PAY/usr/share/icons/hicolor" "${pair##*:}" <<'EOF' || warn "icon conversion failed - packaging without an icon"
 import os, sys
@@ -811,12 +830,15 @@ cp -a "$PAY/." %{buildroot}/
 /usr/bin/$B_PKG
 /usr/share/applications/$B_PKG.desktop
 /usr/share/applications/$B_PKG-converter.desktop
+/usr/share/applications/$B_PKG-diag.desktop
 /usr/share/mime/packages/$B_PKG.xml
 /usr/lib/udev/rules.d/70-$B_PKG.rules
 %doc /usr/share/doc/$B_PKG
 $( [ -d "$PAY/usr/share/icons" ] && echo "/usr/share/icons/hicolor/*/apps/$B_PKG.png" )
 $( ls "$PAY"/usr/share/icons/hicolor/*/apps/$B_PKG-converter.png >/dev/null 2>&1 \
    && echo "/usr/share/icons/hicolor/*/apps/$B_PKG-converter.png" )
+$( ls "$PAY"/usr/share/icons/hicolor/*/apps/$B_PKG-diag.png >/dev/null 2>&1 \
+   && echo "/usr/share/icons/hicolor/*/apps/$B_PKG-diag.png" )
 $( ls "$PAY"/usr/share/icons/hicolor/*/mimetypes/application-x-ovt-project.png >/dev/null 2>&1 \
    && echo "/usr/share/icons/hicolor/*/mimetypes/application-x-ovt-project.png" )
 

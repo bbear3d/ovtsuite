@@ -181,6 +181,12 @@ def _merge_supplement(kb: "Kb", family: str) -> None:
         return
     with open(path, "r", encoding="utf-8") as fh:
         sup = json.load(fh)
+    # rows the family's generated KB has wrong and that cannot be replaced
+    # (the name does not exist there): "drop": [names]
+    drop = set(sup.get("drop", []))
+    if drop:
+        kb.constants = [c for c in kb.constants if c.name not in drop]
+        kb.tables = [t for t in kb.tables if t.name not in drop]
     have = {c.name for c in kb.constants}
     for r in sup.get("constants", []):
         c = KbConstant(*r)

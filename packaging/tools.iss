@@ -20,18 +20,21 @@
 #define LoggerExe    "OVTLogger.exe"
 #define SimulatorExe  "OVTSimulator.exe"
 #define ConverterExe  "OVTConverter.exe"
+#define DiagExe       "OVTDiag.exe"
 
 #define FlasherName  "OVT Flasher"
 #define SnifferName  "OVT Sniffer"
 #define LoggerName   "OVT Logger"
 #define SimulatorName "OVT Simulator"
 #define ConverterName "OVT Converter"
+#define DiagName      "OVT Diag"
 
 #define FlasherAppId "OVTSuite.Flasher"
 #define SnifferAppId "OVTSuite.Sniffer"
 #define LoggerAppId  "OVTSuite.Logger"
 #define SimulatorAppId "OVTSuite.Simulator"
 #define ConverterAppId "OVTSuite.Converter"
+#define DiagAppId     "OVTSuite.Diag"
 
 ; The named mutex every exe of the bundle holds while it runs (branding.APP_MUTEX,
 ; created in packaging/entry.py): AppMutex makes setup wait for -- and ask the

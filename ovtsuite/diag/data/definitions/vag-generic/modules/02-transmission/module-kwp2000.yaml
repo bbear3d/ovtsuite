@@ -1,0 +1,16 @@
+# Automatic gearbox TCUs that speak KWP2000 inside TP 2.0 (ZF 6HP19/26,
+# Aisin 09D): no K-line, session 0x86, identification 1A 9B, no security for
+# reads. Variants for adaptation/coding are not captured yet -- probe first.
+kind: module
+match: { addr: "02", protocol: kwp2000 }
+name: Transmission (KWP2000 over TP 2.0)
+identification:
+  record: kwp_1a9b
+  fields: { part: part, sw: sw_version, coding: coding, wsc: wsc }
+kwp:
+  session: 0x86
+security:
+  functions_needing_security: []
+  functions_needing_login: []
+source: bench
+note: "Session 0x86 and 1A 9B are what the ZF 6HP flash path and the logger's TCU connect use (flash/diag.py _connect_tcu)."

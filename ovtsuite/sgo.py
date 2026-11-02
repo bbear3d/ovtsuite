@@ -319,14 +319,18 @@ def _accept_bcb1(s: "SgoSection", key: bytes, ck16_kind: str) -> bool:
 
 
 def _decode_bcb1(sections: List["SgoSection"]) -> None:
-    """Decode a container's Bosch BCB Type1 areas (EDC15 and ZF 5HP dialects).
+    """Decode a container's Bosch BCB Type1 areas (EDC15, ZF 5HP and EDC17
+    dialects).
 
-    Two dialects share the record format and differ only in the key and in how
+    The dialects share the record format and differ only in the key and in how
     the section's 16-bit field is populated:
 
       - **ZF 5HP** (VW "01V"/"01L"): the fixed 6-byte key ``GEHEIM``
         (:data:`ovtsuite.bcb1.KEY_5HP`), nothing to solve; its 16-bit field is
         a CRC-32 low-16. Tried first because it needs no solving.
+      - **Bosch EDC17** (TriCore engine ECUs): the fixed 10-byte key
+        ``BiWbBuD101`` (:data:`ovtsuite.bcb1.KEY_EDC17`); CRC-32 low-16 field
+        (checked on 03L906019CT: all five areas).
       - **EDC15**: an 11-byte key whose four per-dataset bytes are stored
         nowhere, so they are solved from the areas themselves
         (:func:`ovtsuite.bcb1.solve_key`); its 16-bit field is an additive sum.
@@ -341,6 +345,10 @@ def _decode_bcb1(sections: List["SgoSection"]) -> None:
         return
     # ZF 5HP: fixed GEHEIM key, CRC-32 low-16 field.
     pend = [s for s in pend if not _accept_bcb1(s, _bcb1.KEY_5HP, "crc32")]
+    if not pend:
+        return
+    # Bosch EDC17: fixed BiWbBuD101 key, CRC-32 low-16 field.
+    pend = [s for s in pend if not _accept_bcb1(s, _bcb1.KEY_EDC17, "crc32")]
     if not pend:
         return
     # EDC15: solve the 11-byte key from the remaining areas.
@@ -379,11 +387,21 @@ def parse(data: bytes, name: str = "") -> SgoContainer:
                           declared_len=declared_len, header=header, blob=blob,
                           lo=_u24be(data, bs + _RANGE_LO_OFF),
                           hi=_u24be(data, bs + _RANGE_HI_OFF))
-        _decode_section(sec)
         sections.append(sec)
         bs += _HDR_LEN + slen
         i += 1
-    trailer = bytes(data[sgolen:])
+    return assemble(sections, prefix, bytes(data[sgolen:]), name)
+
+
+def assemble(sections: List[SgoSection], prefix: bytes = b"", trailer: bytes = b"",
+             name: str = "") -> SgoContainer:
+    """Decode ``sections`` (each carrying its section-table ``header`` and its
+    stored ``blob``, the BCB/plain stream under the outer XOR 0xFF) and run the
+    container-level cross-checks. :func:`parse` uses it for a file; the
+    ``.sgm`` reader (:mod:`ovtsuite.sgm`) builds the same sections from XML, so
+    both containers decode, verify and place identically."""
+    for sec in sections:
+        _decode_section(sec)
     _decode_bcb1(sections)
     needs = "" if _cross_check_edc16(sections) else "edc16"
     _cross_check_bcb(sections)
@@ -520,6 +538,9 @@ _U1_MIRROR_BASE = 0x800000
 #: 0x080000-0x0FBFFF, i.e. offset 0 for 0x7C000 bytes, and the trailing
 #: 0x4000 (the boot sector) is never carried by these containers.
 _EDC15_FLASH_BASE = 0x80000
+#: EDC17 second flash bank: bus address 0x80800000, file offset 0x200000.
+_EDC17_BANK_B = 0x800000
+_EDC17_BANK_B_OFFSET = 0x200000
 _EDC15_SIZE = 0x80000
 
 
@@ -539,6 +560,17 @@ def _image_span(sec: "SgoSection"):
             # 512 KiB image (file offset == address, e.g. 0x8000..0x7FFFD);
             # the boot sector below it is not carried and stays fill.
             return sec.lo, sec.lo + sec.declared_len
+        if sec.bcb1_key == _bcb1.KEY_EDC17:
+            # Bosch EDC17: each area sits at its flash address (the low 24
+            # bits of its [START_ADDRESS], 0x80xxxxxx). A 4 MB dump holds the
+            # second flash bank (0x80800000) straight after the first, at file
+            # offset 0x200000 -- as in the 4 MB WinOLS images, whose area #2
+            # starts there and whose block header at that offset states
+            # 0x80800000.
+            base = sec.addr
+            if base >= _EDC17_BANK_B:
+                base = _EDC17_BANK_B_OFFSET + (base - _EDC17_BANK_B)
+            return base, base + sec.declared_len
         if sec.lo >= _EDC15_FLASH_BASE and sec.hi < _EDC15_FLASH_BASE + _EDC15_SIZE:
             base = sec.lo - _EDC15_FLASH_BASE
             return base, base + sec.declared_len
@@ -573,7 +605,9 @@ def _resolve_overlaps(sections: List["SgoSection"]) -> None:
     into one image. Left untouched, the smaller section's bad plaintext
     would still surface in the GUI/CLI and in apply_image's re-encode
     path."""
-    mirrors = [s for s in sections if s.scheme is not None and s.addr >= _U1_MIRROR_BASE]
+    # Only an "edc16"-decoded section is that convention; an EDC17 area at
+    # 0x800000 is its second flash bank (0x80800000), not a mirror.
+    mirrors = [s for s in sections if s.scheme == "edc16" and s.addr >= _U1_MIRROR_BASE]
     if not mirrors:
         return
     for m in mirrors:
@@ -615,6 +649,10 @@ def image(container: SgoContainer, fill: int = 0xFF, max_size: int = MAIN_IMAGE_
     hi = max(re_ for _, _, re_ in entries)
     if any(s.scheme == "bcb1" for s, _, _ in entries):
         hi = max(hi, _EDC15_SIZE)
+    if any(s.scheme == "bcb1" and s.bcb1_key == _bcb1.KEY_EDC17
+           for s, _, _ in entries):
+        # a whole flash bank (2 MB), or both banks (4 MB)
+        hi = _EDC17_BANK_B_OFFSET * (1 if hi <= _EDC17_BANK_B_OFFSET else 2)
     if any(s.scheme == "edc16" for s, _, _ in entries):
         covering = [sz for sz in _EDC16_SIZES if sz >= hi]
         if covering:

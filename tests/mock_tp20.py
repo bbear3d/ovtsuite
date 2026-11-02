@@ -75,7 +75,9 @@ class MockTp20Ecu:
             self.tx_seq = 0
             self._in = bytearray()
             self._in_expected = None
-            self.out = []
+            # drop our own stale frames only: ``out`` may be a sink shared with
+            # other ECUs on a MockTp20Bus
+            self.out[:] = [m for m in self.out if m.can_id not in (self.ecu_tx, 0x200 + self.dest)]
             self.out.append(_Msg(0x200 + self.dest, bytes([
                 0x00, 0xD0, self.ecu_tx & 0xFF, (self.ecu_tx >> 8) & 0xFF,
                 self.ecu_rx & 0xFF, (self.ecu_rx >> 8) & 0xFF, 0x01])))
@@ -130,6 +132,9 @@ class MockTp20Ecu:
 
     # -- ECU -> tester segmentation --
     def _respond(self, resp):
+        self._queue_response(resp)
+
+    def _queue_response(self, resp):
         if resp is None:
             return
         if self.inject_keepalive:                            # ECU pokes an A3 mid-stream
@@ -141,3 +146,72 @@ class MockTp20Ecu:
             op = 0x1 if last else 0x0                        # always ask for ACK (simple)
             self.out.append(_Msg(self.ecu_tx, bytes([(op << 4) | (self.tx_seq & 0x0F)]) + chunk))
             self.tx_seq = (self.tx_seq + 1) & 0x0F
+
+
+class MockTp20Bus:
+    """Several scripted TP 2.0 ECUs on one CAN channel object, for the
+    parallel-channel paths (``ovtsuite.diag.canmux`` / ``link.Bus``).
+
+    ``ecus`` maps a TP 2.0 dest to a KWP handler (or a ready
+    :class:`MockTp20Ecu`). Each module sends on the id the tester asked for
+    in the channel setup (``listen_id``), as the real ones do, and listens
+    on its own id (``0x740 + dest`` unless the ECU object says otherwise).
+    Frames from every module land in one shared sink, in order. Thread-safe:
+    the tester's channels run on several threads at once."""
+
+    def __init__(self, ecus, interframe_byte=0x01, honour_listen=True):
+        import threading
+        self._lock = threading.RLock()
+        self.out = []
+        self.ecus = {}
+        self.allowed_ids = None
+        #: False: every module answers on its own default id (0x300) whatever
+        #: listen id the tester asked for -- the clash case the mux must refuse
+        self.honour_listen = honour_listen
+        self.log = []                         # (dest, request) in arrival order
+        for dest, h in ecus.items():
+            ecu = h if isinstance(h, MockTp20Ecu) else MockTp20Ecu(h, dest=dest, ecu_rx=0x740 + dest,
+                                                                     interframe_byte=interframe_byte)
+            ecu.dest = dest
+            ecu.out = self.out                # shared sink
+            self.ecus[dest] = ecu
+
+    # -- CAN channel surface --
+    def pass_all(self, extended=False):
+        self.allowed_ids = None
+
+    def pass_ids(self, ids, extended=False):
+        self.allowed_ids = set(int(i) for i in ids)
+
+    def clear_filters(self):
+        self.allowed_ids = None
+
+    def set_config(self, **kw):
+        pass
+
+    def clear_rx(self):
+        pass
+
+    def close(self):
+        pass
+
+    def write_can(self, can_id, payload, extended=False, timeout_ms=100):
+        payload = bytes(payload)
+        with self._lock:
+            if can_id == 0x200:
+                ecu = self.ecus.get(payload[0])
+                if ecu is None or payload[1] != 0xC0:
+                    return                    # nobody home at that dest: the setup times out
+                if self.honour_listen:
+                    ecu.ecu_tx = payload[4] | (payload[5] << 8)     # send where the tester asked
+                ecu.write_can(0x200, payload)
+                return
+            for ecu in self.ecus.values():
+                if ecu.ecu_rx == can_id:
+                    ecu.write_can(can_id, payload)
+                    return
+
+    def read(self, max_msgs=16, timeout_ms=100):
+        with self._lock:
+            real, self.out[:] = self.out[:max_msgs], self.out[max_msgs:]
+        return real

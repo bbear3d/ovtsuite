@@ -1,0 +1,17 @@
+# EGR check for the EDC15 / EDC16 engines at idle: air-mass setpoint
+# against measured air mass and the EGR actuator duty, measuring group 3
+# (engine speed, air mass setpoint, air mass, EGR duty in both families'
+# factory catalogues). Read-only.
+kind: procedure
+id: procedure.engine.egr-check
+name: "EGR check at idle"
+description: "Group 003 at idle: the measured air mass should sit near its setpoint while the EGR duty moves; a stuck valve shows as air mass far off the setpoint with the duty at its limit."
+applies: { addr: "01", platform: [edc15, edc16] }
+safety: read-only
+category: Diagnosis
+source: binary
+steps:
+  - check: [engine_running, vehicle_stationary]
+  - live: { group: 3, seconds: 20, title: "EGR control (group 003)", text: "Engine idling, no load. Blip the throttle once halfway through and watch the duty react." }
+  - show: { text: "Last reading:", values: ["live.3"] }
+  - log: { journal: true, note: "EGR check at idle" }

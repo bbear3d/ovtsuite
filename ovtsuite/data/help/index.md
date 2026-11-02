@@ -44,6 +44,8 @@ Climatronic.
   codes.
 - [Bus sniffer](sniffer.md) and [ECU simulator](simulator.md) — seeing what
   another tool does on the bus.
+- [OVT Diag](diag.md) — the separate vehicle-diagnostics program: scan a
+  car, faults, live data, adaptation and coding.
 - [Cables and interfaces](cables.md) — which cables work, and how to set them
   up.
 

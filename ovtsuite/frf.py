@@ -74,6 +74,23 @@ TCUs use the exact same write security-access algorithm already shipped --
 just confirms the match per file rather than assuming it, and flags a
 container plainly if a future file's tape ever differs.
 
+BOSCH EDC17 (added 2026-10-31): the same outer layer wraps the FRFs of the
+TriCore EDC17 engine controllers (box codes 03L/03P/04L..., e.g.
+04L906021EP). Their blocks are tagged ``ENCRYPT-COMPRESS-METHOD A1``, which
+needs no new cipher: XOR with the fixed 10-byte string ``BiWbBuD101`` (the
+same key that codes an EDC17 ``.sgo``, :data:`ovtsuite.bcb1.KEY_EDC17`), then
+the 10-bit-distance LZSS the ZF 8HP Gen2 codec already uses
+(:func:`ovtsuite.flash.crypto.zf8hp_lz_decode`). Solved from 04L906021EP 9972:
+every block decodes to exactly its declared ``UNCOMPRESSED-SIZE`` and its
+ODX ``CRC`` entry (two bytes, tagged ``CRC`` rather than ``CRC32``) is the low
+16 bits of ``zlib.crc32`` of the plaintext, for all five blocks. The ODX
+gives block indices only, but each EDC17 block starts with its own header --
+four little-endian words ``[type][length][link to next block][last word of the
+block's range]`` -- so ``start = end + 4 - length``
+(:func:`edc17_block_start`). For that file the five blocks then tile the
+4 MB TriCore image exactly (0x0, 0x4000, 0x20000, 0x283000, 0x380000) with
+only all-0xFF gaps between them.
+
 ADDRESSING: each ``DATABLOCK``'s ``<SOURCE-START-ADDRESS>`` is a small
 logical block index (1-4 for every file seen -- it is the UDS block
 identifier the download is addressed by), NOT a byte offset into a flat
@@ -94,9 +111,58 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import xml.etree.ElementTree as ET
 
+from . import bcb1 as _bcb1
 from .platforms import zf6hp as _zf6hp
 from .platforms import zf8hp as _zf8hp
 from .flash import crypto as _crypto
+
+#: TriCore flash is addressed from here (the cached segment); an EDC17 block's
+#: header states addresses in it.
+EDC17_FLASH_BASE = 0x80000000
+EDC17_FLASH_SPAN = 0x01000000
+#: ``ENCRYPT-COMPRESS-METHOD`` of an EDC17 block: XOR (KEY_EDC17) + 10-bit LZSS.
+EDC17_METHOD = "A1"
+EDC17_LZ_DIST_BITS = 10
+#: Methods of Bosch TriCore images: ``A1`` (XOR + LZSS) and ``11`` (BCB Type1).
+_BOSCH_METHODS = ("A1", "11")
+
+
+_BOSCH_ECU = re.compile(rb"EDC17_?[A-Z]*\d*[A-Z]*|MED17[._]?[\d.]*\w*|MEV17[._]?[\d.]*|"
+                        rb"MG1[A-Z]*\d*|MD1[A-Z]*\d*|SIMOS\d*[._]?\d*|SID\d{3}")
+
+
+def bosch_ecu_name(data: bytes) -> Optional[str]:
+    """The Bosch ECU name stamped in a decoded image (``EDC17CP14``,
+    ``EDC17C64``, ``MED17.5.2``...) -- upper-case with ``_`` and ``.`` removed
+    -- or None. The most frequent EDC17/MED17/MEV17/MG1/MD1/SIMOS/SID name
+    wins, so one stray mention does not."""
+    counts: Dict[str, int] = {}
+    for m in _BOSCH_ECU.finditer(data):
+        name = m.group(0).decode("ascii", "replace").upper().replace("_", "").replace(".", "")
+        if len(name) >= 6:
+            counts[name] = counts.get(name, 0) + 1
+    return max(counts, key=lambda k: (counts[k], len(k))) if counts else None
+
+
+def edc17_block_start(plain: bytes) -> Optional[int]:
+    """Start offset (from the flash base, 0x80000000) of a decoded EDC17 block,
+    from the block's own 16-byte header, or None when it has no valid one.
+
+    Header, four little-endian words: ``[type][length][link][end]``. ``length``
+    is the block's size, ``link`` the address of the next block in the
+    flashing chain (0 at the end), and ``end`` the address of the block's last
+    word, so ``start = end + 4 - length``. Accepted only when ``length`` equals
+    the decoded size and the start is word-aligned inside the flash window."""
+    if plain is None or len(plain) < 16:
+        return None
+    _t, length, _link, end = struct.unpack_from("<4I", plain, 0)
+    if length != len(plain) or not (EDC17_FLASH_BASE <= end
+                                    < EDC17_FLASH_BASE + EDC17_FLASH_SPAN):
+        return None
+    start = end + 4 - length
+    if start < EDC17_FLASH_BASE or start % 4:
+        return None
+    return start - EDC17_FLASH_BASE
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 _FRF_KEY_PATH = os.path.join(_DATA_DIR, "frf.key")
@@ -179,6 +245,18 @@ class FrfBlock:
     plaintext: Optional[bytes] = None
     crc_expected: Optional[int] = None
     crc_actual: Optional[int] = None
+    #: Width of ``crc_expected``: 32 (``CRC32F``/``CRC32``) or 16 (``CRC``,
+    #: the low 16 bits of the same zlib CRC-32).
+    crc_bits: int = 32
+
+    @property
+    def looks_like_bosch_tricore(self) -> bool:
+        """A block of a Bosch TriCore engine image (EDC17, MED17...): method
+        ``A1`` decoded with a valid block header placing it in the flash
+        window, or method ``11`` decoded with the EDC17 BCB key."""
+        return ((self.method == EDC17_METHOD and self.scheme == "xor_lz"
+                 and edc17_block_start(self.plaintext) is not None)
+                or (self.method == "11" and self.scheme == "bcb1"))
 
     @property
     def crc_ok(self) -> bool:
@@ -239,8 +317,16 @@ class FrfContainer:
 
     @property
     def platform(self) -> Optional[str]:
-        """"zf6hp" / "zf8hp" from the decoded blocks' own structure, None when
-        no block identifies a platform."""
+        """"zf6hp" / "zf8hp" / "edc17" / "med17" from the decoded blocks' own structure,
+        None when no block identifies a platform."""
+        if any(b.looks_like_bosch_tricore for b in self.blocks):
+            name = bosch_ecu_name(b"".join(b.plaintext for b in self.blocks
+                                           if b.plaintext)) or ""
+            if name.startswith("EDC17"):
+                return "edc17"
+            if name.startswith(("MED17", "MEV17")):
+                return "med17"
+            return None
         if any(b.looks_like_zf8hp for b in self.blocks):
             return "zf8hp"
         if any(b.looks_like_zf6hp_calibration for b in self.blocks):
@@ -282,19 +368,21 @@ def _parse_bcb_header(prefix: bytes) -> Dict[str, str]:
     return out
 
 
-def _verified(decoded, declared_len: int, crc_expected: Optional[int], scheme: str):
+def _verified(decoded, declared_len: int, crc_expected: Optional[int], scheme: str,
+              crc_mask: int = 0xFFFFFFFF):
     """Accept a candidate plaintext only on declared length AND (when the ODX
-    carries one) its own CRC32F; otherwise (None, None)."""
+    carries one) its own CRC32F; otherwise (None, None). ``crc_mask`` is
+    0xFFFF for a 16-bit ``CRC`` entry (the low half of the same CRC-32)."""
     if decoded is None or len(decoded) != declared_len:
         return None, None
     if crc_expected is not None:
-        if (zlib.crc32(decoded) & 0xFFFFFFFF) != crc_expected:
+        if (zlib.crc32(decoded) & crc_mask) != crc_expected:
             return None, None
     return bytes(decoded), scheme
 
 
 def _decode_block(raw: bytes, declared_len: int, crc_expected: Optional[int],
-                  method: str = ""):
+                  method: str = "", crc_mask: int = 0xFFFFFFFF):
     """(plaintext, scheme) for one FLASHDATA block's decrypted hex payload,
     or (None, None) if it doesn't verify -- see module docstring point 2.
     Never accepted on length alone; the CRC32F cross-check (when the ODX
@@ -308,28 +396,53 @@ def _decode_block(raw: bytes, declared_len: int, crc_expected: Optional[int],
     header, before the code's meaning was known) and otherwise left
     unrecognized rather than guessed."""
     if method == "00":
-        return _verified(raw, declared_len, crc_expected, "plain")
+        return _verified(raw, declared_len, crc_expected, "plain", crc_mask)
     if method == "22":
         try:
             decoded = _crypto.zf8hp_frf_decode(raw, declared_len)
         except ValueError:
             decoded = None
-        return _verified(decoded, declared_len, crc_expected, "lz22")
+        return _verified(decoded, declared_len, crc_expected, "lz22", crc_mask)
     if method == "AA":
         # ZF 8HP Gen2 (ALX52): AES-128-CBC then 10-bit-distance LZSS
         try:
             decoded = _crypto.zf8hp_gen2_frf_decode(raw, declared_len)
         except (ValueError, RuntimeError):
             decoded = None
-        return _verified(decoded, declared_len, crc_expected, "aes_lz")
+        return _verified(decoded, declared_len, crc_expected, "aes_lz", crc_mask)
+    if method == EDC17_METHOD:
+        # Bosch EDC17: XOR with KEY_EDC17, then the 10-bit LZSS.
+        try:
+            decoded = _crypto.zf8hp_lz_decode(
+                _bcb1._xor_run(raw, 0, len(raw), _bcb1.KEY_EDC17),
+                declared_len, dist_bits=EDC17_LZ_DIST_BITS)
+        except ValueError:
+            decoded = None
+        return _verified(decoded, declared_len, crc_expected, "xor_lz", crc_mask)
     idx = raw.find(_crypto.ZF6HP_BCB_MARKER)
     if idx == -1:
         return None, None
     try:
         decoded = _crypto.zf6hp_bcb_decode(raw[idx:])
     except ValueError:
+        decoded = None
+    got = _verified(decoded, declared_len, crc_expected, "bcb", crc_mask)
+    if got[0] is not None:
+        return got
+    # Bosch EDC17 BCB Type1 (same record format, fixed key BiWbBuD101). Only
+    # accepted on the area's own terminal sum, the sum its header restates and
+    # (when the ODX has one) the CRC.
+    try:
+        prefix, body = _bcb1.split(raw)
+    except ValueError:
         return None, None
-    return _verified(decoded, declared_len, crc_expected, "bcb")
+    decoded = _bcb1.decode(body, declared_len, _bcb1.KEY_EDC17)
+    if decoded is None:
+        return None, None
+    stated = _bcb1.header_sum(prefix)
+    if stated is not None and (sum(decoded) & 0xFFFFFF) != stated:
+        return None, None
+    return _verified(decoded, declared_len, crc_expected, "bcb1", crc_mask)
 
 
 def parse_odx(odx_bytes: bytes, name: str = "") -> FrfContainer:
@@ -350,16 +463,24 @@ def parse_odx(odx_bytes: bytes, name: str = "") -> FrfContainer:
 
     # CRC32F cross-checks, keyed by the DATA block's short name (e.g. "DB_4").
     crc_by_db: Dict[str, int] = {}
+    crc_mask_by_db: Dict[str, int] = {}
+    bosch_crc16: Dict[str, int] = {}      # bare "CRC" entries: Bosch methods only
     sa2_tape: Optional[bytes] = None
     for sec in root.findall(".//SECURITY"):
         method = sec.findtext("./SECURITY-METHOD")
         # Gen1 8HP/6HP tag the per-block zlib CRC "CRC32F"; Gen2 8HP (ALX52)
         # tags the same zlib.crc32(plaintext) value "CRC32" -- accept both.
-        if method in ("CRC32F", "CRC32"):
+        # EDC17 files carry the low 16 bits of the same CRC-32, tagged "CRC" or
+        # "CRC32" with a four-digit value: a value's width is its own digits.
+        if method in ("CRC32F", "CRC32", "CRC"):
             vf = sec.findtext("./VALIDITY-FOR")
-            chk = sec.findtext("./FW-CHECKSUM")
-            if vf and chk:
+            chk = (sec.findtext("./FW-CHECKSUM") or "").strip()
+            if method == "CRC":
+                if vf and len(chk) == 4:
+                    bosch_crc16[vf] = int(chk, 16)
+            elif vf and chk and len(chk) in (4, 8):
                 crc_by_db[vf] = int(chk, 16)
+                crc_mask_by_db[vf] = 0xFFFF if len(chk) == 4 else 0xFFFFFFFF
         elif method == "SA2":
             sig = sec.findtext("./FW-SIGNATURE")
             if sig:
@@ -397,7 +518,7 @@ def parse_odx(odx_bytes: bytes, name: str = "") -> FrfContainer:
         if len(content) > 2:
             raw = bytes.fromhex(content)
             _mi = raw.find(_crypto.ZF6HP_BCB_MARKER)
-            if _mi > 0:
+            if _mi > 0 and method != EDC17_METHOD:
                 _hdr = _parse_bcb_header(raw[:_mi])
                 for _k, _attr in (("START_ADDRESS", "start_address"),
                                   ("END_ADDRESS", "end_address")):
@@ -406,13 +527,32 @@ def parse_odx(odx_bytes: bytes, name: str = "") -> FrfContainer:
                             setattr(block, _attr, int(_hdr[_k], 16))
                         except ValueError:
                             pass
+                # An EDC17 header states TriCore bus addresses (0x80xxxxxx);
+                # a block's base is its offset in the flash window.
+                if (block.start_address is not None
+                        and EDC17_FLASH_BASE <= block.start_address
+                        < EDC17_FLASH_BASE + EDC17_FLASH_SPAN):
+                    block.start_address -= EDC17_FLASH_BASE
+                    if block.end_address is not None:
+                        block.end_address -= EDC17_FLASH_BASE
             crc_expected = crc_by_db.get(short_name)
-            plaintext, scheme = _decode_block(raw, declared_len, crc_expected, method)
+            crc_mask = crc_mask_by_db.get(short_name, 0xFFFFFFFF)
+            if (crc_expected is None and short_name in bosch_crc16
+                    and method in _BOSCH_METHODS):
+                crc_expected, crc_mask = bosch_crc16[short_name], 0xFFFF
+            block.crc_bits = 16 if crc_mask == 0xFFFF else 32
+            plaintext, scheme = _decode_block(raw, declared_len, crc_expected,
+                                              method, crc_mask)
             block.plaintext = plaintext
             block.scheme = scheme
             block.crc_expected = crc_expected
             if plaintext is not None:
-                block.crc_actual = zlib.crc32(plaintext) & 0xFFFFFFFF
+                block.crc_actual = zlib.crc32(plaintext) & crc_mask
+                if block.start_address is None and scheme == "xor_lz":
+                    _e17 = edc17_block_start(plaintext)
+                    if _e17 is not None:
+                        block.start_address = _e17
+                        block.end_address = _e17 + len(plaintext) - 1
                 # ZF 8HP: the block's own descriptor states its absolute
                 # base (end-marker pointer minus the marker's offset) -- the
                 # 8HP equivalent of the 6HP's BCB Type1 [START_ADDRESS].

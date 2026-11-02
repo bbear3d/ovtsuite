@@ -1534,7 +1534,7 @@ class ConverterDialog(QtWidgets.QDialog):
         from .recent import get_last_dir, set_last_dir
         paths, _f = QtWidgets.QFileDialog.getOpenFileNames(
             self, "Files to convert", get_last_dir("convert"),
-            "Definitions, values and binaries (*.xdf *.a2l *.dam *.ols *.kp *.json *.csv "
+            "Definitions, values and binaries (*.xdf *.a2l *.dam *.ols *.olsx *.kp *.json *.csv "
             "*.dcm *.cdfx *.cdf *.bin *.hex *.s19 *.s28 *.s37 *.mot *.ori *.mod);;"
             "All files (*)")
         if paths:

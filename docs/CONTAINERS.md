@@ -241,3 +241,25 @@ blocks (the hex editor's edits). Revert, merge, and "state at version" all
 cover both. Because the history is inside the file, saving over an existing
 native container makes no `.bak`; a plain image saved over itself, or a
 legacy `.hvac` upgraded in place, still keeps one.
+
+
+### PCMFlash one-file reads (`ovtsuite/pcmflash.py`)
+
+PCMFlash saves an MPC564 / M58BW016 EDC16 read both as separate files
+(`_ext_` 2 MB, `_micro_` 0x80200, `_eeprom_` 4 KB) and as one `_flash_`
+file: the external flash then the internal flash (the EEPROM too when the
+file has it), nothing marking the join. `pcmflash.split` finds the parts by
+length and the `FADECAFE CAFEAFFE` program descriptors (0x4003C in the
+external flash, 0x403C in the internal flash). The internal flash is held as
+the 0x81000 image the checksum code and the flasher use (padded with 0xFF);
+the layout remembers its stored length, so a rebuilt file keeps it. A
+project imports the parts as members `flash` / `mpc` / `eeprom` with the file
+as an original of format `pcmflash` (exported whole again by **Original
+file**); **Export > Binary** writes one part or all parts, the internal
+flash as the plain 0x81000 (516 KB) `.mpc`. `TunerSession` opens such a file
+directly with the parts as its container regions and saves it back whole.
+
+**Export > PCMFlash file (flash + MPC)...** (`exporters.export_pcmflash`)
+makes such a file from any set that holds both flashes (a `.dim`, `.sgo`, a
+Full read ...): the internal flash cut to PCMFlash's 0x80200, the EEPROM
+behind it on request.

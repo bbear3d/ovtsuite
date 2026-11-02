@@ -25,10 +25,10 @@ from .model import (AxisDef, Definition, DefinitionError, Storage, TableDef,
                     linear_equation)
 
 #: definition types the base app reads (file extension = type)
-TYPES = ("xdf", "a2l", "ols", "kp", "dam")
+TYPES = ("xdf", "a2l", "ols", "olsx", "kp", "dam")
 #: file-dialog filter for every definition type
-FILTER = ("Definitions (*.xdf *.a2l *.kp *.ols *.dam);;TunerPro XDF (*.xdf);;"
-          "ASAP2 (*.a2l);;WinOLS map pack (*.kp);;WinOLS project (*.ols);;"
+FILTER = ("Definitions (*.xdf *.a2l *.kp *.ols *.olsx *.dam);;TunerPro XDF (*.xdf);;"
+          "ASAP2 (*.a2l);;WinOLS map pack (*.kp);;WinOLS project (*.ols *.olsx);;"
           "DAMOS (*.dam);;All files (*)")
 #: types that are definitions only (an OLS also carries its binary)
 DEFINITION_ONLY = ("xdf", "a2l", "kp", "dam")
@@ -140,6 +140,12 @@ def load(data: bytes, type_: Optional[str] = None, title: str = "") -> Definitio
     tell from its structure). Parsed once per content and kept."""
     data = bytes(data)
     t = (type_ or "").lower().lstrip(".") or detect(data) or ""
+    if t == "olsx":
+        # an encrypted WinOLS export has no structure to recognise: it is
+        # told by its extension, and is the .ols inside
+        from . import olsx
+        data = olsx.decrypt(data)
+        t = "ols"
     if t in ("ols", "kp"):
         t = "winols"
     key = (hashlib.sha1(data).hexdigest(), t)

@@ -73,6 +73,11 @@ for _d, _dirs, _files in os.walk(DATA_DIR):
     _dirs[:] = [x for x in _dirs if x != "__pycache__"]
     _rel = os.path.relpath(_d, PKG_DIR)
     datas += [(os.path.join(_d, f), os.path.join(PKG, _rel)) for f in _files]
+# OVT Diag's bundled definitions pack (ovtsuite/diag/data/definitions).
+for _d, _dirs, _files in os.walk(PKG_DIR / "diag" / "data"):
+    _dirs[:] = [x for x in _dirs if x != "__pycache__"]
+    _rel = os.path.relpath(_d, PKG_DIR)
+    datas += [(os.path.join(_d, f), os.path.join(PKG, _rel)) for f in _files]
 
 # The 32-bit J2534 bridge as plain source files (bridge/), so that when
 # build.ps1 could not freeze j2534bridge32.exe the app can still run the

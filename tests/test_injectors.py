@@ -292,3 +292,28 @@ def test_a_plan_made_again_after_apply_writes_nothing(cat):
     inj.apply_fit(s, [first], "t")
     again = plan()
     assert again.n_cells == 0, [(c.entity.name, c.cells) for c in again.changes]
+
+
+def test_part_numbers_survive_the_json_round_trip_and_read_as_one_line():
+    p = inj.Preset(id="x", name="X", vag=["038 130 073 AL", "038 130 079 BX"],
+                   bosch=["0 414 720 013"])
+    back = inj.Preset.from_json(p.to_json())
+    assert (back.vag, back.bosch) == (p.vag, p.bosch)
+    assert back.part_numbers() == ("VAG 038 130 073 AL, 038 130 079 BX; "
+                                   "Bosch 0 414 720 013")
+    assert inj.Preset(id="y", name="Y").part_numbers() == ""
+
+
+def test_the_factory_presets_carry_their_oem_part_numbers(cat):
+    al = cat.get("pd-al-1043")
+    if not al.vag:
+        pytest.skip("preset data of a module released before the part numbers")
+    assert al.vag[0] == "038 130 073 AL"
+    assert {"0 414 720 013", "0 414 720 021", "0 414 720 028",
+            "0 414 720 039"} <= set(al.bosch)
+    for pid in ("pd100", "pd100-edc15", "pd100-avb", "pd115", "pd-al-1043",
+                "pd-ba-late", "brm", "bhw", "bpw", "azv"):
+        assert cat.get(pid).vag and cat.get(pid).bosch, pid
+    # the PD160 set was dropped: its injector is the 2.0 8v BPW one
+    assert cat.get("pd160-late") is None
+    assert cat.get("bpw").vag[0] == "038 130 073 BJ"

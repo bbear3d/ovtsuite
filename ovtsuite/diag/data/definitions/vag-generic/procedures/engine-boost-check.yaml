@@ -1,0 +1,19 @@
+# Boost control check for the EDC15 / EDC16 engines: specified against
+# actual boost and the actuator duty from measuring group 11, whose cells the
+# factory catalogue of both families identifies as engine speed, boost
+# setpoint, boost (filtered) and the boost actuator command (the suite's
+# binary-derived measuring-block catalogues, datalog/msbcatalogue). Read-only.
+kind: procedure
+id: procedure.engine.boost-check
+name: "Boost control check"
+description: "Watch boost setpoint against actual and the actuator duty (group 011) at idle and under load; a leak or a lazy actuator shows as actual lagging the setpoint while the duty climbs."
+applies: { addr: "01", platform: [edc15, edc16] }
+safety: read-only
+category: Diagnosis
+source: binary
+steps:
+  - check: [engine_running]
+  - show: "Group 011 is read live for 30 s. Let the engine idle for the first seconds, then -- on a safe road or a dyno -- load it in a high gear from ~1500 rpm. Watch cell 3 (actual) follow cell 2 (setpoint); the duty (cell 4) tells how hard the control works for it."
+  - live: { group: 11, seconds: 30, title: "Boost control (group 011)" }
+  - show: { text: "Last reading:", values: ["live.11"] }
+  - log: { journal: true, note: "boost control check" }

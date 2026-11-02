@@ -38,6 +38,22 @@ def speed_byte_to_baud(b: int) -> int:
     return ((b & 0x1F) + 32) * (1 << (b >> 5)) * 200
 
 
+FAST_SUBS = (0x90, 0x91, 0x93)     # OVT EDC15 fast-log hook sub-functions
+_STD_RATES = (9600, 10400, 19200, 38400, 57600, 115200, 125000, 250000, 500000)
+
+
+def s0bg_to_baud(s0bg: int) -> int:
+    """C167 S0BG reload value -> bit/s (16 MHz: 500000/(S0BG+1)), snapped to the
+    nearest standard rate when within 2 % (0x2F -> 10417 -> 10400)."""
+    if s0bg <= 0:
+        return 0
+    b = 500000.0 / (s0bg + 1)
+    for r in _STD_RATES:
+        if abs(b - r) <= 0.02 * r:
+            return r
+    return int(round(b))
+
+
 @dataclass
 class KFrame:
     t: float
@@ -187,7 +203,22 @@ class Framer:
         if (frame[hdr - 1] & 0x3F) == 0:
             hdr += 1
         body = frame[hdr:]
-        if len(body) >= 3 and body[0] == 0x10:
+        if len(body) >= 3 and body[0] == 0x10 and body[1] in FAST_SUBS:
+            # EDC15 fast-log hook: ``10 <90|91|93> <S0BG> ...``.  The third byte is
+            # the C167 S0BG reload value (baud = 500000/(S0BG+1)), NOT an ISO
+            # speed byte, and the ECU answers at that rate while the tester's
+            # request itself went out at the previous rate.  The tap therefore has
+            # to switch as soon as the request is framed -- it can never decode
+            # the ``50 90`` reply at the old rate.  Sub 0x91 re-reads the stored
+            # list and carries s0bg too.
+            baud = s0bg_to_baud(body[2])
+            if baud:
+                self.new_baud = baud
+                fr.note = "fast-log request: ECU answers at %d baud (S0BG 0x%02X)" % (baud, body[2])
+            self.pending_speed = None
+        elif len(body) >= 2 and body[0] == 0x50 and body[1] in FAST_SUBS:
+            self.pending_speed = None                  # reply to the above: no speed byte
+        elif len(body) >= 3 and body[0] == 0x10:
             self.pending_speed = (body[1], body[2])
         elif len(body) >= 2 and body[0] == 0x50:
             speed = body[2] if len(body) >= 3 else (

@@ -1,0 +1,14 @@
+# Any module: read its faults with freeze frames and keep them in the
+# journal, so a later clear or repair can be compared against them.
+kind: procedure
+id: procedure.module.fault-baseline
+name: "Fault baseline"
+description: "Read the module's faults (with freeze frames where it serves them) and record them in the journal before any clear."
+applies: {}
+safety: read-only
+category: Diagnosis
+source: convention
+steps:
+  - check: [ignition_on]
+  - read: { faults: true, text: "Stored faults now (nothing is cleared):" }
+  - log: { journal: true, note: "fault baseline" }

@@ -38,6 +38,14 @@ kilometre. If the file has none, the menu item says *No vehicle-speed
 | **Imp / m**, **Pulses / km** | The same value in two units. Double-click either to type a new one. |
 | **Signal source** | **Sensor** (the hardware speed sender) or **CAN** (speed over the CAN bus, from the ABS or gateway). A variant that follows the primary's source has no switch of its own; its drop-down is greyed out. |
 
+Select cells and press Ctrl+C, or right-click for **Copy**, **Paste** and
+**Select all** (the right-click menu also has **Copy comparison → primary**
+with a comparison open). A paste lands with its top-left cell on the first
+selected cell and sets the **Imp / m**, **Pulses / km** and **Signal source**
+cells it covers (the other columns are skipped) as one undo step. Cells that
+differ from the comparison are orange, in the comparison's columns and in
+yours. On EDC15 Paste sets **SF**, **TMX** and **Pulses/rev** the same way.
+
 When the source is **CAN**, the ECU takes road speed from the bus and the
 pulse count is not used.
 
@@ -85,7 +93,7 @@ blocks were found in this binary.*
 | **SF**, **TMX** | The distance factor and the ceiling. Indicated speed is proportional to SF. |
 | **Pulses/rev** | Sender pulses per revolution. |
 
-The table is read-only; change it with the two boxes below it.
+Double-click **SF**, **TMX** or **Pulses/rev** of a speed block to type a value (undoable), or use the two boxes below the table to rescale every dataset at once.
 
 ### Rescale after a tyre change, or true up the speedo
 

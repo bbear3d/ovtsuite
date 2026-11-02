@@ -18,8 +18,9 @@ do (2,000+ images, see docs/MODULES_PLAN.md):
 4. ZF 8HP -- a ZF block descriptor placing itself at a calibration base;
 5. ZF 6HP -- ZF ident block or shift-schedule family, EDC16 descriptor absent;
 6. Aisin -- the 09D checksum descriptor or the TR-80 block trailers;
-7. EDC16 -- its CAFEAFFE calibration descriptor;
-8. otherwise **unknown**. Nothing is forced into a platform by elimination.
+7. EDC17 -- the EPK Bosch stamps in the calibration (``35/1/EDC17_CP14/5/P680//C680I3WF///``);
+8. EDC16 -- its CAFEAFFE calibration descriptor;
+9. otherwise **unknown**. Nothing is forced into a platform by elimination.
 """
 
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from . import PLATFORMS, MODULES, UNKNOWN, platform as _platform
 from . import aisin as _aisin
 from . import edc15 as _edc15
 from . import edc16 as _edc16
+from . import edc17 as _edc17
 from . import vdo as _vdo
 from . import zf5hp as _zf5hp
 from . import zf6hp as _zf6hp
@@ -104,6 +106,14 @@ def _facts(pid: str, data: bytes) -> Dict[str, str]:
             if i.get("system"):
                 out["system"] = i["system"]
             return out
+        if pid == "edc17":
+            i = _edc17.ident(data) or {}
+            out = {k: i[k] for k in ("software", "part") if i.get(k)}
+            if i.get("variant"):
+                out["family"] = i["variant"]
+            if i.get("project"):
+                out["system"] = "DAMOS project " + i["project"]
+            return out
         if pid == "edc15":
             out = _edc15.ident(data)
             out["variant"] = "%d dataset(s)" % len(_edc15.datasets(data))
@@ -137,7 +147,8 @@ def identify(data: bytes, container_kind: Optional[str] = None,
     for pid, test in (("vdo", _vdo.detect), ("edc15", _edc15.detect),
                       ("zf8hp", _zf8hp.detect), ("zf6hp", _zf6hp.detect),
                       ("zf5hp", _zf5hp.detect),
-                      ("aisin", _aisin.detect), ("edc16", _edc16.detect)):
+                      ("aisin", _aisin.detect), ("edc17", _edc17.detect),
+                      ("edc16", _edc16.detect)):
         if test(data):
             return Identity(pid, "structure", _facts(pid, data))
     return Identity(UNKNOWN, "none")

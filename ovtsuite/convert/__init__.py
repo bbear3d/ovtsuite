@@ -227,7 +227,16 @@ def load_definition(data: bytes, title: str = "", path: Optional[str] = None,
 
 def _read(path: str) -> bytes:
     with open(path, "rb") as fh:
-        return fh.read()
+        data = fh.read()
+    if path.lower().endswith(".olsx"):
+        # an encrypted WinOLS export: the .ols inside (told by its name)
+        from ..definitions import olsx as _olsx
+        from ..definitions.model import DefinitionError as _DE
+        try:
+            return _olsx.decrypt(data)
+        except _DE as ex:
+            raise ConvertError("%s: %s" % (os.path.basename(path), ex))
+    return data
 
 
 def _segments_extent(defn: Definition) -> Optional[Tuple[int, int]]:
@@ -260,6 +269,8 @@ def place(defn: Definition, data: Optional[bytes], base: Optional[int],
         size = size or len(data)
         if base is None:
             base = defn.base_in(data)
+            if defn.base_note:
+                warnings.append(defn.base_note)
         return base, size, data
     if not size:
         try:
@@ -1261,7 +1272,7 @@ def _correct_checksums(img, warnings: List[str]):
     if not prov.is_supported(flat):
         warnings.append("Checksums not corrected: %s" % prov.unsupported_text(flat))
         return img
-    fixed = bytes(prov.correct(flat))
+    fixed = bytes(prov.correct(flat, digest=True))
     warnings.append("Checksums corrected (%s)." % pid if fixed != flat else
                     "Checksums already correct (%s)." % pid)
     return _image.Image([(img.start, fixed)], img.fill, img.source)

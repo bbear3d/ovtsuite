@@ -22,7 +22,11 @@ from .modules import api as _api
 from .modules import registry as _registry
 
 #: the sections the menu has, in order; an item naming another goes last
-SECTIONS = (_api.TOOLS_EDITORS, _api.TOOLS_SETTINGS, _api.TOOLS_FILES)
+TOOLS_LOGGING = _api.TOOLS_LOGGING
+SECTIONS = (_api.TOOLS_EDITORS, _api.TOOLS_SETTINGS, _api.TOOLS_FILES,
+            TOOLS_LOGGING)
+#: where an item naming a section the menu does not have goes
+FALLBACK = _api.TOOLS_FILES
 
 
 def tools() -> List[Tuple[object, object]]:
@@ -87,7 +91,7 @@ def add(win, menu, section: str) -> list:
     from . import icons as _icons
     acts = []
     for spec, t in tools():
-        sec = t.section if t.section in SECTIONS else SECTIONS[-1]
+        sec = t.section if t.section in SECTIONS else FALLBACK
         if sec != section:
             continue
         a = win._act(menu, t.text,

@@ -28,6 +28,10 @@ To convert definitions, calibration values and binaries between formats
 (XDF, A2L, DAMOS, WinOLS, DCM, CDFX, HEX ...) with no file open, or to write
 a DCM or CDFX into a binary, use the [Converter](converter.md).
 
+Vehicle diagnostics -- scanning a car, its modules' faults, live data,
+adaptation and coding -- is a separate program, [OVT Diag](diag.md), with
+its own shortcut; it is not in this menu.
+
 ZF 6HP and ZF 8HP transmissions have their own fault-code window: see [ZF 6HP fault codes](modules/zf6hp/fault-codes.md) and [ZF 8HP fault codes](modules/zf8hp/fault-codes.md).
 
 The [AI assistant](ai/what-it-knows.md#what-each-module-adds) reads what

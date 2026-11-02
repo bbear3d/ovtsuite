@@ -2,3 +2,5 @@
 # on a Windows checkout with core.autocrlf=true (a CR breaks every line).
 *.sh text eol=lf
 packaging/linux/Dockerfile text eol=lf
+# Definition packs are generated and byte-compared (tools/build_diag_defs.py --check): LF everywhere.
+*.yaml text eol=lf

@@ -135,17 +135,17 @@ class StandaloneLogHost:
                 pass
         return done, reason, saved_as
 
-    def _say_keep(self, ref, result, parent):
+    def _say_keep(self, ref, result, parent, what="the log"):
         from .. import gui_ovt_file as _of
         done, reason, saved_as = result
         if done:
             return True
         _of.say_update_result((done, reason), ref.doc.path, parent,
-                              title="Data logging", what="the log")
+                              title="Data logging", what=what)
         if saved_as:
             QtWidgets.QMessageBox.information(
-                parent, "Data logging", "The log was saved as %s instead."
-                % saved_as)
+                parent, "Data logging", "%s was saved as %s instead."
+                % (what[:1].upper() + what[1:], saved_as))
         return False
 
     def keep_log_async(self, ws, path, parent=None, done=None):
@@ -181,6 +181,54 @@ class StandaloneLogHost:
 
         # not a daemon: a log half-written into the .ovt must be finished
         threading.Thread(target=work, name="ovt-keep-log").start()
+        return None
+
+    def keep_attachment_async(self, ws, filename, data, parent=None, done=None):
+        """Put ``data`` into the project ``ws`` came from as an attachment, no
+        questions asked, on a worker thread (as :meth:`keep_log_async`). When the
+        project cannot be updated the text is written beside it, so it is not lost.
+        Returns False when there is nothing to keep, else None: ``done(kept)``
+        follows on the GUI thread."""
+        ref = getattr(ws, "project_ref", None)
+        if ref is None or not data:
+            return False
+        if self._relay is None:
+            self._relay = _KeepRelay()
+
+        def finish(result):
+            owner = parent
+            try:
+                import shiboken6
+                if owner is not None and not shiboken6.isValid(owner):
+                    owner = None
+            except ImportError:
+                pass
+            kept = self._say_keep(ref, result, owner, "the fast-logging session notes")
+            if done is not None:
+                done(kept)
+
+        def work():
+            from .. import gui_ovt_file as _of
+            try:
+                with self._keep_lock:
+                    ok, reason = _of.update_project_quiet(
+                        ref.doc.path, lambda p: p.add_attachment(
+                            filename, bytes(data), set_id=ref.sid))
+                saved_as = None
+                if not ok:
+                    keep = os.path.join(os.path.dirname(ref.doc.path), filename)
+                    try:
+                        with open(keep, "wb") as fh:
+                            fh.write(data)
+                        saved_as = keep
+                    except OSError:
+                        pass
+                result = (ok, reason, saved_as)
+            except Exception as ex:                 # noqa: BLE001
+                result = (False, str(ex), None)
+            self._relay.finished.emit(finish, result)
+
+        threading.Thread(target=work, name="ovt-keep-attachment").start()
         return None
 
     def keep_log(self, ws, path, parent=None):

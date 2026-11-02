@@ -677,6 +677,10 @@ exactly as they were.
 - Remappable shortcuts, a customisable toolbar, and light/dark themes.
 - Standalone **OVT Flasher**, **OVT Logger**, **OVT Converter**, **OVT
   Sniffer** and **OVT Simulator** apps, each with its own taskbar entry.
+- **OVT Diag**, a separate vehicle-diagnostics program (`ovtsuite --diag`, or
+  its own installer): scan a VW-group car, read and clear faults, live data,
+  login, adaptation, coding, basic settings and actuator tests over the same
+  cables. **Experimental: not yet tested on a car.**
 
 ---
 
@@ -745,7 +749,7 @@ Python 3.10 or newer:
 pip install -e .
 pip install PySide6 pyserial pyusb pyftdi cryptography numpy
 ovtsuite gui                       # the editor
-ovtsuite --flasher | --logger | --sniffer | --simulator | --converter
+ovtsuite --flasher | --logger | --sniffer | --simulator | --converter | --diag
 ```
 
 The command line works on any file the installed modules support:

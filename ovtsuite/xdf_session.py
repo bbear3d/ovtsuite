@@ -27,7 +27,7 @@ from .model import Axis, Entity
 from .signal_names import english_units, phrase_english
 
 #: definition types :func:`apply_definition` understands
-SUPPORTED = ("xdf", "a2l", "kp", "ols", "dam")
+SUPPORTED = ("xdf", "a2l", "kp", "ols", "olsx", "dam")
 #: the group tables nothing confirms are listed under (when shown at all)
 UNVERIFIED = "Unverified - check before writing"
 

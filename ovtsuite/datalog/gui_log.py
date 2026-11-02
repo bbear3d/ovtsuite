@@ -34,6 +34,7 @@ from ..flash.gui_flash import (list_ports, kline_devices, is_j2534, open_j2534,
                                no_device_hint,
                                cable_allows_high)
 from . import derived as _derived
+from . import fastnotes as _fn
 from . import logfile as _lf
 from .channels import ChannelNamer
 from . import msbcatalogue as _msbcat
@@ -270,6 +271,9 @@ ABORT_WAIT_S = 1.5
 class LogWorker(QtCore.QThread):
     connected = QtCore.Signal(str, int)              # identity, baud
     browsed = QtCore.Signal(int, list)               # group, [(field, text, value)]
+    #: [(channel key, text)] -- the readings of the ticked cells while not
+    #: logging (see set_watch), so each shows its value as soon as it is ticked
+    watched = QtCore.Signal(list)
     #: generation, stamp, texts, values -- the generation is the recording the
     #: row belongs to (start_logging's return), so a row that was already on
     #: its way when Stop was pressed is recognised and dropped
@@ -277,6 +281,7 @@ class LogWorker(QtCore.QThread):
     status = QtCore.Signal(str)
     failed = QtCore.Signal(str)
     ended = QtCore.Signal()
+    bringup_log = QtCore.Signal(str)   # EDC15-fast: working-copy path to keep in the project
     #: (works, explanation) -- whether 0x23 answered, settled once on connect
     mem_probed = QtCore.Signal(bool, str)
     #: (token, {group: cells | None}) -- a request_probe answered: the
@@ -292,6 +297,10 @@ class LogWorker(QtCore.QThread):
         self._can = None
         self._lock = threading.Lock()
         self._browse_group = 1
+        self._watch: List[_lf.Channel] = []
+        self._fast_cells = {}           # EDC15-fast: {block: [fastlog15.FastCell]}
+        self._fast_build = None         # EDC15-fast: the fasthook.HookBuild the binary carries
+        self._fast_part = ""            # EDC15-fast: part number the open binary is for
         self._channels: List[_lf.Channel] = []
         self._writer: Optional[_lf.KwhackWriter] = None
         self._fh = None
@@ -307,6 +316,31 @@ class LogWorker(QtCore.QThread):
     def set_browse_group(self, g):
         with self._lock:
             self._browse_group = int(g)
+
+    def set_watch(self, channels):
+        """The ticked cells to read while browsing (not logging): their groups
+        are read with the browsed one, and their readings come back as
+        ``watched``. Cells read from memory are not (they need the probe
+        logging does)."""
+        with self._lock:
+            self._watch = [c for c in channels if not c.is_memory]
+
+    def set_fast_expect_part(self, part):
+        """EDC15-fast: the open binary's part number; the connect refuses an ECU
+        whose KW1281 identification does not name it."""
+        self._fast_part = str(part or "")
+
+    def set_fast_build(self, build):
+        """EDC15-fast: the patch build the open binary carries (its flag and
+        stored-list RAM). The RAM was chosen and checked when the patch was made
+        (edc15.fastpatch15 / fastprobe15), so nothing is probed here."""
+        self._fast_build = build
+
+    def set_fast_cells(self, by_block):
+        """EDC15-fast: the open binary's resolved fast-log cells, keyed by block
+        number, so the worker can validate the client-side read against a slow
+        read without touching the GUI's session from the worker thread."""
+        self._fast_cells = dict(by_block or {})
 
     def request_probe(self, token, groups):
         """Read ``groups`` once, before the next browse read, and answer with
@@ -377,6 +411,40 @@ class LogWorker(QtCore.QThread):
         self._writer = None
 
     # -- thread body --
+    def _browse_read(self, sess, group):
+        """One read while not logging: the browsed group, and with it the
+        groups of the ticked cells (``watched``)."""
+        with self._lock:
+            watch = list(self._watch)
+        want = {c.group for c in watch if not c.is_derived}
+        if want:
+            # the browsed group and the ticked cells' groups,
+            # in one read, as logging does
+            res = sess.read_groups(sorted(want | {group}),
+                                   is_stop=lambda: self._stop)
+            cells = res.get(group)
+        else:
+            res = None
+            cells = sess.read_group(group)
+        out = []
+        if cells:
+            for f, cell in enumerate(cells):
+                out.append((f, cell.text, cell.value))
+        self.browsed.emit(group, out)
+        if res is not None:
+            texts, values = [], []
+            for c in watch:
+                got = None if c.is_derived else res.get(c.group)
+                if got and c.field < len(got):
+                    texts.append(got[c.field].text)
+                    values.append(got[c.field].value)
+                else:
+                    texts.append("N/A")
+                    values.append(None)
+            _derived.fill(watch, texts, values)
+            self.watched.emit([(c.key, t) for c, t
+                               in zip(watch, texts)])
+
     def run(self):
         # A drive log is many minutes with nobody touching the laptop -- what
         # the OS idle timer waits for. Once the screen blanks and the machine
@@ -398,6 +466,183 @@ class LogWorker(QtCore.QThread):
         sess = None
         try:
             speed, cap = self._speed, self._cap
+            if self._ecu == "EDC15-fast":
+                # EDC15 fast-logging test harness, driven from the logger's own
+                # Speed dropdown (the baud) and Group selector. Exercises the two
+                # resident modes of the v1.3 flash: the measuring-group reader
+                # (sub 0x91 -- the primary mode; slow-vs-fast compared in-session)
+                # and the raw-RAM streamer (sub 0x90), both at the chosen baud.
+                # The Speed keys map to a baud via _diag.SPEEDS (Low 10400 is a
+                # no-speedup control). Folds into the normal logger once proven.
+                from ..flash import edc15fast
+                if is_j2534(self._port):
+                    self._can = open_j2534(self._port)
+                    link = kline_over_j2534(self._can, "EDC15", self._fast_init,
+                                            self.status.emit)
+                else:
+                    link = KLine(self._port, baud=9600, prefer_fast_init=False)
+                self._link = link
+                from ..flash import diag as _d
+                from ..edc15 import fastlog15 as _fl
+                from ..edc15 import fasthook as _fh
+                fast_baud = _fh.FAST_BAUDS.get(self._speed, edc15fast.FAST_BAUD)
+                if not self._fast_cells:
+                    self.failed.emit(
+                        "EDC15-fast: no measuring-block map. Open the 038906012GN "
+                        "binary (or a matching EDC15 image) so blocks resolve.")
+                    return
+                # Live client-side fast log (v2.4 raw-RAM flash 2021eeb7de):
+                # KW1281 handshake -> KWP 0x89 -> stream. Each row reads the
+                # current group's RAM source addresses in one 0x90 burst at the
+                # fast baud and scales client-side. The group is re-read every
+                # row, so the Group selector switches on the fly with no ECU-side
+                # group resolution. First read goes at 10400 and leaves the ECU
+                # fast; the rest go at fast_baud.
+                self.status.emit("EDC15-fast: connecting at %d baud..." % fast_baud)
+                try:
+                    kwp = edc15fast.fast_stream_connect(
+                        link, fast_baud, self.status.emit, lambda: self._stop,
+                        expect_part=self._fast_part or None,
+                        build=self._fast_build)
+                except (KLineError, KLineTimeout, OSError) as ex:
+                    if not self._stop:
+                        self.failed.emit("EDC15-fast connect failed: %s" % ex)
+                    return
+                if kwp is None:
+                    return
+                fast_baud = getattr(link, "_fl_baud", fast_baud)    # 10400 if the ECU would not switch
+                self.connected.emit("%s   [fast logging]" % (getattr(link, "_fl_ident", "") or "EDC15"),
+                                    fast_baud)
+                if any(getattr(c, "is_memory", False) for c in self._channels):
+                    self.status.emit("EDC15-fast: address-read (memory) channels "
+                                     "log as N/A in fast mode -- use the standard "
+                                     "logger for those.")
+                win_rows = 0
+                warned_gone = ()
+                last_empty = None
+                win_t = time.monotonic()
+                while not self._stop:
+                    try:
+                        with self._lock:
+                            logging_ = self._logging
+                            paused = self._paused
+                            group = self._browse_group
+                            chans = list(self._channels)
+                            gen = self._gen
+                        if paused:
+                            # keep the KWP session alive without logging a row
+                            edc15fast.fast_read(link, kwp, [edc15fast.flag_addr(link)], fast_baud)
+                            time.sleep(0.5)
+                            continue
+                        if logging_:
+                            # Read every distinct measuring block the channels use
+                            # in one 0x90 burst each, then assemble the row exactly
+                            # as the slow logger does.
+                            groups = sorted({c.group for c in chans
+                                             if not c.is_memory and not c.is_derived})
+                            res = {}
+                            # every group's addresses go out as ONE read (chunked
+                            # at MAX_BURST) -- a request costs ~180 ms whatever it
+                            # carries, so two groups must not be two requests.
+                            gaddrs = {g: _fl.read_addrs(self._fast_cells[g])
+                                      for g in groups if self._fast_cells.get(g)}
+                            union = sorted({a for v in gaddrs.values() for a in v})
+                            gone = tuple(g for g in groups
+                                         if not gaddrs.get(g))
+                            if gone != warned_gone:
+                                warned_gone = gone
+                                if gone:
+                                    self.status.emit(
+                                        "EDC15-fast: group%s %s not defined in this "
+                                        "ECU's measuring blocks -- logged as N/A"
+                                        % ("s" if len(gone) > 1 else "",
+                                           ", ".join(str(x) for x in gone)))
+                            if not union:
+                                # nothing readable selected: no I/O means no pacing,
+                                # so this used to spin flat out writing N/A rows
+                                # until the UI froze. Keep the session alive and wait.
+                                edc15fast.fast_read(link, kwp, [edc15fast.flag_addr(link)], fast_baud)
+                                time.sleep(0.5)
+                                continue
+                            allw = edc15fast.fast_read_group(
+                                link, kwp, union, fast_baud) if union else {}
+                            for g in groups:
+                                gcells = self._fast_cells.get(g)
+                                if not gcells:
+                                    continue
+                                wmap = {a: allw[a] for a in gaddrs.get(g, ())
+                                        if a in allw}
+                                if not wmap:
+                                    continue        # no reads -> N/A, not fake 0s
+                                res[g] = _d.parse_cells(
+                                    _fl.block_body(gcells, wmap), drop_echo=False)
+                            texts, values = [], []
+                            for c in chans:
+                                if c.is_derived or c.is_memory:
+                                    # derived: filled below; memory: not read in
+                                    # fast mode (0x90 reads words, not channels)
+                                    texts.append("N/A"); values.append(None)
+                                    continue
+                                cells = res.get(c.group)
+                                if cells and c.field < len(cells):
+                                    cell = cells[c.field]
+                                    texts.append(cell.text); values.append(cell.value)
+                                else:
+                                    texts.append("N/A"); values.append(None)
+                            _derived.fill(chans, texts, values)
+                            stamp = datetime.now()
+                            with self._lock:
+                                # stopped/restarted mid-row: belongs to no file
+                                current = self._logging and self._gen == gen
+                                if current and self._writer is not None:
+                                    self._writer.row(stamp, texts)
+                                    self.rows += 1
+                            if current:
+                                self.logged.emit(gen, stamp, texts, values)
+                            win_rows += 1
+                        else:
+                            cells = self._fast_cells.get(group)
+                            if not cells or not _fl.read_addrs(cells):
+                                # a block the ECU does not provide (undefined, or
+                                # all four cells empty): nothing to read. Report it
+                                # once, and keep the KWP session alive meanwhile --
+                                # an idle session times out in a few seconds, and
+                                # a loop with no I/O and no pacing spun flat out,
+                                # flooding the UI with signals until it froze.
+                                if group != last_empty:
+                                    last_empty = group
+                                    self.browsed.emit(group, [])
+                                edc15fast.fast_read(link, kwp, [edc15fast.flag_addr(link)], fast_baud)
+                                time.sleep(0.3)
+                                continue
+                            last_empty = None
+                            wmap = edc15fast.fast_read_group(
+                                link, kwp, _fl.read_addrs(cells), fast_baud)
+                            if not wmap:
+                                self.browsed.emit(group, [])   # no reads -> blank, not fake 0s
+                            else:
+                                decoded = _d.parse_cells(
+                                    _fl.block_body(cells, wmap), drop_echo=False)
+                                self.browsed.emit(group, [(fi, c.text, c.value)
+                                                          for fi, c in enumerate(decoded)])
+                            win_rows += 1
+                        now = time.monotonic()
+                        if now - win_t >= 0.5:
+                            self.status.emit(
+                                "EDC15-fast: %s @ %.1f Hz (%s)"
+                                % ("logging %d ch" % len(chans) if logging_
+                                   else "group %d" % group,
+                                   win_rows / (now - win_t),
+                                   edc15fast.fast_stats(link)))
+                            win_rows = 0
+                            win_t = now
+                    except (KLineError, KLineTimeout, OSError) as ex:
+                        if self._stop:
+                            break
+                        self.status.emit("EDC15-fast read error: %s" % ex)
+                        time.sleep(0.2)
+                edc15fast.fast_stop(link, kwp, fast_baud, self.status.emit)   # back to 10400
+                return
             if self._ecu == "ZF6HP-UDS":
                 # The 6HP28 does not answer TP 2.0: UDS over ISO-TP 0x7E1 ->
                 # 0x7E9, routed by the gateway (the flasher's route). The
@@ -504,12 +749,7 @@ class LogWorker(QtCore.QThread):
                         if current:
                             self.logged.emit(gen, stamp, texts, values)
                     else:
-                        cells = sess.read_group(group)
-                        out = []
-                        if cells:
-                            for f, cell in enumerate(cells):
-                                out.append((f, cell.text, cell.value))
-                        self.browsed.emit(group, out)
+                        self._browse_read(sess, group)
                 except _diag.StopRequested:
                     break
                 except (KLineError, OSError, _j2534.J2534Error) as ex:
@@ -532,6 +772,22 @@ class LogWorker(QtCore.QThread):
                         inflight = None
         finally:
             self._teardown(sess, link)
+
+    def _write_bringup_log(self, res):
+        """Write the EDC15-fast bring-up result text to a timestamped .log file.
+
+        Placeholder path: the user's home folder, so the raw capture is kept
+        even though this test does not go through the normal logfile writer."""
+        import os, tempfile, datetime
+        try:
+            name = "edc15fast_bringup_%s.log" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(tempfile.mkdtemp(prefix="ovt-edc15fast-"), name)
+            text = res if isinstance(res, str) else res.as_text()
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            return path
+        except Exception:
+            return None
 
     def _live_timeout(self, link):
         """Short reads for live data (see LIVE_READ_TIMEOUT); the connect
@@ -799,6 +1055,11 @@ class ConnectionBar(QtWidgets.QWidget):
         self.port_lbl = QtWidgets.QLabel("Port:")
         h.addWidget(self.port_lbl)
         self.port_box = QtWidgets.QComboBox()
+        # a cable's full description ("FTDI:A50285BI -- FT232R USB UART, S/N ...") is
+        # long: the box may be narrower than it, never force the dialog wider
+        self.port_box.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.port_box.setMinimumContentsLength(14)
         self._last_port_key = None
         h.addWidget(self.port_box, 1)
         rb = QtWidgets.QPushButton("Refresh")
@@ -894,7 +1155,7 @@ class ConnectionBar(QtWidgets.QWidget):
         self.ecu_box.setCurrentText(want if want in allowed else allowed[0])
         self.ecu_box.blockSignals(False)
         self.ecu_box.setEnabled(True)
-        self.fast_disable_chk.setVisible(not can and self.ecu() != "EDC15")  # K-line, not EDC15
+        self.fast_disable_chk.setVisible(not can and self.ecu() not in ("EDC15", "EDC15-fast"))  # K-line, not EDC15(-fast)
         self.refresh_ports()                         # rebuilds ports -> _port_changed
         if hasattr(self, "speed_box"):
             self._ecu_changed()                      # signals were blocked above
@@ -918,8 +1179,8 @@ class ConnectionBar(QtWidgets.QWidget):
             return
         # EDC15 is always 5-baud slow init (KW1281 has no fast init, and an
         # EDC15 must not be sent one) -- no option shown, as in the flasher.
-        self.fast_disable_chk.setVisible(self.ecu() != "EDC15")
-        if self.ecu() == "EDC15":
+        self.fast_disable_chk.setVisible(self.ecu() not in ("EDC15", "EDC15-fast"))
+        if self.ecu() in ("EDC15", "EDC15-fast"):
             self.fast_disable_chk.setChecked(True)
             self.fast_disable_chk.setEnabled(False)
         elif is_j2534(self.port_box.currentData()):
@@ -944,19 +1205,37 @@ class ConnectionBar(QtWidgets.QWidget):
         if not self._restoring:
             self._recall_module(QtCore.QSettings(*branding.QSETTINGS), self.ecu())
             self.save_settings()
-        # The speed picker raises the K-LINE baud, so it belongs to neither
-        # EDC15 (fixed KW1281 rate) nor anything reached over CAN.
-        fixed = self.ecu() in ("EDC15", "ZF6HP", "ZF6HP-UDS", "Aisin TRx")
+        # The speed picker raises the K-LINE baud, so it does not belong to
+        # anything reached over CAN. On an EDC15 it chooses between the stock
+        # KW1281 logger (Low) and fast logging (Medium), which engages only for a
+        # patched ECU whose matching binary is open (see _fast_gate).
+        fixed = self.ecu() in ("ZF6HP", "ZF6HP-UDS", "Aisin TRx")
         self.speed_box.setVisible(not fixed and not self.is_can())
         self.speed_lbl.setVisible(not fixed and not self.is_can())
         self._rebuild_speeds()
+        edc15 = self.ecu() == "EDC15"
+        tip = ("Low: standard EDC15 logging (KW1281, works on any ECU).\n"
+               "Medium: fast logging at 38400 baud.  High: fast logging at 125000 "
+               "baud.  Used automatically when the open binary carries the OVT "
+               "fast-logging patch and matches the ECU; otherwise the logger "
+               "falls back to Low and says why.") if edc15 else ""
+        self.speed_box.setToolTip(tip)
+        self.speed_lbl.setToolTip(tip)
         self._apply_fast_init_default()              # EDC15 -> slow init default
 
     def _rebuild_speeds(self):
         """Speed list for the current cable: drop High (244898) on a CH340/CH341 or
         J2534 cable (Medium-capped)."""
         labels, keys = list(SPEED_LABELS), list(SPEED_KEYS)
-        if not cable_allows_high(self.port_box.currentData()):
+        if self.ecu() == "EDC15":
+            # EDC15 fast logging: Low = standard logger, Medium 38400, High 125000
+            # -- rates the ECU's own S0BG reload sets, so no cable cap applies.
+            try:
+                from ..edc15 import fasthook
+                labels = list(fasthook.EDC15_SPEED_LABELS)
+            except ImportError:         # EDC15 module not installed: stock list
+                pass
+        elif not cable_allows_high(self.port_box.currentData()):
             labels, keys = labels[:2], keys[:2]
         prev = self.speed_box.currentData()
         self.speed_box.blockSignals(True)
@@ -1008,7 +1287,7 @@ class ConnectionBar(QtWidgets.QWidget):
         return _CAN_DEST.get(self.ecu(), 0x01)
 
     def speed(self):
-        return "Low" if self.ecu() == "EDC15" else (self.speed_box.currentData() or "Medium")
+        return self.speed_box.currentData() or "Medium"
 
     def fast_init(self):
         """K-line fast init: always on for a J2534 device (hardware); the checkbox
@@ -1237,6 +1516,7 @@ class ConnPane(QtWidgets.QWidget):
         self._window = window
         self._scope = scope
         self._worker: Optional[LogWorker] = None
+        self._fast_active = False      # this session runs EDC15 fast logging
         self._channels: List[_lf.Channel] = []
         # The recording in progress: set by Start, cleared the moment it is
         # stopped -- so a session that ends later (Disconnect after Stop)
@@ -1246,6 +1526,8 @@ class ConnPane(QtWidgets.QWidget):
         self._t0 = None
         self._live = _lf.DataLog()
         self._hz = RateMeter()          # readings per second, while connected
+        self._fast_notes = _fn.SessionNotes()   # EDC15-fast messages, kept as an attachment
+        self._last_log_file = ""        # the last log recorded to a file (notes go beside it)
         self._logging = False           # real state, not read back off a button
         self._mem_state = None          # what the 0x23 probe said, once connected
         #: controller -> the identity it reported on its last connect. Kept
@@ -1490,7 +1772,14 @@ class ConnPane(QtWidgets.QWidget):
         # the Log column holds only a check box; the others are dragged
         # wider or narrower by their headings, the last takes the rest
         _resizable_columns(self.browse, [_check_col_width(self.browse), 280, None],
-                           fill=1)
+                           fill=1, last_min=self._value_col_min(self.browse))
+        # never narrower than its columns need: a narrow pane cut the Value column off
+        # and gave the table a sideways scroll bar
+        fit = self.browse._fit_columns
+        self.browse.setMinimumWidth(
+            self.browse.horizontalHeader().sectionSize(0) + fit.least // 3 + fit.last_min
+            + self.browse.verticalScrollBar().sizeHint().width()
+            + 2 * self.browse.frameWidth() + 4)
         self.browse.horizontalHeaderItem(0).setToolTip("Tick a cell to log it")
         self.browse.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         lv.addWidget(self.browse, 1)
@@ -1585,7 +1874,7 @@ class ConnPane(QtWidgets.QWidget):
         self.sel.verticalHeader().setVisible(False)
         _resizable_columns(self.sel, [
             self.sel.fontMetrics().horizontalAdvance("G255/8") + 20, 280, None],
-            fill=1)
+            fill=1, last_min=self._value_col_min(self.sel))
         self.sel.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.sel.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         rv.addWidget(self.sel, 1)
@@ -2048,21 +2337,33 @@ class ConnPane(QtWidgets.QWidget):
                 QtWidgets.QMessageBox.warning(self, "Data logging", why)
             return False
         self.conn.save_settings()
+        run_ecu, run_speed, fast_part = self._choose_logging_mode()
+        self._fast_active = run_ecu == "EDC15-fast"
         self._worker = LogWorker(
-            port, self.conn.ecu(), self.conn.speed(), self.conn.cap_high(),
+            port, run_ecu, run_speed, self.conn.cap_high(),
             transport=("can" if can else "kline"),
             can_rate=self.conn.can_rate.currentData() or 500000,
             can_dest=self.conn.can_dest(),
             fast_init=self.conn.fast_init())
         self._worker.connected.connect(self._on_connected)
         self._worker.browsed.connect(self._on_browsed)
+        self._worker.watched.connect(self._on_watched)
         self._worker.logged.connect(self._on_logged)
         self._worker.status.connect(self._say)
+        self._worker.status.connect(self._fast_note)
+        self._fast_notes.reset(self._fast_notes_header(fast_part, run_speed)
+                                if self._fast_active else ())
         self._worker.failed.connect(self._on_failed)
         self._worker.ended.connect(self._on_ended)
+        self._worker.bringup_log.connect(self._on_bringup_log)
         self._worker.mem_probed.connect(self._on_mem_probed)
         self._worker.probed.connect(self._on_probed)
         self._worker.set_browse_group(self._current_group())
+        self._push_watch()
+        if self._fast_active:
+            self._worker.set_fast_cells(self._resolve_fast_cells())
+            self._worker.set_fast_expect_part(fast_part)
+            self._worker.set_fast_build(self._fast_build_of_image())
         self.connect_btn.setText("Connecting...")
         self.connect_btn.setEnabled(False)
         self.conn.set_enabled_all(False)
@@ -2098,6 +2399,83 @@ class ConnPane(QtWidgets.QWidget):
         else:
             self._say("Still waiting for the J2534 driver to close the device...")
 
+    def _primary_image(self):
+        """The open primary binary's bytes (None when there is none)."""
+        prim = self._primary()
+        img = getattr(prim, "data", None)
+        if img is None:
+            img = getattr(getattr(prim, "binfile", None), "data", None)
+        return img
+
+    def _fast_build_of_image(self):
+        """The fast-logging build the open binary carries (None: none)."""
+        from ..edc15 import fasthook
+        return fasthook.detect(self._primary_image())
+
+    def _fast_gate(self):
+        """May the EDC15 fast path run? ``(ok, why, part)``: ``why`` is the build
+        name when ok, else the reason it is not offered; ``part`` is the open
+        binary's part number, checked against the ECU's identification at
+        connect. All structural: the registered resident-hook build must be in
+        the open binary and its measuring blocks must resolve."""
+        from ..edc15 import fasthook
+        prim = self._primary()
+        if prim is None or getattr(prim, "platform", None) != "edc15":
+            return False, "no EDC15 binary is open", ""
+        img = self._primary_image()
+        build = fasthook.detect(img)
+        if build is None:
+            return False, "the open binary does not carry the fast-logging patch", ""
+        if not self._resolve_fast_cells():
+            return False, "the open binary's measuring blocks could not be resolved", ""
+        part = ""
+        try:
+            from ..platforms.identify import identify
+            part = identify(bytes(img)).facts.get("part", "")
+        except Exception:                            # noqa: BLE001 -- advisory
+            part = ""
+        return True, build.name, part
+
+    def _choose_logging_mode(self):
+        """``(worker ecu, speed, expected part)`` for this connect (see
+        :func:`fasthook.choose_mode`); the reasons are said once."""
+        from ..edc15 import fasthook
+        ecu, speed = self.conn.ecu(), self.conn.speed()
+        gate = self._fast_gate() if (ecu == "EDC15" and speed in fasthook.FAST_BAUDS) \
+            else (False, "", "")
+        run_ecu, run_speed, part, msgs = fasthook.choose_mode(ecu, speed, gate)
+        for m in msgs:
+            self._say(m)
+        return run_ecu, run_speed, part
+
+    def _resolve_fast_cells(self):
+        """EDC15-fast: {block: fastlog15.FastCell list} resolved from the open
+        binary, for the dataset the ECU runs. Empty when no EDC15 binary is
+        open -- the worker then reports that it needs one."""
+        prim = self._primary()
+        if prim is None or getattr(prim, "platform", None) != "edc15":
+            return {}
+        try:
+            from ..edc15.msblock15 import MeasuringBlocks15
+            from ..edc15 import fastlog15
+            mb = MeasuringBlocks15(prim)
+            labels = [d.label for d in getattr(prim, "datasets", [])]
+            ds = getattr(self._namer, "dataset", None)
+            if ds not in labels:
+                ds = labels[0] if labels else None
+            if ds is None:
+                return {}
+            out = {}
+            for g in mb._groups:
+                if g.group != ds:
+                    continue
+                cells = fastlog15.resolve_block(mb, ds, g.block)
+                if cells is not None:
+                    out[g.block] = cells
+            return out
+        except Exception:          # noqa: BLE001 -- never block connect on this
+            return {}
+
     def _on_connected(self, identity, baud):
         self.ident.setText("%s   (%d baud)" % (identity or "connected", baud))
         self._hz.reset()
@@ -2118,10 +2496,75 @@ class ConnPane(QtWidgets.QWidget):
                 self._apply_preset()
         self.state_changed.emit()
 
+    def _on_bringup_log(self, path):
+        """Keep the EDC15-fast bring-up log in the open project (Log file tab),
+        the same route a normal recording takes; otherwise report its path."""
+        import os
+        ws = self._workspace()
+        if ws is not None and getattr(ws, "project_ref", None) is not None \
+                and path and os.path.exists(path):
+            self._keep_ref = (ws, path)
+            if self._keep_log(path) is not False:
+                self._say("Bring-up log kept in the project (Log file tab).")
+                return
+        if path:
+            self._say("Bring-up log: %s" % path)
+
     def _on_failed(self, msg):
         QtWidgets.QMessageBox.critical(self, "Data logging", "%s: %s" % (self.title(), msg))
 
+    def _fast_notes_header(self, part, speed=""):
+        """What the notes of this session are about, for their first lines."""
+        out = []
+        try:
+            prim = self._primary()
+            if prim is not None:
+                out.append("Binary: %s" % prim.binfile.name)
+            if part:
+                out.append("Part number: %s" % part)
+            b = self._fast_build_of_image()
+            if b is not None:
+                out.append("Patch: %s, flag 0x%04X, target 0x%04X, list 0x%04X" % (
+                    b.name, b.flag, b.target, b.stored))
+            if speed:
+                out.append("Speed: %s" % speed)
+        except Exception:                           # noqa: BLE001 -- the header is a courtesy
+            pass
+        return out
+
+    def _fast_note(self, msg):
+        if self._fast_active:
+            self._fast_notes.add(msg)
+
+    def _keep_fast_notes(self):
+        """The session's EDC15-fast messages go into the project as an attachment
+        (Project panel > Attachments); with no project they are written beside the
+        last log that was recorded to a file, else not kept."""
+        got = self._fast_notes.take()
+        if got is None:
+            return
+        name, data = got
+        ref, ws = self._project_ref()
+        if ref is not None:
+            def said(kept):
+                try:
+                    if kept:
+                        self._say("Fast-logging session notes kept in the project "
+                                  "(Attachments: %s)." % name)
+                except RuntimeError:
+                    pass                # the window closed while it was kept
+            kept = _fn.keep(self._window, ws, name, data, parent=self, done=said)
+            if kept is not None:
+                said(kept)
+            return
+        last = getattr(self, "_last_log_file", "")
+        if last:
+            path = _fn.write_beside(last, name, data)
+            if path:
+                self._say("Fast-logging session notes written to %s" % path)
+
     def _on_ended(self):
+        self._keep_fast_notes()
         retire_thread(self._worker)     # never destroy a still-running QThread
         self._worker = None
         self._logging = False
@@ -2131,6 +2574,7 @@ class ConnPane(QtWidgets.QWidget):
         self.ident.setText("Not connected.")
         self._hz.reset()
         self.rate.setText("")
+        self._clear_sel_values()
         # the next ECU may have other software: ask it again
         self._probe_state.clear()
         self._probe_unserved.clear()
@@ -2186,6 +2630,7 @@ class ConnPane(QtWidgets.QWidget):
                 # logger) is gone. A worker still running hands it on from
                 # _on_ended, as before; _log_path keeps it from going twice.
                 p._finish_cut_log()
+                p._keep_fast_notes()
 
     def _finish_cut_log(self):
         """Keep a recording its session was taken away in the middle of
@@ -2329,6 +2774,12 @@ class ConnPane(QtWidgets.QWidget):
             self._say("Group %d: its cells taken out (%d left to log)."
                       % (g, len(self._channels)))
         return len(self._channels) - before
+
+    @staticmethod
+    def _value_col_min(table):
+        """Room the Value column keeps however narrow the table is: a reading with its
+        unit ("35.2 mg/stroke") used to be cut to "35.2 mg/..."."""
+        return table.fontMetrics().horizontalAdvance("0000.0 mg/stroke") + 12
 
     def _on_browsed(self, group, cells):
         if group != self._current_group():
@@ -2645,6 +3096,31 @@ class ConnPane(QtWidgets.QWidget):
             self.sel.setItem(r, 2, QtWidgets.QTableWidgetItem(""))
         # the widths stay as set (or as the user dragged them)
         self._sync_preset_buttons()          # Save as... needs a cell to keep
+        self._push_watch()                   # a ticked cell reads at once
+
+    def _push_watch(self):
+        """Tell the connection which cells are ticked, so each shows its
+        live value now rather than when logging starts."""
+        w = getattr(self, "_worker", None)
+        if w is not None:
+            w.set_watch(list(self._channels))
+
+    def _on_watched(self, pairs):
+        """Live readings of the ticked cells while not logging."""
+        if self._logging:
+            return                      # the rows being logged fill them
+        rows = {c.key: r for r, c in enumerate(self._channels)}
+        for key, text in pairs:
+            r = rows.get(key)
+            it = self.sel.item(r, 2) if r is not None else None
+            if it is not None:
+                it.setText(text)
+
+    def _clear_sel_values(self):
+        for r in range(self.sel.rowCount()):
+            it = self.sel.item(r, 2)
+            if it is not None:
+                it.setText("")
 
     def _remove_selected(self):
         rows = sorted({i.row() for i in self.sel.selectedItems()}, reverse=True)
@@ -2671,9 +3147,15 @@ class ConnPane(QtWidgets.QWidget):
         if ref is None:
             self.keep_in_project.setVisible(False)
         else:
-            self.keep_in_project.setText(
-                "Keep the log in the project %s (%s) -- export it from the "
-                "Project panel" % (ref.doc.title, ref.set.name))
+            full = ("Keep the log in the project %s (%s) -- export it from the "
+                    "Project panel" % (ref.doc.title, ref.set.name))
+            # A project and set name can be long, and a check box never wraps: its text
+            # made the whole dialog wider than the screen (the cut-off Value columns).
+            fm = self.keep_in_project.fontMetrics()
+            self.keep_in_project.setText(fm.elidedText(
+                "Keep the log in the project %s" % ref.doc.title,
+                QtCore.Qt.TextElideMode.ElideMiddle, 420))
+            self.keep_in_project.setToolTip(full)
             self.keep_in_project.setVisible(True)
         self._dest_changed()
 
@@ -2796,6 +3278,7 @@ class ConnPane(QtWidgets.QWidget):
         if self._keep_ref is None:
             _recent.set_last_dir(os.path.dirname(path), "log")
         self._log_path = path
+        self._last_log_file = "" if self._keep_ref is not None else path
         self._t0 = None
         self._live = _lf.DataLog(channels=[_lf.Channel(c.group, c.field, c.label, c.unit, c.signal,
                                                        derived=c.derived)
@@ -3025,6 +3508,11 @@ class DataLogDialog(QtWidgets.QDialog):
         self.status = QtWidgets.QLabel("")
         self.status.setStyleSheet("color: gray")
         self.status.setWordWrap(True)
+        # Two lines are always reserved: the live fast-logging status changes twice a
+        # second and a message that wraps on one update and not the next made every
+        # widget above it jump.
+        self.status.setMinimumHeight(2 * self.status.fontMetrics().lineSpacing() + 2)
+        self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
 
         # -- binaries row (standalone only) --------------------------------
         # With no main window there are no tabs to borrow a binary from, so the

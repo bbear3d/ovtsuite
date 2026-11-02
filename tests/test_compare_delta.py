@@ -79,7 +79,7 @@ if QtCore is not None:
         assert _row(m, 0) == ["1", "1.200", "1"]
         m.set_delta("d1", blank=True)
         assert _row(m, 0) == ["", "+2.0", ""]
-        assert "difference (this file - comparison)" in m.sep_text()
+        assert "difference (primary - comparison)" in m.sep_text()
 
     def test_tint_is_opaque_with_dark_text_and_copy_is_absolute(model):
         from ovtsuite import gui
@@ -101,6 +101,54 @@ if QtCore is not None:
         tip = m.data(up, QtCore.Qt.ToolTipRole)
         assert "12.0" in tip and "10.0" in tip
 
+    def test_differing_cells_are_outlined_not_filled(model):
+        """A cell that differs carries the outline role in both halves and
+        every kind of cell (axis breakpoints too); the fill is left to the
+        heat map and the tint, so they show through."""
+        from ovtsuite import gui
+        from ovtsuite.gui_cellmarks import OUTLINE_ROLE
+        m = model
+        P = lambda r, c: m.index(1 + r, 1 + c)                          # noqa: E731
+        C = lambda r, c: m.index(m.sep_row() + 2 + r, 1 + c)            # noqa: E731
+        for ix in (C(0, 1), C(1, 0), C(1, 2)):                          # 12/10, 20/25, 24/0
+            assert m.data(ix, OUTLINE_ROLE) is True
+        assert m.data(C(0, 0), OUTLINE_ROLE) is None                    # equal
+        assert m.data(P(0, 1), OUTLINE_ROLE) is True
+        assert m.data(P(0, 0), OUTLINE_ROLE) is None
+        assert m.data(C(0, 1), QtCore.Qt.BackgroundRole) is None        # no orange fill
+        assert m.data(C(0, 1), QtCore.Qt.ForegroundRole) is None
+        m._ax_diff = {("x", 1)}
+        ax = m.index(0, 2)
+        assert m.data(ax, OUTLINE_ROLE) is True
+        assert m.data(ax, QtCore.Qt.BackgroundRole) == gui.AXIS_BG
+        # the heat map keeps its fill under the outline
+        m.set_heatmap(True)
+        assert m.data(C(0, 1), OUTLINE_ROLE) is True
+        assert m.data(C(0, 1), QtCore.Qt.BackgroundRole) is not None
+        assert m.data(C(0, 1), QtCore.Qt.BackgroundRole) != gui.DELTA_UP_BG
+
+    def test_tint_works_on_plain_values_and_means_primary_higher(model):
+        """The tint is no longer tied to a difference mode: with both tables
+        on Values it fills a differing cell red where the PRIMARY is higher
+        and blue where it is lower, in either half, and the heat map wins."""
+        from ovtsuite import gui
+        m = model
+        m.set_delta("abs", tint=True)
+        P = lambda r, c: m.index(1 + r, 1 + c)                          # noqa: E731
+        C = lambda r, c: m.index(m.sep_row() + 2 + r, 1 + c)            # noqa: E731
+        B = QtCore.Qt.BackgroundRole
+        assert m.data(P(0, 1), B) == gui.DELTA_UP_BG       # 12 vs 10
+        assert m.data(C(0, 1), B) == gui.DELTA_UP_BG       # the same cell, other half
+        assert m.data(P(1, 0), B) == gui.DELTA_DOWN_BG     # 20 vs 25
+        assert m.data(C(1, 0), B) == gui.DELTA_DOWN_BG
+        assert m.data(P(0, 0), B) is None
+        # the direction is the primary's, whatever difference is shown
+        m.set_delta("d2", tint=True)
+        assert m.data(C(0, 1), B) == gui.DELTA_UP_BG
+        assert m.data(C(0, 1), QtCore.Qt.DisplayRole) == "-2.0"
+        m.set_heatmap(True)
+        assert m.data(C(0, 1), B) != gui.DELTA_UP_BG
+
     def test_this_files_table_as_a_difference_is_read_only(model):
         from ovtsuite import gui
         m = model
@@ -119,7 +167,7 @@ if QtCore is not None:
         assert [cell(0, c) for c in range(3)] == ["", "-2.0", ""]
         # the comparison half is untouched, and says so on the banner
         assert _row(m, 0) == ["10.0", "10.0", "14.0"]
-        assert "this file: difference" in m.sep_text()
+        assert "primary: difference" in m.sep_text()
         # no typing, no pasting, no selection arithmetic
         assert not m.flags(m.index(1, 1)) & QtCore.Qt.ItemIsEditable
         m._edit_cells([(0, 0, 99.0)])
@@ -164,33 +212,42 @@ if QtCore is not None:
         m.set_delta("d1")
         assert _row(m, 0) == ["A", "C", "C"]
 
-    def test_the_menu_sets_both_views_and_the_options(isolated_qsettings_module):
+    def test_the_menu_names_the_files_and_sets_what_and_where(
+            model, isolated_qsettings_module):
+        from types import SimpleNamespace as NS
         from ovtsuite import gui_compare_delta as gcd, options
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         assert app
-        menu = gcd.fill_menu(QtWidgets.QMenu())
-        acts = {a.text(): a for a in menu.actions() if a.text()}
+        ws = NS(model=model,
+                primary=NS(binfile=NS(name="tuned.bin")),
+                comparison=NS(binfile=NS(name="stock.bin")))
+        menu = gcd.fill_menu(QtWidgets.QMenu(), lambda: ws)
+        menu.aboutToShow.emit()
+        texts = [a.text() for a in menu.actions()]
+        assert "Primary: tuned.bin" in texts and "Comparison: stock.bin" in texts
         sections = [a.text() for a in menu.actions() if a.isSeparator()]
-        assert "Comparison shows" in sections
-        assert "This file's table shows (read only)" in sections
+        assert sections[:2] == ["Show as", "Show it in"]
+        acts = {a.text(): a for a in menu.actions() if a.text()}
+        where = {w: acts[t] for w, t in gcd.WHERE}
         try:
-            diff = [a for a in menu.actions()
-                    if a.text().startswith("Difference: this file")]
-            assert len(diff) == 2               # one per section
-            diff[0].trigger()
-            diff[1].trigger()
+            assert not any(a.isEnabled() for a in where.values())   # off: nothing to place
+            acts["Difference: primary - comparison"].trigger()
             assert options.get("ui/compare_delta") == "d1"
-            assert options.get("ui/primary_delta") == "d1"
+            menu.aboutToShow.emit()
+            assert all(a.isEnabled() for a in where.values())
+            assert where["cmp"].isChecked() and gcd.mode() == "d1"
+            assert gcd.primary_mode() == "abs"                  # the default: comparison
+            where["both"].trigger()
+            assert gcd.mode() == "d1" and gcd.primary_mode() == "d1"
+            where["primary"].trigger()
+            assert gcd.mode() == "abs" and gcd.primary_mode() == "d1"
             acts["Tint by direction"].trigger()
             acts["Blank the cells that do not differ"].trigger()
             assert options.get("ui/compare_delta_tint") is True
             assert options.get("ui/compare_delta_blank") is True
-            menu.aboutToShow.emit()             # reads the options back
-            assert diff[0].isChecked() and diff[1].isChecked()
-            assert gcd.active()
-            for a in menu.actions():
-                if a.text() == "Values":
-                    a.trigger()
+            menu.aboutToShow.emit()                 # reads the options back
+            assert where["primary"].isChecked() and gcd.active()
+            acts["Values"].trigger()
             assert not gcd.active()
         finally:
             for k in gcd.KEYS:
@@ -204,10 +261,13 @@ if QtCore is not None:
         btn = gcd.make_button(ws)
         try:
             assert btn.text() == "Difference view" and btn.isEnabled()
-            options.set("ui/primary_delta", "pct")
+            options.set("ui/compare_delta", "pct")
+            options.set("ui/compare_delta_in", "primary")
             gcd.apply_all(type("W", (), {"workspaces": lambda self: [ws]})())
             assert ws.model.primary_delta() == "pct"
+            assert ws.model.delta_mode() == "abs"
             assert btn.text() == "Difference view (on)"
+            assert "primary table" in btn.toolTip()
             ws.model._cmp = []                  # no comparison loaded
             gcd.refresh_button(ws)
             assert not btn.isEnabled() and btn.text() == "Difference view"

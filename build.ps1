@@ -48,7 +48,7 @@
                                                    (-Installers modules-checksum)
         dist\OVTFlasher-<version>-setup.exe   dist\OVTSniffer-<version>-setup.exe
         dist\OVTLogger-<version>-setup.exe    dist\OVTConverter-<version>-setup.exe
-        dist\OVTTools-<version>-setup.exe
+        dist\OVTTools-<version>-setup.exe     dist\OVTDiag-<version>-setup.exe
 
     A module installer refuses to install unless OVT-Suite or OVT Tools is
     installed. The tool installers offer every module's checksum variant.
@@ -115,6 +115,7 @@
       modules-checksum   one installer per module, checksum-only variant
       flasher   OVT Flasher only        sniffer   OVT Sniffer only
       logger    OVT Logger only         converter OVT Converter only
+      diag      OVT Diag only (its own product; not part of 'tools')
       tools     all of these tools, no main app
     The tool installers ship the same build minus the other tools' launchers
     and the full modules (OVTSuite.exe included: every launcher starts it),
@@ -242,7 +243,7 @@ param(
     [string]$InnoSetup,
     [switch]$NoInstaller,
     [ValidateSet('full', 'main', 'base', 'modules', 'modules-checksum',
-                 'flasher', 'sniffer', 'logger', 'converter', 'tools')]
+                 'flasher', 'sniffer', 'logger', 'converter', 'diag', 'tools')]
     [string[]]$Installers = @('full'),
     [string[]]$Modules = @('all'),
     [switch]$BaseOnly,
@@ -814,7 +815,8 @@ Write-Step 'Checking dependencies'
 #   (ovtsuite\modules\native.py); compiling needs MSVC (Visual Studio or its
 #   Build Tools, "Desktop development with C++")
 $deps = @('PySide6>=6.6', 'numpy>=1.24', 'pyserial>=3.5', 'pyusb>=1.2', 'pyftdi>=0.55',
-          'cryptography>=41', 'pyinstaller>=6.6', 'cython>=3.0', 'setuptools>=64')
+          'cryptography>=41', 'pyinstaller>=6.6', 'cython>=3.0', 'setuptools>=64',
+          'pyyaml>=6')   # OVT Diag definition packs (YAML authoring format)
 if ($Test -and -not $SkipTests) { $deps += 'pytest' }
 $DepsStamp = Join-Path $EnvDir '.ovtsuite-deps'
 if (Test-DepsCurrent $DepsStamp $deps) {
@@ -1262,7 +1264,7 @@ if ($NoInstaller) {
         # the per-module installers get a folder of their own
         $ModuleInstallers = Join-Path $DistDir 'module-installers'
         $AllExes = @('OVTSuite.exe', 'OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe',
-                     'OVTConverter.exe')
+                     'OVTConverter.exe', 'OVTDiag.exe')
         $FullInc = Join-Path $InstallerWork 'modules_full.iss'
         $CksInc  = Join-Path $InstallerWork 'modules_checksum.iss'
         $ModRows = @()
@@ -1396,10 +1398,11 @@ if ($NoInstaller) {
                               sniffer = @('OVTSuite.exe', 'OVTSniffer.exe');
                               logger = @('OVTSuite.exe', 'OVTLogger.exe');
                               converter = @('OVTSuite.exe', 'OVTConverter.exe');
+                              diag = @('OVTSuite.exe', 'OVTDiag.exe');
                               tools = @('OVTSuite.exe', 'OVTFlasher.exe', 'OVTSniffer.exe', 'OVTLogger.exe',
                                         'OVTConverter.exe') }[$which]
                     $base = @{ flasher = 'OVTFlasher'; sniffer = 'OVTSniffer'; logger = 'OVTLogger';
-                               converter = 'OVTConverter';
+                               converter = 'OVTConverter'; diag = 'OVTDiag';
                                tools = 'OVTTools' }[$which]
                     $defs = @("/DTool=$which") + $FtdiDefs
                     if ($which -in @('flasher', 'tools')) { $defs += $AddonDefs }

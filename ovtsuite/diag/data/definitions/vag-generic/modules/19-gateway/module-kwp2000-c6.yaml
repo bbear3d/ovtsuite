@@ -1,0 +1,27 @@
+# The C6 CAN gateway (4F0907468x, "GW-BEM 5CAN-M") over TP 2.0: it refuses
+# 1A 9B (7F 1A 11) and identifies through data identifiers; its coding is the
+# three-byte long form read with 22 06 00 (length from 22 06 01); it serves the
+# installation list on 22 04 A1. All from Bear's autoscan capture
+# (Reference/Logs/VCDS-Autoscan.log).
+kind: module
+match: { addr: "19", protocol: kwp2000, generation: C6 }
+name: CAN gateway (C6, TP 2.0)
+identification:
+  record: kwp_dids
+  dids: { part: 0xF187, sw: 0xF189, hw_part: 0xF191, hw_version: 0xF1A3, system_name: 0xF197, wsc_field: 0xF1A5, coding: 0x0600, coding_length: 0x0601 }
+kwp:
+  session: 0x89
+  header: 0x10
+faults:
+  encoding: vag             # 18 02 words are VAG numbers: 0x0414 = 01044, 0x0528 = 01320 (autoscan capture)
+variants:
+  installation_list: did_04a1
+  coding: uds_0600
+  adaptation: routine_b8
+  login: none
+  security_access: none
+security:
+  functions_needing_security: []
+  functions_needing_login: []
+source: capture
+note: "Function map 31 B8 00 00 -> 01 06 01 07 01 08 01 0A 01 0C 01 14 in the capture; faults with 18 02 FF 00 and 12 00 04 freeze frames like the engine."

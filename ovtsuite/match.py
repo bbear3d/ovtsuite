@@ -120,6 +120,9 @@ REF_BINARIES = {
     # table (exact blocks + evidence-resolved changed stretches), tables
     # structurally re-verified across the group. Tables AND constants.
     "p350_u8a7": "p350_u8a7_ref.bin",   # = 038997016L sw 3791 (1037399384)
+    # U8A6 (P350U8A6: 038997016K, BGW): the earlier build of the same relay-
+    # style glow code, derived from p350 by tools/generate_derived_kb.py
+    "p350_u8a6": "p350_u8a6_ref.bin",   # = 038997016K sw 0811
 }
 
 

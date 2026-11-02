@@ -55,6 +55,10 @@ MODULES: Dict[str, ModuleInfo] = {m.id: m for m in (
     ModuleInfo("edc16", "Bosch EDC16",
                "EDC16 engine ECUs: definitions, maps, checksum, EEPROM/immo editor.",
                ("edc16",)),
+    ModuleInfo("edc17", "Bosch EDC17",
+               "EDC17 engine ECUs (TriCore): the parameter definitions of the DAMOS "
+               "projects, found in the image by its EPK, and the block checksum.",
+               ("edc17",)),
     ModuleInfo("edc15", "Bosch EDC15",
                "EDC15VM+/P and MSA15/EDC15V engine ECUs: definitions, maps, checksum, EEPROM editor.",
                ("edc15",)),
@@ -83,6 +87,7 @@ MODULES: Dict[str, ModuleInfo] = {m.id: m for m in (
 PLATFORMS: Dict[str, Platform] = {p.id: p for p in (
     Platform("edc16", "Bosch EDC16", "EDC16", "edc16", 13, ("edc16",)),
     Platform("edc15", "Bosch EDC15", "EDC15", "edc15", 7, ("edc15",)),
+    Platform("edc17", "Bosch EDC17", "EDC17", "edc17", 6, ()),
     Platform("zf6hp", "ZF 6HP", "6HP", "zf6hp", 11, ("zf6hp",)),
     Platform("zf5hp", "ZF 5HP", "5HP", "zf5hp", 6, ()),
     Platform("zf8hp", "ZF 8HP", "8HP", "zf8hp", 3, ("zf8hp",)),

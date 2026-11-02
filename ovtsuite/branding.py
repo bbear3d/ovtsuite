@@ -59,6 +59,7 @@ SNIFFER_APP_ID = EXE_NAME + ".Sniffer"
 LOGGER_APP_ID = EXE_NAME + ".Logger"
 SIMULATOR_APP_ID = EXE_NAME + ".Simulator"
 CONVERTER_APP_ID = EXE_NAME + ".Converter"
+DIAG_APP_ID = EXE_NAME + ".Diag"
 
 #: The standalone tools' own executables and display names. The Windows build
 #: puts one small launcher exe per tool beside the main one (packaging/launcher/
@@ -67,9 +68,11 @@ CONVERTER_APP_ID = EXE_NAME + ".Converter"
 #: at, and what the tool-only installers (packaging/tool_installer.iss) ship
 #: with OVTSuite.exe.
 TOOL_EXES = {"flasher": "OVTFlasher", "sniffer": "OVTSniffer", "logger": "OVTLogger",
-             "simulator": "OVTSimulator", "converter": "OVTConverter"}
+             "simulator": "OVTSimulator", "converter": "OVTConverter",
+             "diag": "OVTDiag"}
 TOOL_NAMES = {"flasher": "OVT Flasher", "sniffer": "OVT Sniffer", "logger": "OVT Logger",
-              "simulator": "OVT Simulator", "converter": "OVT Converter"}
+              "simulator": "OVT Simulator", "converter": "OVT Converter",
+              "diag": "OVT Diag"}
 
 #: Console launcher for the MCP server (``ovtsuite mcp``) in the Windows
 #: bundle: the main exe is windowed, so an MCP client starts this console

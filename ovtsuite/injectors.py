@@ -296,6 +296,10 @@ class Preset:
     body: str = ""
     nozzle: str = ""
     listed_for: List[str] = field(default_factory=list)
+    #: the injector body's OEM part numbers: VAG (038 130 073 AL ...) and
+    #: Bosch (0 414 720 013 ...), the one the preset is read from first
+    vag: List[str] = field(default_factory=list)
+    bosch: List[str] = field(default_factory=list)
     source: str = ""
     notes: str = ""
     char: Optional[Characteristic] = None
@@ -309,11 +313,21 @@ class Preset:
     def derived(self) -> bool:
         return self.char is None and bool(self.base)
 
+    def part_numbers(self) -> str:
+        """The OEM part numbers in one line ("" when none are recorded)."""
+        bits = []
+        if self.vag:
+            bits.append("VAG " + ", ".join(self.vag))
+        if self.bosch:
+            bits.append("Bosch " + ", ".join(self.bosch))
+        return "; ".join(bits)
+
     def to_json(self) -> dict:
         d = {"id": self.id, "name": self.name, "kind": self.kind,
              "confidence": self.confidence, "platform": self.platform,
              "cam": self.cam, "body": self.body, "nozzle": self.nozzle,
-             "listed_for": list(self.listed_for), "source": self.source,
+             "listed_for": list(self.listed_for), "vag": list(self.vag),
+             "bosch": list(self.bosch), "source": self.source,
              "notes": self.notes, "base": self.base, "flow": self.flow,
              "basis": self.basis}
         if self.char is not None:
@@ -330,7 +344,8 @@ class Preset:
             id=d["id"], name=d.get("name", d["id"]), kind=d.get("kind", OEM),
             confidence=d.get("confidence", EXACT), platform=d.get("platform", ""),
             cam=d.get("cam", ""), body=d.get("body", ""), nozzle=d.get("nozzle", ""),
-            listed_for=list(d.get("listed_for", [])), source=d.get("source", ""),
+            listed_for=list(d.get("listed_for", [])), vag=list(d.get("vag", [])),
+            bosch=list(d.get("bosch", [])), source=d.get("source", ""),
             notes=d.get("notes", ""),
             char=Characteristic.from_json(d["char"]) if d.get("char") else None,
             base=d.get("base", ""), flow=float(d.get("flow", 1.0)),

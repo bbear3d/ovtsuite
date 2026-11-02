@@ -1,0 +1,30 @@
+# The C6 instrument cluster (4F0920xxx, "KOMBIINSTR.") over TP 2.0 at dest
+# 0x07: KWP2000 session 0x89, 1A 9B refused, identification through data
+# identifiers, an 11-byte long coding on 22 06 00, measuring groups on 21 xx,
+# faults 18 02 FF 00 with 12 00 04 freeze frames. From Bear's autoscan capture
+# (Reference/Logs/VCDS-Autoscan.log) and the earlier cluster capture
+# (VCDS-Cluster-TP2.0.log).
+kind: module
+match: { addr: "17", protocol: kwp2000, generation: C6 }
+name: Instruments (C6, TP 2.0)
+identification:
+  record: kwp_dids
+  dids: { part: 0xF187, sw: 0xF189, hw_part: 0xF191, hw_version: 0xF1A3, system_name: 0xF197, wsc_field: 0xF1A5, coding: 0x0600, coding_length: 0x0601 }
+kwp:
+  session: 0x89
+  header: 0x10
+faults:
+  encoding: vag             # 18 02 words are VAG numbers: 0x0414 = 01044 (autoscan capture), not P0414
+variants:
+  coding: uds_0600
+  adaptation: routine_b8
+  actuator_tests: routine_b8
+  basic_settings: routine_b8
+  login: none
+  security_access: none
+  installation_list: none
+security:
+  functions_needing_security: []
+  functions_needing_login: []
+source: capture
+note: "Function map 31 B8 00 00 -> 01 02 01 03 01 06 01 07 01 08 01 0C 01 14; identifiers F1 AA (J285), F1 7E, F1 8C also answered."

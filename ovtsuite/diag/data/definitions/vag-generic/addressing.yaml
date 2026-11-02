@@ -1,0 +1,95 @@
+# Module address table. Every value here is either a captured/bench fact
+# (source: capture / bench, with where it was seen) or the VAG convention
+# that a module's 5-baud K-line address IS its two-digit module address
+# (source: convention). A module whose TP 2.0 logical address or ISO-TP ids
+# are not known is listed without them: OVT Diag probes it by address and
+# offers to record what it finds in the user's local pack. Per-generation
+# tables read from a car's gateway sit beside this file (addressing-c6.yaml).
+kind: addressing
+generations:
+  C6:
+    description: "Audi A6 / S6 (4F), 2005-2011"
+    buses: { powertrain: 500000, comfort: 100000 }
+  PQ35:
+    description: "VW Golf V / Jetta / Touran, Audi A3 8P, Seat Leon 1P, Skoda Octavia II"
+    buses: { powertrain: 500000, comfort: 100000 }
+  PQ34:
+    description: "VW Golf IV / Bora, Audi A3 8L, Seat Leon 1M, Skoda Octavia I (K-line era)"
+    buses: {}
+modules:
+  - addr: "01"
+    name: Engine
+    kline: { address: 0x01, init: slow }
+    kwp_header: 0x10          # EDC16 answers KWP2000 frames addressed 0x10 (KWHack capture, 038997016T)
+    tp20: { dest: 0x01, setup_id: 0x200, listen_id: 0x300 }
+    source: capture
+    note: "TP 2.0 dest 0x01 from Scanmatik/VCDS captures (Reference/Logs); K-line header 0x10 from the KWHack EDC16 captures."
+  - addr: "02"
+    name: Transmission
+    kline: { address: 0x02, init: slow }
+    tp20: { dest: 0x02, setup_id: 0x200, listen_id: 0x300 }
+    source: bench
+    note: "dest 0x02 is what the ZF 6HP19/26 and Aisin 09D flash paths use (flash/zf6hp.py, flash/aisin09d.py)."
+  - addr: "03"
+    name: ABS / ESP
+    kline: { address: 0x03, init: slow }
+    tp20: { dest: 0x03 }
+    source: bench
+    note: "ESP8 4F0910517AL over TP 2.0 dest 0x03 (flash/abs_esp8.py)."
+  - addr: "08"
+    name: HVAC
+    kline: { address: 0x08, init: slow }
+    source: convention
+    note: "The C6 Climatronic's TP 2.0 address (0x2C, flash/climatronic.py) is in addressing-c6.yaml with the rest of the gateway's list."
+  - addr: "09"
+    name: Central electrics
+    kline: { address: 0x09, init: slow }
+    source: convention
+  - addr: "15"
+    name: Airbags
+    kline: { address: 0x15, init: slow }
+    source: convention
+  - addr: "16"
+    name: Steering wheel
+    kline: { address: 0x16, init: slow }
+    source: convention
+  - addr: "17"
+    name: Instruments
+    kline: { address: 0x17, init: slow }
+    source: convention
+    note: "The C6 cluster's TP 2.0 address (0x07, Reference/Logs/VCDS-Cluster-TP2.0.log) is in addressing-c6.yaml; over CAN it identifies through data identifiers (22 F1 87 ...), 1A 9B is refused -- flash/cluster.py and the autoscan capture."
+  - addr: "19"
+    name: CAN gateway
+    kline: { address: 0x19, init: slow }
+    source: convention
+  - addr: "25"
+    name: Immobilizer
+    kline: { address: 0x25, init: slow }
+    source: convention
+  - addr: "36"
+    name: Seat memory, driver
+    kline: { address: 0x36, init: slow }
+    source: convention
+  - addr: "46"
+    name: Central convenience
+    kline: { address: 0x46, init: slow }
+    source: convention
+  - addr: "55"
+    name: Headlight range
+    kline: { address: 0x55, init: slow }
+    source: convention
+  - addr: "56"
+    name: Radio
+    kline: { address: 0x56, init: slow }
+    source: convention
+  # UDS-on-ISO-TP modules. request/response are the native CAN ids; the
+  # functional broadcast is the standard 0x7DF. The gearbox pair is the VAG
+  # powertrain physical pair (0x7E1/0x7E9), confirmed on Bear's 6HP28 read
+  # (Reference/Logs/VCDS-UDS-Trans.log). A second "02" row: the resolver merges
+  # by address, so a UDS 6HP28/8HP uses these isotp ids while a TP 2.0
+  # 6HP19/26 uses tp20.dest -- the transport chosen at connect decides which.
+  - addr: "02"
+    name: Transmission (UDS)
+    isotp: { request: 0x7E1, response: 0x7E9, functional: 0x7DF }
+    source: capture
+    note: "ZF 6HP28 / 8HP: UDS on 0x7E1<-0x7E9 (Reference/Logs/VCDS-UDS-Trans.log)."

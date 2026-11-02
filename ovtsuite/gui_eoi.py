@@ -19,23 +19,45 @@ What it shows, over the start-of-injection map's own breakpoints:
   the selector, as the ECU does;
 * **Table no.** -- which duration table(s) it reads, with the blend.
 
+**Units** shows the angles (all but Table no.) as crank degrees or as
+microseconds at each cell's own engine speed; typing, copying and Set target
+EOI follow it.
+
 Typing a value edits what you see: an EOI moves the SOI (the fuelling stays
 calibrated), an SOI moves the SOI tables, a duration moves the duration
 tables the ECU blends there (that is fuel quantity on a PD engine, so it asks
 first). **View** also shows one duration table on its own axes, shaded by how
 much the ECU uses each cell at the chosen coolant, for editing that table.
+
+The grid follows the app's table conventions (:mod:`ovtsuite.gui_cellmarks`):
+alternating rows and the shared delegate, so a selected cell shows in the
+solid accent, and right-click gives Copy, Paste (typed values, as typing
+them: one undo step), Set target EOI for the selection and the Go to
+buttons. With a comparison loaded, a second read-only grid sits below the
+first (:mod:`ovtsuite.gui_eoi_compare`); a cell that differs has the orange
+outline in both, over the band or shade it keeps.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import eoi as _eoi
+from . import compare_delta as _cd
+from .gui_cellmarks import CellDelegate, selection_tsv
+from .gui_eoi_edit import EoiEditing, heat_color, remembered
+from .gui_eoi_surface import SHOWN_KEY, WIDTH as SURF_W, EoiSurface
 
 MODES = (("eoi", "EOI"), ("soi", "SOI"), ("dur", "Duration"),
          ("idx", "Table no."))
+
+#: how angles are shown: crank degrees, or time at the cell's own engine speed
+UNITS = (("deg", "Degrees", "Crank degrees."),
+         ("us", "µs", "Microseconds at each cell's engine speed: the same "
+                      "angle is a longer time at a lower speed, so every cell "
+                      "converts at its own rpm (no time at 0 rpm)."))
 
 #: EOI bands (deg ATDC): before TDC, then later and later
 _EOI_BANDS = ((0.0, "#E1F5EE"), (4.0, "#F1EFE8"), (8.0, "#FAEEDA"),
@@ -74,6 +96,35 @@ _COND_TIPS = {
 def _num(v: float, nd: int = 2) -> str:
     t = ("%.*f" % (nd, v)).rstrip("0").rstrip(".") if nd else "%d" % round(v)
     return "0" if t in ("-0", "") else t
+
+
+def cell_value(mode: str, cell: "_eoi.Cell") -> Tuple[float, str]:
+    """``(value, text)`` of a grid cell in the shown ``mode``."""
+    if mode == "eoi":
+        return cell.eoi, _num(cell.eoi, 2)
+    if mode == "soi":
+        return cell.soi_btdc, _num(cell.soi_btdc, 2)
+    if mode == "dur":
+        return cell.duration, _num(cell.duration, 2)
+    return cell.index, "%.2f" % cell.index
+
+
+def parse_paste(text: str) -> List[List[Optional[float]]]:
+    """Clipboard text as rows of numbers (None where a cell is not one). A
+    copy of the whole table (Copy table: a header line and a label column)
+    loses both."""
+    rows = [[c.strip() for c in ln.split("\t")]
+            for ln in text.replace("\r", "").split("\n") if ln.strip()]
+
+    def num(t):
+        try:
+            return float(t.replace(",", ".").replace("\u00b0", "").strip())
+        except ValueError:
+            return None
+    out = [[num(c) for c in r] for r in rows]
+    if out and out[0] and out[0][0] is None and len(out) > 1:
+        out = [r[1:] for r in out[1:]]
+    return out
 
 
 def availability(ws) -> Optional[str]:
@@ -126,12 +177,16 @@ class EoiDialog(QtWidgets.QDialog):
         self._calcs: Dict[int, _eoi.Calculator] = {}
         self._filling = False
         self._asked_quantity = False
+        self._sized_for_comparison = False
+        self._prim_vals: Dict[tuple, float] = {}
+        self._cmp_vals: Dict[tuple, float] = {}
+        self._last_plan = None
+        self.edit = EoiEditing(self)
         self.setWindowTitle("End of injection")
         try:
             self.setWindowIcon(_g().app_icon())
         except Exception:
             pass
-        self.resize(940, 680)
         v = QtWidgets.QVBoxLayout(self)
 
         top = QtWidgets.QHBoxLayout()
@@ -185,6 +240,7 @@ class EoiDialog(QtWidgets.QDialog):
             top.addWidget(lbl)
             top.addWidget(sp)
             self.cond[key] = (lbl, sp)
+        top.addWidget(self.edit.reset)
         top.addStretch(1)
         v.addLayout(top)
         top = QtWidgets.QHBoxLayout()
@@ -200,11 +256,47 @@ class EoiDialog(QtWidgets.QDialog):
             self.mode_group.addButton(b, i)
             top.addWidget(b)
         top.addSpacing(12)
+        top.addWidget(QtWidgets.QLabel("Units"))
+        self.unit_group = QtWidgets.QButtonGroup(self)
+        self.unit_group.setExclusive(True)
+        for i, (key, text, tip) in enumerate(UNITS):
+            b = QtWidgets.QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setCheckable(True)
+            b.setChecked(i == 0)
+            b.setProperty("unit", key)
+            self.unit_group.addButton(b, i)
+            top.addWidget(b)
+        top.addSpacing(12)
         top.addWidget(QtWidgets.QLabel("View"))
         self.view = QtWidgets.QComboBox()
-        self.view.setMinimumContentsLength(24)
+        self.view.setMinimumContentsLength(10)
+        self.view.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         top.addWidget(self.view, 1)
+        from .gui_eoi_compare import EoiCompare
+        self.cmpv = EoiCompare(self)
+        top.addSpacing(12)
+        top.addWidget(self.cmpv.check)
+        from . import gui_compare_delta as _gcd
+        self.diff_btn = QtWidgets.QPushButton(_gcd.TITLE)
+        self.diff_btn.setToolTip(_gcd.TIP)
+        self.diff_btn.setMenu(_gcd.fill_menu(QtWidgets.QMenu(self.diff_btn),
+                                             lambda: self.ws))
         v.addLayout(top)
+        self.surf_btn = QtWidgets.QPushButton("3D surface")
+        self.surf_btn.setCheckable(True)
+        self.surf_btn.setToolTip("Show or hide the rotatable, editable 3-D "
+                                 "surface beside the grids  Ctrl+3")
+        # the table editor's edit bar ends the same way: Heatmap, 3D surface,
+        # Difference view
+        eb = self.edit.eb
+        eb.addStretch()
+        eb.addWidget(self.edit.heat)
+        eb.addWidget(self.surf_btn)
+        eb.addWidget(self.diff_btn)
+        v.addWidget(self.edit.bar)
         self.when = QtWidgets.QLabel()
         self.when.setWordWrap(True)
         self.when.setStyleSheet("color: gray")
@@ -220,18 +312,65 @@ class EoiDialog(QtWidgets.QDialog):
 
         self.axes_lbl = QtWidgets.QLabel()
         self.axes_lbl.setStyleSheet("color: gray")
-        v.addWidget(self.axes_lbl)
+        self.surf = EoiSurface(self)
+        hdr = QtWidgets.QHBoxLayout()
+        hdr.addWidget(self.surf.bar)
+        hdr.addWidget(self.axes_lbl, 1, QtCore.Qt.AlignmentFlag.AlignBottom)
+        v.addLayout(hdr)
         self.grid = QtWidgets.QTableWidget()
         self.grid.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.grid.horizontalHeader().setSectionResizeMode(
-            QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.grid.horizontalHeader().setMinimumSectionSize(34)
-        self.grid.verticalHeader().setDefaultSectionSize(22)
+        self.prim_head = QtWidgets.QLabel()
+        self.prim_head.setStyleSheet("color: gray")
+        self.prim_head.setVisible(False)
+        pbox = QtWidgets.QWidget()
+        pl = QtWidgets.QVBoxLayout(pbox)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(2)
+        pl.addWidget(self.prim_head)
+        pl.addWidget(self.grid, 1)
+        # the app's table conventions: alternating rows and the shared
+        # delegate (a selected cell shows in the solid accent over the
+        # band / shade it keeps), the difference outline
         f = self.grid.font()
         f.setPointSizeF(max(7.5, f.pointSizeF() - 1))
-        self.grid.setFont(f)
-        v.addWidget(self.grid, 1)
+        for g in (self.grid, self.cmpv.grid):
+            g.setAlternatingRowColors(True)
+            g.setItemDelegate(CellDelegate(g))
+            g.horizontalHeader().setSectionResizeMode(
+                QtWidgets.QHeaderView.ResizeMode.Stretch)
+            g.horizontalHeader().setMinimumSectionSize(34)
+            g.verticalHeader().setDefaultSectionSize(22)
+            g.setFont(f)
+            g.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            g.customContextMenuRequested.connect(
+                lambda pos, g=g: self._grid_menu(g, pos))
+            sc = QtGui.QShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Copy), g)
+            sc.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+            sc.activated.connect(lambda g=g: self._copy_selection(g))
+        pst = QtGui.QShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Paste),
+                              self.grid)
+        pst.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        pst.activated.connect(self._paste)
+        self.split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.split.setChildrenCollapsible(False)
+        self.row1 = QtWidgets.QWidget()
+        r1 = QtWidgets.QHBoxLayout(self.row1)
+        r1.setContentsMargins(0, 0, 0, 0)
+        r1.addWidget(self.surf.pbox)
+        r1.addWidget(pbox, 1)
+        self.row2 = QtWidgets.QWidget()
+        r2 = QtWidgets.QHBoxLayout(self.row2)
+        r2.setContentsMargins(0, 0, 0, 0)
+        r2.addWidget(self.surf.cbox)
+        r2.addWidget(self.cmpv.box, 1)
+        self.split.addWidget(self.row1)
+        self.split.addWidget(self.row2)
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 1)
+        v.addWidget(self.split, 1)
+        from .gui_cmpscroll import ViewLink
+        self.cmpv.attach(ViewLink)
         self.missing = QtWidgets.QLabel()
         self.missing.setWordWrap(True)
         self.missing.setVisible(False)
@@ -242,7 +381,7 @@ class EoiDialog(QtWidgets.QDialog):
         self.info.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.info.setWordWrap(True)
         self.info.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        self.info.setMinimumHeight(96)
+        self.info.setMinimumHeight(80)
         low.addWidget(self.info, 3)
         gocol = QtWidgets.QVBoxLayout()
         self.go_soi = QtWidgets.QPushButton("Go to SOI table")
@@ -274,6 +413,7 @@ class EoiDialog(QtWidgets.QDialog):
         self.more_btn.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         more = QtWidgets.QMenu(self.more_btn)
+        more.addAction("Set step for Alt+Up / Alt+Down...", self.edit.set_step)
         self.collapse_act = more.addAction("Collapse to one duration table...",
                                            self._collapse)
         self.more_btn.setMenu(more)
@@ -290,6 +430,7 @@ class EoiDialog(QtWidgets.QDialog):
         self.soi_box.currentIndexChanged.connect(lambda _i: self._set_changed())
         self.coolant.valueChanged.connect(lambda _v: self.rebuild())
         self.mode_group.idClicked.connect(lambda _i: self.rebuild())
+        self.unit_group.idClicked.connect(lambda _i: self.rebuild())
         self.view.currentIndexChanged.connect(lambda _i: self.rebuild())
         self.grid.currentCellChanged.connect(
             lambda r, c, _r, _c: self._show_info(r, c))
@@ -297,15 +438,68 @@ class EoiDialog(QtWidgets.QDialog):
         self.copy_btn.clicked.connect(self._copy)
         self.target_btn.clicked.connect(self._target)
         self.go_soi.clicked.connect(self._goto_soi)
+        self.coolant.valueChanged.connect(lambda _v: self.edit.refresh_reset())
+        self.soi_box.currentIndexChanged.connect(
+            lambda _i: self.edit.refresh_reset())
+        for _l, sp in self.cond.values():
+            sp.valueChanged.connect(lambda _v: self.edit.refresh_reset())
+        for g in (self.grid, self.cmpv.grid):
+            g.selectionModel().selectionChanged.connect(
+                lambda *_a: self.surf.repaint())
+            g.selectionModel().currentChanged.connect(
+                lambda *_a: self.surf.repaint())
+        self.edit.attach()
+        for w in (self.surf.view, self.surf.cmp_view, self.cmpv.grid):
+            self.edit.bind_actions(w)
+        self.surf_btn.toggled.connect(self.surf.set_shown)
+        sc = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+3"), self)
+        sc.setContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+        sc.activated.connect(self.surf_btn.toggle)
+        from . import options as _opt
+        _opt.notifier().changed.connect(self._option_changed)
 
+        # open on a dataset the view can calculate, not on one whose tables the
+        # definition does not place (unless every one is like that)
+        self.ds.setCurrentIndex(next(
+            (i for i, m in enumerate(self.models) if not m.missing), 0))
         if entity is not None:
             for i, m in enumerate(self.models):
                 if (entity.group or "") == (m.group or ""):
                     self.ds.setCurrentIndex(i)
                     break
         self._model_changed()
+        if remembered(SHOWN_KEY):
+            self.surf.set_shown(True, remember_it=False)
+        self.edit.refresh_reset()
+        self._size_window()
 
     # ------------------------------------------------------------ state
+    def say(self, text: str) -> None:
+        """A line under the grids and in the tab's status bar."""
+        self.status.setText(text)
+        try:
+            self.ws.statusBar().showMessage(text, 6000)
+        except Exception:
+            pass
+
+    def diff_state(self) -> Tuple[str, str, bool, bool]:
+        """The Difference view: ``(comparison grid's mode, primary grid's
+        mode, blank unchanged cells, tint by direction)``."""
+        from . import gui_compare_delta as gcd
+        from . import options as opt
+        return (gcd.mode(), gcd.primary_mode(), bool(opt.get(gcd.BLANK_KEY)),
+                bool(opt.get(gcd.TINT_KEY)))
+
+    def shows_difference(self) -> bool:
+        """Whether the primary grid shows differences (so is read only)."""
+        return bool(self.cmpv.wanted() and self._cmp_vals
+                    and self.diff_state()[1] != "abs")
+
+    def _option_changed(self, key: str) -> None:
+        from . import gui_compare_delta as gcd
+        if key in gcd.KEYS:
+            self.rebuild()
+
     @property
     def model(self) -> _eoi.InjectionModel:
         return self.models[max(0, self.ds.currentIndex())]
@@ -366,6 +560,67 @@ class EoiDialog(QtWidgets.QDialog):
         b = self.mode_group.checkedButton()
         return b.property("mode") if b is not None else "eoi"
 
+    def unit(self) -> str:
+        b = self.unit_group.checkedButton()
+        return b.property("unit") if b is not None else "deg"
+
+    def _angles_shown(self) -> bool:
+        """True when the grid holds angles (every view but Table no.)."""
+        return self.table_view() is not None or self.mode() != "idx"
+
+    def _in_us(self) -> bool:
+        return self.unit() == "us" and self._angles_shown()
+
+    def _show(self, deg: float, rpm: float) -> Optional[float]:
+        """An angle as the grid shows it: degrees, or µs at ``rpm`` (None
+        where there is no time, at 0 rpm)."""
+        return _eoi.deg_to_us(deg, rpm) if self._in_us() else deg
+
+    def _shown_text(self, deg: float, rpm: float, nd: int = 2) -> str:
+        v = self._show(deg, rpm)
+        if v is None:
+            return "-"
+        return _num(v, 0 if self._in_us() else nd)
+
+    def _shown_pair(self, mode: str, vt, rpm: float,
+                    angle: bool = False) -> Tuple[float, str]:
+        """A ``(degrees, text)`` pair as the grid shows it: the same in
+        degrees, or µs at ``rpm`` (``-`` where there is no time, at 0 rpm).
+        ``angle`` marks a duration-table value, always an angle."""
+        deg = vt[0]
+        if not (angle or mode != "idx") or not self._in_us():
+            return deg, vt[1] if vt[1] is not None else _num(deg, 2)
+        v = _eoi.deg_to_us(deg, rpm)
+        return (0.0, "-") if v is None else (v, _num(v, 0))
+
+    def _rpm_at(self, rc: tuple) -> float:
+        """The engine speed of a shown cell."""
+        k = self.table_view()
+        if k is not None:
+            return self.calc.dur_t[k].point(*rc)[0]
+        return self._cells[rc].rpm
+
+    def stepped(self, cells, step: float) -> Dict[tuple, float]:
+        """The shown values of ``cells`` after adding ``step`` degrees (in
+        µs a degree is a different time in every cell)."""
+        out = {}
+        for rc in cells:
+            cur = self._prim_vals.get(rc)
+            if cur is None:
+                continue
+            if not self._in_us():
+                out[rc] = cur + step
+                continue
+            deg = self._to_deg(cur, self._rpm_at(rc))
+            shown = None if deg is None else self._show(deg + step, self._rpm_at(rc))
+            if shown is not None:
+                out[rc] = shown
+        return out
+
+    def _to_deg(self, typed: float, rpm: float) -> Optional[float]:
+        """What was typed into a cell, as degrees."""
+        return _eoi.us_to_deg(typed, rpm) if self._in_us() else typed
+
     def table_view(self) -> Optional[int]:
         """Duration table number shown on its own axes, or None (the grid)."""
         k = self.view.currentData()
@@ -391,7 +646,8 @@ class EoiDialog(QtWidgets.QDialog):
         self.when.setVisible(False)
         self._sync_inputs()
         notes = list(m.notes) + [
-            "EOI in degrees ATDC: negative = before TDC. SOI in degrees BTDC."]
+            "EOI in degrees ATDC: negative = before TDC. SOI in degrees BTDC. "
+            "Units: Degrees, or µs at each cell's own engine speed."]
         self.notes.setText(" ".join(notes))
         self.rebuild()
 
@@ -430,18 +686,29 @@ class EoiDialog(QtWidgets.QDialog):
         if calc is None:
             self.missing.setText(
                 "<b>This definition does not place every table the "
-                "calculation needs:</b><br>" + "<br>".join(m.missing)
+                "calculation needs%s:</b><br>" % (
+                    " (dataset %s)" % m.label if len(self.models) > 1 else "")
+                + "<br>".join(m.missing)
                 + "<br><br>Nothing is guessed: the view opens once the "
                 "definition has them.")
             self.axes_lbl.setText("")
             self.info.setText("")
+            self.cmpv.show(False)
+            self.row2.setVisible(False)
+            self.surf.sync_rows()
+            self.prim_head.setVisible(False)
             return
         k = self.table_view()
         for b in self.mode_group.buttons():
             b.setEnabled(k is None)
+        for b in self.unit_group.buttons():
+            b.setEnabled(self._angles_shown())
         self.target_btn.setEnabled(k is None and not self._read_only())
         self.go_soi.setEnabled(k is None)
         self.more_btn.setEnabled(not self._read_only())
+        self._prim_vals, self._cmp_vals = {}, {}
+        keep = (self._selected_cells(), (self.grid.currentRow(), self.grid.currentColumn()),
+                (self.grid.rowCount(), self.grid.columnCount()))
         self._filling = True
         try:
             if k is None:
@@ -453,8 +720,77 @@ class EoiDialog(QtWidgets.QDialog):
             self.info.setText(str(ex))
         finally:
             self._filling = False
+        self._restore_selection(*keep)
+        self._show_comparison()
+        can = self._can_edit()
+        for w in self.edit.widgets():
+            w.setEnabled(can)
+        self._sync_difference_button()
         r, c = max(0, self.grid.currentRow()), max(0, self.grid.currentColumn())
         self._show_info(r, c)
+        self.surf.reload()
+
+    def _equal_rows(self) -> None:
+        """The primary and comparison grids get the same height (the bar
+        between them still moves)."""
+        if self.row2.isHidden() or self.split.height() < 40:
+            return
+        n = self.split.height() - self.split.handleWidth()
+        self.split.setSizes([n // 2, n - n // 2])
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        if not getattr(self, "_leveled", False):          # the first time only
+            self._leveled = True
+            QtCore.QTimer.singleShot(0, self._equal_rows)
+
+    def _restore_selection(self, sel, cur, shape) -> None:
+        """What was selected is still selected after the grid is filled again
+        (an edit, an undo, another condition), when it has the same shape."""
+        g = self.grid
+        if not sel or (g.rowCount(), g.columnCount()) != shape:
+            return
+        sm, m = g.selectionModel(), g.model()
+        items = QtCore.QItemSelection()
+        for r, c in sel:
+            items.select(m.index(r, c), m.index(r, c))
+        sm.select(items, QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        if cur[0] >= 0 and cur[1] >= 0:
+            sm.setCurrentIndex(m.index(*cur),
+                               QtCore.QItemSelectionModel.SelectionFlag.NoUpdate)
+
+    def _sync_difference_button(self) -> None:
+        """Enabled while there is a comparison file; says when a difference
+        view is on."""
+        from . import gui_compare_delta as gcd
+        has = self.cmpv.session is not None
+        on = has and gcd.active()
+        self.diff_btn.setEnabled(has)
+        self.diff_btn.setText(gcd.TITLE + (" (on)" if on else ""))
+
+    def _show_comparison(self) -> None:
+        """Show the comparison grid under the primary's when there is one to
+        show (else say why not); grow the window the first time."""
+        cv = self.cmpv
+        shown = bool(cv.wanted() and self._cmp_vals)
+        from .gui_compare_delta import file_names
+        pn, cn = file_names(self.ws)
+        cv.show(shown, "Comparison: %s  (read only)" % cn if cn else
+                "Comparison (read only)")
+        self.prim_head.setText("Primary: %s" % pn if pn else "Primary")
+        self.prim_head.setVisible(shown)
+        why = "" if shown or not cv.wanted() else cv.reason
+        cv.check.setToolTip(why or cv.check.toolTip().split("\n\n")[0])
+        if why:
+            self.status.setText("Comparison not shown: %s" % why)
+        was_hidden = self.row2.isHidden()
+        self.row2.setVisible(not cv.box.isHidden())      # no empty row below
+        if was_hidden and not self.row2.isHidden():      # shown again: level
+            QtCore.QTimer.singleShot(0, self._equal_rows)
+        self.surf.sync_rows()
+        if shown and not self._sized_for_comparison:
+            self._sized_for_comparison = True
+            self._size_window(True)
 
     def _headers(self, t: _eoi.Table) -> None:
         self.grid.setColumnCount(len(t.xs))
@@ -469,6 +805,65 @@ class EoiDialog(QtWidgets.QDialog):
         self.axes_lbl.setText("Columns: %s   ·   Rows: %s" % (
             _u(t.e.x), _u(t.e.y if t.ys else None)))
 
+    # ---------------------------------------------------------- cell look
+    @staticmethod
+    def _shade(mode: str, val: float, lo: float, hi: float) -> str:
+        """The band (EOI), table colour (table number) or sequential shade
+        (SOI, duration: ``lo`` to ``hi`` over both grids) of a value."""
+        if mode == "eoi":
+            return next(col for lim, col in _EOI_BANDS if val <= lim)
+        if mode == "idx":
+            return _IDX[min(int(val), len(_IDX) - 1)]
+        f = 0.0 if hi <= lo else (val - lo) / (hi - lo)
+        return _SEQ[min(int(f * len(_SEQ)), len(_SEQ) - 1)]
+
+    def _cell_bg(self, val: float, lo: float, hi: float):
+        """The Heatmap colour of a value (the table editor's ramp over
+        ``lo``..``hi``), or None: plain cells."""
+        if not self.edit.heat.isChecked() or hi <= lo:
+            return None
+        return heat_color((val - lo) / (hi - lo))
+
+    def _tint(self, mode: str, d: Optional[float]):
+        """The Difference view's direction tint of a differing cell."""
+        sg = _cd.sign(mode, d)
+        if not sg:
+            return None
+        g = _g()
+        return g.DELTA_UP_BG if sg > 0 else g.DELTA_DOWN_BG
+
+    def _new_item(self, txt: str, val: float, bg=None, *, editable=False,
+                  italic=False, tip="") -> QtWidgets.QTableWidgetItem:
+        it = QtWidgets.QTableWidgetItem(txt)
+        it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        if bg is not None:                  # a light fill: dark text, either theme
+            it.setForeground(_INK)
+            it.setBackground(QtGui.QColor(bg))
+        if italic:
+            fnt = it.font()
+            fnt.setItalic(True)
+            it.setFont(fnt)
+        if tip:
+            it.setToolTip(tip)
+        flags = QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEnabled
+        if editable:
+            flags |= QtCore.Qt.ItemFlag.ItemIsEditable
+        it.setFlags(flags)
+        it.setData(QtCore.Qt.ItemDataRole.UserRole, val)
+        return it
+
+    def _size_comparison(self, t: "_eoi.Table") -> None:
+        """The comparison grid has the primary's rows and columns and
+        headers."""
+        g = self.cmpv.grid
+        g.clearContents()
+        g.setColumnCount(self.grid.columnCount())
+        g.setRowCount(self.grid.rowCount())
+        g.setHorizontalHeaderLabels([self.grid.horizontalHeaderItem(c).text()
+                                     for c in range(self.grid.columnCount())])
+        g.setVerticalHeaderLabels([self.grid.verticalHeaderItem(r).text()
+                                   for r in range(self.grid.rowCount())])
+
     def _fill_grid(self, calc: _eoi.Calculator) -> None:
         cool = self.coolant.value()
         ref = calc.reference(cool)
@@ -477,51 +872,92 @@ class EoiDialog(QtWidgets.QDialog):
         self._cells = {}
         self._headers(ref)
         mode = self.mode()
+        vals: Dict[tuple, tuple] = {}
         for r in range(len(ref.vals)):
             for c in range(len(ref.vals[0])):
                 rpm, q = ref.point(r, c)
                 cell = calc.cell(cool, rpm, q, mem)
                 self._cells[(r, c)] = cell
-                if mode == "eoi":
-                    val, txt = cell.eoi, _num(cell.eoi, 2)
-                elif mode == "soi":
-                    val, txt = cell.soi_btdc, _num(cell.soi_btdc, 2)
-                elif mode == "dur":
-                    val, txt = cell.duration, _num(cell.duration, 2)
-                else:
-                    val, txt = cell.index, "%.2f" % cell.index
-                it = QtWidgets.QTableWidgetItem(txt)
-                it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-                it.setForeground(_INK)
-                if mode == "eoi":
-                    bg = next(col for lim, col in _EOI_BANDS if val <= lim)
-                    it.setBackground(QtGui.QColor(bg))
-                elif mode == "idx":
-                    it.setBackground(QtGui.QColor(_IDX[min(int(val), len(_IDX) - 1)]))
-                if cell.soi_limited:
-                    fnt = it.font()
-                    fnt.setItalic(True)
-                    it.setFont(fnt)
-                    it.setToolTip("SOI capped by %s" % calc.model.limiter.name)
-                flags = QtCore.Qt.ItemFlag.ItemIsSelectable | \
-                    QtCore.Qt.ItemFlag.ItemIsEnabled
-                if mode != "idx" and not self._read_only():
-                    flags |= QtCore.Qt.ItemFlag.ItemIsEditable
-                it.setFlags(flags)
-                it.setData(QtCore.Qt.ItemDataRole.UserRole, val)
-                self.grid.setItem(r, c, it)
-        if mode in ("soi", "dur"):
-            vals = [it.data(QtCore.Qt.ItemDataRole.UserRole)
-                    for it in (self.grid.item(r, c) for r in range(self.grid.rowCount())
-                               for c in range(self.grid.columnCount())) if it is not None]
-            lo, hi = min(vals), max(vals)
-            for r in range(self.grid.rowCount()):
-                for c in range(self.grid.columnCount()):
-                    it = self.grid.item(r, c)
-                    if it is None:
-                        continue
-                    f = 0.0 if hi <= lo else (it.data(QtCore.Qt.ItemDataRole.UserRole) - lo) / (hi - lo)
-                    it.setBackground(QtGui.QColor(_SEQ[min(int(f * len(_SEQ)), len(_SEQ) - 1)]))
+                vals[(r, c)] = self._shown_pair(mode, cell_value(mode, cell), rpm)
+        cvals = self.cmpv.values(mode, cool, self._cells) \
+            if self.cmpv.wanted() else None
+        if cvals is not None:
+            cvals = {rc: self._shown_pair(mode, vt, self._cells[rc].rpm)
+                     for rc, vt in cvals.items()}
+        allv = [v for v, _t in vals.values()] + \
+            [v for v, _t in (cvals or {}).values()]
+        lo, hi = min(allv), max(allv)
+        cmode, pmode, blank, tint = self.diff_state()
+        if cvals is None:
+            pmode = "abs"
+        heat = self.edit.heat.isChecked()
+        editable = mode != "idx" and not self._read_only() and pmode == "abs"
+        self._size_comparison(ref)
+        for (r, c), (val, txt) in vals.items():
+            cell = self._cells[(r, c)]
+            cval = ctxt = None
+            differs = False
+            if cvals is not None:
+                cval, ctxt = cvals[(r, c)]
+                differs = ctxt != txt
+            bg = self._cell_bg(val, lo, hi)
+            shown, cshown = txt, ctxt
+            if differs:
+                if pmode != "abs":
+                    shown = _cd.text(pmode, _cd.delta(pmode, val, cval), True, 2, blank)
+                if cmode != "abs":
+                    cshown = _cd.text(cmode, _cd.delta(cmode, val, cval), True, 2, blank)
+            elif cvals is not None:
+                if pmode != "abs":
+                    shown = _cd.text(pmode, None, False, 2, blank)
+                if cmode != "abs":
+                    cshown = _cd.text(cmode, None, False, 2, blank)
+            it = self._new_item(
+                shown, val, bg, editable=editable and txt != "-",
+                italic=cell.soi_limited,
+                tip=("SOI capped by %s" % calc.model.limiter.name)
+                if cell.soi_limited else "")
+            if bg is None and tint and differs and not heat and pmode != "abs":
+                t = self._tint(pmode, _cd.delta(pmode, val, cval))
+                if t is not None:
+                    it.setBackground(QtGui.QColor(t))
+                    it.setForeground(_INK)
+            self.grid.setItem(r, c, it)
+            if cvals is not None:
+                cbg = self._cell_bg(cval, lo, hi)
+                ci = self._new_item(cshown, cval, cbg, tip="Primary: %s" % txt)
+                if cbg is None and tint and differs and not heat and cmode != "abs":
+                    t = self._tint(cmode, _cd.delta(cmode, val, cval))
+                    if t is not None:
+                        ci.setBackground(QtGui.QColor(t))
+                        ci.setForeground(_INK)
+                self.cmpv.grid.setItem(r, c, ci)
+                if differs:
+                    self.cmpv.mark(it, ci, True)
+                    it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "")
+                                  + "Comparison: %s" % ctxt)
+        self._prim_vals = {rc: v for rc, (v, _t) in vals.items()}
+        self._cmp_vals = {rc: v for rc, (v, _t) in cvals.items()} if cvals else {}
+
+    def _table_item(self, val: float, w: float, cool: float,
+                    editable: bool, txt: Optional[str] = None
+                    ) -> QtWidgets.QTableWidgetItem:
+        """A duration-table cell: shaded by how much the ECU uses it."""
+        text = txt if txt is not None else _num(val, 2)
+        editable = editable and text != "-"        # no time at 0 rpm
+        if w <= 0:
+            it = self._new_item(text, val, _UNUSED_BG, editable=editable,
+                                tip="Not used at %.0f °C" % cool)
+            it.setForeground(_UNUSED_INK)
+        elif w < 0.999:
+            it = self._new_item(text, val, _PART_BG, editable=editable,
+                                tip="Blended in with weight %.0f %% at %.0f °C"
+                                % (100 * w, cool))
+        else:
+            it = self._new_item(text, val, _USED_BG, editable=editable,
+                                tip="Used alone at %.0f °C" % cool)   # light under any theme
+        it.setData(QtCore.Qt.ItemDataRole.UserRole + 1, w)
+        return it
 
     def _fill_table(self, calc: _eoi.Calculator, k: int) -> None:
         cool = self.coolant.value()
@@ -530,32 +966,71 @@ class EoiDialog(QtWidgets.QDialog):
         self._cells = {}
         self._headers(t)
         use = calc.usage(k, cool)
+        got = self.cmpv.table_values(k, t, cool) if self.cmpv.wanted() else None
+        cmode, pmode, blank, tint = self.diff_state()
+        if got is None:
+            pmode = "abs"
+        editable = not self._read_only() and pmode == "abs"
+        heat = self.edit.heat.isChecked()
+        allv = [x for row in t.vals for x in row] + \
+            ([x for x in got[0].values()] if got is not None else [])
+        lo, hi = min(allv), max(allv)
+        self._size_comparison(t)
+        self._prim_vals, self._cmp_vals = {}, {}
         for r in range(len(t.vals)):
             for c in range(len(t.vals[0])):
-                w = use[r][c]
-                it = QtWidgets.QTableWidgetItem(_num(t.vals[r][c], 2))
-                it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-                if w <= 0:
-                    it.setBackground(_UNUSED_BG)
-                    it.setForeground(_UNUSED_INK)
-                    it.setToolTip("Not used at %.0f °C" % cool)
-                elif w < 0.999:
-                    it.setBackground(_PART_BG)
-                    it.setForeground(_INK)
-                    it.setToolTip("Blended in with weight %.0f %% at %.0f °C"
-                                  % (100 * w, cool))
-                else:
-                    it.setBackground(_USED_BG)          # light under any theme
-                    it.setForeground(_INK)
-                    it.setToolTip("Used alone at %.0f °C" % cool)
-                flags = QtCore.Qt.ItemFlag.ItemIsSelectable | \
-                    QtCore.Qt.ItemFlag.ItemIsEnabled
-                if not self._read_only():
-                    flags |= QtCore.Qt.ItemFlag.ItemIsEditable
-                it.setFlags(flags)
-                it.setData(QtCore.Qt.ItemDataRole.UserRole, t.vals[r][c])
-                it.setData(QtCore.Qt.ItemDataRole.UserRole + 1, w)
+                rpm = t.point(r, c)[0]
+                val, vtxt = self._shown_pair("dur", (t.vals[r][c], None), rpm,
+                                             True)
+                it = self._table_item(val, use[r][c], cool, editable, vtxt)
+                self._prim_vals[(r, c)] = val
+                if heat:
+                    self._heated(it, val, lo, hi)
+                if got is None:
+                    self.grid.setItem(r, c, it)
+                    continue
+                cvals, cuse = got
+                cv, ctext = self._shown_pair("dur", (cvals[(r, c)], None), rpm,
+                                             True)
+                ci = self._table_item(
+                    cv, cuse[r][c] if cuse is not None else 1.0, cool, False,
+                    ctext)
+                if heat:
+                    self._heated(ci, cv, lo, hi)
+                if cuse is None:
+                    ci.setToolTip("The comparison's table read at this "
+                                  "table's breakpoints")
+                differs = ctext != it.text()
+                ci.setToolTip((ci.toolTip() + "\n" if ci.toolTip() else "")
+                              + "Primary: %s" % it.text())
+                if cmode != "abs":
+                    ci.setText(_cd.text(cmode, _cd.delta(cmode, val, cv)
+                                        if differs else None, differs, 2, blank))
+                if pmode != "abs":
+                    it.setText(_cd.text(pmode, _cd.delta(pmode, val, cv)
+                                        if differs else None, differs, 2, blank))
+                if tint and differs and not heat:
+                    for item, m in ((it, pmode), (ci, cmode)):
+                        if m != "abs":
+                            tc = self._tint(m, _cd.delta(m, val, cv))
+                            if tc is not None:
+                                item.setBackground(QtGui.QColor(tc))
+                                item.setForeground(_INK)
                 self.grid.setItem(r, c, it)
+                self.cmpv.grid.setItem(r, c, ci)
+                self._cmp_vals[(r, c)] = cv
+                if differs:
+                    self.cmpv.mark(it, ci, True)
+                    it.setToolTip(it.toolTip() + "\nComparison: %s" % ctext)
+
+    def _heated(self, it: QtWidgets.QTableWidgetItem, val: float, lo: float,
+                hi: float) -> None:
+        """The Heatmap over a duration-table cell (its use stays in the
+        tooltip)."""
+        bg = self._cell_bg(val, lo, hi)
+        if bg is not None:
+            it.setBackground(QtGui.QColor(bg))
+            it.setForeground(_INK)
 
     def _read_only(self) -> bool:
         return bool(getattr(self.ws, "view_only", None))
@@ -575,9 +1050,11 @@ class EoiDialog(QtWidgets.QDialog):
             rpm, q = t.point(r, c)
             it = self.grid.item(r, c)
             w = it.data(QtCore.Qt.ItemDataRole.UserRole + 1) if it else 0
+            us = _eoi.deg_to_us(t.vals[r][c], rpm)
             self.info.setText(
-                "<b>%s</b> at %s rpm, %s mg: %s° &nbsp; used %s at %.0f °C" % (
+                "<b>%s</b> at %s rpm, %s mg: %s° %s&nbsp; used %s at %.0f °C" % (
                     t.e.name, _num(rpm, 0), _num(q, 1), _num(t.vals[r][c], 2),
+                    "(%s µs) " % _num(us, 0) if us is not None else "",
                     "alone" if w >= 0.999 else ("with weight %.0f %%" % (100 * w)
                                                 if w > 0 else "not at all"),
                     self.coolant.value()))
@@ -621,12 +1098,24 @@ class EoiDialog(QtWidgets.QDialog):
                 m.duration.selector.name, _num(cell.soi, 2), cell.index,
                 dur_names, _num(cell.duration, 2),
                 _num(cell.duration, 2), _num(cell.soi_btdc, 2),
-                _eoi.fmt_angle(cell.eoi, 2)))
+                _eoi.fmt_angle(cell.eoi, 2)) + self._time_line(cell))
         for i, _w in cell.dur_members:
             e = calc.dur_t[i].e
             cells = [(rr, cc) for rr, cc, _ in calc.dur_t[i].weights(
                 cell.rpm, cell.q_dur if cell.q_dur is not None else cell.q)]
             menu.addAction(e.name, lambda e=e, cl=cells: self._goto(e, cl))
+
+    def _time_line(self, cell: _eoi.Cell) -> str:
+        """The cell's three angles as time at its own speed (µs view only)."""
+        if not self._in_us():
+            return ""
+        if _eoi.deg_to_us(1.0, cell.rpm) is None:
+            return "<br><span style='color:gray'>No time at %s rpm.</span>" % _num(cell.rpm, 0)
+        f = lambda d: _num(_eoi.deg_to_us(d, cell.rpm), 0)         # noqa: E731
+        return ("<br><span style='color:gray'>At %s rpm: SOI %s µs BTDC, "
+                "duration %s µs, EOI %s µs %s TDC.</span>" % (
+                    _num(cell.rpm, 0), f(cell.soi_btdc), f(cell.duration),
+                    f(abs(cell.eoi)), "after" if cell.eoi >= 0 else "before"))
 
     # --------------------------------------------------------------- go to
     def _goto(self, e, cells) -> None:
@@ -692,43 +1181,180 @@ class EoiDialog(QtWidgets.QDialog):
     def _edited(self, it: QtWidgets.QTableWidgetItem) -> None:
         if self._filling:
             return
-        calc = self.calc
         try:
-            new = float(it.text().replace(",", ".").replace("°", "").strip())
+            new = float(it.text().replace(",", ".").replace("°", "")
+                        .replace("µs", "").replace("us", "").strip())
         except ValueError:
             self.rebuild()
             return
-        r, c = it.row(), it.column()
+        self.commit({(it.row(), it.column()): new})
+
+    def commit(self, values: Dict[tuple, float]) -> int:
+        """Make the shown cells ``{(row, col): value}`` those values, as
+        typing them would: in the shown view's terms (an EOI moves the SOI,
+        an SOI moves the SOI tables, a duration moves the duration tables,
+        a duration table's cells are written), as ONE plan and one undo
+        step -- typing one cell, pasting a block, Copy comparison -> primary and
+        the Modify selection bar all come here. Returns the cells written."""
+        calc = self.calc
+        values = {rc: v for rc, v in values.items()
+                  if 0 <= rc[0] < self.grid.rowCount()
+                  and 0 <= rc[1] < self.grid.columnCount()}
+        if calc is None or not values or self._read_only():
+            self.rebuild()
+            return 0
         cool = self.coolant.value()
         k = self.table_view()
+        # a time typed in is an angle at this cell's own engine speed
+        values = {rc: self._to_deg(v, self._rpm_at(rc))
+                  for rc, v in values.items()}
+        values = {rc: v for rc, v in values.items() if v is not None}
+        if not values:                                  # no time at 0 rpm
+            self.rebuild()
+            return 0
         try:
             if k is not None:
-                plan = _eoi.plan_table(calc.dur_t[k].e, [(r, c, new)])
+                plan = _eoi.plan_table(calc.dur_t[k].e,
+                                       [(r, c, v) for (r, c), v in values.items()])
             else:
-                cell = self._cells[(r, c)]
                 mode = self.mode()
+                pts = {(self._cells[rc].rpm, self._cells[rc].q): v
+                       for rc, v in values.items()}
                 if mode == "eoi":
-                    plan = _eoi.plan_target_eoi(
-                        calc, cool, lambda n, q: new if (n, q) == (cell.rpm, cell.q)
-                        else None)
+                    plan = _eoi.plan_target_eoi(calc, cool, lambda n, q: pts.get((n, q)))
                     if plan.unreached:
                         QtWidgets.QMessageBox.information(
                             self, "End of injection",
                             "No start of injection within the SOI table's range "
-                            "gives an EOI of %s there." % _eoi.fmt_angle(new))
+                            "gives the wanted EOI at %d point%s." % (
+                                len(plan.unreached),
+                                "" if len(plan.unreached) == 1 else "s"))
                 elif mode == "soi":
-                    plan = _eoi.plan_soi(calc, cool, [(cell.rpm, cell.q, new)])
-                else:
+                    plan = _eoi.plan_soi(calc, cool, [(n, q, v) for (n, q), v in pts.items()])
+                elif mode == "dur":
                     if not self._confirm_quantity():
                         self.rebuild()
-                        return
-                    plan = _eoi.plan_duration(calc, cool, [(cell.rpm, cell.q, new)])
+                        return 0
+                    plan = _eoi.plan_duration(calc, cool,
+                                              [(n, q, v) for (n, q), v in pts.items()])
+                else:
+                    self.rebuild()
+                    return 0
         except Exception as ex:
             QtWidgets.QMessageBox.warning(self, "End of injection",
                                           "Nothing was changed: %s" % ex)
             self.rebuild()
-            return
-        self._apply(plan)
+            return 0
+        self._last_plan = plan
+        n = self._apply(plan)
+        if not n:
+            self.rebuild()
+        return n
+
+    def _can_edit(self) -> bool:
+        return (self.calc is not None and not self._read_only()
+                and not self.shows_difference()
+                and (self.table_view() is not None or self.mode() != "idx"))
+
+    # -------------------------------------------------- right-click, paste
+    def _selected_cells(self, g=None) -> List[tuple]:
+        g = g or self.grid
+        return sorted({(i.row(), i.column()) for i in g.selectedIndexes()})
+
+    def _copy_selection(self, g=None) -> str:
+        """The selected cells to the clipboard as shown, tab-separated (the
+        table editor's Copy); Copy table keeps the whole table."""
+        text = selection_tsv(g or self.grid)
+        if text:
+            QtWidgets.QApplication.clipboard().setText(text)
+        return text
+
+    def _paste(self) -> int:
+        """Typed values from the clipboard, from the top-left selected cell
+        (one value over a selection fills it), written as typing them."""
+        if not self._can_edit():
+            return 0
+        rows = parse_paste(QtWidgets.QApplication.clipboard().text())
+        flat = [v for row in rows for v in row if v is not None]
+        if not flat:
+            return 0
+        sel = self._selected_cells()
+        if len(flat) == 1 and len(sel) > 1:
+            values = {rc: flat[0] for rc in sel}
+        else:
+            r0, c0 = sel[0] if sel else (max(0, self.grid.currentRow()),
+                                         max(0, self.grid.currentColumn()))
+            values = {(r0 + i, c0 + j): v for i, row in enumerate(rows)
+                      for j, v in enumerate(row) if v is not None}
+        values = {rc: v for rc, v in values.items()
+                  if rc[0] < self.grid.rowCount() and rc[1] < self.grid.columnCount()}
+        self.commit(values)
+        return len(values)
+
+    def _grid_menu(self, g, pos) -> None:
+        """Right-click on either grid."""
+        menu = self._build_menu(g)
+        if menu is not None:
+            menu.exec(g.viewport().mapToGlobal(pos))
+
+    def _build_menu(self, g) -> Optional[QtWidgets.QMenu]:
+        calc = self.calc
+        if calc is None:
+            return None
+        menu = QtWidgets.QMenu(self)
+        sel = self._selected_cells(g)
+        ke = QtGui.QKeySequence.StandardKey
+        copy = menu.addAction("Copy", lambda: self._copy_selection(g))
+        copy.setShortcut(QtGui.QKeySequence(ke.Copy))
+        copy.setEnabled(bool(sel))
+        paste = menu.addAction("Paste", self._paste)
+        paste.setShortcut(QtGui.QKeySequence(ke.Paste))
+        paste.setEnabled(g is self.grid and self._can_edit()
+                         and bool(QtWidgets.QApplication.clipboard().text()))
+        menu.addSeparator()
+        tgt = menu.addAction("Set target EOI for the selection...", self._target)
+        tgt.setEnabled(self.table_view() is None and not self._read_only()
+                       and bool(sel) and g is self.grid)
+        menu.addAction("Set step...", self.edit.set_step)
+        goto = menu.addAction("Go to SOI table (selected cells marked)", self._goto_soi)
+        goto.setEnabled(self.go_soi.isEnabled())
+        dur = menu.addMenu("Go to duration table")
+        for a in self.go_dur.menu().actions():
+            dur.addAction(a)
+        dur.setEnabled(bool(dur.actions()) and self.go_dur.isEnabled())
+        if self.cmpv.wanted() and self._cmp_vals:
+            menu.addSeparator()
+            self.cmpv.menu_actions(menu, self._cmp_vals, self._prim_vals, sel,
+                                   self._can_edit())
+        return menu
+
+    def _size_window(self, with_comparison: Optional[bool] = None) -> None:
+        """The size the window opens at: the least its layout allows (wide
+        enough for its rows and no wider), and never more than the screen has.
+        The height is one to read the grid in (a little taller for two grids,
+        at most 82 % of the screen). Showing the comparison grid, or
+        the surface, takes it up to the new minimum; a window you made larger
+        stays so."""
+        scr = self.screen() or QtWidgets.QApplication.primaryScreen()
+        avail = scr.availableGeometry() if scr is not None else QtCore.QRect(0, 0, 1366, 728)
+        lay = self.layout()
+        hint = lay.totalMinimumSize() if lay is not None else self.minimumSizeHint()
+        w, h = hint.width(), hint.height()
+        cmp_on = self.cmpv.wanted() if with_comparison is None else with_comparison
+        # tall enough to read the grid (two grids share it with the comparison:
+        # a little taller, but never over 82 % of the screen)
+        h = max(h, min(720, int(avail.height() * 0.82)) if cmp_on
+                else min(680, avail.height() - 60))
+        if self.isVisible() or with_comparison:
+            w, h = max(w, self.width()), max(h, self.height())
+        w = max(hint.width(), min(w, avail.width() - 40))
+        h = max(hint.height(), min(h, avail.height() - 60))
+        self.resize(w, h)
+        if self.isVisible():
+            fg = self.frameGeometry()
+            if fg.bottom() > avail.bottom() or fg.right() > avail.right():
+                self.move(max(avail.left(), min(self.x(), avail.right() - self.width())),
+                          max(avail.top(), min(self.y(), avail.bottom() - self.height())))
 
     def _confirm_quantity(self) -> bool:
         if self._asked_quantity:
@@ -745,15 +1371,22 @@ class EoiDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------- actions
     def _copy(self) -> None:
         g = self.grid
-        hdr = {"eoi": "EOI deg ATDC (negative = BTDC)", "soi": "SOI deg BTDC",
-               "dur": "Duration deg", "idx": "Duration table no."}[self.mode()]
+        if self._in_us():
+            hdr = {"eoi": "EOI us ATDC (negative = BTDC)", "soi": "SOI us BTDC",
+                   "dur": "Duration us"}.get(self.mode())
+        else:
+            hdr = {"eoi": "EOI deg ATDC (negative = BTDC)", "soi": "SOI deg BTDC",
+                   "dur": "Duration deg", "idx": "Duration table no."}[self.mode()]
         if self.table_view() is not None:
-            hdr = "Duration table %d" % self.table_view()
+            hdr = "Duration table %d%s" % (self.table_view(),
+                                           " (us)" if self._in_us() else "")
         lines = ["%s at %.0f C\t%s" % (hdr, self.coolant.value(), "\t".join(
             g.horizontalHeaderItem(c).text() for c in range(g.columnCount())))]
         for r in range(g.rowCount()):
             lines.append("\t".join([g.verticalHeaderItem(r).text()] + [
-                _num(g.item(r, c).data(QtCore.Qt.ItemDataRole.UserRole), 3)
+                ("-" if g.item(r, c).text() == "-"
+                 else _num(g.item(r, c).data(QtCore.Qt.ItemDataRole.UserRole),
+                           1 if self._in_us() else 3))
                 for c in range(g.columnCount())]))
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
 
@@ -764,8 +1397,9 @@ class EoiDialog(QtWidgets.QDialog):
         calc = self.calc
         if calc is None:
             return
+        us = self.unit() == "us"
         d = TargetDialog(self, calc, self.coolant.value(),
-                         bool(len(self.selected_points()) > 1))
+                         bool(len(self.selected_points()) > 1), us)
         if d.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         target, only_late, sel_only, tables = d.result_values()
@@ -776,9 +1410,13 @@ class EoiDialog(QtWidgets.QDialog):
                        if (cl.rpm, cl.q) == (rpm, q)), None)
             if pts is not None and rc not in pts:
                 return None
-            if only_late and rc is not None and self._cells[rc].eoi <= target:
+            # a time target is a different angle at every speed
+            deg = _eoi.us_to_deg(target, rpm) if us else target
+            if deg is None:                              # no time at 0 rpm
                 return None
-            return target
+            if only_late and rc is not None and self._cells[rc].eoi <= deg:
+                return None
+            return deg
         plan = _eoi.plan_target_eoi(calc, self.coolant.value(), want, tables)
         if not plan.n_cells:
             QtWidgets.QMessageBox.information(self, "Set target EOI",
@@ -810,18 +1448,29 @@ class TargetDialog(QtWidgets.QDialog):
     keeping the ECU's duration selection (so the fuelling stays as it is)."""
 
     def __init__(self, parent, calc: _eoi.Calculator, coolant: float,
-                 has_selection: bool):
+                 has_selection: bool, microseconds: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Set target EOI")
         self.calc = calc
         f = QtWidgets.QFormLayout(self)
         self.target = QtWidgets.QDoubleSpinBox()
-        self.target.setRange(-20.0, 30.0)
-        self.target.setSingleStep(0.5)
-        self.target.setDecimals(1)
-        self.target.setSuffix("° ATDC")
-        self.target.setValue(8.0)
-        self.target.setToolTip("Degrees after TDC; a negative value is before TDC.")
+        if microseconds:
+            self.target.setRange(-5000.0, 10000.0)
+            self.target.setSingleStep(25.0)
+            self.target.setDecimals(0)
+            self.target.setSuffix(" µs ATDC")
+            self.target.setValue(500.0)
+            self.target.setToolTip(
+                "Microseconds after TDC; a negative value is before TDC. "
+                "The same time is a different angle at each engine speed, so "
+                "every point gets the angle that is this time at its own rpm.")
+        else:
+            self.target.setRange(-20.0, 30.0)
+            self.target.setSingleStep(0.5)
+            self.target.setDecimals(1)
+            self.target.setSuffix("° ATDC")
+            self.target.setValue(8.0)
+            self.target.setToolTip("Degrees after TDC; a negative value is before TDC.")
         f.addRow("End of injection", self.target)
         self.only_late = QtWidgets.QCheckBox("Only where it ends later than this")
         self.only_late.setChecked(True)

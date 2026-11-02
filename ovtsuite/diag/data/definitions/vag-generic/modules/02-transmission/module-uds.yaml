@@ -1,0 +1,20 @@
+# ZF 6HP28 / 8HP (and other UDS TCUs): UDS over ISO-TP. Identification through
+# the F1xx DIDs and the 06 00 long coding, faults through 19 02, no TP 2.0.
+# The read-security key algorithm is the suite's own (the flash path solved
+# it); it is named here, never reimplemented in the diag code.
+kind: module
+match: { addr: "02", protocol: uds }
+name: Transmission (UDS)
+identification:
+  record: uds_f1xx
+uds:
+  session: 0x03
+variants:
+  coding: uds_0600
+  security_access: uds_seed_key
+security:
+  key_algorithm: zf6hp_read      # ovtsuite.flash.crypto.zf6hp_read_key, via diag.udskey
+  security_level: 3
+  functions_needing_security: [coding]
+source: capture
+note: "6HP28 UDS sequence from Reference/Logs/VCDS-UDS-Trans.log: 10 03, 22 F1 9E/A2/87/89/91/A3/A5, 22 06 01 then 22 06 00 for the long coding. The read key lives in flash/crypto.zf6hp_read_key."

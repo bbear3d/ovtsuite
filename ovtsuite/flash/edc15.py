@@ -6,8 +6,10 @@
 """EDC15 external-flash and EEPROM read/write over K-line.
 
 Ported from KWHack ``EDC15/Edc15FlashVM.cs`` + ``EDC15/Edc15VM.cs`` (both
-bench-validated). The EDC15 is a C167 with a 512 KB Am29F400BT; everything is
-done through a small RAM loader uploaded over KWP2000:
+bench-validated). The EDC15 is a C167 with either a 512 KB Am29F400BT or a 1 MB
+Am29F800BT; :class:`FlashLayout` captures the difference and
+:meth:`Edc15Flash.detect_layout` picks it on the ECU (see docs/edc15-1mb.md).
+Everything is done through a small RAM loader uploaded over KWP2000:
 
 * connect: 5-baud slow init at 9600 -> KW1281 identification -> EndCommunication
   -> a second slow init at 10400 that answers with KWP2000; then
@@ -16,7 +18,8 @@ done through a small RAM loader uploaded over KWP2000:
 * soft-bricked ECUs (stuck in the KWP2000 boot stub, answering the 9600 pulse
   with sync 0x95/0xB5 or a non-1281 keyword) are detected and driven through the
   recovery path (0x85 only, no KW1281 prerequisite) automatically.
-* ``read_flash``: whole-chip loader, 254-byte packets, 0x00000-0x7FFFF.
+* ``read_flash``: whole-chip loader, 254-byte packets, over the whole part
+  (512 KB at the 0x080000 window, 1 MB at the 0x200000 window).
 * ``write_flash_sectors`` (default write): per-sector loader; the loader's
   CmdB2 checksum is compared against the image per sector and only differing
   sectors are erased (CmdB0) and programmed (Cmd36, 128-byte chunks).
@@ -28,6 +31,7 @@ Speeds: Low = stay at 10400; Medium = 38400 (0x50); High = 124800 (0x87).
 """
 import logging
 import time
+from dataclasses import dataclass
 
 from .transport import KLineError, KLineTimeout
 from .crypto import compute_lvl41_key
@@ -42,12 +46,80 @@ EEPROM_SIZE = 512
 
 SPEEDS = {"Low": None, "Medium": (0x50, 38400), "High": (0x87, 124800)}
 
-# Am29F400BT top-boot sectors (flash-relative)
+# Am29F400BT top-boot sectors (flash-relative), 512 KB part
 SECTORS = [(0x00000, 0x10000), (0x10000, 0x20000), (0x20000, 0x30000), (0x30000, 0x40000),
            (0x40000, 0x50000), (0x50000, 0x60000), (0x60000, 0x70000),
            (0x70000, 0x78000), (0x78000, 0x7A000), (0x7A000, 0x7C000), (0x7C000, 0x80000)]
 SECTOR_WRITE_BASE = 0x200000        # CPU-bus address the sector loader erases/programs at
-SECTOR_READ_BASE = 0x080000         # ...and reads/checksums at
+SECTOR_READ_BASE = 0x080000         # ...and the 512 KB whole-chip read loop reads/checksums at
+
+# Am29F800BT top-boot sectors (flash-relative), 1 MB part: fifteen 64 KB
+# sectors then the 32/8/8/16 KB top-boot group, mirroring the 29F400BT layout
+# one segment higher. The KWP2000 boot stub lives in the top 16 KB (0xFC000).
+SECTORS_1M = ([(i << 16, (i + 1) << 16) for i in range(15)]
+              + [(0xF0000, 0xF8000), (0xF8000, 0xFA000), (0xFA000, 0xFC000), (0xFC000, 0x100000)])
+
+
+@dataclass(frozen=True)
+class FlashLayout:
+    """Everything that differs between the 512 KB and 1 MB EDC15 flash parts.
+
+    Bench-proven on a 512 KB ECU: the flash answers reads at every external CPU
+    address except the 0x200000-0x3FFFFF block, which is the write-only
+    programming window (reads return an open-bus pattern). The chip simply sees
+    the CPU address lines, so ``chip_byte = cpu & (size - 1)``: a 512 KB part
+    ignores A19, a 1 MB part decodes it. Hence
+
+    * 512 KB: ``read_base`` 0x080000 (historical, bench-proven) -- the whole chip.
+    * 1 MB: the lower half (chip 0x00000-0x7FFFF, A19 = 0) is read through
+      ``read_base`` 0x100000 and the upper half (A19 = 1) through the window the
+      firmware itself uses, 0x080000 (``split_base``), so the upper half takes
+      the proven path and only the lower half depends on an inferred window.
+
+    ``cpu_read(off)`` gives the CPU address to read chip offset ``off`` at.
+    ``write_base`` is the programming window for erase/program (both sizes): the
+    1 MB lower half programs at 0x200000-0x27FFFF, the upper at 0x280000-0x2FFFFF.
+    The 1 MB windows are inferred from the aliasing and not yet bench-proven on a
+    1 MB ECU. See docs/edc15-1mb.md.
+    """
+    name: str
+    size: int
+    sectors: tuple
+    boot_start: int
+    boot_end: int
+    read_base: int
+    write_base: int = SECTOR_WRITE_BASE
+    split: int = 0              # chip offset where a second read window starts (0: none)
+    split_base: int = 0         # CPU address that chip offset ``split`` is read at
+
+    def cpu_read(self, off: int) -> int:
+        """CPU address to read chip offset ``off`` at."""
+        if self.split and off >= self.split:
+            return self.split_base + (off - self.split)
+        return self.read_base + off
+
+
+LAYOUT_512 = FlashLayout("512 KB (Am29F400BT)", FLASH_SIZE, tuple(SECTORS),
+                         BOOT_START, BOOT_END, SECTOR_READ_BASE)
+LAYOUT_1M = FlashLayout("1 MB (Am29F800BT)", 0x100000, tuple(SECTORS_1M),
+                        0xFC000, 0xFFFFF, 0x100000, split=0x80000,
+                        split_base=SECTOR_READ_BASE)
+
+#: Span the A19-decode size probe compares (small; decisive and quick).
+PROBE_LEN = 0x1000
+
+#: CPU addresses the window survey samples, 0x70000 into each 512 KB window:
+#: A19=0 windows (lower half of a 1 MB part), A19=1 windows (upper half), and the
+#: write-only programming block.
+SURVEY_ADDRS = (0x070000, 0x0F0000, 0x170000, 0x1F0000, 0x270000, 0x2F0000,
+                0x470000, 0x4F0000, 0x870000, 0x8F0000)
+
+#: Read windows used to test CPU A19. All are bench-proven aliases of the same
+#: flash cell on a 512 KB ECU. ``A19_HI`` have A19=1, ``A19_LO`` have A19=0; each
+#: is 0x70000 into a 512 KB window, clear of the internal ROM and the 0x07F000
+#: peripheral.
+A19_HI = (0x0F0000, 0x1F0000, 0x8F0000)
+A19_LO = (0x170000, 0x470000, 0x870000)
 
 # The C167's own 32 KB internal boot ROM, as the RUNNING ECU maps it. Much of
 # the firmware lives here rather than in the flash: each reference image makes
@@ -114,6 +186,12 @@ def sector_checksum(data) -> int:
     return acc
 
 
+def _plausible_flash(data) -> bool:
+    """Real flash/code has many distinct byte values; an unmapped bus returns
+    one or two (e.g. the high address byte and 0x00, repeated)."""
+    return len(set(bytes(data))) >= 8
+
+
 def eeprom_info(ee) -> dict:
     """Decode the well-known EDC15 EEPROM fields (KWHack Edc15VM.GetEepromInfo)."""
     ee = bytes(ee)
@@ -147,6 +225,9 @@ class Edc15Flash:
         self.kwp = None
         self.variant = None
         self.recovered = False
+        #: flash part geometry; stays 512 KB until :meth:`detect_layout` says
+        #: otherwise, so nothing changes for a 512 KB ECU.
+        self.layout = LAYOUT_512
         #: shorter session timing the link asks for (the J2534 byte-stream
         #: link's ``edc15_timing``, switched by kline_j2534_raw's
         #: EDC15_J2534_FAST_TIMING); empty: the timing used on a serial cable
@@ -456,40 +537,46 @@ class Edc15Flash:
                     raise
                 self.k.clear_rx()
 
+    def _flash_read_cpu(self, cpu, n) -> bytes:
+        """One whole-chip-loader read of ``n`` (<=0xFE) bytes at CPU ``cpu``."""
+        req = bytearray([0x05, 0x23, (cpu >> 16) & 0xFF, (cpu >> 8) & 0xFF, cpu & 0xFF, n])
+        req.append(_cks(req))
+        return self._read_packet_with_retry(bytes(req))
+
     def read_flash(self, on_percent=None, on_stage=None, is_stop=None) -> bytes:
-        """Read the full 512 KB flash via the whole-chip loader (call
-        ``connect(loader="flash")`` first)."""
+        """Read the whole flash via the whole-chip loader (call
+        ``connect(loader="flash")`` first). Size/window come from
+        :attr:`layout`; for a 512 KB part this is byte-identical to before --
+        the chunking lands the same 0xFE packets plus the trailing 0x20 read
+        because 0x80000 = 2064*0xFE + 0x20."""
         if self._loader != "flash":
             raise KLineError("read_flash needs the flash loader (connect(loader='flash'))")
+        lay = self.layout
         stage = on_stage or (lambda s: None)
-        stage("Reading flash...")
+        stage("Reading flash (%s)..." % lay.name)
         out = bytearray()
-        pos = 0
         before = -1
         try:
-            done = False
-            while True:
+            pos = 0
+            while pos < lay.size:
                 self._stop(is_stop)
-                req = bytearray([0x05, 0x23, ((pos >> 16) & 0xFF) + 0x08,
-                                 (pos >> 8) & 0xFF, pos & 0xFF, 0xFE])
-                req.append(_cks(req))
-                out += self._read_packet_with_retry(bytes(req))
-                if done:
-                    req = bytearray([0x05, 0x23, ((pos >> 16) & 0xFF) + 0x08, 0xFF, 0xE0, 0x20])
-                    req.append(_cks(req))
-                    out += self._read_packet_with_retry(bytes(req))
-                    break
-                pos += 0xFE
-                if pos == FLASH_END:
-                    done = True
-                pct = min(100, pos * 100 // FLASH_END)
+                n = min(0xFE, lay.size - pos)
+                if lay.split and pos < lay.split:
+                    n = min(n, lay.split - pos)        # never straddle the two windows
+                out += self._flash_read_cpu(lay.cpu_read(pos), n)
+                pos += n
+                pct = min(100, pos * 100 // lay.size)
                 if pct != before and on_percent:
                     on_percent(pct)
                     before = pct
         finally:
             self.try_close()
-        if len(out) != FLASH_SIZE:
-            raise KLineError("EDC15 read returned %d bytes, expected %d" % (len(out), FLASH_SIZE))
+        if len(out) != lay.size:
+            raise KLineError("EDC15 read returned %d bytes, expected %d" % (len(out), lay.size))
+        if len(set(out)) < 64:
+            raise KLineError(
+                "EDC15 read returned no flash data (only %d distinct byte values): "
+                "the window read is unmapped. The image was NOT produced." % len(set(out)))
         if on_percent:
             on_percent(100)
         return bytes(out)
@@ -526,10 +613,11 @@ class Edc15Flash:
         ``connect(loader="flash")``."""
         if self._loader != "flash":
             raise KLineError("write_flash_full needs the flash loader")
-        if len(image) < FLASH_SIZE:
-            raise ValueError("EDC15 image must be 0x80000 bytes; got %d" % len(image))
+        lay = self.layout
+        if len(image) < lay.size:
+            raise ValueError("EDC15 image must be 0x%X bytes; got %d" % (lay.size, len(image)))
         stage = on_stage or (lambda s: None)
-        total = FLASH_SIZE
+        total = lay.size
         done = [0]
         before = [-1]
 
@@ -547,10 +635,10 @@ class Edc15Flash:
             time.sleep(4.0)
             self._check_ack()
             stage("Writing boot block...")
-            self._write_block(image, BOOT_START, BOOT_END, progress, is_stop,
+            self._write_block(image, lay.boot_start, lay.boot_end, progress, is_stop,
                               inter_chunk=0.02 if self._fast else 0.0)
             stage("Writing main block...")
-            self._write_block(image, MAIN_START, MAIN_END, progress, is_stop)
+            self._write_block(image, 0x00000, lay.boot_start - 1, progress, is_stop)
         finally:
             self.try_close()
         stage("Write complete.")
@@ -591,14 +679,20 @@ class Edc15Flash:
                 self.k.clear_rx()
         raise KLineTimeout("no valid response to %s" % what)
 
-    def _sector_checksum_ecu(self, start, end):
-        cs, ce = start + SECTOR_READ_BASE, end + SECTOR_READ_BASE
+    def _checksum_cpu(self, cs, ce):
+        """The sector loader's CmdB2 over an absolute CPU-bus range [cs, ce):
+        the ECU reads and hashes the span itself and returns only the 16-bit
+        result, so the span's size costs nothing on the K-line."""
         body = bytes([(cs >> 16) & 0xFF, (cs >> 8) & 0xFF, cs & 0xFF,
                       (ce >> 16) & 0xFF, (ce >> 8) & 0xFF, ce & 0xFF])
-        data = self._loader_cmd(0xB2, body, 0xB2, "checksum 0x%X-0x%X" % (start, end))
+        data = self._loader_cmd(0xB2, body, 0xB2, "checksum 0x%06X-0x%06X" % (cs, ce))
         if len(data) < 2:
             raise KLineError("checksum query returned %d byte(s)" % len(data))
         return (data[0] << 8) | data[1]
+
+    def _sector_checksum_ecu(self, start, end):
+        cs = self.layout.cpu_read(start)
+        return self._checksum_cpu(cs, cs + (end - start))
 
     def _erase_sector(self, cpu_addr):
         self._loader_cmd(0xB0, bytes([(cpu_addr >> 16) & 0xFF, (cpu_addr >> 8) & 0xFF,
@@ -663,6 +757,87 @@ class Edc15Flash:
         which is just that base expressed as a carry into the high byte)."""
         return self.read_cpu_range(SECTOR_READ_BASE + flash_addr, length)
 
+    # -------------------------------------------------- 512 KB vs 1 MB detect
+    def detect_layout(self, is_stop=None):
+        """Pick :attr:`layout` (512 KB vs 1 MB) by testing whether CPU A19
+        reaches the flash, with no content signature.
+
+        The flash answers reads in many aliased windows (see :class:`FlashLayout`).
+        Windows that differ only in A19 show the *same* cell on a 512 KB part
+        (it ignores A19) and the two *halves* on a 1 MB part. So:
+
+        1. the A19=1 windows must read identically (proves they alias the proven
+           read window) and look like flash;
+        2. the A19=0 windows must read identically to each other;
+        3. A19=0 equal to A19=1 means 512 KB, different means 1 MB.
+
+        Any step that fails (no flash-like data, inconsistent aliases) is
+        inconclusive and keeps 512 KB, the bench-proven behaviour. A 1 MB part on
+        which A19 never reaches the chip is therefore also taken as 512 KB.
+
+        The sector loader compares on the ECU with its checksum command (only
+        16-bit results cross the wire); the flash loader reads short spans.
+        """
+        if self._loader not in ("sector", "flash"):
+            raise KLineError("size detection needs the sector or flash loader")
+        self.layout = LAYOUT_512
+        hi, lo = A19_HI, A19_LO
+        sample = self._probe_sample(hi[0])
+        self.log("Size probe: A19=1 window 0x%06X -> %s" % (hi[0], sample[:8].hex(" ")))
+        if not _plausible_flash(sample):
+            return self._inconclusive("the read window returned no flash data", hi[0], sample)
+        for name, group in (("A19=1", hi), ("A19=0", lo)):
+            for other in group[1:]:
+                self._stop(is_stop)
+                if not self._probe_equal(group[0], other):
+                    return self._inconclusive(
+                        "%s windows 0x%06X and 0x%06X disagree" % (name, group[0], other),
+                        hi[0], sample)
+        self._stop(is_stop)
+        same = self._probe_equal(lo[0], hi[0])
+        self.layout = LAYOUT_512 if same else LAYOUT_1M
+        self.log("Size probe: A19=0 window 0x%06X -> %s (%s the A19=1 window)"
+                 % (lo[0], self._probe_sample(lo[0])[:8].hex(" "), "same as" if same else "differs from"))
+        self.log("Detected EDC15 flash: %s." % self.layout.name)
+        if not same:
+            self._survey_windows(hi[0], sample)
+        return self.layout
+
+    def _inconclusive(self, why, known, sample):
+        self.log("Size probe inconclusive (%s); assuming a 512 KB flash." % why)
+        self._survey_windows(known, sample)
+        return self.layout
+
+    def _survey_windows(self, known, ref):
+        """Log what each candidate CPU window returns (read-only), so a bench
+        log shows which windows are flash, which half of a 1 MB part they
+        reach, and which are open bus. ``ref`` is the sample read at ``known``
+        through the proven window."""
+        self.log("Window survey (reference 0x%06X = %s):" % (known, ref[:8].hex(" ")))
+        for cpu in SURVEY_ADDRS:
+            try:
+                got = self._probe_sample(cpu)
+            except (KLineError, KLineTimeout) as ex:
+                self.log("  0x%06X: no reply (%s)" % (cpu, ex))
+                continue
+            kind = ("same as the read window" if got[:len(ref)] == ref[:len(got)]
+                    else "flash-like, differs" if _plausible_flash(got)
+                    else "open bus / pattern")
+            self.log("  0x%06X: %s  [%s]" % (cpu, got[:8].hex(" "), kind))
+
+    def _probe_sample(self, cpu) -> bytes:
+        """A short real read at ``cpu`` (a few dozen bytes) for inspection."""
+        if self._loader == "sector":
+            return self.read_cpu_range(cpu, READ_CHUNK)
+        return self._flash_read_cpu(cpu, 0x40)
+
+    def _probe_equal(self, a, b) -> bool:
+        """Do the ``PROBE_LEN`` spans at CPU ``a`` and ``b`` read identical?"""
+        if self._loader == "sector":
+            return self._checksum_cpu(a, a + PROBE_LEN) == self._checksum_cpu(b, b + PROBE_LEN)
+        n = min(0xFE, PROBE_LEN)                 # flash loader: one packet is plenty
+        return self._flash_read_cpu(a, n) == self._flash_read_cpu(b, n)
+
     def read_irom(self, on_percent=None, on_stage=None, is_stop=None) -> bytes:
         """Read the C167 internal boot ROM over K-line -- no boot mode needed.
 
@@ -682,14 +857,15 @@ class Edc15Flash:
         Returns the list of sector indexes written."""
         if self._loader != "sector":
             raise KLineError("write_flash_sectors needs the sector loader")
-        if len(image) < FLASH_SIZE:
-            raise ValueError("EDC15 image must be 0x80000 bytes; got %d" % len(image))
+        lay = self.layout
+        if len(image) < lay.size:
+            raise ValueError("EDC15 image must be 0x%X bytes; got %d" % (lay.size, len(image)))
         stage = on_stage or (lambda s: None)
         try:
             to_write = []
             stage("Full write: every sector will be rewritten." if force_full
                   else "Comparing sector checksums...")
-            for i, (s, e) in enumerate(SECTORS):
+            for i, (s, e) in enumerate(lay.sectors):
                 self._stop(is_stop)
                 if force_full:
                     to_write.append(i)
@@ -708,7 +884,7 @@ class Edc15Flash:
                     on_percent(100)
                 return []
 
-            total = sum(SECTORS[i][1] - SECTORS[i][0] for i in to_write)
+            total = sum(lay.sectors[i][1] - lay.sectors[i][0] for i in to_write)
             done = [0]
             before = [-1]
 
@@ -721,9 +897,9 @@ class Edc15Flash:
 
             for k, i in enumerate(to_write):
                 self._stop(is_stop)
-                s, e = SECTORS[i]
+                s, e = lay.sectors[i]
                 stage("Writing sector %d of %d (0x%05X-0x%05X)..." % (k + 1, len(to_write), s, e - 1))
-                cpu = s + SECTOR_WRITE_BASE
+                cpu = s + lay.write_base
                 self._erase_sector(cpu)
                 self._program_sector(cpu, image[s:e], progress, is_stop)
 
@@ -731,7 +907,7 @@ class Edc15Flash:
                 stage("Verifying written sectors...")
                 bad = []
                 for i in to_write:
-                    s, e = SECTORS[i]
+                    s, e = lay.sectors[i]
                     if self._sector_checksum_ecu(s, e) != sector_checksum(image[s:e]):
                         bad.append(i)
                 if bad:

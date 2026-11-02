@@ -464,6 +464,18 @@ def build_menu(ws, item, parent=None) -> Optional[QtWidgets.QMenu]:
     add = m.addAction("Add parameter...", lambda: add_parameter(ws))
     add.setEnabled(not ro)
     add.setToolTip("Define a table or value the definitions do not have")
+    from . import gui_project as _gp
+    if _gp.builtin_maps_hidden(getattr(ws, "win", None), ws):
+        # opened with its project's definition only (a WinOLS project as
+        # stored): the module's own maps, built now, beside it
+        lb = m.addAction("Load the module's built-in maps",
+                         lambda: _gp.load_builtin_maps(ws.win, ws))
+        lb.setEnabled(not ro)
+        lb.setToolTip("This binary opens with its project's definition only. "
+                      "The module identifies it and lists its own maps beside "
+                      "the project's: a few seconds. Project panel > the "
+                      "binary > Hide the module's built-in maps turns them "
+                      "off again.")
     try:
         from . import gui_ai
         gui_ai._ai_actions(ws, m, e)

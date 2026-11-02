@@ -343,7 +343,7 @@ class InjectorDialog(QtWidgets.QDialog):
         self.cmp_check = QtWidgets.QCheckBox("Show comparison")
         self.cmp_check.setToolTip(
             "Show what the comparison file is set up for, how each table this "
-            "writes compares with the comparison's (orange: differs) and the "
+            "writes compares with the comparison's (orange outline: differs) and the "
             "comparison's fuel per degree in the chart (dotted).")
         self.cmp_check.setChecked(True)
         self.cmp_check.toggled.connect(self._show_cmp)
@@ -508,7 +508,7 @@ class InjectorDialog(QtWidgets.QDialog):
         self.changes.setHorizontalHeaderLabels(["Table", "What", "Cells", "Largest change",
                                                 "Comparison"])
         self.changes.horizontalHeaderItem(4).setToolTip(
-            "The table as this writes it against the comparison file's (orange: differs)")
+            "The table as this writes it against the comparison file's (orange outline: differs)")
         self.changes.verticalHeader().setVisible(False)
         self.changes.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.changes.setSelectionBehavior(
@@ -806,6 +806,13 @@ class InjectorDialog(QtWidgets.QDialog):
         bits = []
         if p.listed_for:
             bits.append("Listed for: " + ", ".join(p.listed_for))
+        parts = p.part_numbers()
+        if not parts and p.derived:
+            base = self.cat.get(p.base)
+            if base is not None and base.part_numbers():
+                parts = "%s (%s)" % (base.part_numbers(), base.name)
+        if parts:
+            bits.append("OEM part numbers: " + parts)
         if p.body or p.nozzle:
             bits.append("; ".join(x for x in (p.body and "Body: " + p.body,
                                               p.nozzle and "Nozzle: " + p.nozzle) if x))

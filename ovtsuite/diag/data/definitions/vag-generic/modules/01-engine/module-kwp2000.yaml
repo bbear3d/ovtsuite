@@ -1,0 +1,26 @@
+# Engine control units that speak KWP2000 (EDC16 over K-line or TP 2.0).
+# The variant block is what the KWHack K-line captures of VCDS against an
+# EDC16 (038997016T) showed; another KWP2000 engine family (ME7.x) may differ
+# and gets its own document, matched on its part numbers, when captured.
+kind: module
+match: { addr: "01", protocol: kwp2000 }
+name: Engine (KWP2000)
+identification:
+  record: kwp_1a9b
+  fields: { part: part, sw: sw_version, coding: coding, wsc: wsc }
+kwp:
+  session: 0x89
+  header: 0x10
+variants:
+  adaptation: routine_b8
+  actuator_tests: routine_b8
+  basic_settings: routine_b8
+  coding: record_9a
+  login: record_9a_bit23
+  security_access: seed_plus_code
+  link_speed: [0x50, 0x87, 0xA7]
+security:
+  functions_needing_security: [adaptation, actuator_tests, basic_settings]
+  functions_needing_login: [coding]
+source: capture
+note: "KWHack docs/KWP2000-Sniffing.md: adaptation / actuator tests / basic settings run through the 31 B8/B9/BA/BB routine family, coding and login through the 3B 9A record, security access is 27 with key = seed + code."

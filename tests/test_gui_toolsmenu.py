@@ -165,7 +165,7 @@ def test_module_tools_come_from_the_modules_declarations(win, monkeypatch):
     monkeypatch.setattr(gui_modtools, "tools", lambda: [(spec, tool)])
     m = QtWidgets.QMenu()
     assert gui_modtools.add(win, m, gui_modtools.SECTIONS[0]) == []
-    (a,) = gui_modtools.add(win, m, gui_modtools.SECTIONS[-1])  # unknown: last
+    (a,) = gui_modtools.add(win, m, gui_modtools.FALLBACK)      # unknown: with the files
     a.trigger()
     assert ran == [win]
     assert not gui_modtools.applies(win, spec, tool)    # no tab open

@@ -139,6 +139,15 @@ class TrxProfile:
     windows: Dict[int, Tuple[int, int]] = field(default_factory=dict)
     #: fixed seed to issue per requestSeed subfunction (else a default)
     seed_values: Dict[int, bytes] = field(default_factory=dict)
+    #: optional fn(path, profile) -> image: reads the file the user picked
+    #: (a container, say) in place of :func:`load_image`, and may fill in the
+    #: profile (``tape``, ``idents``, ``tp20_dest``, ``extra``) from it
+    source_loader: Optional[Callable[..., bytes]] = None
+    #: optional fn(profile, **responder kwargs) -> responder: a module's own
+    #: class (see :func:`new_responder`)
+    responder_factory: Optional[Callable[..., object]] = None
+    #: whatever ``source_loader`` learned that the responder needs
+    extra: object = None
 
 
 def aisin09d_profile() -> TrxProfile:
@@ -158,12 +167,46 @@ _PROFILE_FACTORIES: Dict[str, Callable[[], TrxProfile]] = {
 }
 
 
-def profile_names() -> List[str]:
+def _module_profiles() -> Dict[str, Callable[[], TrxProfile]]:
+    """KWP2000 profiles the installed modules contribute (``kwp_profiles()``
+    in ``<module>/sim_profiles.py``, see :func:`ovtsuite.flash.ecu_sim`).
+    Empty where this file runs without its package (the 32-bit bridge)."""
+    try:
+        from . import ecu_sim as _es
+        return _es._module_profiles("kwp_profiles")
+    except Exception:
+        return {}
+
+
+def builtin_profile_names() -> List[str]:
+    """The profiles of this file, without a module's."""
     return list(_PROFILE_FACTORIES)
 
 
+def profile_names() -> List[str]:
+    return list(_PROFILE_FACTORIES) + [k for k in _module_profiles()
+                                       if k not in _PROFILE_FACTORIES]
+
+
 def profile(name: str) -> TrxProfile:
-    return (_PROFILE_FACTORIES.get(name) or aisin09d_profile)()
+    fn = _PROFILE_FACTORIES.get(name) or _module_profiles().get(name)
+    return (fn or aisin09d_profile)()
+
+
+def load_source(prof: TrxProfile, path: Optional[str]) -> bytes:
+    """The image to serve for ``path``: the profile's own loader when it has
+    one (a module's container reader), else :func:`load_image`."""
+    if prof.source_loader is not None and path:
+        return prof.source_loader(path, prof)
+    return load_image(path)
+
+
+def new_responder(prof: TrxProfile, **kw):
+    """The responder for ``prof`` -- the module's own class when the profile
+    names one, else :class:`Trx09dResponder`."""
+    if prof.responder_factory is not None:
+        return prof.responder_factory(prof, **kw)
+    return Trx09dResponder(prof, **kw)
 
 
 # ------------------------------------------------------------------ responder

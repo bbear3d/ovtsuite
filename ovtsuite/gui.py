@@ -29,6 +29,7 @@ from .appsettings import settings as _settings
 # it is installed (ovtsuite.speedview dispatches).
 from . import speedview as _view6
 from . import compare_delta as _cdelta
+from . import gui_cellmarks as _cm
 from . import platforms as _platforms
 from .modules import registry as _registry
 
@@ -512,6 +513,8 @@ if HAVE_QT:
                 return e is not None or t == QtCore.QEvent.MouseButtonRelease
             return False
 
+    #: no longer a cell fill: a difference from the comparison is the orange
+    #: outline of gui_cellmarks. Kept for code written against the old colour.
     DIFF_BG = QtGui.QColor(255, 214, 153)
     # a delta cell tinted by direction (Options > Editor > Comparison table):
     # opaque and light with dark text, so the numbers read in both themes
@@ -524,7 +527,6 @@ if HAVE_QT:
     CELL_DARK_FG = QtGui.QColor(20, 20, 20)       # dark text on any light fill
     HEX_EDIT_BG = QtGui.QColor(255, 213, 145)     # byte changed from original
     HEX_DEF_BG = QtGui.QColor(129, 199, 132)      # byte inside a defined table
-    HEX_DIFF_BG = QtGui.QColor(239, 154, 154)     # byte differs vs comparison
     SEP_BG = QtGui.QColor(96, 110, 128)           # comparison banner row
     SEP_FG = QtGui.QColor(255, 255, 255)
     HEX_HL_FG = QtGui.QColor(20, 20, 20)          # text on any highlight
@@ -540,11 +542,14 @@ if HAVE_QT:
     _R_BG = int(QtCore.Qt.BackgroundRole)
     _R_FG = int(QtCore.Qt.ForegroundRole)
     _R_SIZE = int(QtCore.Qt.SizeHintRole)
+    #: True on a cell that differs from the comparison: the orange outline
+    #: the delegate draws (gui_cellmarks)
+    _R_OUTLINE = _cm.OUTLINE_ROLE
     _R_TEXT = frozenset((_R_DISPLAY, _R_EDIT))
     #: everything TableModel.data answers; Qt asks for more, and those
     #: return None before any work is done
     _GRID_ROLES = frozenset((_R_DISPLAY, _R_EDIT, _R_TIP, _R_FONT, _R_ALIGN,
-                             _R_BG, _R_FG, _R_SIZE))
+                             _R_BG, _R_FG, _R_SIZE, _R_OUTLINE))
     _AL_LEFT = int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
     _AL_RIGHT = int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
     _AL_CENTER = int(QtCore.Qt.AlignCenter)
@@ -723,7 +728,7 @@ if HAVE_QT:
         def addStretch(self, _n=0):
             self._next()
 
-    class OptionsDelegate(QtWidgets.QStyledItemDelegate):
+    class OptionsDelegate(_cm.OutlineDelegate):
         """A drop-down editor for a value cell whose parameter names its
         values (``entity.options``: raw -> label, e.g. a VDO cluster's coding
         digits). Every other cell gets the ordinary line editor."""
@@ -825,6 +830,28 @@ if HAVE_QT:
             self._ndiff = None              # see _diff_count
             self._ax_diff = frozenset()     # ("x"|"y", i) breakpoints differing
             self._crheads = None            # comparison's own row labels
+            #: the comparison shown at its original size
+            #: (:mod:`ovtsuite.gui_cmpsize`): ``outline_all`` -- the two
+            #: tables differ in size, so no cell is compared with another
+            #: and every cell, axes included, has the difference outline
+            #: (and the difference view and tint are off); ``outline_cells``
+            #: -- ``(z cells, axis points)`` outlined, for a table that holds
+            #: no comparison of its own to tell
+            self.outline_all = False
+            self.outline_cells = None
+
+        def _outline_at(self, k, a, b):
+            """The outline of a cell of a table that is not compared with
+            its own comparison block (see ``outline_all``)."""
+            if k == "z":
+                if self._at(self._vals, a, b) is None:
+                    return None
+                if self.outline_all or (a, b) in self.outline_cells[0]:
+                    return True
+            elif k in ("x", "y"):
+                if self.outline_all or (k, a) in self.outline_cells[1]:
+                    return True
+            return None
 
         def _cmp_axes(self):
             """(X, Y) breakpoints the comparison block's cells sit at.
@@ -853,10 +880,14 @@ if HAVE_QT:
             self._vmin = min(flat) if flat else 0.0
             self._vmax = max(flat) if flat else 0.0
 
-        def _cell_style(self, v, other, role):
-            """Background / foreground / font for a value cell. With the
-            heatmap on, heat wins in both halves and a differing cell is
-            marked bold; otherwise a differing cell gets the diff fill.
+        def _cell_style(self, v, other, role, primary=False):
+            """Background / foreground for a value cell, and whether it
+            differs from the other half (``_R_OUTLINE``: the orange outline
+            the delegate draws, over whatever the fill is). The fill is the
+            heat map's when it is on, else -- with the difference view's
+            "Tint by direction" -- red where the primary is the higher and
+            blue where it is the lower (``primary``: ``v`` is the primary's
+            value, else the comparison's), else none.
 
             ``v`` is None for a comparison cell the other calibration has no
             value for -- a TCC map with three sub-columns per gear group laid
@@ -865,17 +896,21 @@ if HAVE_QT:
             if v is None:
                 return None
             differs = other is not None and abs(v - other) > 1e-6
+            if role == _R_OUTLINE:
+                return True if differs else None
             heat = self._heatmap and self._vmax > self._vmin
+            tint = (differs and not heat and self._delta[2]
+                    and not self._delta_hold and not self.outline_all)
             if role == _R_BG:
                 if heat:
                     return self._heat((v - self._vmin) / (self._vmax - self._vmin))
-                return DIFF_BG if differs else None
-            if role == _R_FG and (heat or differs):
-                # both DIFF_BG and the heat ramp are light fills -> dark text,
+                if tint:
+                    return DELTA_UP_BG if (v > other) == primary else DELTA_DOWN_BG
+                return None
+            if role == _R_FG and (heat or tint):
+                # the heat ramp and the tint are light fills -> dark text,
                 # theme-independent (default text would be white in dark mode)
                 return CELL_DARK_FG
-            if role == _R_FONT and heat and differs:
-                return _bold_font()
             return None
 
         def _sync_compare(self):
@@ -1057,7 +1092,7 @@ if HAVE_QT:
                 if dm != "abs":
                     tag += " · showing " + _cdelta.BANNER[dm]
                 if self._delta[3] != "abs":
-                    tag += " · this file: %s, read only" % _cdelta.BANNER[
+                    tag += " · primary: %s, read only" % _cdelta.BANNER[
                         self._delta[3]]
                 return "Comparison - %s   %s%s" % (
                     self.cmp_name or "comparison", diff, tag)
@@ -1088,19 +1123,19 @@ if HAVE_QT:
         def primary_delta(self) -> str:
             """The mode this file's table shows in ("abs" with no
             comparison, or while a copy is made)."""
-            if self._delta_hold or not self._cmp:
+            if self._delta_hold or not self._cmp or self.outline_all:
                 return "abs"
             return self._delta[3]
 
         def delta_mode(self) -> str:
             """The comparison's mode now ("abs" while a copy is made)."""
-            return "abs" if self._delta_hold else self._delta[0]
+            return "abs" if self._delta_hold or self.outline_all else self._delta[0]
 
         def _delta_cell(self, v, pv, f, role, primary=False, hexed=False):
             """A value cell in a delta mode: ``v`` the comparison's, ``pv``
             the primary's (``primary``: the cell drawn is the primary's).
             None to show it plain."""
-            mode, blank, tint = self._delta[:3]
+            mode, blank = self._delta[:2]
             if primary:
                 mode = self._delta[3]
             if (mode == "abs" or self._delta_hold or v is None or pv is None
@@ -1114,22 +1149,15 @@ if HAVE_QT:
                 dec = max(self._dec, self._cmp_dec) if f == 1.0 else 1
                 return _cdelta.text(mode, d, differs, dec, blank)
             if role == _R_TIP and hexed:
-                return "this file: %02X\n%s: %02X" % (
+                return "primary: %02X\n%s: %02X" % (
                     int(round(pv)) & 0xFF, self.other_label,
                     int(round(v)) & 0xFF)
             if role == _R_TIP:
-                return "this file: %s\n%s: %s" % (
+                return "primary: %s\n%s: %s" % (
                     self._ztext(pv, f, self._dec), self.other_label,
                     self._ztext(v, f, self._cmp_dec))
-            heat = self._heatmap and self._vmax > self._vmin
-            sg = _cdelta.sign(mode, d) if differs else 0
-            if tint and sg and not heat:
-                if role == _R_BG:
-                    return DELTA_UP_BG if sg > 0 else DELTA_DOWN_BG
-                if role == _R_FG:
-                    return CELL_DARK_FG
             if primary:
-                return self._cell_style(pv, v, role)
+                return self._cell_style(pv, v, role, True)
             return self._cell_style(v, pv, role)
 
         def set_heatmap(self, on: bool):
@@ -1358,6 +1386,9 @@ if HAVE_QT:
             if role not in _GRID_ROLES or not self.entity or not idx.isValid():
                 return None
             k, a, b = self._kind(idx.row(), idx.column())
+            if role == _R_OUTLINE and (self.outline_all
+                                       or self.outline_cells is not None):
+                return self._outline_at(k, a, b)
             tk = getattr(self.entity, "text_kind", "")
             if self.hl and (k, a, b) in self.hl:
                 if role == _R_BG:
@@ -1451,9 +1482,11 @@ if HAVE_QT:
                 # a breakpoint the other side does not share is marked like a
                 # differing cell
                 if role == _R_BG:
-                    return DIFF_BG if differs else AXIS_BG
+                    return AXIS_BG
                 if role == _R_FG:
-                    return CELL_DARK_FG if differs else AXIS_FG
+                    return AXIS_FG
+                if role == _R_OUTLINE:
+                    return True if differs else None
                 if role == _R_FONT:
                     return _bold_font()
                 return None
@@ -1466,7 +1499,7 @@ if HAVE_QT:
                 if role in _R_TEXT:
                     return _as_char(v)
                 return self._cell_style(v, self._at(self._cmp, a, b)
-                                        if self._cmp else None, role)
+                                        if self._cmp else None, role, True)
             if tk == "hex":
                 # A patch/bypass site is a raw byte the user matches against a
                 # hex signature ("stock 6C, bypass 60"), not a scaled number.
@@ -1478,7 +1511,7 @@ if HAVE_QT:
                 if role in _R_TEXT:
                     return "" if v is None else "%02X" % (int(round(v)) & 0xFF)
                 return self._cell_style(v, self._at(self._cmp, a, b)
-                                        if self._cmp else None, role)
+                                        if self._cmp else None, role, True)
             opts = getattr(self.entity, "options", None)
             if opts and v is not None:
                 lbl = opts.get(int(round(v)))
@@ -1510,7 +1543,7 @@ if HAVE_QT:
                         "Type a speed to switch it on, or \"off\" to restore "
                         "it." % _fmt(v, 0))
             return self._cell_style(v, self._at(self._cmp, a, b) if self._cmp
-                                    else None, role)
+                                    else None, role, True)
 
         def flags(self, idx):
             f = super().flags(idx)
@@ -2137,6 +2170,7 @@ if HAVE_QT:
             self.abs_tbl = QtWidgets.QTableWidget(0, len(_acols))
             self.abs_tbl.setHorizontalHeaderLabels(_acols)
             self.abs_tbl.verticalHeader().setVisible(False)
+            self._style_table(self.abs_tbl)
             v.addWidget(self.abs_tbl)
 
             v.addWidget(QtWidgets.QLabel(
@@ -2166,6 +2200,7 @@ if HAVE_QT:
             self.vn_tbl = QtWidgets.QTableWidget(0, len(_vcols))
             self.vn_tbl.setHorizontalHeaderLabels(_vcols)
             self.vn_tbl.verticalHeader().setVisible(False)
+            self._style_table(self.vn_tbl)
             v.addWidget(self.vn_tbl)
 
             self._apply_mode_ui()          # configure the spinbox for the mode
@@ -2214,6 +2249,16 @@ if HAVE_QT:
             self.vn_tbl.itemChanged.connect(self._changed)
             self._populate()
 
+        def _style_table(self, tbl):
+            """The app's table look and clipboard: alternating rows (the
+            selection draws solid), the shared delegate (a selected cell's text
+            stays legible), Ctrl+C / Ctrl+V and a right-click Copy / Paste."""
+            from .gui_cellmarks import CellDelegate, install_clipboard
+            tbl.setAlternatingRowColors(True)
+            tbl.setItemDelegate(CellDelegate(tbl))
+            install_clipboard(
+                tbl, paste=lambda r, c, grid: self._paste(tbl, r, c, grid))
+
         def _ask_tire(self, hint=None):
             """Modal tyre-size entry; returns the geometric rolling circumference
             in metres, or None if cancelled."""
@@ -2231,8 +2276,8 @@ if HAVE_QT:
             out.setStyleSheet("font-weight:600")
 
             def circ():
-                dia = rsp.value() * 25.4 + 2.0 * wsp.value() * asp.value() / 100.0
-                return _m.pi * dia / 1000.0
+                from .gears import tyre_circumference
+                return tyre_circumference(wsp.value(), asp.value(), rsp.value())
 
             def upd():
                 out.setText("Rolling circumference: %.3f m" % circ())
@@ -2385,7 +2430,7 @@ if HAVE_QT:
             self._update_unit_label()
             self._populate()
 
-        def _num_item(self, entity, name, shared, vn=False):
+        def _num_item(self, entity, name, shared, vn=False, diff=False):
             """A cell holding one editable value. ``entity`` is the entity to
             edit for the selected copy (the copy's own, or the shared main-block
             one); ``name`` is the parameter symbol (used to mirror edits to
@@ -2409,6 +2454,9 @@ if HAVE_QT:
                                                             entity.addr))
             else:
                 it.setToolTip("%s @ 0x%X" % (entity.name, entity.addr))
+            if diff:                    # differs from the comparison: orange
+                from .gui_cellmarks import mark_differs
+                mark_differs(it)
             return it
 
         def _label_item(self, text, tip=""):
@@ -2476,10 +2524,11 @@ if HAVE_QT:
             it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             it.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
             if diff:
-                it.setBackground(EDIT_BG)
-                it.setForeground(CELL_DARK_FG)
+                from .gui_cellmarks import mark_differs
+                mark_differs(it)
             else:
-                it.setForeground(QtGui.QColor(140, 140, 140))
+                from .gui_cellmarks import cmp_fg
+                it.setForeground(cmp_fg(self.abs_tbl))
             return it
 
         def _populate(self):
@@ -2491,9 +2540,10 @@ if HAVE_QT:
             for r, (lbl, name) in enumerate(arows):
                 self.abs_tbl.setItem(r, 0, self._label_item(lbl, name))
                 e, shared = cp.entity(name, pbn)
-                self.abs_tbl.setItem(r, 1, self._num_item(e, name, shared))
+                cv = self._cmp_value(name) if self._has_cmp else None
+                self.abs_tbl.setItem(r, 1, self._num_item(
+                    e, name, shared, diff=self._val_diff(cv, e)))
                 if self._has_cmp:
-                    cv = self._cmp_value(name)
                     dec = _entity_decimals(e) if e is not None else 3
                     self.abs_tbl.setItem(r, 2, self._cmp_item(
                         cv, dec, diff=self._val_diff(cv, e)))
@@ -2512,11 +2562,13 @@ if HAVE_QT:
                 (e1, s1, n1), (e2, s2, n2) = (
                     ((ehi, shi, hi), (elo, slo, lo)) if swap
                     else ((elo, slo, lo), (ehi, shi, hi)))
-                self.vn_tbl.setItem(r, 1, self._num_item(e1, n1, s1, vn=True))
-                self.vn_tbl.setItem(r, 2, self._num_item(e2, n2, s2, vn=True))
+                cv1 = self._cmp_value(n1) if self._has_cmp else None
+                cv2 = self._cmp_value(n2) if self._has_cmp else None
+                self.vn_tbl.setItem(r, 1, self._num_item(
+                    e1, n1, s1, vn=True, diff=self._val_diff(cv1, e1)))
+                self.vn_tbl.setItem(r, 2, self._num_item(
+                    e2, n2, s2, vn=True, diff=self._val_diff(cv2, e2)))
                 if self._has_cmp:
-                    cv1 = self._cmp_value(n1)
-                    cv2 = self._cmp_value(n2)
                     self.vn_tbl.setItem(r, 3, self._cmp_item(
                         cv1, 0, vn=True, diff=self._val_diff(cv1, e1)))
                     self.vn_tbl.setItem(r, 4, self._cmp_item(
@@ -2548,6 +2600,18 @@ if HAVE_QT:
                     out.append(e)
             return out or [entity]
 
+        def _item_raw(self, item, text):
+            """The stored-units value an edit of ``text`` in ``item`` means,
+            or None when it cannot be read (the v/n tables hold the display
+            transform; the ratios the plain number)."""
+            try:
+                x = text.strip().replace(",", ".")
+                if item.tableWidget() is self.vn_tbl:
+                    return self._vn_parse(x)
+                return float(x)
+            except (ValueError, ZeroDivisionError):
+                return None
+
         def _changed(self, item):
             if self._loading or item is None:
                 return
@@ -2555,19 +2619,44 @@ if HAVE_QT:
             name = item.data(QtCore.Qt.UserRole + 1)
             if entity is None:
                 return
-            is_vn = item.tableWidget() is self.vn_tbl
-            try:
-                raw = self._vn_parse(item.text()) if is_vn \
-                    else float(item.text())
-            except (ValueError, ZeroDivisionError):
-                self._populate()
-                return
+            raw = self._item_raw(item, item.text())
             if raw is None:
                 self._populate()
                 return
             for e in self._edit_targets(name, entity):
                 self.gears.set_value(e, raw)
             self._populate()
+
+        def _paste(self, tbl, row, col, grid):
+            """Clipboard cells with their top-left at ``(row, col)`` of
+            ``tbl``: each lands on the editable value cell beneath it (the
+            labels and the comparison columns are skipped), as if typed;
+            'copy edits to all copies' applies. One undo step. Returns how
+            many cells were set."""
+            writes = {}
+            for dr, line in enumerate(grid):
+                for dc, text in enumerate(line):
+                    r, c = row + dr, col + dc
+                    if r >= tbl.rowCount() or c >= tbl.columnCount():
+                        continue
+                    it = tbl.item(r, c)
+                    if it is None or not it.flags() & QtCore.Qt.ItemIsEditable:
+                        continue
+                    entity = it.data(QtCore.Qt.UserRole)
+                    raw = self._item_raw(it, text)
+                    if entity is None or raw is None \
+                            or text.strip() == it.text().strip():
+                        continue        # (what is shown already: keep exact)
+                    for e in self._edit_targets(
+                            it.data(QtCore.Qt.UserRole + 1), entity):
+                        writes[e.addr] = (e, raw)
+            changed = [(e, v) for e, v in writes.values()
+                       if self._val_diff(v, e)]
+            if changed:
+                self.session.edit_values(changed, "paste gear ratios")
+                self.copies = self.gears.copies()
+            self._populate()
+            return len(writes)
 
         def _copy_gears_from_cmp(self):
             if not self._has_cmp:
@@ -2760,12 +2849,11 @@ if HAVE_QT:
             return "%08X" % (sec * self.COLS)
 
         def _cell_bg(self, a):
-            """Highlight colour for byte ``a`` (or None): differs-vs-comparison,
-            edited-from-original, or inside a defined table."""
+            """Highlight colour for byte ``a`` (or None): edited-from-original
+            or inside a defined table. A byte that differs from the comparison
+            has the orange outline instead (``OUTLINE_ROLE``), over either."""
             if a >= len(self.buf):
                 return None
-            if self._differs(a):
-                return HEX_DIFF_BG
             if self.compare_shown() is None and a < len(self.original) \
                     and self.original[a] != self.buf[a]:
                 return HEX_EDIT_BG
@@ -2799,6 +2887,8 @@ if HAVE_QT:
                 return "%02X" % b
             if role == QtCore.Qt.TextAlignmentRole:
                 return int(QtCore.Qt.AlignCenter)
+            if role == _cm.OUTLINE_ROLE:
+                return True if self._differs(a) else None
             if role == QtCore.Qt.BackgroundRole:
                 return self._cell_bg(a)
             if role == QtCore.Qt.ForegroundRole:
@@ -2896,6 +2986,7 @@ if HAVE_QT:
             view = self.parent()
             current = (view is not None and view.currentIndex() == index)
             if not selected and not current:
+                _cm.draw_outline(painter, option, index)
                 return
             pal = option.palette
             r = option.rect
@@ -2915,6 +3006,7 @@ if HAVE_QT:
                     painter.drawRect(r.adjusted(3, 3, -3, -3))
             finally:
                 painter.restore()
+            _cm.draw_outline(painter, option, index)
 
         def createEditor(self, parent, option, index):
             ed = QtWidgets.QLineEdit(parent)
@@ -3368,7 +3460,7 @@ if HAVE_QT:
                 self.resize(620, 560)
                 self._build_edc15()
             else:
-                self.resize(460, 520)
+                self.resize(820 if self._has_cmp else 560, 520)
                 self._build_edc16()
             btns = QtWidgets.QHBoxLayout()
             btns.addStretch(1)
@@ -3418,13 +3510,18 @@ if HAVE_QT:
             self.tbl = QtWidgets.QTableWidget(0, len(_cols))
             self.tbl.setHorizontalHeaderLabels(_cols)
             self.tbl.verticalHeader().setVisible(False)
-            self.tbl.horizontalHeader().setSectionResizeMode(
-                QtWidgets.QHeaderView.ResizeMode.Stretch)
+            hh = self.tbl.horizontalHeader()
+            # every column as wide as its heading (and the drop-down) needs;
+            # the last one takes what is left
+            hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+            hh.setStretchLastSection(True)
+            hh.setMinimumSectionSize(70)
             self.tbl.itemChanged.connect(self._cell_changed16)
-            if self._has_cmp:
-                self.tbl.setContextMenuPolicy(
-                    QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-                self.tbl.customContextMenuRequested.connect(self._vss_menu16)
+            self._style_table(self.tbl, paste=self._paste16,
+                              extra=self._vss_menu16 if self._has_cmp else None)
+            # the source column's text lives under the drop-down, for Copy
+            from .gui_cellmarks import NoTextDelegate
+            self.tbl.setItemDelegateForColumn(4, NoTextDelegate(self.tbl))
             v.addWidget(self.tbl)
 
             cav = QtWidgets.QHBoxLayout()
@@ -3480,6 +3577,36 @@ if HAVE_QT:
             note.setStyleSheet("color: gray")
             v.addWidget(note)
 
+        def _style_table(self, tbl, paste=None, extra=None):
+            """The app's table look and clipboard: alternating rows (the
+            selection draws solid), the shared delegate (a selected cell's text
+            stays legible), Ctrl+C and a right-click Copy, and Paste where the
+            table has cells to edit."""
+            from .gui_cellmarks import CellDelegate, install_clipboard
+            tbl.setAlternatingRowColors(True)
+            tbl.setItemDelegate(CellDelegate(tbl))
+            tbl.setSelectionBehavior(
+                QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
+            tbl.setSelectionMode(
+                QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+            install_clipboard(tbl, paste=paste, extra=extra)
+
+        def _role_labels16(self, rows):
+            """Each row named as the gear-ratio dialog names its copies: the
+            transmission the coding selecting it stands for ("Automatic (TC)
+            . main block", "5-speed manual"). Only where the coding arrays
+            give one per row and they differ; else "primary" / "variant"."""
+            plain = ["primary" if r["primary"] else "variant" for r in rows]
+            try:
+                from .variant import row_transmissions
+                txs = row_transmissions(self.session, rows)
+            except Exception:
+                return plain
+            if not txs:
+                return plain
+            return [tx[:1].upper() + tx[1:] + (" \u00b7 main block" if r["primary"] else "")
+                    for tx, r in zip(txs, rows)]
+
         def _vss_src_entities(self):
             ents = {e.name: e for e in list(self.session.entities)
                     + list(self.session.variant_entities())}
@@ -3492,26 +3619,31 @@ if HAVE_QT:
             return None
 
         def _reload16(self):
+            from .gui_cellmarks import mark_differs
             self._loading = True
             rows = vss_pulse_settings(self.session)
             self._rows16 = rows
             self._src_combos = []
             self.tbl.setRowCount(len(rows))
+            roles = self._role_labels16(rows)
             for i, r in enumerate(rows):
-                role = QtWidgets.QTableWidgetItem(
-                    "primary" if r["primary"] else "variant")
+                role = QtWidgets.QTableWidgetItem(roles[i])
                 role.setFlags(QtCore.Qt.ItemIsEnabled)
                 self.tbl.setItem(i, 0, role)
                 ad = QtWidgets.QTableWidgetItem("0x%X" % r["addr"])
                 ad.setFlags(QtCore.Qt.ItemIsEnabled)
                 ad.setFont(QtGui.QFont("Consolas"))
                 self.tbl.setItem(i, 1, ad)
+                cr = (self._cmp_rows16[i] if self._has_cmp
+                      and i < len(self._cmp_rows16) else None)
                 for col, txt in ((2, "%.3f" % r["imp_m"]),
                                  (3, "%d" % r["imp_km"])):
                     it = QtWidgets.QTableWidgetItem(txt)
                     it.setFont(QtGui.QFont("Consolas"))
                     it.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsEditable
                                 | QtCore.Qt.ItemIsSelectable)
+                    if cr and cr["imp_km"] != r["imp_km"]:
+                        mark_differs(it)     # differs from the comparison
                     self.tbl.setItem(i, col, it)
                 # source drop-down (editable where the row has its own switch);
                 # short labels keep the column narrow, full meaning in tooltip
@@ -3531,10 +3663,20 @@ if HAVE_QT:
                 combo.currentIndexChanged.connect(
                     lambda _ix, row=i: self._source_changed16(row))
                 self._src_combos.append(combo)
-                self.tbl.setCellWidget(i, 4, combo)
+                # inset in a holder, so the cell's orange outline (differs
+                # from the comparison) shows around the drop-down
+                from .gui_cellmarks import OUTLINE_WIDTH
+                holder = QtWidgets.QWidget()
+                hl = QtWidgets.QHBoxLayout(holder)
+                m = OUTLINE_WIDTH + 1
+                hl.setContentsMargins(m, m, m, m)
+                hl.addWidget(combo)
+                self.tbl.setCellWidget(i, 4, holder)
+                # the source's text under the drop-down, so Copy has it
+                srcown = QtWidgets.QTableWidgetItem(combo.currentText())
+                srcown.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+                self.tbl.setItem(i, 4, srcown)
                 if self._has_cmp:
-                    cr = (self._cmp_rows16[i]
-                          if i < len(self._cmp_rows16) else None)
                     kmit = QtWidgets.QTableWidgetItem(
                         "%d" % cr["imp_km"] if cr else "\u2014")
                     kmit.setFont(QtGui.QFont("Consolas"))
@@ -3545,11 +3687,10 @@ if HAVE_QT:
                     srcit.setFlags(QtCore.Qt.ItemIsEnabled
                                    | QtCore.Qt.ItemIsSelectable)
                     if cr and cr["imp_km"] != r["imp_km"]:
-                        kmit.setBackground(EDIT_BG)
-                        kmit.setForeground(CELL_DARK_FG)
+                        mark_differs(kmit)
                     if cr and cr.get("src") != r.get("src"):
-                        srcit.setBackground(EDIT_BG)
-                        srcit.setForeground(CELL_DARK_FG)
+                        mark_differs(srcit)
+                        mark_differs(srcown)
                     self.tbl.setItem(i, 5, kmit)
                     self.tbl.setItem(i, 6, srcit)
             self.copy_all_btn.setEnabled(len(rows) > 1)
@@ -3560,16 +3701,24 @@ if HAVE_QT:
             self._loading = False
             self._recalc()
 
-        def _write_pulses16(self, row, km):
+        @staticmethod
+        def _pulses_raw16(km):
+            """The 4 stored bytes of ``km`` pulses/km, or None when outside
+            what the constant can hold."""
             raw = round(3.6e9 / (km / 1000.0)) if km else 0
             if not (0 <= raw <= 0xFFFFFFFF):
+                return None
+            return raw.to_bytes(4, "big")
+
+        def _write_pulses16(self, row, km):
+            raw = self._pulses_raw16(km)
+            if raw is None:
                 QtWidgets.QMessageBox.warning(
                     self, "VSS",
                     "That pulses/km value is outside the storable range.")
                 self._reload()
                 return
-            self.session.edit_bytes(self._rows16[row]["addr"],
-                                    raw.to_bytes(4, "big"))
+            self.session.edit_bytes(self._rows16[row]["addr"], raw)
             self._reload()
             self._after_write()
 
@@ -3578,7 +3727,7 @@ if HAVE_QT:
                 return
             row, col = item.row(), item.column()
             try:
-                x = float(item.text().strip())
+                x = float(item.text().strip().replace(",", "."))
             except ValueError:
                 self._reload()
                 return
@@ -3587,28 +3736,71 @@ if HAVE_QT:
             elif col == 3:                     # Pulses/km
                 self._write_pulses16(row, x)
 
-        def _source_changed16(self, row):
-            if getattr(self, "_loading", False):
-                return
+        def _write_source16(self, row, want):
+            """Set row ``row``'s signal source (0 sensor, 1 CAN) and force the
+            calibrated source type; True if a byte changed. The caller groups
+            it into an undo step."""
             r = self._rows16[row]
             saddr = r.get("src_addr")
             if saddr is None:
-                return
-            want = int(self._src_combos[row].currentData())
+                return False
             data = self.session.binfile.data
             changed = False
+            if 0 <= saddr < len(data) and data[saddr] != want:
+                self.session.edit_bytes(saddr, bytes([want]))
+                changed = True
+            styp = r.get("styp_addr")           # force cal-controlled source
+            if styp is not None and 0 <= styp < len(data) and data[styp] != 2:
+                self.session.edit_bytes(styp, bytes([2]))
+                changed = True
+            return changed
+
+        def _source_changed16(self, row):
+            if getattr(self, "_loading", False):
+                return
+            if self._rows16[row].get("src_addr") is None:
+                return
+            want = int(self._src_combos[row].currentData())
             # one action for the user -> one undo step
             with self.session.transaction("VSS source selection"):
-                if 0 <= saddr < len(data) and data[saddr] != want:
-                    self.session.edit_bytes(saddr, bytes([want]))
-                    changed = True
-                styp = r.get("styp_addr")       # force cal-controlled source
-                if styp is not None and 0 <= styp < len(data) and data[styp] != 2:
-                    self.session.edit_bytes(styp, bytes([2]))
-                    changed = True
+                changed = self._write_source16(row, want)
             if changed:
                 self._reload()
                 self._after_write()
+
+        def _paste16(self, row, col, grid):
+            """Clipboard cells with their top-left at ``(row, col)``: Imp/m,
+            Pulses/km and Signal source cells take the value beneath them
+            (Role, Address and the comparison columns are skipped); the whole
+            paste is one undo step. Returns how many cells were set."""
+            rows = getattr(self, "_rows16", [])
+            n = 0
+            with self.session.transaction("VSS: paste"):
+                for dr, line in enumerate(grid):
+                    for dc, text in enumerate(line):
+                        r, c = row + dr, col + dc
+                        if r >= len(rows) or not 2 <= c <= 4:
+                            continue
+                        text = text.strip()
+                        if c == 4:
+                            want = {"sensor": 0, "hw sensor": 0, "0": 0,
+                                    "can": 1, "1": 1}.get(text.lower())
+                            if want is not None and self._write_source16(r, want):
+                                n += 1
+                            continue
+                        try:
+                            x = float(text.replace(",", "."))
+                        except ValueError:
+                            continue
+                        raw = self._pulses_raw16(x * 1000.0 if c == 2 else x)
+                        if raw is None:
+                            continue
+                        if self.session.edit_bytes(rows[r]["addr"], raw):
+                            n += 1
+            self._reload()
+            if n:
+                self._after_write()
+            return n
 
         def _copy_to_variants16(self):
             rows = getattr(self, "_rows16", [])
@@ -3665,17 +3857,14 @@ if HAVE_QT:
                 self._reload()
                 self._after_write()
 
-        def _vss_menu16(self, pos):
-            if not self._has_cmp:
-                return
+        def _vss_menu16(self, menu, pos):
+            """The comparison's entry in the table's right-click menu."""
             rows = sorted({i.row() for i in self.tbl.selectedIndexes()})
             if not rows:
                 return
-            menu = QtWidgets.QMenu(self)
             act = menu.addAction(
                 "Copy comparison \u2192 primary (%d row(s))" % len(rows))
             act.triggered.connect(lambda: self._copy_from_cmp16(rows))
-            menu.exec(self.tbl.viewport().mapToGlobal(pos))
 
         def _recalc(self, *a):
             if getattr(self, "_loading", False):
@@ -3959,10 +4148,14 @@ if HAVE_QT:
             self.tbl = QtWidgets.QTableWidget(0, len(_cols15))
             self.tbl.setHorizontalHeaderLabels(_cols15)
             self.tbl.verticalHeader().setVisible(False)
+            # SF, TMX and Pulses/rev of an fgwDA block are typed in the table
+            # (double-click, F2 or just typing); the other cells are read-only
             self.tbl.setEditTriggers(
-                QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-            self.tbl.setSelectionMode(
-                QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+                QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
+                | QtWidgets.QAbstractItemView.EditTrigger.EditKeyPressed
+                | QtWidgets.QAbstractItemView.EditTrigger.AnyKeyPressed)
+            self.tbl.itemChanged.connect(self._cell_changed15)
+            self._style_table(self.tbl, paste=self._paste15)
             self.tbl.horizontalHeader().setSectionResizeMode(
                 QtWidgets.QHeaderView.ResizeMode.Stretch)
             v.addWidget(self.tbl)
@@ -4056,11 +4249,72 @@ if HAVE_QT:
             note.setStyleSheet("color: gray")
             v.addWidget(note)
 
+        #: table column -> (field of the speed block, bytes offset, struct code)
+        _COLS15 = {4: ("SF", 2, "<H"), 5: ("TMX", 8, "<H"), 6: ("IMP", 18, "<h")}
+
+        def _write15(self, block, col, text):
+            """The (address, bytes) typed ``text`` means for ``block``'s column
+            ``col`` (4 SF, 5 TMX, 6 Pulses/rev, stored x 60), or None when it is
+            not a number the field holds."""
+            import struct as _st
+            _name, off, fmt = self._COLS15[col]
+            try:
+                x = float(text.strip().replace(",", "."))
+            except ValueError:
+                return None
+            v = round(x * 60.0) if col == 6 else round(x)
+            try:
+                return block.addr + off, _st.pack(fmt, v)
+            except _st.error:
+                return None
+
+        def _editable15(self, i, col):
+            blocks = getattr(self, "_blocks15", [])
+            return (col in self._COLS15 and i < len(blocks)
+                    and blocks[i].name.startswith("fgwDA") and blocks[i].valid)
+
+        def _cell_changed15(self, item):
+            if getattr(self, "_loading15", False):
+                return
+            i, col = item.row(), item.column()
+            if not self._editable15(i, col):
+                return
+            w = self._write15(self._blocks15[i], col, item.text())
+            if w is None:
+                QtWidgets.QMessageBox.warning(
+                    self, "VSS", "That is not a value the %s field can hold."
+                    % self._COLS15[col][0])
+            elif self.session.edit_bytes(*w):
+                self._after_write()
+            self._reload()
+
+        def _paste15(self, row, col, grid):
+            """Clipboard cells with their top-left at ``(row, col)``: SF, TMX
+            and Pulses/rev of the fgwDA rows they cover are set (everything else
+            skipped); one undo step. Returns how many cells were set."""
+            n = 0
+            with self.session.transaction("VSS: paste"):
+                for dr, line in enumerate(grid):
+                    for dc, text in enumerate(line):
+                        r, c = row + dr, col + dc
+                        if not self._editable15(r, c):
+                            continue
+                        w = self._write15(self._blocks15[r], c, text)
+                        if w is not None and self.session.edit_bytes(*w):
+                            n += 1
+            self._reload()
+            if n:
+                self._after_write()
+            return n
+
         def _reload15(self):
+            from .gui_cellmarks import mark_differs
             from .edc15.vss15 import (speed_settings as _edc15_speed,
                                       FGG_SOURCES as _FGG_SRC)
             st = _edc15_speed(self.session)
             blocks = st.blocks
+            self._blocks15 = list(blocks)
+            self._loading15 = True
             self.tbl.setRowCount(len(blocks))
             for i, b in enumerate(blocks):
                 src = st.source.get(b.ds.label)
@@ -4078,6 +4332,8 @@ if HAVE_QT:
                     it = QtWidgets.QTableWidgetItem(txt)
                     if j in (4, 5, 6):
                         it.setFont(QtGui.QFont("Consolas"))
+                    if not self._editable15(i, j):
+                        it.setFlags(it.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
                     self.tbl.setItem(i, j, it)
                 if self._has_cmp:
                     cb = (self._cmp15.blocks[i]
@@ -4091,7 +4347,13 @@ if HAVE_QT:
                     for j, txt in enumerate(ccells):
                         it = QtWidgets.QTableWidgetItem(txt)
                         it.setFont(QtGui.QFont("Consolas"))
+                        # differs from the comparison: orange, in both halves
+                        if txt != cells[4 + j]:
+                            mark_differs(it)
+                            mark_differs(self.tbl.item(i, 4 + j))
+                        it.setFlags(it.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
                         self.tbl.setItem(i, 7 + j, it)
+            self._loading15 = False
             self._ds_changed15()
             self._recalc15()
 
@@ -4907,9 +5169,8 @@ if HAVE_QT:
         def __init__(self, target, pt, title, parent=None):
             super().__init__(parent)
             from . import patch as _patch
-            from .model import placement_trusted
             self._patch = _patch
-            self._trusted = placement_trusted
+            self._trusted = _patch.trusted
             self.target = target
             self.pt = pt
             self._title = title
@@ -4937,7 +5198,7 @@ if HAVE_QT:
             for e in entries:
                 self._check_item(row, e.selected)
                 self.tbl.setItem(row, 1, QtWidgets.QTableWidgetItem(e.title()))
-                te = _patch.find_entity(target, e.name)
+                te = _patch.find_entity(target, e.name, e.coding)
                 if te is None:
                     status = "not found in this binary"
                     combo = None
@@ -5244,7 +5505,10 @@ if HAVE_QT:
                 cells = [when, self._history.display_label(ver),
                          str(ver.get("n_bytes", 0)),
                          "pending (unsaved)" if ver.get("pending") else "saved"]
-                tip = ["Automatic label: %s" % ver.get("label", "")]
+                # the whole name and date first: the column is narrower than
+                # a long name
+                tip = ["%s   %s" % (when, cells[1]), "",
+                       "Automatic label: %s" % ver.get("label", "")]
                 if ver.get("regions"):
                     tip.append("Also changed: %s" % ", ".join(
                         sorted(ver["regions"])))
@@ -5478,6 +5742,7 @@ if HAVE_QT:
     PLATFORM_BADGE = {
         "edc16": ("ECU", "EDC16", QtGui.QColor(61, 124, 201)),
         "edc15": ("ECU", "EDC15", QtGui.QColor(61, 124, 201)),
+        "edc17": ("ECU", "EDC17", QtGui.QColor(61, 124, 201)),
         "zf5hp": ("TCU", "ZF 5HP", QtGui.QColor(224, 190, 64)),
         "zf6hp": ("TCU", "ZF 6HP", QtGui.QColor(224, 160, 48)),
         "zf8hp": ("TCU", "ZF 8HP", QtGui.QColor(224, 120, 48)),
@@ -5766,6 +6031,8 @@ if HAVE_QT:
             eb.addWidget(self.dyno_btn)
             from . import gui_compare_delta as _gcd     # comparison as a
             eb.addWidget(_gcd.make_button(self))        # difference (a menu)
+            from . import gui_cmpsize as _gcs2          # comparison size (a menu)
+            eb.addWidget(_gcs2.make_button(self))
 
             # the comparison (when loaded) is shown INSIDE this same grid,
             # under a banner row, so both share one set of scrollers and one
@@ -6208,6 +6475,8 @@ if HAVE_QT:
                                lambda: _gck.to_primary(self, self.table))
                 skip = ("Copy selected cells from comparison",)
             _gck.add_to_menu(self.win, menu, skip)  # revert actions
+            from . import gui_cmpsize as _gcs2
+            _gcs2.add_to_menu(self, menu)           # comparison size
             e = self.model.entity
             if e is not None and e.kind in ("map", "curve") and \
                     getattr(e, "source", "") != "user":
@@ -6873,7 +7142,7 @@ if HAVE_QT:
                 if t is cur:
                     active = len(out)
                 ref.update({"pinned": t.pinned, "heat": t.heat,
-                            "zmode": t.zmode})
+                            "zmode": t.zmode, "cmpsize": t.cmpsize})
                 out.append(ref)
             return {"tables": out, "table_active": active}
 
@@ -6898,7 +7167,8 @@ if HAVE_QT:
                         continue
                     t = _TableTab(e, pinned=bool(d.get("pinned", True)),
                                   heat=bool(d.get("heat", False)),
-                                  zmode=d.get("zmode") or None)
+                                  zmode=d.get("zmode") or None,
+                                  cmpsize=d.get("cmpsize") or None)
                     if not t.pinned and self._preview_index() >= 0:
                         t.pinned = True     # only one preview at a time
                     i = self.ttabs.addTab("")
@@ -7004,7 +7274,13 @@ if HAVE_QT:
                 lines.append("(no description)")
             banner = ""
             ov = self.model.overlay
-            if ov is not None:
+            nat = getattr(getattr(self, "cmp_grid", None), "native", None)
+            if nat is not None and nat.on:          # gui_cmpsize
+                banner = ("\ncomparison: shown at its original size, not "
+                          "resampled" + (" - same size, linked" if nat.linked()
+                                         else " - the sizes differ, so no cell "
+                                         "is compared with another"))
+            elif ov is not None:
                 tag = {"direct": "comparison: direct cell diff",
                        "axis-mismatch": "comparison: same size, "
                        "AXES DIFFER - cells are at different operating points",
@@ -8557,13 +8833,17 @@ if HAVE_QT:
 
     class _TableTab:
         """One open table in a file tab, and what it remembers."""
-        __slots__ = ("entity", "pinned", "heat", "zmode", "view")
+        __slots__ = ("entity", "pinned", "heat", "zmode", "view", "cmpsize")
 
-        def __init__(self, entity, pinned=False, heat=False, zmode=None):
+        def __init__(self, entity, pinned=False, heat=False, zmode=None,
+                     cmpsize=None):
             self.entity = entity
             self.pinned = pinned        # False: the preview tab
             self.heat = heat            # heatmap shading on
             self.zmode = zmode          # ZF "Show Z as" (None: not chosen)
+            #: the comparison's size here ("resampled" / "original"), or
+            #: None: the default (Options > Editor; gui_cmpsize)
+            self.cmpsize = cmpsize
             self.view = None            # scroll and selection, once left
 
     class TableTabBar(QtWidgets.QTabBar):
@@ -9252,7 +9532,7 @@ if HAVE_QT:
                 self, title, get_last_dir(),
                 "All files (*);;OVT projects (*.ovt);;"
                 "ECU & flash files (*.bin *.sgo *.dim *.frf);;"
-                "WinOLS projects (*.ols);;"
+                "WinOLS projects (*.ols *.olsx);;"
                 "Definitions (*.xdf *.a2l *.kp *.dam);;"
                 "OVT containers (*.edc16 *.edc15 *.6hp *.8hp *.hvac *.vdo);;"
                 "Cluster EEPROM (*.vdo *.bin)")
@@ -9414,6 +9694,7 @@ if HAVE_QT:
                 return
             shown = cur.cmp_version["id"] if cur.cmp_version else None
             from . import options as _opt
+            menu.setToolTipsVisible(True)       # a long name is cut: tip has it whole
             cap = _opt.get("history/version_menu_max")   # VERSION_MENU_MAX
             for i, ver in enumerate(versions[:cap]):
                 when = ver.get("ts", "").replace("T", " ")[:16]
@@ -9592,6 +9873,11 @@ if HAVE_QT:
                       ).setToolTip("The file the set was imported from, with "
                                    "the saved version in it (an edited .frf "
                                    "cannot be rebuilt yet)")
+            self._act(x, "PCMFlash file (flash + MPC)...",
+                      lambda: _gp.export_pcmflash(cw()), needs_file=True,
+                      enabled_when=lambda: (in_proj() and _gp.has_flash_and_mpc(cw()))
+                      ).setToolTip("The external flash and the internal flash "
+                                   "(MPC) as the one-file read PCMFlash makes")
             x.addSeparator()
             self._act(x, "Definition as XDF...", self._on_ws("export_xdf"),
                       needs_file=True,
@@ -9704,6 +9990,8 @@ if HAVE_QT:
             _gpl.add_menu(self, view)
             from . import gui_compare_delta as _gcd
             _gcd.add_menu(self, view)           # View > Difference view
+            from . import gui_cmpsize as _gcs2
+            _gcs2.add_menu(self, view)          # View > Comparison size
             view.addSeparator()
             self._act(view, "Next tab", lambda: self._cycle_tab(1), "Ctrl+Tab")
             self._act(view, "Previous tab", lambda: self._cycle_tab(-1),
@@ -9742,6 +10030,9 @@ if HAVE_QT:
                 "Lay this file's measuring blocks out so each logging preset reads "
                 "fewer blocks per row -- more rows a second. The logger uses them "
                 "once the ECU has the file.")
+            # the modules' logging tools (EDC15's Fast logging patcher) follow it
+            from . import gui_modtools as _gmt_log
+            _gmt_log.add(self, tools, _gmt_log.TOOLS_LOGGING)
 
             def _eoi_open(_c=False):
                 from . import gui_eoi as _ge   # End of injection (eoi.py)

@@ -355,6 +355,15 @@ class EcuProfile:
     #: from its OWN served image (merged over ``idents``; re-read after a
     #: download replaces the image, as a reflashed module would)
     idents_from_image: Optional[Callable[[bytes], Dict[int, bytes]]] = None
+    #: optional fn(path, profile) -> image: reads the file the user picked
+    #: (a container, say) in place of :func:`_load_image`, and may fill in the
+    #: profile (idents, key_fns, ``extra``) from what it finds there
+    source_loader: Optional[Callable[["str", "EcuProfile"], bytes]] = None
+    #: optional fn(profile, **EcuResponder kwargs) -> EcuResponder: a module's
+    #: own responder class (see :func:`new_responder`)
+    responder_factory: Optional[Callable[..., "EcuResponder"]] = None
+    #: whatever ``source_loader`` learned that the responder needs
+    extra: object = None
 
 
 class EcuResponder:
@@ -982,16 +991,63 @@ _PROFILE_FACTORIES: Dict[str, Callable[[], EcuProfile]] = {
 }
 
 
+def _module_profiles(hook: str = "profiles") -> Dict[str, Callable[[], object]]:
+    """Profiles the installed modules contribute: by convention
+    ``<module>/sim_profiles.py`` with ``profiles() -> {name: factory}`` (the
+    way ``ai_tools.py`` works), so the module's code stays in its package.
+    ``kwp_profiles()`` in the same file does the same for the KWP2000 /
+    TP 2.0 simulator (:mod:`.trx_sim`). A module whose hook fails is skipped."""
+    out: Dict[str, Callable[[], object]] = {}
+    try:
+        import importlib
+        import importlib.util
+        from .. import branding
+        from ..modules import registry as _reg
+        mods = sorted(_reg.installed())
+    except Exception:
+        return out
+    for mid in mods:
+        name = "%s.%s.sim_profiles" % (branding.PKG, mid)
+        try:
+            if importlib.util.find_spec(name) is None:
+                continue
+            fn = getattr(importlib.import_module(name), hook, None)
+            made = fn() if fn is not None else None
+        except Exception:
+            continue
+        for k, fn in (made or {}).items():
+            out.setdefault(k, fn)
+    return out
+
+
 def profile_names() -> List[str]:
-    return list(_PROFILE_FACTORIES)
+    return list(_PROFILE_FACTORIES) + [k for k in _module_profiles()
+                                       if k not in _PROFILE_FACTORIES]
 
 
 def profile(name: str) -> EcuProfile:
-    return (_PROFILE_FACTORIES.get(name) or _PROFILE_FACTORIES["6hp28"])()
+    fn = _PROFILE_FACTORIES.get(name) or _module_profiles().get(name)
+    return (fn or _PROFILE_FACTORIES["6hp28"])()
+
+
+def load_image(prof: EcuProfile, path: Optional[str]) -> bytes:
+    """The image to serve for ``path``: the profile's own loader when it has
+    one (a module's container reader), else :func:`_load_image`."""
+    if prof.source_loader is not None and path:
+        return prof.source_loader(path, prof)
+    return _load_image(path)
+
+
+def new_responder(prof: EcuProfile, **kw) -> EcuResponder:
+    """The responder for ``prof`` -- the module's own class when the profile
+    names one, else the generic :class:`EcuResponder`."""
+    if prof.responder_factory is not None:
+        return prof.responder_factory(prof, **kw)
+    return EcuResponder(prof, **kw)
 
 
 def make_responder(name: str, **kw) -> EcuResponder:
-    return EcuResponder(profile(name), **kw)
+    return new_responder(profile(name), **kw)
 
 
 class Gs19Responder(EcuResponder):
@@ -1148,7 +1204,7 @@ def main(argv=None):   # pragma: no cover - hardware/CLI entry point
         prof.tx_id = args.tx
     if args.func is not None:
         prof.func_id = args.func
-    image = _load_image(args.image)
+    image = load_image(prof, args.image)
     if args.image:
         log("image: %s (%d bytes)" % (args.image, len(image)))
 
@@ -1157,8 +1213,8 @@ def main(argv=None):   # pragma: no cover - hardware/CLI entry point
     bus_check(ch, log=log)
     set_rx_filters(ch, [prof.rx_id, prof.func_id], log=log)
     io = IsoTpEcu(ch, rx_id=prof.rx_id, tx_id=prof.tx_id, func_id=prof.func_id, log=log)
-    responder = EcuResponder(prof, image=image, read_mode=args.mode,
-                             strict_key=args.strict_key, log=log)
+    responder = new_responder(prof, image=image, read_mode=args.mode,
+                              strict_key=args.strict_key, log=log)
     sim = Simulator(io, responder, log=log)
     try:
         sim.run()

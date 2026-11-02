@@ -24,9 +24,9 @@ from .signal_names import sentence_case
 from .signals import EMPTY_IDS, SignalCatalog, observed_ids
 
 #: the app's cell colours (:mod:`ovtsuite.gui_cellmarks`): a cell edited
-#: but not applied yet (PENDING_BG, bold, dark text; it takes the place of
-#: orange in the primary), a cell that differs from the comparison (orange,
-#: dark text, in both tables), an empty slot's grey text
+#: but not applied yet (PENDING_BG, bold, dark text), a cell that differs
+#: from the comparison (orange outline, over the fill, in both tables), an
+#: empty slot's grey text
 
 
 def _tidy(text: str) -> str:
@@ -672,11 +672,10 @@ class MsBlockDialog(QtWidgets.QDialog):
                     it.setData(QtCore.Qt.UserRole, cid)
                     mine = shown[c] if c < len(shown) else None
                     if self._cmp_differs(g, cid, mine):
-                        # orange in both; a held primary cell stays yellow
+                        # the outline in both, over a held cell's yellow too
                         mark_differs(it)
                         own = self.table.item(r, c + 1)
-                        if own is not None and own.data(QtCore.Qt.UserRole) is not None \
-                                and self._key(g, c) not in self._pending:
+                        if own is not None and own.data(QtCore.Qt.UserRole) is not None:
                             mark_differs(own)
                         if own is not None:
                             own.setToolTip((own.toolTip() + "\n" if own.toolTip() else "")

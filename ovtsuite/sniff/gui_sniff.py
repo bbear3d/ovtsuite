@@ -212,6 +212,7 @@ class SerialTapWorker(QtCore.QThread):
             self.opened.emit("serial tap on %s at %d baud%s" % (
                 self.port_name, self.baud, " (following speed changes)" if self.follow else ""))
             last_rx = time.time()
+            tracker = KL.Framer("kwp")
             while not self._stop:
                 with self._lock:
                     want, self._want_baud = self._want_baud, None
@@ -224,6 +225,17 @@ class SerialTapWorker(QtCore.QThread):
                 if data:
                     last_rx = now
                     self.frames.emit([C.Record(now, "kraw", 0, bytes(data))])
+                    if self.follow:
+                        # Follow link-speed changes HERE, in the reader thread: the
+                        # GUI only sees the bytes after its 150 ms flush timer, by
+                        # which time the ECU's reply (~35 ms after the request, at
+                        # the new rate) has already been missed.
+                        tracker.feed(now, bytes(data))
+                        nb, tracker.new_baud = tracker.new_baud, None
+                        if nb and nb != self.baud:
+                            ser.baudrate = nb
+                            self.baud = nb
+                            self.baud_changed.emit(nb)
                 elif self.follow and self.baud != start_baud and now - last_rx > self.IDLE_REVERT_S:
                     ser.baudrate = start_baud
                     self.baud = start_baud

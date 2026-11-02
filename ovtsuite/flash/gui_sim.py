@@ -46,7 +46,7 @@ _TRX_PROFILES = set(_trx.profile_names())
 #: Profiles that can be simulated over K-line (serial) via trx_kline_sim, mapped
 #: to the make_responder ECU kind. The 09D (trx) profiles and the ZF 6HP19
 #: ("gs19", an ecu_sim profile) both reuse their existing TP2.0/CAN responders.
-_KLINE_ECUS = {name: "aisin09d" for name in _TRX_PROFILES}
+_KLINE_ECUS = {name: "aisin09d" for name in _trx.builtin_profile_names()}
 if "gs19" in set(_sim.profile_names()):
     _KLINE_ECUS["gs19"] = "gs19"
 
@@ -134,7 +134,7 @@ class SimWorker(QtCore.QThread):
             image = b""
             if self._image_path:
                 try:
-                    image = _sim._load_image(self._image_path)
+                    image = _sim.load_image(prof, self._image_path)
                     emit("Serving image: %s (%d bytes)"
                          % (os.path.basename(self._image_path), len(image)))
                 except Exception as ex:
@@ -163,7 +163,7 @@ class SimWorker(QtCore.QThread):
                      % (self._timing.cf_gap_ms, self._timing.resp_latency_ms,
                         self._timing.jitter_ms, self._timing.drop_cf_prob * 100,
                         self._timing.drop_resp_prob * 100))
-            responder = _sim.EcuResponder(
+            responder = _sim.new_responder(
                 prof, image=image,
                 read_mode=("faithful" if self._faithful else "serve"),
                 strict_key=self._strict_key, log=emit,
@@ -206,12 +206,12 @@ class SimWorker(QtCore.QThread):
         image = b""
         if self._image_path:
             try:
-                image = _trx.load_image(self._image_path)
+                image = _trx.load_source(prof, self._image_path)
                 emit("Serving image: %s (%d bytes)"
                      % (os.path.basename(self._image_path), len(image)))
             except Exception as ex:
                 emit("(could not load image, serving zeros: %s)" % ex)
-        responder = _trx.Trx09dResponder(
+        responder = _trx.new_responder(
             prof, image=image,
             read_mode=("faithful" if self._faithful else "serve"),
             strict_key=self._strict_key, log=emit,

@@ -5,11 +5,13 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Export members of an ``.ovt`` project (spec section 8).
 
-* :func:`export_raw` -- a member's bytes at any branch/checkpoint (``.bin``).
+* :func:`export_raw` -- a member's bytes at any branch/checkpoint (``.bin``);
+  an EDC16 calibration-only file (512 KB) comes out as the full 2 MB image.
 * :func:`export_original` -- back into the delivery container it was imported
   from. Unchanged content returns the original bytes exactly; changed content
   is rebuilt for ``.dim`` (untouched chunks carried through) and ``.sgo``
-  (only changed sections re-encoded). ``.frf`` has no writer.
+  (only changed sections re-encoded); a PCMFlash one-file EDC16 read is laid
+  end to end again. ``.frf`` has no writer.
 
 The older native containers (``.edc16`` / ``.edc15`` / ``.6hp`` / ...) are
 import-only: nothing exports them (the app still writes one internally, as a
@@ -39,13 +41,47 @@ def export_raw(project: Project, sid: str, mid: str, *,
                                 checkpoint=_cid(project, sid, branch, checkpoint))
     if data is None:
         raise ExportRefused("member %r does not exist at that point" % mid)
+    # a project that still holds an EDC16 calibration-only file (512 KB, from
+    # before imports made it the full image) exports the full 2 MB image
+    if project.set(sid).platform == "edc16" and mid == "flash":
+        from ..platforms import edc16 as _e16
+        if _e16.is_cal_only(data):
+            return _e16.pad_cal_only(data)
     return data
+
+
+def export_pcmflash(project: Project, sid: str, *, branch: Optional[str] = None,
+                    checkpoint: Optional[str] = None,
+                    with_eeprom: bool = False) -> bytes:
+    """The set as one PCMFlash ``_flash_`` file: the external flash then the
+    internal flash cut to the length PCMFlash's own micro files have (0x80200),
+    the EEPROM behind them when asked for and the set has one. Works for any
+    EDC16 set that holds both flash parts, whatever it was imported from."""
+    from .. import pcmflash as _pcm
+    cid = _cid(project, sid, branch, checkpoint)
+    want = project.state(sid, cid)
+    flash, mpc = want.get("flash"), want.get("mpc")
+    if flash is None or mpc is None:
+        raise ExportRefused("a PCMFlash file needs both the external flash and "
+                            "the internal flash (MPC); this set lacks %s"
+                            % ("both" if flash is None and mpc is None else
+                               "the external flash" if flash is None
+                               else "the internal flash"))
+    flash = export_raw(project, sid, "flash", branch=branch, checkpoint=cid)
+    if len(flash) != _pcm.EXT_SIZE:
+        raise ExportRefused("the external flash is 0x%X bytes; PCMFlash's is "
+                            "0x%X" % (len(flash), _pcm.EXT_SIZE))
+    ee = want.get("eeprom") if with_eeprom else None
+    if with_eeprom and (ee is None or len(ee) != _pcm.EEPROM_SIZE):
+        raise ExportRefused("the set has no 4 KB EEPROM to put in the file")
+    order = ("ext", "mpc") + (("eeprom",) if ee is not None else ())
+    return _pcm.join(_pcm.Layout(order, 0x80200), flash, mpc, ee)
 
 
 def original_formats(project: Project, sid: str) -> List[str]:
     """The original container formats this set can be exported to."""
     return [o.format for o in project.set(sid).originals
-            if o.format in ("dim", "sgo")]
+            if o.format in ("dim", "sgo", "pcmflash")]
 
 
 def export_original(project: Project, sid: str, oid: str, *,
@@ -72,6 +108,16 @@ def export_original(project: Project, sid: str, oid: str, *,
         if "eeprom" in o.members and want.get("eeprom") is not None:
             chunks = _dim.replace_chunk(chunks, 3, want["eeprom"])
         return _dim.build(chunks)
+    if o.format == "pcmflash":
+        # the combined file again: the saved parts in the order and lengths
+        # the file came with (ovtsuite.pcmflash)
+        from .. import pcmflash as _pcm
+        lay = _pcm.detect(raw)
+        if lay is None or want.get("flash") is None or want.get("mpc") is None:
+            raise ExportRefused("the original PCMFlash file can no longer be "
+                                "put together -- export the parts as raw "
+                                "binaries instead")
+        return _pcm.join(lay, want["flash"], want["mpc"], want.get("eeprom"))
     if o.format == "sgo" and s.platform == "hvac":
         # Climatronic: re-packed through hvac_image -- the flat image is based
         # at the firmware's base, and the flash loader section (declared at

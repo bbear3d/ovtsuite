@@ -34,3 +34,16 @@ tools/j2534logger/registryoutput.txt
 # downloaded add-on files the build only hashes (addons/README.md)
 addons/*.zip
 addons/*.cab
+
+# scratch captures and one-off analysis output (kept on disk)
+/_rs6tmp/
+/_view/
+/diag.csv
+/fit.csv
+/sweep.csv
+tools/j2534logger/j2534log_*.txt
+
+# third-party reference PDFs (saved forum threads, manuals): not ours to publish
+docs/multimap/
+docs/BHW*.pdf
+docs/EDC15+ Funktionsbeschreibung*.pdf

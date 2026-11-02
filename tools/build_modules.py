@@ -22,7 +22,9 @@ split through this one tool, so Windows and Linux make the same decisions:
             [--unsigned] [--no-check]
         build every stale .ovtmod (content fingerprints, see
         ovtsuite.modules.build), sign it, and check it in a clean interpreter
-        against the staged base app
+        against the staged base app. First regenerates and compiles the OVT
+        Diag definition packs inside the modules (tools/build_diag_defs.py),
+        so a package ships current, validated definitions
 
     python tools/build_modules.py install-into DEST [--packages dist/modules]
             [--modules ...] [--variant full|checksum]
@@ -226,7 +228,21 @@ def cmd_plan(args):
     return 0
 
 
+def _refresh_diag_defs():
+    """Regenerate and compile the OVT Diag definition packs that ship inside
+    the modules (``ovtsuite/<id>/definitions/*``) BEFORE fingerprinting, so a
+    package always carries current, validated definitions and the fingerprint
+    sees the compiled form it will ship. ``tools/build_diag_defs.py`` owns the
+    generators; the compiled output is byte-stable, so an unchanged pack does
+    not mark its module as changed."""
+    import build_diag_defs
+    print("Diag definition packs")
+    build_diag_defs.generate()
+    build_diag_defs.compile_all()
+
+
 def cmd_packages(args):
+    _refresh_diag_defs()
     specs = build._specs(SRC)
     build.ownership(SRC, specs)                  # fails loudly on a clash
     fps = build.fingerprint(SRC, specs)

@@ -361,13 +361,38 @@ class KLine:
         try:
             time.sleep(0.3)
             self._bitbang_5baud(address, even_parity)
-            self.clear_rx()
-            sync = self.read_byte()
-            self.last_sync = sync
-            if sync != 0x55:
-                raise KLineError("Unexpected sync byte: expected 0x55, got 0x%02X" % sync)
+            rb = getattr(self, "wake_reply_baud", None)
+            if rb:                                  # ECU left at another rate by an
+                self.set_baud(rb)                   # unclosed fast session (edc15fast)
+            # The bit-banged break leaves echo/framing-error bytes (0x00/0xFF) in the
+            # receive path, some of which arrive AFTER a clear_rx(); scan past them
+            # for the real sync rather than failing on the first byte.
+            base = getattr(self.port, "baudrate", None)
+            sync = None
+            for _ in range(6):
+                b = self.read_byte()
+                self.last_sync = b
+                if b == 0x55:
+                    sync = b
+                    break
+                if b in (0x00, 0xFF):
+                    continue                        # echo of our own break
+                break                               # something else: wrong-baud sync?
+            if sync is None:
+                # ECU answered but the sync byte was mis-sampled: it used the other
+                # rate (9600 KW1281-style vs 10400).  Read the keywords at that rate.
+                alt = 9600 if base and abs(base - 10400) < abs(base - 9600) else 10400
+                if self.last_sync in (0x00, 0xFF) or base is None:
+                    raise KLineError("No sync byte after wake (only echo)")
+                self.set_baud(alt)
+                self.wake_note = "sync 0x%02X at %s baud, retrying keywords at %d" % (
+                    self.last_sync, base, alt)
             kw_lsb = self.read_byte()
             kw_msb = self.read_byte()
+            if sync is None and base is not None and kw_lsb not in (0x6B, 0x01, 0xEF, 0x8F):
+                self.set_baud(base)
+                raise KLineError("Unexpected sync byte 0x%02X (keywords 0x%02X 0x%02X)"
+                                 % (self.last_sync, kw_lsb, kw_msb))
             version = ((kw_msb & 0x7F) << 7) + (kw_lsb & 0x7F)
             time.sleep(0.025)
             self.write_byte((~kw_msb) & 0xFF)       # complement of keyword msb

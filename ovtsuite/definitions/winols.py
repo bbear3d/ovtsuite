@@ -8,7 +8,7 @@
 Both start with the same header -- ``u32 11, "WinOLS File\\0"``, ``u32``
 format version -- and keep their maps as one list of records, written field
 after field with no padding. The record layout was reconstructed from
-projects of format versions 114, 117, 250, 292, 397, 479, 503 and 597 (OLS 4 ... 5.x);
+projects of format versions 114, 117, 250, 292, 397, 479, 503, 597 and 834 (OLS 4 ... 5.87);
 (and 303, 373 - 375 and 440 from a larger corpus); every record of every
 sample parses in sequence and the list ends exactly
 where the next section starts, so nothing here searches or guesses: a record
@@ -100,13 +100,25 @@ class _Profile:
     tailn: int          # record tail after the 01 01 01 marker (-1: none)
     folder_ml: bool
     folder_tail: int
+    axprec: int = 0     # bytes between an axis' precision and its signed flag
+    vtail: int = -1     # >= 0: a record tail holds a table of value texts, then this many bytes
 
 
 # Ordered newest first; a list is read with the profile its format version
 # names, and if that does not parse to the declared count, with the others
 # (an unseen version is usually one of these layouts).
 PROFILES = (
-    _Profile("597", False, True, True, 117, 32, 14, True, 4, 64, True, 25),
+    # 834 (WinOLS 5.8x; what an .olsx import is saved as): the 597 layout with
+    # 4 more bytes after an axis' precision and 20 (not 4) at its end, and a
+    # record tail of  i32 -1, 40 bytes, u32 n, n x u32 keys, u32 n, n x str
+    # value texts, i32 -1, 16 bytes  (72 bytes when there are no texts).
+    _Profile("834", False, True, True, 117, 32, 14, True, 20, 68, True, 25,
+             axprec=4, vtail=20),
+    # 597 ends a record the same way (a project of the .olsx exports of
+    # WinOLS 5.87 has value texts): i32 -1, 40 bytes, u32 n, n x u32, u32 n,
+    # n x str, then 16 bytes -- 4 + 64 bytes when n is 0
+    _Profile("597", False, True, True, 117, 32, 14, True, 4, 64, True, 25,
+             vtail=16),
     _Profile("503", False, True, True, 117, 32, 14, True, 4, 60, True, 25),
     _Profile("479", False, True, True, 117, 32, 14, True, 4, 48, True, 25),
     # 440: the 479 layout (no NULs, 4 bytes after each axis) with the
@@ -266,6 +278,8 @@ class Record:
     flags: bytes = b"\x01\x01\x01"
     profile: str = ""
     none: Tuple[str, ...] = ()
+    #: the value texts of a record (834: value, text), e.g. 0 FALSE, 1 TRUE
+    vtexts: List[Tuple[int, str]] = field(default_factory=list)
 
 
 def _axis(r: _R) -> Axis:
@@ -278,6 +292,7 @@ def _axis(r: _R) -> Axis:
     numbase = r.u32()
     pre = r.raw(P.axpre)
     prec = r.i32()
+    r.p += P.axprec
     signed = bool(r.u8())
     n = r.u32()
     if n > 0x100000:
@@ -336,14 +351,25 @@ def _record(r: _R) -> Record:
     flags = r.raw(3)
     if any(b > 1 for b in flags) or not flags[0]:
         raise ValueError("record tail out of step at 0x%X" % (r.p - 3))
-    if P.tailn >= 0:
+    vtexts: List[Tuple[int, str]] = []
+    if P.vtail >= 0:
+        r.p += 4 + 40
+        n = r.u32()
+        if n > 100000:
+            raise ValueError("%d value texts at 0x%X" % (n, r.p - 4))
+        keys = [r.u32() for _ in range(n)]
+        if r.u32() != n:
+            raise ValueError("value text count differs at 0x%X" % (r.p - 4))
+        vtexts = [(k, r.str() or "") for k in keys]
+        r.p += P.vtail
+    elif P.tailn >= 0:
         r.p += 4 + P.tailn
-    none = tuple(k for k, v in (("description", desc0), ("name", name0),
+    none =tuple(k for k, v in (("description", desc0), ("name", name0),
                                 ("label", label0), ("units", units0)) if v is None)
     return Record(typ, org, size, numbase, folder, name, desc, cols, rows,
                   signed, prec, label, units, factor, offset, addr, x, y,
                   lead, bit_texts, bit_u8, h1, bytes(pre), c2, c3, end,
-                  bytes(ztail), bytes(tail), bytes(flags), P.name, none)
+                  bytes(ztail), bytes(tail), bytes(flags), P.name, none, vtexts)
 
 
 def _walk(d: bytes, start: int, count: int, prof: _Profile,

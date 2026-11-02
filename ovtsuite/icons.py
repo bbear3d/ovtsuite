@@ -6,7 +6,7 @@
 """Toolbar and menu icons: Lucide SVGs (``data/icons``, ISC licence, see
 Help > Credits & licences) drawn in the palette's text colour. A few the set
 has no match for (``shift-map``, ``lock-up``, ``needle-sweep``, ``injector``,
-``logging-blocks``) are the app's own, drawn in the same style. A module's own Tools-menu item names its icon
+``logging-blocks``, ``fast-logging``) are the app's own, drawn in the same style. A module's own Tools-menu item names its icon
 in its declaration (:class:`ovtsuite.modules.api.MenuTool`).
 
 An :class:`_SvgEngine` draws the outline icon at whatever size is asked for,

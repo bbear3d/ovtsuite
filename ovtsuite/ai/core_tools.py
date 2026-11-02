@@ -127,6 +127,9 @@ def _checksum_run(ctx, handle, taken):
             rep = cs.verify(data, **opts)
     except _modapi.ChecksumError:
         rep = None
+    if rep is not None and getattr(rep, "ok", False):
+        from .. import checksum_memo
+        checksum_memo.mark(cs, bytes(data), opts)   # the flasher need not redo it
 
     def keep():
         s._checksum_cache = (key, rep)

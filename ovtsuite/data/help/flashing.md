@@ -108,7 +108,7 @@ described on the page for that unit.
 | ECU entry | Transport | Read | Write | Page |
 |---|---|---|---|---|
 | **EDC16** | K-line or CAN | Calibration (top 512 KB); full read (whole flash + MPC) | Calibration blocks; boot / program / MPC blocks (armed, high risk) | [EDC16](flashing/edc16.md) |
-| **EDC15** | K-line | Whole 512 KB flash; EEPROM; flash + EEPROM | Changed sectors; EEPROM; flash + EEPROM; boot mode | [EDC15](flashing/edc15.md) |
+| **EDC15** | K-line | Whole flash (512 KB or 1 MB, detected); EEPROM; flash + EEPROM | Changed sectors; EEPROM; flash + EEPROM; boot mode | [EDC15](flashing/edc15.md) |
 | **Climatronic** | CAN | No (it cannot be read over OBD) | The Climatronic set in the active tab, or a `.sgo` / `.hvac` file | [Other units](flashing/other-units.md#climatronic) |
 | **Cluster** | CAN | Experimental flash dump | No | [Other units](flashing/other-units.md#cluster-can) |
 | **Cluster (VDO K-line)** | K-line | 2 KB EEPROM | The whole 2 KB EEPROM, read back and verified (no automatic backup) | [Other units](flashing/other-units.md#cluster-vdo-k-line) |

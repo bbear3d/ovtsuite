@@ -1,0 +1,17 @@
+# C6 airbag (4F0910655x) over UDS on ISO-TP. Identification through F1xx DIDs,
+# long coding 06 00, faults 19 02. No security needed for reads. From Bear's
+# autoscan capture.
+kind: module
+match: { addr: "15", protocol: uds, generation: C6 }
+name: Airbags (C6, UDS)
+identification:
+  record: uds_f1xx
+uds:
+  session: 0x03
+variants:
+  coding: uds_0600
+  security_access: none
+security:
+  functions_needing_security: []
+source: capture
+note: "0x715<-0x77F; 22 F1 87 -> 4F0910655x, 22 06 00 -> long coding; faults 19 02 AE answered 59 02 99 (status mask, no DTC) in the capture."

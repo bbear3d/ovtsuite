@@ -12,12 +12,12 @@ so a delta reads in the units on screen.
 
 Modes (the first is today's view):
 
-``abs``    the comparison's own values
-``d1``     this file - comparison   (positive: this file is higher; the
+``abs``    the values themselves
+``d1``     primary - comparison   (positive: the primary is higher; the
            default delta, because it reads as "what I changed")
-``d2``     comparison - this file
-``pct``    (this file - comparison) / |comparison|, in percent
-``ratio``  this file / comparison
+``d2``     comparison - primary
+``pct``    (primary - comparison) / |comparison|, in percent
+``ratio``  primary / comparison
 
 Hex maps show a difference as a signed hex byte (``+0A``); a percentage or
 ratio stays decimal. Text (ASCII) maps stay as they are. A comparison value of
@@ -30,18 +30,18 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 MODES: Tuple[Tuple[str, str], ...] = (
-    ("abs", "Absolute values"),
-    ("d1", "Difference: this file - comparison"),
-    ("d2", "Difference: comparison - this file"),
-    ("pct", "Percent change from comparison"),
-    ("ratio", "Ratio: this file / comparison"),
+    ("abs", "Values"),
+    ("d1", "Difference: primary - comparison"),
+    ("d2", "Difference: comparison - primary"),
+    ("pct", "Percent change of the primary from the comparison"),
+    ("ratio", "Ratio: primary / comparison"),
 )
 #: the banner's wording for each mode
 BANNER = {
-    "d1": "difference (this file - comparison)",
-    "d2": "difference (comparison - this file)",
+    "d1": "difference (primary - comparison)",
+    "d2": "difference (comparison - primary)",
     "pct": "percent change from comparison",
-    "ratio": "ratio (this file / comparison)",
+    "ratio": "ratio (primary / comparison)",
 }
 NONE_TEXT = "-"
 

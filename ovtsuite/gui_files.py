@@ -7,7 +7,10 @@
 
 Everything the user works on is a project (``.ovt``):
 
-* **Open project...** / **Open Recent** open projects -- nothing else;
+* **Open project...** / **Open Recent** open projects -- nothing else but a
+  WinOLS project (``.ols``), which the dialog lists beside ``.ovt`` and which
+  opens as a new project the way Options > Projects and saving > Opening a
+  WinOLS project says (``gui_project.open_ols``), not through Import;
 * **Import** brings files in, *into this project* or *into a new project*:
   a binary or container (``.bin``, ``.sgo``, ``.frf``, ``.dim``, an old
   ``.edc16`` / ``.6hp`` ... or ``.edc15bak``) becomes a set, opened in a new
@@ -36,14 +39,16 @@ from . import gui_project as _gp
 
 #: File > Import's file types
 IMPORT_FILTER = (
-    "Importable files (*.bin *.ori *.hex *.mpc *.sgo *.frf *.dim *.ols "
+    "Importable files (*.bin *.ori *.hex *.mpc *.sgo *.frf *.dim *.ols *.olsx "
     "*.edc16 *.edc15 *.6hp *.8hp *.vdo *.edc15bak *.xdf *.a2l *.kp *.dam);;"
     "Binaries and containers (*.bin *.ori *.hex *.mpc *.sgo *.frf *.dim "
     "*.edc16 *.edc15 *.6hp *.8hp *.vdo *.edc15bak);;"
-    "WinOLS projects (*.ols);;"
+    "WinOLS projects (*.ols *.olsx);;"
     "Definitions (*.xdf *.a2l *.kp *.dam);;"
     "All files (*)")
-PROJECT_FILTER = "OVT projects (*.ovt);;All files (*)"
+PROJECT_FILTER = ("Projects and WinOLS projects (*.ovt *.ols *.olsx);;"
+                  "OVT projects (*.ovt);;WinOLS projects (*.ols *.olsx);;"
+                  "All files (*)")
 COMPARE_FILTER = (
     "Projects and binaries (*.ovt *.bin *.ori *.sgo *.frf *.dim *.edc16 "
     "*.edc15 *.6hp *.8hp *.vdo);;All files (*)")
@@ -97,11 +102,14 @@ def open_any(win, path: str) -> bool:
         from .recent import remove_recent
         remove_recent(path)
         return False
-    if classify(path) == "project":
+    kind = classify(path)
+    if kind == "project":
         ok = _gp.open_project(win, path)
         if ok:
             _info_on_open(win)
         return ok
+    if kind == "ols":
+        return _gp.open_ols(win, path)          # Options: Opening a WinOLS project
     return import_files(win, [path], target="new")
 
 

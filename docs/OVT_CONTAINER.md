@@ -207,8 +207,12 @@ A record never names a version that is gone:
   and later" and "the versions after it" both mean now. The merge is refused
   only when the move would change which record a version is set up for: two
   records of one kind in the run end up on one version, where the tie goes by
-  `recorded` instead of by place in the history. (An original file or a flash
-  record on a version inside the run still refuses the merge.)
+  `recorded` instead of by place in the history. (An original file, or the
+  *last* flash record -- the version the car has -- on a version inside the run
+  still refuses the merge, the newest of a run may be it. An *earlier* flash, one
+  of the history in `flash_log`, does not: its record keeps its time and sha1,
+  gets `checkpoint` null and `merged_into` the newest, like a flash of unsaved
+  edits.)
 * **A three-way merge** with another program's save re-points them too (see
   9.1).
 * Deleting a branch removes no version, so no record dangles; a record's

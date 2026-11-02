@@ -858,6 +858,21 @@ def models(session) -> List[InjectionModel]:
         return []
 
 
+def deg_to_us(deg: float, rpm: float) -> Optional[float]:
+    """Crank degrees as microseconds at ``rpm`` (one revolution is 360° in
+    60e6/rpm µs). None at a speed of 0 or below: no time is defined there."""
+    if rpm is None or rpm <= 0:
+        return None
+    return deg * 1e6 / (6.0 * rpm)
+
+
+def us_to_deg(us: float, rpm: float) -> Optional[float]:
+    """Microseconds as crank degrees at ``rpm`` (inverse of :func:`deg_to_us`)."""
+    if rpm is None or rpm <= 0:
+        return None
+    return us * 6.0 * rpm / 1e6
+
+
 def fmt_angle(v: float, nd: int = 1) -> str:
     """``-3.5`` -> "3.5° BTDC", ``4`` -> "4.0° ATDC" (EOI is ATDC-signed)."""
     if abs(v) < 0.5 * 10 ** -nd:
@@ -870,4 +885,4 @@ __all__ = ["Table", "TableSet", "SoiSet", "Correction", "FuelCorrection", "CONDI
            "Plan", "members", "plan_target_eoi", "plan_duration", "plan_soi",
            "plan_table", "advance_for_target",
            "plan_collapse", "collapse_error", "selector_problems", "apply",
-           "models", "fmt_angle", "is_rpm_axis"]
+           "models", "fmt_angle", "is_rpm_axis", "deg_to_us", "us_to_deg"]

@@ -22,12 +22,14 @@ from . import sgo as _sgo
 from . import catalogue as _catalogue
 from . import groups as _groups
 from . import container as _cont
+from . import pcmflash as _pcmflash
 from . import frf as _frf_mod
 from . import defn as _defn
 from . import platforms as _platforms
 from .platforms.identify import Identity as _Identity, identify as _identify
 from .modules import api as _modapi
 from .modules import registry as _registry
+from . import checksum_memo as _memo
 
 _REF_DIR = None   # resolved lazily; overridable for tests/packaging
 
@@ -129,6 +131,15 @@ class CompoundCommand(Command):
         return len(self.commands)
 
 
+class HeldCommand(CompoundCommand):
+    """The edits a key held down made (one per repeat), undone as one step:
+    :meth:`CommandStack.hold`."""
+
+    def add(self, cmd: Command) -> None:
+        self.commands.append(cmd)
+        self.writes.extend(cmd.writes)
+
+
 class RegionCommand(Command):
     """An undoable byte edit into a region working buffer (MPC / EEPROM),
     rather than the external image.
@@ -184,6 +195,22 @@ class CommandStack:
         self._clean: Optional[Command] = None      # None == the empty state
         self._clean_lost = False
         self.revision = 0                          # bumps on every change
+        self._holding = False                      # see hold()
+        self._held: Optional[Command] = None
+
+    # -- holding a key ---------------------------------------------------
+    def hold(self) -> None:
+        """From now until :meth:`release`, the commands pushed one after the
+        other become ONE undo step: a shortcut held down repeats its edit
+        many times a second, and walking back through every repeat with
+        Ctrl+Z is no way to take back one keypress. A command pushed after
+        anything else (an undo, a save) starts a new step."""
+        self._holding = True
+        self._held = None
+
+    def release(self) -> None:
+        self._holding = False
+        self._held = None
 
     # -- state ---------------------------------------------------------
     @property
@@ -246,6 +273,16 @@ class CommandStack:
         if self._undone and self._clean is not None                 and any(c is self._clean for c in self._undone):
             self._clean_lost = True
         self._undone.clear()
+        if self._holding:
+            top = self._done[-1] if self._done else None
+            if self._held is not None and top is self._held \
+                    and top is not self._clean:
+                if not isinstance(top, HeldCommand):
+                    top = HeldCommand(top.label, [top])
+                    self._done[-1] = top
+                    self._held = top
+                top.add(cmd)
+                return top
         if coalesce and self._done:
             prev = self._done[-1]
             # never merge across a save, or undoing to the clean state
@@ -253,6 +290,8 @@ class CommandStack:
             if prev is not self._clean and prev.merge(cmd):
                 return prev
         self._done.append(cmd)
+        if self._holding:
+            self._held = cmd
         if len(self._done) > self.limit:
             dropped = self._done.pop(0)
             if dropped is self._clean:
@@ -280,7 +319,14 @@ class CommandStack:
 
 class TunerSession:
     def __init__(self, path: str, family: Optional[str] = None,
-                 ref_path: Optional[str] = None, progress=None):
+                 ref_path: Optional[str] = None, progress=None,
+                 definition_only: bool = False):
+        # ``definition_only``: a project's own definition is to be given to
+        # this binary INSTEAD of the module's parameters (a WinOLS project
+        # opened "as stored"): the module's family search and parameter tree
+        # are skipped -- they would be built and thrown away -- and the
+        # session is the module's checksum support only, until the definition
+        # is applied (xdf_session.apply_definition).
         # A .dim (Dimsport BDM-dump container, see ovtsuite.dim) bundles the
         # external flash we tune ALONGSIDE internal flash + EEPROM chunks we
         # don't touch. Detected by content (the container's own magic), not
@@ -309,6 +355,10 @@ class TunerSession:
         # becomes binfile, the rest is kept here so the flasher and the hex
         # editor can reach internal flash and EEPROM too.
         self._container = None
+        #: the layout of a PCMFlash one-file read (ovtsuite.pcmflash) this
+        #: session was opened from: its parts are in ``_container`` and the
+        #: file is saved back whole, in the same layout
+        self._pcm = None
         # Working byte buffers for the non-external regions (MPC internal
         # flash, EEPROM) while they are being edited in the hex view. A
         # region is copied in here lazily on its first edit; save() folds
@@ -457,6 +507,25 @@ class TunerSession:
                         "every 16-bit word exchanged, as some readers save an "
                         "MSA15 / EDC15V flash). It is shown in the ECU's own "
                         "byte order and kept the way it is stored.")
+        elif (_pcm_parts := _pcmflash.split_file(path)) is not None:
+            # PCMFlash's one-file EDC16 read: external flash, internal flash
+            # (and EEPROM) laid end to end. The external flash is the image;
+            # the rest are the regions a container would carry.
+            self._pcm = _pcm_parts.layout
+            self._container = _cont.Container("edc16")
+            self._container.add(_cont.BLOCK_EXTERNAL, _pcm_parts.ext)
+            self._container.add(_cont.BLOCK_MPC, _pcm_parts.mpc)
+            if _pcm_parts.eeprom is not None:
+                self._container.add(_cont.BLOCK_EEPROM, _pcm_parts.eeprom)
+            self.binfile = BinaryFile.from_bytes(_pcm_parts.ext,
+                                                 os.path.basename(path))
+            self.load_note = (
+                "This is a PCMFlash one-file read: %s. The external flash is "
+                "shown; the internal flash%s are its regions, and Save writes "
+                "the file whole again. File > Export gives each part as a "
+                "binary of its own." % (
+                    _pcm_parts.layout.describe(),
+                    " and EEPROM" if _pcm_parts.eeprom is not None else ""))
         else:
             self.binfile = BinaryFile.load(path)
             # An MSA15 / EDC15V image some readers save with the two bytes of
@@ -531,6 +600,10 @@ class TunerSession:
         # Size the bar before the first report: the platforms take a different
         # number of steps, and a dialog that starts at /13 and switches to /7
         # jumps backwards in front of the user.
+        if definition_only and self.support == "full":
+            self.support = ("checksum" if self._module_checks(platform, data)
+                            else "none")
+            self._definition_only = True
         rep = Reporter(progress, STEPS.get(platform, 1)
                        if self.support == "full" else 1)
         rep.step("Reading %s" % os.path.basename(path))
@@ -550,7 +623,12 @@ class TunerSession:
         #: or the reason a stored definition was passed over.
         self.defn_state = "none"
         restored = False
-        if self.support != "full":
+        if self.support != "full" and getattr(self, "_definition_only", False):
+            self.unsupported_reason = (
+                "%s. The module's own maps are not loaded: this binary uses "
+                "its project's definition instead of them." %
+                self.binary_identity.describe())
+        elif self.support != "full":
             self.unsupported_reason = (
                 "%s. %s" % (self.binary_identity.describe(),
                             self._limited_text(platform, data)))
@@ -580,13 +658,11 @@ class TunerSession:
         self.change_log: List[str] = []
         self._txn = None              # open transaction(), see transaction()
         self.last_checksum = None
-        # When True, EDC16 2 MB save/correct also regenerates the content digest
-        # required to flash edited blocks over KWP2000/OBD (see checksum.correct(
-        # ..., digest=True)). Defaults True so saved tunes are flash-ready: an
-        # edited calibration block gets the canonical MPPS-identical trailer
-        # (harmless on the bench/BDM path); an unedited one keeps its genuine
-        # OEM signature. Set False to leave the trailer untouched.
-        self.write_digest = True
+        # (The EDC16 content digest -- needed to flash edited blocks over
+        # KWP2000/OBD -- is always checked and regenerated: an edited
+        # calibration block gets the canonical MPPS-identical trailer, harmless
+        # on the bench/BDM path; an unedited one keeps its genuine OEM
+        # signature. See _checksum_opts.)
         # When True a ZF 6HP save/correct ALSO rewrites the program/boot-area
         # descriptor self-CRCs (zlib CRC-32), not just the calibration checksum.
         # Off by default: a calibration tune never changes a 28-byte descriptor
@@ -900,11 +976,12 @@ class TunerSession:
                 text = "%s %s" % (text, why)
         return text
 
-    def _checksum_opts(self, write_digest=None, program_area=None) -> dict:
+    def _checksum_opts(self, program_area=None) -> dict:
         """The options every provider understands (each ignores the rest):
-        EDC16 regenerates the KWP2000 content digest, ZF 6HP also rewrites
-        the program/boot descriptor self-CRCs."""
-        return {"digest": self.write_digest if write_digest is None else write_digest,
+        EDC16 always checks and regenerates the KWP2000 content digest (a
+        verify without it passes an image the ECU's own check refuses), ZF 6HP
+        also rewrites the program/boot descriptor self-CRCs."""
+        return {"digest": True,
                 "program_area": (self.correct_program_area if program_area is None
                                  else program_area)}
 
@@ -932,12 +1009,15 @@ class TunerSession:
         if cached is not None and cached[0] == key:
             return cached[1]
         rep = None
+        opts = self._checksum_opts()
         try:
             if cs.is_supported(self.binfile.data):
-                rep = cs.verify(self.binfile.data, **self._checksum_opts())
+                rep = cs.verify(self.binfile.data, **opts)
         except _modapi.ChecksumError:
             rep = None
         self._checksum_cache = (key, rep)
+        if rep is not None and getattr(rep, "ok", False):
+            _memo.mark(cs, self.binfile.data, opts)     # the flasher need not
         return rep
 
     def checksum_status_known(self) -> bool:
@@ -969,26 +1049,32 @@ class TunerSession:
         except Exception:
             return []
 
-    def correct_checksums(self, write_digest: Optional[bool] = None,
-                          program_area: Optional[bool] = None):
+    def correct_checksums(self, program_area: Optional[bool] = None):
         """Recompute the flash checksums in place; return (report_before,
         changed). No-op (changed=False) when unsupported or already valid --
         including when the platform's module is not installed.
 
-        For 2 MB EDC16 images the content digest is also regenerated when
-        ``write_digest`` (or, if not given, ``self.write_digest``) is True --
+        For 2 MB EDC16 images the content digest is always regenerated too --
         needed to flash edited blocks over KWP2000/OBD.
         """
         cs = self.checksum_provider()
         if cs is None:
             return None, False
-        opts = self._checksum_opts(write_digest, program_area)
+        opts = self._checksum_opts(program_area)
         try:
             if not cs.is_supported(self.binfile.data):
                 return None, False
+            if _memo.settled(cs, self.binfile.data, opts):
+                # found to need nothing already (the background verify, a
+                # save, a write): the report is all that is left to give
+                rep = self.checksum_status()
+                self.last_checksum = rep
+                return rep, False
             before = cs.verify(self.binfile.data, **opts)
             fixed = bytes(cs.correct(self.binfile.data, **opts))
             changed = bytes(self.binfile.data) != fixed
+            if not changed:
+                _memo.mark(cs, self.binfile.data, opts)  # a fixed point
             if changed:
                 if len(fixed) == len(self.binfile.data):
                     self.binfile.data = bytearray(fixed)
@@ -996,6 +1082,8 @@ class TunerSession:
                     n = min(len(self.binfile.data), len(fixed))
                     self.binfile.data[:n] = fixed[:n]
             self.last_checksum = cs.verify(self.binfile.data, **opts)
+            if getattr(self.last_checksum, "ok", False):
+                _memo.mark(cs, self.binfile.data, opts)
             return before, changed
         except _modapi.ChecksumError:
             return None, False
@@ -1397,6 +1485,15 @@ class TunerSession:
                     patched = _sgo.replace_section(patched, 0x404000, _win)
             data = _sgo.to_bytes(patched)
             self._sgo_container = patched
+        elif self._pcm is not None:
+            # the PCMFlash one-file read it was opened from: the same layout
+            # again, with the internal flash's checksum redone for an edit
+            _regions = dict(self.region_buffers())
+            _mpc = _regions.get(self.MPC_REGION)
+            if _mpc is not None and pack_fix:
+                _mpc = self._mpc_corrected(_mpc, data)
+            data = _pcmflash.join(self._pcm, data, _mpc,
+                                  _regions.get(self.EEPROM_REGION))
         elif self._byte_swapped:
             # a plain file of a byte-swapped original: written the same way
             from .platforms import edc15 as _e15p
@@ -1638,6 +1735,7 @@ class TunerSession:
         new._region_edits = {}
         new._region_saved = {}
         new._container = None
+        new._pcm = None
         new.defn_state = "shared"
         new.original = bytes(data)
         new._last_saved_snapshot = new.original

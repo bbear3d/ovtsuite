@@ -61,7 +61,9 @@ The whole session is also saved to a log file automatically (see
 | **Aisin TRx** | KWP2000 on VW TP 2.0 (CAN), or on K-line | The Aisin 09D. On CAN it answers a TP 2.0 channel setup for any logical address and logs which one the tool used. Its identification (part number) comes from the served image when it has one. |
 
 The UDS modules listen on CAN id 0x7E1 (and the functional id 0x7DF) and
-answer on 0x7E9.
+answer on 0x7E9. An installed module can add modules of its own to the list;
+the [Bosch EDC17 module](modules/edc17/simulator.md) adds an EDC17 ECM, for both
+the UDS cars (id 0x7E0) and the older KWP2000 / TP 2.0 ones.
 
 ## Options
 

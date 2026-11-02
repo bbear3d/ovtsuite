@@ -35,4 +35,5 @@ include = ["ovtsuite*"]
 [tool.setuptools.package-data]
 ovtsuite = ["data/*.json.gz", "data/*.json", "data/*.ico", "data/*.txt",
             "data/licenses/*.txt", "data/help/*.md", "data/help/*.json",
-            "data/help/**/*", "*/help/*.md", "*/help/**/*"]
+            "data/help/**/*", "*/help/*.md", "*/help/**/*",
+            "diag/data/definitions/**/*"]

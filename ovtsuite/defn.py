@@ -58,7 +58,7 @@ def supports(platform: str) -> bool:
 #: Session attributes that are infrastructure, not part of the definition.
 _SKIP = frozenset({
     "binfile", "path", "undo_stack", "change_log", "original", "last_checksum",
-    "write_digest", "correct_program_area", "sgo_warning", "load_note", "entities", "by_key", "kb", "platform",
+    "correct_program_area", "sgo_warning", "load_note", "entities", "by_key", "kb", "platform",
     "defn_state", "defn_skipped", "has_definition_file", "definition_notes",
 })
 
@@ -178,7 +178,7 @@ def installed_identity(m) -> Optional[str]:
 #: its recorded hash is updated -- that is the prompt to decide whether this
 #: wants bumping too. A frozen build has no source to hash, so there this
 #: number (with each module's own version) is ALL that tells builds apart.
-MODEL_VERSION = 3
+MODEL_VERSION = 4
 
 #: The base files that build, shape or restore a session's model -- traced
 #: from ``TunerSession.__init__`` through a module's ``build`` / ``load_kb``

@@ -186,6 +186,11 @@ def default_registry(include_modules: bool = True) -> Registry:
         _convert_tools.register(reg)
     except Exception:                   # noqa: BLE001 - never blocks the rest
         pass
+    try:
+        from ..diag import ai_tools as _diag_tools   # OVT Diag: read-only vehicle / scan / fault tools
+        _diag_tools.register(reg)
+    except Exception:                   # noqa: BLE001
+        pass
     if include_modules:
         for t in module_tools():
             if reg.get(t.name) is None:

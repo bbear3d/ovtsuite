@@ -1,0 +1,370 @@
+# Audi A6 / S6 (4F, C6) module address table as the car's own gateway holds
+# it: every row below is one record of the gateway's installation list
+# (``22 04 A1`` -> ``<addr> <TP 2.0 dest> <status> <bus>``), read from Bear's
+# A6 C6 in his own sniffer capture of a workshop-tool autoscan
+# (Reference/Logs/VCDS-Autoscan.log, 2026-09-20). The TP 2.0 dest is therefore
+# a fact of this platform's gateway, whether or not that module was fitted to
+# that car; "bus" is the list's bus byte (00 drive CAN, 01 comfort CAN, 04
+# infotainment, 03 the instruments' own, 0D the gateway itself) as a word
+# where the grouping of known modules makes it plain, else as the number.
+# Three of these dests were already known from the bench (01, 02, 03) and two
+# from earlier captures (08 -> 0x2C, 17 -> 0x07); the capture agrees with all
+# five. The K-line convention rows live in addressing.yaml; the generation
+# descriptions too.
+kind: addressing
+modules:
+  - addr: "19"
+    name: CAN gateway
+    tp20: { dest: 0x1F }
+    bus: gateway
+    gateway: { installation_list: did_04a1 }
+    generations: [C6]
+    source: capture
+  - addr: "05"
+    name: Access / start authorisation
+    tp20: { dest: 0x31 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "09"
+    name: Central electrics
+    tp20: { dest: 0x20 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "46"
+    name: Central convenience
+    tp20: { dest: 0x21 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "42"
+    name: Door electronics, driver
+    tp20: { dest: 0x22 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "52"
+    name: Door electronics, passenger
+    tp20: { dest: 0x23 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "62"
+    name: Door electronics, rear left
+    tp20: { dest: 0x24 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "72"
+    name: Door electronics, rear right
+    tp20: { dest: 0x25 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "36"
+    name: Seat memory, driver
+    tp20: { dest: 0x26 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "06"
+    name: Seat memory, passenger
+    tp20: { dest: 0x35 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "69"
+    name: Trailer
+    tp20: { dest: 0x43 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "3D"
+    name: Special function II
+    tp20: { dest: 0x3A }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "08"
+    name: HVAC
+    tp20: { dest: 0x2C }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "16"
+    name: Steering wheel electronics
+    tp20: { dest: 0x2A }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "6C"
+    name: Rear-view camera
+    tp20: { dest: 0x49 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "6D"
+    name: Boot lid electronics
+    tp20: { dest: 0x34 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "26"
+    name: Convertible roof
+    tp20: { dest: 0x30 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "65"
+    name: Tyre pressure
+    tp20: { dest: 0x29 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "17"
+    name: Instruments
+    tp20: { dest: 0x07 }
+    bus: instrument
+    generations: [C6]
+    source: capture
+  - addr: "18"
+    name: Auxiliary heater
+    tp20: { dest: 0x2F }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "53"
+    name: Parking brake
+    tp20: { dest: 0x19 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "03"
+    name: ABS / ESP
+    tp20: { dest: 0x03 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "04"
+    name: Steering angle sensor
+    tp20: { dest: 0x13 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "1B"
+    name: Active steering
+    tp20: { dest: 0x1E }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "10"
+    name: Parking / steering assist
+    tp20: { dest: 0x1D }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "22"
+    name: All-wheel drive
+    tp20: { dest: 0x0A }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "15"
+    name: Airbags
+    tp20: { dest: 0x05 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "01"
+    name: Engine
+    tp20: { dest: 0x01 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "11"
+    name: Engine II
+    tp20: { dest: 0x15 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "02"
+    name: Transmission
+    tp20: { dest: 0x02 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "55"
+    name: Headlight range
+    tp20: { dest: 0x06 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "14"
+    name: Suspension electronics
+    tp20: { dest: 0x0C }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "13"
+    name: Distance regulation
+    tp20: { dest: 0x0B }
+    bus: bus-05
+    generations: [C6]
+    source: capture
+  - addr: "5C"
+    name: Lane keeping
+    tp20: { dest: 0x1A }
+    bus: bus-05
+    generations: [C6]
+    source: capture
+  - addr: "3C"
+    name: Lane change assist
+    tp20: { dest: 0x1C }
+    bus: bus-05
+    generations: [C6]
+    source: capture
+  - addr: "07"
+    name: Control head, front
+    tp20: { dest: 0x3F }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "27"
+    name: Control head, rear
+    tp20: { dest: 0x3E }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "0E"
+    name: Media player 1
+    tp20: { dest: 0x58 }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "1E"
+    name: Media player 2
+    tp20: { dest: 0x50 }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "2E"
+    name: Media player 3
+    tp20: { dest: 0x54 }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "3E"
+    name: Media player 4
+    tp20: { dest: 0x62 }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "56"
+    name: Radio
+    tp20: { dest: 0x52 }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "57"
+    name: TV tuner
+    tp20: { dest: 0x57 }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "0F"
+    name: Digital radio
+    tp20: { dest: 0x4F }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "37"
+    name: Navigation
+    tp20: { dest: 0x5B }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "77"
+    name: Telephone
+    tp20: { dest: 0x5A }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "67"
+    name: Voice control
+    tp20: { dest: 0x5C }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "47"
+    name: Sound system
+    tp20: { dest: 0x53 }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "5F"
+    name: Information electronics
+    tp20: { dest: 0x4D }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "7F"
+    name: Information electronics II
+    tp20: { dest: 0x4E }
+    bus: infotainment
+    generations: [C6]
+    source: capture
+  - addr: "20"
+    name: High-beam assist
+    tp20: { dest: 0x16 }
+    bus: bus-05
+    generations: [C6]
+    source: capture
+  - addr: "30"
+    name: Special function
+    tp20: { dest: 0x3B }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "76"
+    name: Parking aid
+    tp20: { dest: 0x2D }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "4F"
+    name: Central electrics II
+    tp20: { dest: 0x28 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "6F"
+    name: Central convenience II
+    tp20: { dest: 0x3C }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "28"
+    name: HVAC, rear
+    tp20: { dest: 0x45 }
+    bus: comfort
+    generations: [C6]
+    source: capture
+  - addr: "4C"
+    name: Tyre pressure II
+    tp20: { dest: 0x08 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "34"
+    name: Level control
+    tp20: { dest: 0x04 }
+    bus: drive
+    generations: [C6]
+    source: capture
+  - addr: "50"
+    name: Module 50
+    tp20: { dest: 0x38 }
+    bus: comfort
+    generations: [C6]
+    source: capture
