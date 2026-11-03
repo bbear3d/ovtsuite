@@ -21,7 +21,7 @@ do (2,000+ images, see docs/MODULES_PLAN.md):
 7. EDC17 -- the EPK Bosch stamps in the calibration (``35/1/EDC17_CP14/5/P680//C680I3WF///``);
 8. EDC16 -- its CAFEAFFE calibration descriptor;
 9. an ECU's own EEPROM (512 bytes EDC15, 4 KB EDC16) whose installed module's
-   layout finds its checksums right -- an ``edc15eeprom`` / ``edc16eeprom``
+   layout finds its structure -- an ``edc15eeprom`` / ``edc16eeprom``
    (never a flash: no module builds a tree from it, the EEPROM editor opens it);
 10. otherwise **unknown**. Nothing is forced into a platform by elimination.
 """
@@ -167,8 +167,9 @@ _EEPROM_SIZES = (512, 4096)
 
 def eeprom_layout(data: bytes):
     """The EEPROM layout (``ovtsuite.gui_eeprom`` protocol) of the installed
-    module that recognises ``data`` -- right size AND its own checksums agree
-    -- or None. Needs the module: what an EEPROM holds is the module's."""
+    module that recognises ``data`` -- right size and the layout's own
+    structure, whether or not its checksums agree -- or None. Needs the
+    module: what an EEPROM holds is the module's."""
     if len(data) not in _EEPROM_SIZES:
         return None
     try:
@@ -178,7 +179,7 @@ def eeprom_layout(data: bytes):
         return None
     for lay in layouts:
         try:
-            if lay.size == len(data) and int(lay.identify(bytes(data))) >= 2 \
+            if lay.size == len(data) and int(lay.identify(bytes(data))) >= 1 \
                     and getattr(lay, "platform", "") in EEPROM_FOR:
                 return lay
         except Exception:

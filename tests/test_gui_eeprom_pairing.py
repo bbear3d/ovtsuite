@@ -296,3 +296,76 @@ def test_f2_and_the_menu_rename_a_kept_log_and_attachment(win, tmp_path, monkeyp
     assert _item(panel, "log", lg.id).text(0).endswith("pull in 3rd.csv")
     assert proj.log_bytes(lg.id) == b"a,b\n1,2\n"
     assert doc.project.modified_since_save
+
+
+# ------------------------------------------------------------- Export menu
+def _visible(menu):
+    return [a.text() for a in menu.actions() if a.isVisible() and not a.isSeparator()]
+
+
+def test_export_menu_lists_only_what_applies_to_the_tab(win, tmp_path, editor_calls):
+    path = _write(tmp_path, "car eeprom.bin", eeprom15())
+    gf.import_files(win, [path], target="new")
+    QtWidgets.QApplication.processEvents()
+    win._refresh_enabled()
+    items = _visible(win.export_menu)
+    assert "EEPROM (.bin)..." in items and "Binary (.bin)..." in items
+    assert "PCMFlash EDC16 File..." not in [a.text() for a in win.export_menu.actions()
+                                            if a.isVisible()]
+    for hidden in ("Definition as XDF...", "Definition as A2L...", "Data log...",
+                   "Original file (.sgo / .dim / .frf)..."):
+        assert hidden not in items
+    # no stray separators at the ends
+    shown = [a for a in win.export_menu.actions() if a.isVisible()]
+    assert not shown[0].isSeparator() and not shown[-1].isSeparator()
+    # a tab with no EEPROM of its own offers no EEPROM export
+    assert win.current.stored_eeprom() == eeprom15()
+
+
+def test_the_pcmflash_item_is_named_for_edc16(win):
+    assert "PCMFlash EDC16 File..." in [a.text() for a in win.export_menu.actions()]
+
+
+# ---------------------------------------- Tools > EEPROM editor visibility
+def test_the_eeprom_editor_item_is_there_only_for_a_tab_that_stores_an_eeprom(
+        win, tmp_path, editor_calls, monkeypatch):
+    from ovtsuite import gui_eeprom
+    assert not win._ee_act.isVisible()                 # nothing open
+    path = _write(tmp_path, "car eeprom.bin", eeprom15())
+    gf.import_files(win, [path], target="new")
+    QtWidgets.QApplication.processEvents()
+    win._refresh_enabled()
+    assert win._ee_act.isVisible() and win._ee_act.isEnabled()
+    # a tab that stores no EEPROM (a flash with none, an unrecognised file)
+    monkeypatch.setattr(type(win.current), "stored_eeprom", lambda self: None)
+    win._refresh_enabled()
+    assert not win._ee_act.isVisible()
+    assert gui_eeprom.layouts_for(eeprom15())
+
+
+# ------------------------------------------------ EEPROM edits are versions
+def test_describe_change_names_the_fields_that_moved():
+    from ovtsuite.edc15 import eeprom15 as E
+    old = eeprom15()
+    new = E.apply(old, E.FIELD_BY_KEY["vin"], "WVWZZZ1JZ3W999999")
+    assert pair.describe_change(old, new) == "EEPROM edit: VIN"
+    assert pair.describe_change(old, old) == "EEPROM edit"
+
+
+def test_saving_an_eeprom_edit_is_a_version_named_for_it(win, tmp_path, monkeypatch):
+    from ovtsuite import gui_eeprom
+    from ovtsuite.edc15 import eeprom15 as E
+    path = _write(tmp_path, "car eeprom.bin", eeprom15())
+    with monkeypatch.context() as m:
+        m.setattr(type(win), "show_file_info", lambda *a, **k: None, raising=False)
+        from ovtsuite import gui
+        m.setattr(gui.Workspace, "open_own_eeprom_editor", lambda self: None)
+        gf.import_files(win, [path], target="new")
+        QtWidgets.QApplication.processEvents()
+    ws = win.current
+    ws.primary.edit_bytes(0, E.apply(eeprom15(), E.FIELD_BY_KEY["vin"],
+                                     "WVWZZZ1JZ3W999999"))
+    from ovtsuite import gui_project as gp
+    assert gp._commit(ws)
+    s = ws.project_ref.set
+    assert s.checkpoint(s.active.head).label == "EEPROM edit: VIN"

@@ -23,26 +23,25 @@ EEPROM a module knows:
 
 ## Opening an EEPROM
 
-- **From the project.** A set that holds an EEPROM -- an EDC15 **Read flash + EEPROM**
-  or EEPROM read from the flasher, or an imported `.dim`, `.edc15`, `.edc16`
-  or KWHack `.edc15bak` that carries one -- has it in its tab, and the menu
-  item opens it, titled *... [EEPROM]*.
-- **A stand-alone EEPROM.** An EEPROM imported on its own (File > Import, or a
-  file opened or dropped) is recognised as one and **opens in this editor
-  by itself**, instead of the hex editor; **Tools > EEPROM editor** brings
-  it back after you close it.
-- **Paired with a flash.** An EEPROM paired with a flash in the project (asked
-  when you import it into a project that holds the flash; automatic when both
-  are imported together) is that flash's EEPROM: with the flash in the tab,
-  the menu item opens it. See [An ECU's EEPROM in a
+**Tools > EEPROM editor...** is there only when the tab in front **is** an
+EEPROM or **stores** one; otherwise it is hidden. The editor opens no files.
+
+- **An EEPROM tab.** An EEPROM imported on its own (File > Import, or a file
+  opened or dropped) is recognised by its structure -- the module's layout --
+  not only by correct checksums, so an EEPROM edited elsewhere, with wrong
+  checksums, still loads (the editor then offers to correct them). It **opens in this
+  editor by itself**, instead of the hex editor; the menu item brings it back.
+- **A paired EEPROM.** An EEPROM paired with a flash in the project (asked when
+  you import it into a project that holds the flash; automatic when both are
+  imported together) is that flash's EEPROM: with the flash in the tab, the
+  menu item opens it. See [An ECU's EEPROM in a
   project](../projects.md#an-ecus-eeprom-in-a-project).
-- **From a file.** With no EEPROM in the tab, and none the project holds on its
-  own, the menu item asks for an EEPROM image (`.bin`, `.eep`, `.rom`). **Open...** in the editor opens
-  another one.
-- **From the car.** **Read EEPROM** in the flasher (EDC15) reads it into a
-  project -- a new one, or a new branch (*EEPROM read <date>*) of the EDC15
-  project in front -- and opens it here at once. See
-  [Reading](../flashing/reading.md).
+- **Stored in the file.** The EEPROM a `.dim`, `.edc15` or `.edc16` carries, a
+  full backup's, or an EEPROM read from the car in the flasher (EDC15: **Read
+  EEPROM**, into a project -- see [Reading](../flashing/reading.md)).
+
+**File > Export > EEPROM (.bin)...** writes the tab's stored EEPROM out as a
+plain image; the item is there only when the tab stores one.
 
 **Layout** at the top says which control unit's EEPROM it is. It is chosen
 from the image's size, and -- when two layouts could fit -- from which one's
@@ -79,10 +78,8 @@ Both layouts show an **Immobiliser** box above the fields with **On** and **Off*
 
 | Button | What it does |
 |---|---|
-| **Open...** | Opens another EEPROM image from disk; from then on the editor works on that file, not the project. |
-| **Apply** | For the EEPROM of a project's set: puts the edits into the tab as one undoable edit (**Edit > Undo** takes them out). **File > Save** keeps them in the project, flash and EEPROM together, as a new version. |
-| **Save** | Instead of **Apply**, for an EEPROM image opened from disk: writes that file. |
-| **Save As...** | Writes the EEPROM alone as a `.bin`. A project is not changed by it. |
+| **Apply** | Puts the edits into the tab as one undoable edit (**Edit > Undo** takes them out). **File > Save** keeps them in the project as a new version of its own, named for what changed (*EEPROM edit: VIN, Odometer*); with a paired flash it is a version of the flash's branch that changes only the EEPROM. |
+| **Export...** | Writes the EEPROM alone as a `.bin`. The tab and the project are not changed by it. |
 | **Revert** | Goes back to the EEPROM as it was opened or last applied or saved. |
 | The layout's own | EDC15: **Virginize...**. EDC16: **Correct checksums**. See each module's page. |
 | **Write to ECU...** | Opens the flasher with this EEPROM ready to write (EDC15; the flasher does not write an EDC16 EEPROM). |

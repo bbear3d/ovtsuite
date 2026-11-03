@@ -8549,13 +8549,56 @@ if HAVE_QT:
             set_last_dir(path, "export")
             self.statusBar().showMessage("Exported EEPROM to %s" % path, 6000)
 
+        def stored_eeprom(self):
+            """The EEPROM stored with this tab, or None: the tab itself when
+            it is an EEPROM image, a held backup EEPROM, the EEPROM a native
+            container carries (paired EEPROM included) or a .dim's EEPROM chunk."""
+            p = self.primary
+            if p is None:
+                return None
+            if self.is_eeprom_image():
+                return bytes(p.binfile.data)
+            held = getattr(self, "_eeprom", None)
+            if held is not None:
+                return bytes(held)
+            inner = self._container_eeprom()
+            if inner is not None:
+                return bytes(inner)
+            chunks = getattr(p, "_dim_chunks", None)
+            if chunks is not None:
+                from . import dim as dim_mod
+                try:
+                    return bytes(dim_mod.eeprom(chunks))
+                except Exception:
+                    return None
+            return None
+
+        def export_stored_eeprom(self):
+            """File > Export > EEPROM: the tab's stored EEPROM as a .bin."""
+            from .recent import get_last_dir, set_last_dir
+            data = self.stored_eeprom()
+            if data is None:
+                return
+            base = _os.path.splitext(self.primary.binfile.name)[0].replace(
+                " (unsaved)", "").replace(" [EEPROM]", "")
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Export EEPROM",
+                _os.path.join(get_last_dir("export"), base + "_EEPROM.bin"),
+                "EEPROM image (*.bin);;All files (*)")
+            path = _ensure_ext(path, ".bin")
+            if not path:
+                return
+            with open(path, "wb") as fh:
+                fh.write(data)
+            set_last_dir(path, "export")
+            self.statusBar().showMessage("Exported EEPROM to %s" % path, 6000)
+
         def _container_eeprom(self):
             """The EEPROM a loaded native container (.edc15 / .edc16) carries,
-            with any in-place edits (the hex editor's Region: EEPROM), or None.
-            A .dim's EEPROM has its own export (EEPROM (.dim)...)."""
+            or a .dim carries, with any in-place edits (the hex editor's
+            Region: EEPROM), or None."""
             p = self.primary
-            if (p is None or getattr(p, "_dim_chunks", None) is not None
-                    or not p.has_eeprom()):
+            if p is None or not p.has_eeprom():
                 return None
             return dict(p.region_buffers()).get(p.EEPROM_REGION)
 
@@ -8602,8 +8645,8 @@ if HAVE_QT:
 
         def open_eeprom_editor(self):
             """Tools > EEPROM editor: the EEPROM this tab holds (a backup's,
-            or the project set's EEPROM part) -- edits go back into it as one
-            undoable edit -- else an EEPROM image picked from disk."""
+            the project set's EEPROM part, one in a .edc15 / .edc16 / .dim, or
+            the tab itself) -- edits go back into it as one undoable edit."""
             from . import gui_eeprom
             from .recent import get_last_dir, set_last_dir
             if self.is_eeprom_image():
@@ -8635,21 +8678,9 @@ if HAVE_QT:
                 if dlg.data != self._container_eeprom():
                     self._container_eeprom_adopt(dlg.data)
                 return
-            # a flash with no EEPROM of its own: the project may hold one
-            # that was imported alone -- offer to pair it (and open it)
-            if self.project_ref is not None and _gp.offer_pair_eeprom(self):
-                return self.open_eeprom_editor()
-            path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, "Open an EEPROM image", get_last_dir("eeprom"),
-                gui_eeprom.FILTER)
-            if not path:
-                return
-            with open(path, "rb") as fh:
-                data = fh.read()
-            set_last_dir(_os.path.dirname(path), "eeprom")
-            dlg = gui_eeprom.open_editor(self, data, path=path)
-            if dlg is not None:
-                dlg.exec()
+            # (the menu item is only there when the tab stores an EEPROM)
+            QtWidgets.QMessageBox.information(
+                self, "EEPROM editor", "This tab stores no EEPROM.")
 
         def is_eeprom_image(self) -> bool:
             """This tab holds an ECU's EEPROM image itself (not a flash with
@@ -9811,6 +9842,7 @@ if HAVE_QT:
         def _make_actions(self):
             self._needs_file = []          # actions disabled with no file open
             self._conditional = []         # (action, predicate) -- disabled unless predicate() too
+            self._hide_when_na = set()     # ...of these, hidden (not just greyed) when it fails
             cw = lambda: self.current      # noqa: E731
             has_cmp = lambda: cw().comparison is not None   # noqa: E731
             bar = self.menuBar()
@@ -9910,8 +9942,8 @@ if HAVE_QT:
                       lambda: _gp.close_project(self, cw().project_ref.doc),
                       needs_file=True, enabled_when=in_project)
             # every export in one place, all made from the project (its last
-            # saved version -- offered to save first); items that do not
-            # apply stay listed but disabled, so the menu keeps its shape
+            # saved version -- offered to save first); an item that does not
+            # apply to the tab in front is hidden (_hide_when_na)
             x = self.export_menu = m.addMenu("&Export")
             self._needs_file.append(x.menuAction())
             in_proj = lambda: cw().project_ref is not None   # noqa: E731
@@ -9919,6 +9951,12 @@ if HAVE_QT:
                       needs_file=True).setToolTip(
                 "A plain image of one part of the set -- flash, MPC or EEPROM "
                 "-- as last saved")
+            self._act(x, "EEPROM (.bin)...", self._on_ws("export_stored_eeprom"),
+                      needs_file=True,
+                      enabled_when=lambda: cw().stored_eeprom() is not None
+                      ).setToolTip("The EEPROM stored with this tab (a paired "
+                                   "EEPROM, one in a .edc15 / .edc16 / .dim, "
+                                   "or the tab itself) as a plain image")
             self._act(x, "Original file (.sgo / .dim / .frf)...",
                       lambda: _gp.export_original(cw()), needs_file=True,
                       enabled_when=lambda: (in_proj()
@@ -9926,7 +9964,7 @@ if HAVE_QT:
                       ).setToolTip("The file the set was imported from, with "
                                    "the saved version in it (an edited .frf "
                                    "cannot be rebuilt yet)")
-            self._act(x, "PCMFlash file (flash + MPC)...",
+            self._act(x, "PCMFlash EDC16 File...",
                       lambda: _gp.export_pcmflash(cw()), needs_file=True,
                       enabled_when=lambda: (in_proj() and _gp.has_flash_and_mpc(cw()))
                       ).setToolTip("The external flash and the internal flash "
@@ -9952,6 +9990,9 @@ if HAVE_QT:
                           needs_file=True,
                           enabled_when=lambda k=kind: (
                               in_proj() and bool(_gp.kept(cw().project_ref.doc, k))))
+            for act in x.actions():
+                if act.text() != "Binary (.bin)..." and not act.isSeparator():
+                    self._hide_when_na.add(act)
             m.addSeparator()
             self._act(m, "New window", self.new_window).setToolTip(
                 "Start another %s in a window of its own (a project open in "
@@ -10277,15 +10318,23 @@ if HAVE_QT:
             self._sync_eeprom_act()
 
         def _sync_eeprom_act(self):
-            """Tools > EEPROM editor: an ECU EEPROM layout comes from a
-            module (EDC15, EDC16); without one the item says which."""
+            """Tools > EEPROM editor: only there when the tab in front is an
+            EEPROM image or stores one (a paired EEPROM, a .edc15 / .edc16 /
+            .dim's), and a module knows its layout (EDC15, EDC16)."""
             from . import gui_eeprom
-            ok = gui_eeprom.available()
-            self._ee_act.setEnabled(ok)
-            self._ee_act.setToolTip(
-                "The EEPROM of the tab's control unit (EDC15, EDC16), or an "
-                "EEPROM image from a file" if ok else
-                "Needs the Bosch EDC15 or EDC16 module (Tools > Modules...)")
+            act = getattr(self, "_ee_act", None)
+            if act is None:
+                return
+            ws = self.current
+            try:
+                stored = ws is not None and ws.primary is not None \
+                    and ws.stored_eeprom() is not None
+            except Exception:
+                stored = False
+            ok = stored and gui_eeprom.layouts_for(ws.stored_eeprom()) != []
+            act.setVisible(bool(ok))
+            act.setEnabled(bool(ok))
+            act.setToolTip("The EEPROM stored with this tab")
 
         def _toggle_program_area(self, checked):
             set_program_area_pref(bool(checked))
@@ -10312,9 +10361,29 @@ if HAVE_QT:
                     ok = has and bool(check())
                 except Exception:
                     ok = False
+                # (a hidden QAction reports itself disabled: decide from ok)
+                if a in getattr(self, "_hide_when_na", ()):
+                    a.setVisible(ok)
                 a.setEnabled(ok)
+            # (a menu with a separator at an end or two in a row shows
+            # no stray lines when items between them are hidden)
+            x = getattr(self, "export_menu", None)
+            if x is not None:
+                prev_sep = True
+                last = None
+                for a in x.actions():
+                    if a.isSeparator():
+                        a.setVisible(not prev_sep)
+                        if not prev_sep:
+                            last = a
+                        prev_sep = True
+                    elif a.isVisible():
+                        prev_sep = False
+                if prev_sep and last is not None:
+                    last.setVisible(False)
             from . import gui_viewonly as _vo
             _vo.restrict_actions(self, ws)
+            self._sync_eeprom_act()
             from . import gui_undomenu as _gum
             _gum.sync(self)
 

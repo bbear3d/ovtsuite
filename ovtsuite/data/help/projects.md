@@ -130,8 +130,8 @@ A closed project comes back with **File > Restore project from history** or
 ## An ECU's EEPROM in a project
 
 An EDC15 EEPROM (512 bytes) or an EDC16 EEPROM (4 KB) is recognised as one
-by its own structure -- the module knows its layout and the file's checksums
-must agree with it -- instead of being "an unrecognised binary". It is listed
+by its own structure -- the module knows its layout; the file's checksums need
+not be right -- instead of being "an unrecognised binary". It is listed
 as *Bosch EDC15 EEPROM* / *Bosch EDC16 EEPROM*, and File information shows what it
 holds (VIN, immobiliser, odometer ...). The Bosch EDC15 / EDC16 modules are needed
 for this.
@@ -155,8 +155,6 @@ Pairing is offered wherever the two meet:
   (with several flashes, you pick).
 - A flash imported into a project that holds an EEPROM of its unit on its own
   asks whether that EEPROM is this flash's.
-- **Tools > EEPROM editor** on a flash with no EEPROM, in a project that holds
-  one on its own, offers to pair it.
 - **Pair with a flash...** on the EEPROM's set in the Project panel.
 
 Pairing adds a version to the flash's branch (*Imported <file>*), so earlier

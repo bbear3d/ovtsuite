@@ -749,6 +749,20 @@ def _commit(ws, label="") -> bool:
             auto = src if src.startswith("AI: ") else "patch: %s" % src
         except ValueError:
             auto = "patch"
+    # EEPROM edits are versions of their own: a save that changed only the
+    # EEPROM (a paired one, or an EEPROM tab) is named for what changed in it,
+    # and one that changed it among other things says so in its log
+    if not (label or named) and kind == "save":
+        before = proj.state(ref.sid, head)
+        moved = {m for m, b in images.items() if before.get(m) != b}
+        ee = next((m.id for m in ref.set.members if m.role == "eeprom"), None)
+        if ee in moved:
+            from . import gui_eeprompair as _pair
+            what = _pair.describe_change(before.get(ee), images[ee])
+            if moved == {ee}:
+                auto = what
+            else:
+                lines = list(lines) + [what]
     proj.commit(ref.sid, ref.bid, images, label=label or named or auto,
                 kind=kind, log=lines)
     # tables resized in the tab (ovtsuite.resize) go with the version
@@ -1886,13 +1900,6 @@ def definition_placement(win, doc, sid) -> bool:
     reload_set(win, doc, sid)
     refresh_panel(win)
     return True
-
-
-def offer_pair_eeprom(ws) -> bool:
-    """Tools > EEPROM editor on a flash tab with no EEPROM: pair the project's
-    stand-alone EEPROM of its control unit with it, when there is one."""
-    from . import gui_eeprompair as _pair
-    return _pair.offer_pair_eeprom(ws)
 
 
 def reload_set(win, doc, sid):

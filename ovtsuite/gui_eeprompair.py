@@ -15,8 +15,7 @@ offered wherever the two meet:
 * importing an EEPROM and a flash in one go (paired without asking, or asked
   which flash when there are several),
 * importing a flash while the project holds an EEPROM image of its own,
-* Tools > EEPROM editor on a flash with no EEPROM when the project holds one
-  of its own, and the project panel's *Pair with a flash...*.
+* the project panel's *Pair with a flash...*.
 
 The project work is :mod:`ovtsuite.project.importers` (``pair_eeprom``,
 ``merge_eeprom_set``); this module asks the questions and brings the open
@@ -223,25 +222,6 @@ def pair_file(win, doc, flash_sid: str, data: bytes, filename: str) -> bool:
 
 
 # --------------------------------------------------- from the editor / panel
-def offer_pair_eeprom(ws) -> bool:
-    """Tools > EEPROM editor on a flash tab that has no EEPROM: when its
-    project holds an EEPROM of this control unit on its own, offer to pair
-    it. True when it was paired (the caller then opens the editor on it)."""
-    from .project import importers as _imp
-    from . import gui_project as _gp
-    ref = getattr(ws, "project_ref", None)
-    if ref is None or ref.set.platform not in _platforms.EEPROM_FOR:
-        return False
-    sets = _imp.standalone_eeprom_sets(ref.doc.project, ref.set.platform)
-    if not sets:
-        return False
-    got = ask_eeprom_for_flash(ws.win, ref.doc.project, ref.set.name,
-                               ref.set.platform, sets)
-    if not hasattr(got, "id"):
-        return False
-    return merge(ws.win, ref.doc, got.id, ref.set.id)
-
-
 def pair_with_flash(win, doc, eeprom_sid: str) -> bool:
     """Project panel: pair the EEPROM set with a flash set chosen from the
     project's flash sets of that control unit."""
@@ -322,3 +302,25 @@ def flash_met_eeprom(win, doc, proj, s, before, with_eeprom) -> bool:
         return False
     got = ask_eeprom_for_flash(win, proj, s.name, s.platform, alone)
     return hasattr(got, "id") and merge(win, doc, got.id, s.id)
+
+
+# ------------------------------------------------------------ version names
+def describe_change(old: bytes, new: bytes) -> str:
+    """"EEPROM edit: VIN, Immobiliser" -- the fields of the layout that fits
+    the EEPROM whose values differ between ``old`` and ``new`` (just "EEPROM
+    edit" when none can be told)."""
+    try:
+        from . import gui_eeprom
+        lays = gui_eeprom.layouts_for(bytes(new))
+        names = []
+        if lays and old is not None and len(old) == len(new):
+            lay = lays[0]
+            for f in lay.fields:
+                if lay.get(bytes(old), f) != lay.get(bytes(new), f):
+                    names.append(f.name)
+        if names:
+            more = "" if len(names) <= 4 else " +%d more" % (len(names) - 4)
+            return "EEPROM edit: %s%s" % (", ".join(names[:4]), more)
+    except Exception:
+        pass
+    return "EEPROM edit"

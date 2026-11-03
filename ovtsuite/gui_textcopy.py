@@ -3,7 +3,8 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Ctrl+C on selected text in a read-only text view.
+"""Ctrl+C on selected text in a read-only text view, and on the selected rows
+of a plain tree / list / table widget.
 
 Edit > Copy cells owns Ctrl+C for the whole main window. A text box you can
 type in (and a plain read-only ``QTextEdit``) tells Qt it wants that key
@@ -17,6 +18,12 @@ Select All) and the focused widget is such a view with text selected (or,
 for Select All, one that can select), the view keeps the key. Everything
 else -- a table in focus, a view with nothing selected -- is left to the
 window's own shortcut as before.
+
+Edit > Copy cells is for cells of a table, so a tree or list (the parameter
+tree, the Project panel, search results) that has the focus no longer
+"copies" a table selection it is not showing: Ctrl+C there copies its own
+selected rows as text (tab-separated columns, one row a line). Only Qt's own
+widget classes get this; a view that is a class of ours handles its keys.
 """
 
 from __future__ import annotations
@@ -49,9 +56,32 @@ def _has_selection(w) -> bool:
     return False
 
 
+def _plain_item_widget(w) -> bool:
+    return (isinstance(w, (QtWidgets.QTreeWidget, QtWidgets.QListWidget,
+                           QtWidgets.QTableWidget))
+            and type(w).__module__.startswith("PySide6"))
+
+
+def selected_rows_text(w) -> str:
+    """The selected rows of a plain tree / list / table widget as text."""
+    if isinstance(w, QtWidgets.QTreeWidget):
+        cols = w.columnCount()
+        return "\n".join("\t".join(it.text(c) for c in range(cols)).rstrip("\t")
+                         for it in w.selectedItems())
+    if isinstance(w, QtWidgets.QListWidget):
+        return "\n".join(it.text() for it in w.selectedItems())
+    rows = {}
+    for ix in w.selectedIndexes():
+        rows.setdefault(ix.row(), {})[ix.column()] = ix.data() or ""
+    return "\n".join("\t".join(str(r[c]) for c in sorted(r))
+                     for _k, r in sorted(rows.items()))
+
+
 def keeps_key(w, ev) -> bool:
     """Whether the key press ``ev`` (a ShortcutOverride) belongs to ``w``
     rather than to a window shortcut."""
+    if _plain_item_widget(w):
+        return ev.matches(_COPY) and bool(w.selectedIndexes())
     if not _selectable_text(w):
         return False
     if ev.matches(_COPY):
@@ -64,9 +94,15 @@ def keeps_key(w, ev) -> bool:
 
 class _Filter(QtCore.QObject):
     def eventFilter(self, obj, ev):
-        if ev.type() == QtCore.QEvent.Type.ShortcutOverride \
+        t = ev.type()
+        if t == QtCore.QEvent.Type.ShortcutOverride \
                 and isinstance(obj, QtWidgets.QWidget) and keeps_key(obj, ev):
             ev.accept()
+            return True
+        if t == QtCore.QEvent.Type.KeyPress and isinstance(obj, QtWidgets.QWidget) \
+                and _plain_item_widget(obj) and ev.matches(_COPY) \
+                and obj.selectedIndexes():
+            QtWidgets.QApplication.clipboard().setText(selected_rows_text(obj))
             return True
         return False
 

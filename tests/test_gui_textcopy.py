@@ -89,12 +89,39 @@ def test_selectable_label_selection_is_copied(window):
     assert window.hits == []
 
 
-def test_other_widgets_still_get_the_window_shortcut(window):
-    tbl = QtWidgets.QTableWidget(2, 2)
-    window.lay.addWidget(tbl)
+def test_a_tree_or_list_copies_its_own_rows_not_the_windows_cells(window):
+    tree = QtWidgets.QTreeWidget()
+    tree.setColumnCount(2)
+    tree.addTopLevelItem(QtWidgets.QTreeWidgetItem(["Map A", "12"]))
+    tree.addTopLevelItem(QtWidgets.QTreeWidgetItem(["Map B", "34"]))
+    lst = QtWidgets.QListWidget()
+    lst.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+    lst.addItems(["log 1.csv", "log 2.csv"])
+    window.lay.addWidget(tree)
+    window.lay.addWidget(lst)
     _show(window)
-    _copy(window, tbl)
-    assert window.hits == [1]
+    tree.topLevelItem(1).setSelected(True)
+    assert _copy(window, tree) == "Map B\t34"
+    lst.item(0).setSelected(True)
+    lst.item(1).setSelected(True)
+    assert _copy(window, lst) == "log 1.csv\nlog 2.csv"
+    assert window.hits == []
+
+
+def test_a_class_of_our_own_keeps_its_keys_and_a_table_is_left_to_the_window(window):
+    class Mine(QtWidgets.QTreeWidget):
+        pass
+    mine = Mine()
+    mine.addTopLevelItem(QtWidgets.QTreeWidgetItem(["x"]))
+    mine.topLevelItem(0).setSelected(True)
+    window.lay.addWidget(mine)
+    _show(window)
+    _copy(window, mine)
+    assert window.hits == [1]            # not claimed: its own code decides
+    view = QtWidgets.QTableView()
+    window.lay.addWidget(view)
+    _copy(window, view)
+    assert window.hits == [1, 1]
 
 
 def test_install_is_idempotent(app):

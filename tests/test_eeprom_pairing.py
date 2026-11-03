@@ -60,10 +60,6 @@ def test_non_eeprom_binaries_stay_unrecognised():
     for blob in (bytes(512), b"\xFF" * 512, os.urandom(512), b"\xFF" * 4096,
                  bytes(1000)):
         assert ident.identify(blob).platform == "unknown"
-    # a 512-byte file with one checksum byte wrong is not "its checksums agree"
-    bad = bytearray(eeprom15())
-    bad[0x4E] ^= 0xFF
-    assert ident.identify(bytes(bad)).platform == "unknown"
 
 
 def test_the_vin_names_the_project_information():
@@ -159,8 +155,10 @@ def test_an_eeprom_read_with_bad_checksums_is_still_an_eeprom_set():
     assert s.platform == "edc15eeprom"
     assert [(m.id, m.role) for m in s.members] == [("eeprom", "eeprom")]
     assert p.state(s.id, s.active.head)["eeprom"] == bytes(bad)
-    # without the hint the same bytes are no known binary
-    assert imp.import_read(Project("y"), bytes(bad), "x").platform == "unknown"
+    # wrecked past what its structure shows, the read's own say-so still holds
+    worse = bytes(512)
+    t = imp.import_read(Project("y"), worse, "x", eeprom_of="edc15")
+    assert t.platform == "edc15eeprom"
 
 
 def test_a_project_saved_before_eeprom_sets_adopts_them_on_open():
@@ -174,3 +172,24 @@ def test_a_project_saved_before_eeprom_sets_adopts_them_on_open():
     st = p.state(s.id, s.active.head)
     assert sb.set_platform(p, s.id, st) == "edc15eeprom"
     assert s.members[0].role == "eeprom"
+
+
+def test_eeprom_with_wrong_checksums_is_still_recognised_by_its_structure():
+    good = eeprom15()
+    for wrecked in ((0x4E,), (0x4E, 0x5C, 0x67, 0x5D, 0x5E),
+                    (0x4E, 0x5C, 0x67, 0x5D, 0x5E, 0x5F, 0x64, 0x65, 0x66, 0x69, 0xC7)):
+        bad = bytearray(good)
+        for c in wrecked:
+            bad[c] ^= 0x55
+        assert ident.identify(bytes(bad)).platform == "edc15eeprom", wrecked
+    # EDC16: damaged checksum words on most blocks
+    e16 = bytearray(eeprom16())
+    for base in (0x40, 0xE0, 0x100, 0x120):
+        e16[base + 30] ^= 0x11
+    assert ident.identify(bytes(e16)).platform == "edc16eeprom"
+
+
+def test_things_that_are_not_eeproms_stay_unrecognised_with_the_loose_rule():
+    for blob in (os.urandom(512), os.urandom(4096), bytes(512), b"\xFF" * 512,
+                 bytes(range(256)) * 2, bytes(range(256)) * 16):
+        assert ident.identify(blob).platform == "unknown"
