@@ -18,6 +18,7 @@ from ovtsuite import platforms  # noqa: E402
 from ovtsuite.platforms import identify as ident  # noqa: E402
 from ovtsuite.project import Project  # noqa: E402
 from ovtsuite.project import importers as imp  # noqa: E402
+from ovtsuite.project import companions as co  # noqa: E402
 
 edc15 = pytest.importorskip("ovtsuite.edc15.eeprom15")
 edc16 = pytest.importorskip("ovtsuite.edc16.eeprom16")
@@ -77,22 +78,21 @@ def test_import_makes_a_set_of_its_own_holding_the_eeprom():
     assert imp.standalone_eeprom_sets(p, "edc15") == [s]
 
 
-def test_pairing_an_eeprom_with_a_flash_set():
+def test_pairing_an_eeprom_with_a_flash_set_links_a_companion():
     p = Project("x")
     fl = imp.import_bytes(p, flash15(), "flash.bin")
     assert fl.platform == "edc15"
     assert imp.flash_sets_for(p, "edc15") == [fl]
     out = imp.pair_eeprom(p, fl.id, eeprom15(), "car.bin")
-    assert out is fl
-    assert fl.member("eeprom").role == "eeprom"
-    st = p.state(fl.id, fl.active.head)
-    assert st["eeprom"] == eeprom15() and len(st["flash"]) == 0x80000
-    # the older version of the branch has no EEPROM, the newer one has
-    assert "eeprom" not in p.state(fl.id, fl.active.head and fl.checkpoints[0].id)
-    # a second EEPROM replaces it as a new version; history keeps both
+    assert out is fl and fl.member("eeprom") is None       # not a part of the flash
+    (comp,) = [s for s in p.sets if s.platform == "edc15eeprom"]
+    assert co.links(p, fl.id) == {"eeprom": comp}
+    assert co.injected(p, fl.id) == {"eeprom": eeprom15()}
+    # a second EEPROM replaces the link; the first stays a set of its own
     other = eeprom15(vin=b"WVWZZZ1JZ3W000002")
     imp.pair_eeprom(p, fl.id, other, "car2.bin")
-    assert p.state(fl.id, fl.active.head)["eeprom"] == other
+    assert co.injected(p, fl.id) == {"eeprom": other}
+    assert imp.standalone_eeprom_sets(p, "edc15") == [comp]
 
 
 def test_pairing_refuses_another_control_units_eeprom():
@@ -102,14 +102,18 @@ def test_pairing_refuses_another_control_units_eeprom():
         imp.pair_eeprom(p, fl.id, b"\x00" * 100, "junk.bin")
 
 
-def test_a_standalone_eeprom_set_merges_into_a_flash_set():
+def test_a_standalone_eeprom_set_links_to_a_flash_set_and_stays_a_set():
     p = Project("x")
     e = imp.import_bytes(p, eeprom15(), "car.bin")
     fl = imp.import_bytes(p, flash15(), "flash.bin")
     out = imp.merge_eeprom_set(p, e.id, fl.id)
-    assert out is fl and e not in p.sets
-    assert p.state(fl.id, fl.active.head)["eeprom"] == eeprom15()
-    assert imp.standalone_eeprom_sets(p) == []
+    assert out is fl and e in p.sets
+    assert co.injected(p, fl.id)["eeprom"] == eeprom15()
+    assert imp.standalone_eeprom_sets(p) == []          # linked now
+    # one companion serves several flashes
+    fl2 = imp.import_bytes(p, flash15(), "flash2.bin")
+    imp.merge_eeprom_set(p, e.id, fl2.id)
+    assert {s.id for s in co.flashes_using(p, e.id)} == {fl.id, fl2.id}
 
 
 def test_round_trip_through_the_project_file():
@@ -118,9 +122,9 @@ def test_round_trip_through_the_project_file():
     imp.pair_eeprom(p, fl.id, eeprom15(), "car.bin")
     imp.import_bytes(p, eeprom15(vin=b"WVWZZZ1JZ3W000009"), "other.bin")
     q = Project.from_bytes(p.to_bytes())
-    assert sorted(s.platform for s in q.sets) == ["edc15", "edc15eeprom"]
+    assert sorted(s.platform for s in q.sets) == ["edc15", "edc15eeprom", "edc15eeprom"]
     f2 = next(s for s in q.sets if s.platform == "edc15")
-    assert q.state(f2.id, f2.active.head)["eeprom"] == eeprom15()
+    assert co.injected(q, f2.id)["eeprom"] == eeprom15()
 
 
 def test_an_edc16_eeprom_is_recognised_and_pairs_with_an_edc16_flash():

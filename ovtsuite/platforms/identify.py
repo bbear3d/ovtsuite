@@ -23,7 +23,10 @@ do (2,000+ images, see docs/MODULES_PLAN.md):
 9. an ECU's own EEPROM (512 bytes EDC15, 4 KB EDC16) whose installed module's
    layout finds its structure -- an ``edc15eeprom`` / ``edc16eeprom``
    (never a flash: no module builds a tree from it, the EEPROM editor opens it);
-10. otherwise **unknown**. Nothing is forced into a platform by elimination.
+10. otherwise **unknown**.
+
+(The EDC16 internal flash -- ``edc16mpc`` -- is tested just before EDC16: it
+carries the same descriptor, but a vector table at 0 and a smaller size.) Nothing is forced into a platform by elimination.
 """
 
 from dataclasses import dataclass, field
@@ -110,6 +113,9 @@ def _facts(pid: str, data: bytes) -> Dict[str, str]:
             if i.get("system"):
                 out["system"] = i["system"]
             return out
+        if pid == "edc16mpc":
+            i = _edc16.mpc_ident(data)
+            return {"part": i["hw"], "software": i["software"]} if i else {}
         if pid == "edc17":
             i = _edc17.ident(data) or {}
             out = {k: i[k] for k in ("software", "part") if i.get(k)}
@@ -152,7 +158,7 @@ def identify(data: bytes, container_kind: Optional[str] = None,
                       ("zf8hp", _zf8hp.detect), ("zf6hp", _zf6hp.detect),
                       ("zf5hp", _zf5hp.detect),
                       ("aisin", _aisin.detect), ("edc17", _edc17.detect),
-                      ("edc16", _edc16.detect)):
+                      ("edc16mpc", _edc16.is_mpc), ("edc16", _edc16.detect)):
         if test(data):
             return Identity(pid, "structure", _facts(pid, data))
     pid = eeprom_platform(data)

@@ -449,7 +449,7 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
         from ..platforms import zf5hp as _z5p
         if _z5p.byte_swapped(data):
             ident = _identify(_z5p.swap16(data))
-    from ..platforms import is_eeprom as _is_eeprom
+    from ..platforms import is_companion as _is_eeprom
     if _is_eeprom(ident.platform):
         return _import_eeprom(project, data, ident, filename, into_set, branch,
                               sidecar_log)
@@ -475,74 +475,71 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
 
 def _import_eeprom(project, data, ident, filename, into_set, branch,
                    sidecar_log):
-    """A control unit's EEPROM image (EDC15 512 bytes, EDC16 4 KB).
-
-    Into a set of that control unit's flash (``into_set``) it becomes that
-    set's EEPROM -- the companion the EEPROM editor opens beside the flash
-    (:func:`pair_eeprom`). Otherwise it is a set of its own, one ``eeprom``
-    member, which opens straight in the EEPROM editor and can be paired with
-    a flash later (:func:`merge_eeprom_set`)."""
-    from ..platforms import EEPROM_OF
-    if into_set is not None:
-        target = project.set(into_set)
-        if target.platform == EEPROM_OF[ident.platform]:
-            return pair_eeprom(project, target.id, data, filename)
+    """A control unit's EEPROM image (EDC15 512 bytes, EDC16 4 KB) or an EDC16
+    internal flash (MPC): a **companion** -- a set of its own, one ``eeprom`` /
+    ``mpc`` member, with its own versions, tab and exports. Into a flash set of
+    the same control unit (``into_set``) it is also linked to it
+    (:func:`pair_eeprom`); otherwise it can be linked later
+    (:func:`merge_eeprom_set`)."""
+    from ..platforms import COMPANION_OF
+    ecu, role = COMPANION_OF[ident.platform]
     s = _new_or_existing_set(project, None, ident.platform, filename,
                              ident.facts)
-    if s.member("eeprom") is None:
-        project.add_member(s.id, _member("eeprom", "eeprom", ident.platform))
-    _add_history(project, s.id, {"eeprom": bytes(data)}, sidecar_log or "",
+    if s.member(role) is None:
+        project.add_member(s.id, _member(role, role, ident.platform))
+    _add_history(project, s.id, {role: bytes(data)}, sidecar_log or "",
                  root_kind="import", root_label="Imported %s" % filename,
                  source={"file": filename, "format": "bin"}, branch=branch)
+    if into_set is not None:
+        target = project.set(into_set)
+        if target.platform == ecu:
+            from . import companions as _co
+            _co.link(project, target.id, s.id)
+            return target
     return s
 
 
 def pair_eeprom(project: Project, sid: str, data: bytes, filename: str = "", *,
                 label: str = ""):
-    """Make ``data`` (an EEPROM image of the same control unit) the EEPROM of
-    flash set ``sid``: a new version of the set's active branch whose
-    ``eeprom`` member is the image (the member is added when the set has
-    none; one that has an EEPROM gets it replaced, and the older version
-    keeps the old one). Returns the set. ImportRefused when the image is no
-    EEPROM of this set's control unit."""
-    from ..platforms import EEPROM_OF
+    """Import ``data`` (an EEPROM / MPC image of the same control unit) as a
+    companion set and link it to flash set ``sid`` -- replacing the companion
+    that flash had in that role (it stays in the project as a set of its own).
+    Returns the flash set. ImportRefused when the image is no companion of
+    this set's control unit."""
+    from ..platforms import COMPANION_OF
+    from . import companions as _co
     ident = _identify(bytes(data))
     s = project.set(sid)
-    if EEPROM_OF.get(ident.platform) != s.platform:
+    want = COMPANION_OF.get(ident.platform)
+    if want is None or want[0] != s.platform:
         raise ImportRefused(
-            "%s is not an EEPROM of %s (%s)" % (
+            "%s is not an EEPROM or internal flash of %s (%s)" % (
                 filename or "this file", s.name,
                 ident.describe() if ident.known else "unrecognised"))
-    if s.member("eeprom") is None:
-        project.add_member(s.id, _member("eeprom", "eeprom", s.platform))
-    project.commit(s.id, None, {"eeprom": bytes(data)}, kind="import",
-                   label=label or "Imported %s" % (filename or "EEPROM"),
-                   source={"file": filename, "format": "bin"})
+    c = _import_eeprom(project, data, ident, filename, None, "Stock", None)
+    _co.link(project, s.id, c.id)
     return s
 
 
 def merge_eeprom_set(project: Project, eeprom_sid: str, flash_sid: str):
-    """Pair the stand-alone EEPROM set ``eeprom_sid`` with flash set
-    ``flash_sid``: its EEPROM becomes the flash set's (:func:`pair_eeprom`)
-    and the stand-alone set goes. Returns the flash set."""
-    e = project.set(eeprom_sid)
-    main = next((m for m in e.members if m.role == "eeprom"), None) \
-        or (e.members[0] if e.members else None)
-    if main is None:
-        raise ImportRefused("%s holds no EEPROM" % e.name)
-    data = project.state(e.id, e.active.head)[main.id]
-    name = e.name
-    out = pair_eeprom(project, flash_sid, data, name)
-    project.remove_set(e.id)
-    return out
+    """Link the companion set ``eeprom_sid`` to flash set ``flash_sid``. The
+    companion stays a set of its own. Returns the flash set."""
+    from . import companions as _co
+    try:
+        _co.link(project, flash_sid, eeprom_sid)
+    except ValueError as ex:
+        raise ImportRefused(str(ex))
+    return project.set(flash_sid)
 
 
 def standalone_eeprom_sets(project: Project, ecu: Optional[str] = None):
-    """The sets that are just an EEPROM image (no flash), optionally only
-    those of control unit ``ecu`` (``"edc15"`` / ``"edc16"``)."""
-    from ..platforms import EEPROM_OF
-    return [s for s in project.sets if s.platform in EEPROM_OF
-            and (ecu is None or EEPROM_OF[s.platform] == ecu)]
+    """The companion sets (EEPROMs, MPCs) that no flash links yet, optionally
+    only those of control unit ``ecu`` (``"edc15"`` / ``"edc16"``)."""
+    from ..platforms import COMPANION_OF
+    from . import companions as _co
+    return [c for c in project.sets if c.platform in COMPANION_OF
+            and (ecu is None or COMPANION_OF[c.platform][0] == ecu)
+            and not _co.flashes_using(project, c.id)]
 
 
 def flash_sets_for(project: Project, ecu: str):
@@ -786,7 +783,18 @@ def definition_type(data: bytes) -> Optional[str]:
 
 
 # --------------------------------------------------------------- public API
-def import_bytes(project: Project, data: bytes, filename: str, *,
+def import_bytes(project: Project, data: bytes, filename: str, **kw):
+    """Import one file's bytes into ``project`` (see :func:`_import_bytes`);
+    an EDC15 / EDC16 flash that came with an EEPROM or an internal flash (a
+    .dim, a PCMFlash file, a backup) has them split out as companion sets,
+    linked to it."""
+    s = _import_bytes(project, data, filename, **kw)
+    from . import companions as _co
+    _co.split(project, s.id)
+    return s
+
+
+def _import_bytes(project: Project, data: bytes, filename: str, *,
                  into_set: Optional[str] = None, branch: str = "",
                  sidecar_log: Optional[str] = None,
                  definition: Optional[Tuple[str, bytes]] = None,
@@ -912,6 +920,8 @@ def import_read(project: Project, data: bytes, name: str, *,
     _ensure_members(project, s, specs)
     project.add_root(s.id, images, kind="read", label=label, source=src,
                      branch="Stock" if into_set is None else label)
+    from . import companions as _co
+    _co.split(project, s.id)
     return s
 
 

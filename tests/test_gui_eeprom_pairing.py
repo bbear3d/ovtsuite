@@ -27,6 +27,7 @@ from ovtsuite import gui_eeprompair as pair  # noqa: E402
 from ovtsuite import gui_files as gf  # noqa: E402
 from ovtsuite.project import Project  # noqa: E402
 from ovtsuite.project import importers as imp  # noqa: E402
+from ovtsuite.project import companions as co  # noqa: E402
 from ovtsuite import project as ovt  # noqa: E402
 from ovtsuite.project import autosave as _as  # noqa: E402
 
@@ -148,9 +149,9 @@ def test_eeprom_imported_with_a_flash_pairs_without_asking(
     made, paired = gf._import_each(win, proj, [e, f])          # EEPROM listed first
     assert [s.platform for _p, s in made] == ["edc15"]
     assert [p for p, _s in paired] == [e]
-    assert len(proj.sets) == 1
-    s = proj.sets[0]
-    assert proj.state(s.id, s.active.head)["eeprom"] == eeprom15()
+    assert len(proj.sets) == 2                   # the flash and its companion
+    s = made[0][1]
+    assert co.injected(proj, s.id)["eeprom"] == eeprom15()
 
 
 def test_eeprom_imported_beside_one_flash_in_the_project_asks_to_pair_it(
@@ -168,8 +169,8 @@ def test_eeprom_imported_beside_one_flash_in_the_project_asks_to_pair_it(
     made, paired = gf._import_each(win, proj, [e], doc=doc)
     assert made == [] and [s for _p, s in paired] == [fl]
     assert asked and "companion" in asked[0][0] and asked[0][1] == ["flash"]
-    assert proj.state(fl.id, fl.active.head)["eeprom"] == eeprom15()
-    assert len(proj.sets) == 1
+    assert co.injected(proj, fl.id)["eeprom"] == eeprom15()
+    assert len(proj.sets) == 2
 
 
 def test_declining_keeps_the_eeprom_a_set_of_its_own(win, tmp_path, monkeypatch):
@@ -180,7 +181,7 @@ def test_declining_keeps_the_eeprom_a_set_of_its_own(win, tmp_path, monkeypatch)
     e = _write(tmp_path, "ee.bin", eeprom15())
     made, paired = gf._import_each(win, proj, [e], doc=doc)
     assert paired == [] and [s.platform for _p, s in made] == ["edc15eeprom"]
-    assert fl.member("eeprom") is None
+    assert co.links(proj, fl.id) == {}
 
 
 def test_cancelling_leaves_the_eeprom_out(win, tmp_path, monkeypatch):
@@ -208,7 +209,7 @@ def test_several_flashes_ask_which_one(win, tmp_path, monkeypatch):
     made, paired = gf._import_each(win, proj, [e], doc=doc)
     assert "more than one" in seen[0][0] and len(seen[0][1]) == 2
     assert [s for _p, s in paired] == [b]
-    assert b.member("eeprom") is not None and a.member("eeprom") is None
+    assert "eeprom" in co.links(proj, b.id) and co.links(proj, a.id) == {}
 
 
 def test_a_flash_imported_beside_a_lone_eeprom_asks_to_pair_it(
@@ -229,31 +230,9 @@ def test_a_flash_imported_beside_a_lone_eeprom_asks_to_pair_it(
     made, paired = gf._import_each(win, proj, [f], doc=doc)
     assert asked and "on its own" in asked[0]
     assert [s.platform for _p, s in made] == ["edc15"]
-    assert e not in proj.sets and len(proj.sets) == 1
+    assert e in proj.sets and len(proj.sets) == 2
     s = made[0][1]
-    assert proj.state(s.id, s.active.head)["eeprom"] == eeprom15()
-
-
-def test_pairing_waits_for_unsaved_edits(win, tmp_path, monkeypatch):
-    class Tab:
-        project_ref = type("R", (), {"sid": None})()
-
-        def is_dirty(self):
-            return True
-
-        def tab_label(self):
-            return "tab"
-    proj = Project("p")
-    fl = imp.import_bytes(proj, flash15(), "flash.bin")
-    doc = _doc(win, proj)
-    tab = Tab()
-    tab.project_ref.sid = fl.id
-    monkeypatch.setattr(type(doc), "tabs", lambda self, w: [tab])
-    told = []
-    monkeypatch.setattr(QtWidgets.QMessageBox, "information",
-                        staticmethod(lambda *a, **k: told.append(a[2])))
-    assert pair.pair_file(win, doc, fl.id, eeprom15(), "ee.bin") is False
-    assert told and "unsaved" in told[0] and fl.member("eeprom") is None
+    assert co.injected(proj, s.id)["eeprom"] == eeprom15()
 
 
 # --------------------------------------------- renaming in the Project panel
@@ -369,3 +348,17 @@ def test_saving_an_eeprom_edit_is_a_version_named_for_it(win, tmp_path, monkeypa
     assert gp._commit(ws)
     s = ws.project_ref.set
     assert s.checkpoint(s.active.head).label == "EEPROM edit: VIN"
+
+
+def test_opening_an_older_project_splits_its_eeprom_and_mpc_without_opening_tabs(win):
+    from test_companions import flash16, mpc_image, eeprom16
+    from ovtsuite.project.model import Member
+    proj = Project("old")
+    s = proj.add_set("old", platform="edc16")
+    for mid in ("flash", "mpc", "eeprom"):
+        proj.add_member(s.id, Member(id=mid, role=mid, platform="edc16"))
+    proj.add_root(s.id, {"flash": flash16(), "mpc": mpc_image(), "eeprom": eeprom16()},
+                  kind="import", label="Imported old.dim")
+    doc = _doc(win, proj)
+    assert len(proj.sets) == 3 and len(co.links(proj, s.id)) == 2
+    assert doc.tabs(win) == []                       # nothing was opened

@@ -100,6 +100,9 @@ PLATFORMS: Dict[str, Platform] = {p.id: p for p in (
     # something the EEPROM editor opens and that pairs with the ECU's flash.
     Platform("edc15eeprom", "Bosch EDC15 EEPROM", "EDC15 EEPROM", "", 1, ()),
     Platform("edc16eeprom", "Bosch EDC16 EEPROM", "EDC16 EEPROM", "", 1, ()),
+    # The EDC16 control unit's internal (MPC5xx) flash on its own: a companion
+    # of an EDC16 flash, versioned and exported by itself.
+    Platform("edc16mpc", "Bosch EDC16 MPC (internal flash)", "EDC16 MPC", "edc16", 1, ()),
     Platform("unknown", "Unrecognised binary", "?", "", 1, ()),
 )}
 
@@ -109,6 +112,23 @@ UNKNOWN = "unknown"
 EEPROM_OF = {"edc15eeprom": "edc15", "edc16eeprom": "edc16"}
 #: ...and back: flash platform id -> its EEPROM platform id.
 EEPROM_FOR = {v: k for k, v in EEPROM_OF.items()}
+
+
+#: Companion platform id -> (the flash platform it belongs to, the member role
+#: it takes in that flash's container). A companion is a set of its own, linked
+#: from the flash set it goes with (Project.link_companion).
+COMPANION_OF = {"edc15eeprom": ("edc15", "eeprom"),
+                "edc16eeprom": ("edc16", "eeprom"),
+                "edc16mpc": ("edc16", "mpc")}
+
+
+def is_companion(pid: str) -> bool:
+    return pid in COMPANION_OF
+
+
+def companion_roles(flash_pid: str):
+    """The roles (``eeprom``, ``mpc``) a flash of ``flash_pid`` takes."""
+    return [r for f, r in COMPANION_OF.values() if f == flash_pid]
 
 
 def is_eeprom(pid: str) -> bool:

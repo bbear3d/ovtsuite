@@ -30,7 +30,7 @@ SET_KINDS = ("ecu", "tcu", "cluster", "hvac", "other")
 #: Platform -> set kind, for a new set's default.
 PLATFORM_SET_KIND = {
     "edc16": "ecu", "edc15": "ecu",
-    "edc16eeprom": "ecu", "edc15eeprom": "ecu",
+    "edc16eeprom": "ecu", "edc15eeprom": "ecu", "edc16mpc": "ecu",
     "zf6hp": "tcu", "zf8hp": "tcu", "aisin": "tcu",
     "vdo": "cluster", "hvac": "hvac",
 }

@@ -127,40 +127,41 @@ project...**, or drop it on the window and pick **Import into <project>**.
 A closed project comes back with **File > Restore project from history** or
 **File > Reopen last closed project** (Ctrl+Shift+T), with the tabs it had.
 
-## An ECU's EEPROM in a project
+## An ECU's EEPROM and internal flash in a project
 
-An EDC15 EEPROM (512 bytes) or an EDC16 EEPROM (4 KB) is recognised as one
-by its own structure -- the module knows its layout; the file's checksums need
-not be right -- instead of being "an unrecognised binary". It is listed
-as *Bosch EDC15 EEPROM* / *Bosch EDC16 EEPROM*, and File information shows what it
-holds (VIN, immobiliser, odometer ...). The Bosch EDC15 / EDC16 modules are needed
-for this.
+An EDC15 EEPROM (512 bytes), an EDC16 EEPROM (4 KB) and an EDC16 internal flash
+(**MPC**, 0x81000 bytes) are recognised by their own structure -- the module
+knows the layout; an EEPROM's checksums need not be right -- instead of being
+"an unrecognised binary". Each is a **companion**: a set of its own, with its
+own versions and branches, its own tab, exported on its own (**File > Export >
+EEPROM (.bin)...** / **MPC / internal flash (.bin)...**). The EEPROM opens in
+the [EEPROM editor](tools/eeprom.md), an MPC in the hex editor.
 
-- **On its own** (a set of its own, no flash beside it) it opens in the
-  [EEPROM editor](tools/eeprom.md), not the hex editor, every time you open
-  it. **Tools > Hex editor** is still there for the raw bytes. Edits you
-  **Apply** (or leave in the editor when you close it) are one undoable edit
-  in its tab, and **File > Save** keeps them in the project.
-- **Paired with a flash** it is the `EEPROM` part of the flash's set. The
-  flash's tab then opens it from **Tools > EEPROM editor**: no file to pick.
-  Saving the tab saves flash and EEPROM together, as one version.
+A companion is **linked** to a flash set of the same control unit (an EDC15
+EEPROM to an EDC15 flash; an EDC16 EEPROM or MPC to an EDC16 flash; nothing
+else matches). The flash **follows the companion's latest version**: its tab
+holds the companion in its EEPROM / MPC part, and **Tools > EEPROM editor** on
+the flash edits it -- saved as a new version of the *companion*, never of the
+flash. One companion can serve several flashes (the stock EEPROM under every
+tune). Flasher, PCMFlash export and the original `.dim` rebuild use the linked
+companions' latest versions.
 
-Pairing is offered wherever the two meet:
+Where links are made:
 
-- **File > Import > Into this project...** (or **Add files to the project**)
-  with an EEPROM, when the project already holds that control unit's flash:
-  *Import it as the companion of ...?* -- with several flashes you pick which.
-  **Import it separately** keeps it a set of its own.
-- An EEPROM and a flash imported **together** are paired without a question
-  (with several flashes, you pick).
-- A flash imported into a project that holds an EEPROM of its unit on its own
-  asks whether that EEPROM is this flash's.
-- **Pair with a flash...** on the EEPROM's set in the Project panel.
-
-Pairing adds a version to the flash's branch (*Imported <file>*), so earlier
-versions keep the EEPROM they had; pairing a second EEPROM replaces it in a
-new version. A tab with unsaved changes is asked to be saved first.
-An EEPROM of another control unit is refused.
+- A `.dim`, a PCMFlash file or a backup is imported as the flash set **plus** its
+  EEPROM and MPC as companion sets, already linked; only the flash opens in a
+  tab. Projects from before are split the same way when they are opened (and
+  saved with the project's next Save).
+- **File > Import > Into this project...** (or **Add files to the project**) with
+  an EEPROM or MPC, when the project holds that control unit's flash: *Import it
+  as the companion of ...?* -- with several flashes you pick which. **Import it
+  separately** keeps it unlinked.
+- An EEPROM or MPC and a flash imported **together** are linked without a
+  question. A flash imported into a project that holds an unlinked companion of
+  its unit asks whether to link it.
+- **Pair with a flash...** on a companion's set in the Project panel; **Unlink
+  from ...** takes the link away (the companion stays); a flash's set menu lists
+  **Open <companion>**.
 
 ## Comparing
 

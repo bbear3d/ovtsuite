@@ -7499,6 +7499,9 @@ if HAVE_QT:
                 # editor (which stays on Tools > Hex editor)
                 self.open_own_eeprom_editor()
                 return
+            if getattr(loaded, "platform", "") == "edc16mpc":
+                self.open_hex()             # an internal flash: bytes (and its checksum)
+                return
             reason = (getattr(loaded, "unsupported_reason", None)
                       or "This binary has no parameter definition.")
             box = QtWidgets.QMessageBox(self)
@@ -8572,6 +8575,39 @@ if HAVE_QT:
                 except Exception:
                     return None
             return None
+
+        def stored_mpc(self):
+            """The internal flash (MPC) stored with this tab (a .dim's, a
+            linked companion's, the tab itself when it is one), or None."""
+            p = self.primary
+            if p is None:
+                return None
+            if p.platform == "edc16mpc":
+                return bytes(p.binfile.data)
+            try:
+                buf = dict(p.region_buffers()).get(p.MPC_REGION)
+            except Exception:
+                buf = None
+            return bytes(buf) if buf else None
+
+        def export_stored_mpc(self):
+            """File > Export > MPC: the tab's stored internal flash as a .bin."""
+            from .recent import get_last_dir, set_last_dir
+            data = self.stored_mpc()
+            if data is None:
+                return
+            base = _os.path.splitext(self.primary.binfile.name)[0].replace(
+                " (unsaved)", "")
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Export MPC", _os.path.join(get_last_dir("export"), base + "_MPC.bin"),
+                "Internal flash (*.bin *.mpc);;All files (*)")
+            path = _ensure_ext(path, ".bin")
+            if not path:
+                return
+            with open(path, "wb") as fh:
+                fh.write(data)
+            set_last_dir(path, "export")
+            self.statusBar().showMessage("Exported MPC to %s" % path, 6000)
 
         def export_stored_eeprom(self):
             """File > Export > EEPROM: the tab's stored EEPROM as a .bin."""
@@ -9957,6 +9993,11 @@ if HAVE_QT:
                       ).setToolTip("The EEPROM stored with this tab (a paired "
                                    "EEPROM, one in a .edc15 / .edc16 / .dim, "
                                    "or the tab itself) as a plain image")
+            self._act(x, "MPC / internal flash (.bin)...",
+                      self._on_ws("export_stored_mpc"), needs_file=True,
+                      enabled_when=lambda: cw().stored_mpc() is not None
+                      ).setToolTip("The internal flash stored with this tab "
+                                   "(a linked MPC, a .dim's, or the tab itself)")
             self._act(x, "Original file (.sgo / .dim / .frf)...",
                       lambda: _gp.export_original(cw()), needs_file=True,
                       enabled_when=lambda: (in_proj()

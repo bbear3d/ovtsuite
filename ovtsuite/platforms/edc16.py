@@ -50,3 +50,36 @@ def pad_cal_only(data: bytes) -> bytes:
 def find_cal_marker(data: bytes, start: int = 0, end: int = None) -> int:
     """Offset of the calibration marker within ``[start, end)``, or -1."""
     return data.find(CAL_MARKER, start, len(data) if end is None else end)
+
+
+#: The EDC16U31/U34 internal (MPC5xx) flash: 512 KiB of PowerPC code, a vector
+#: table at 0, and the CAFEAFFE descriptor at 0x403C -- as a plain file it is
+#: 0x81000 bytes (4 KiB of 0xFF after the flash), some tools save 0x80100.
+MPC_MIN, MPC_MAX = 0x80000, 0x81000
+MPC_DESCRIPTOR_AT = 0x403C
+MPC_IDENT_AT = 0x4010
+
+
+def is_mpc(data: bytes) -> bool:
+    """An EDC16 internal-flash (MPC) image, by structure: the right size, a
+    PowerPC exception table at 0 (``b``/``bl`` words every 8 bytes, a zero word
+    between them), and the descriptor at 0x403C. Told from an external flash
+    by the vector table, which no calibration image has at its start."""
+    if not MPC_MIN <= len(data) <= MPC_MAX:
+        return False
+    if data[MPC_DESCRIPTOR_AT:MPC_DESCRIPTOR_AT + 8] != b"\xFA\xDE\xCA\xFE" + DESCRIPTOR:
+        return False
+    for i in range(0, 0x40, 8):
+        w = int.from_bytes(data[i:i + 4], "big")
+        if w >> 26 != 18 or data[i + 4:i + 8] != b"\0\0\0\0":
+            return False
+    return True
+
+
+def mpc_ident(data: bytes) -> dict:
+    """``{"hw": "1037391503", "software": "P475AAXE"}`` from the ident string
+    at 0x4010 (empty when it is not there)."""
+    raw = bytes(data[MPC_IDENT_AT:MPC_IDENT_AT + 18])
+    if len(raw) == 18 and raw[:10].isdigit() and raw[10:].isalnum():
+        return {"hw": raw[:10].decode(), "software": raw[10:].decode()}
+    return {}

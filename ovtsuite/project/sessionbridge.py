@@ -130,13 +130,18 @@ def working_file(project: Project, sid: str, state: Images, *,
     cont = _c.Container(fmt)
     if log:
         cont.add(_c.BLOCK_LOG, log.encode("utf-8"))
+    from . import companions as _co
+    comp = _co.injected(project, sid)       # linked EEPROM / MPC: their heads
     for m in s.members:
         btype = role_block.get(m.role)
-        if btype is None or m.id not in state:
+        if btype is None or m.id not in state or m.role in comp:
             continue
         cont.add(btype, state[m.id], address=m.base)
         if m.role == "flash" and m.meta:
             cont.set_meta(m.meta)
+    for role, data in comp.items():
+        if role_block.get(role) is not None:
+            cont.add(role_block[role], data, address=ROLE_BASE.get(role, 0))
     if defn:
         cont.add(_c.BLOCK_DEFN, defn)
     return fmt.ext, cont.to_bytes()
@@ -182,9 +187,14 @@ def read_back(project: Project, sid: str, path: str) -> Tuple[Images, Optional[b
     cont = _c.Container.from_bytes(data)
     block_role = {v: k for k, v in role_block.items()}
     images: Images = {}
+    from . import companions as _co
+    linked = _co.links(project, sid)
     for blk in cont.blocks:
         role = block_role.get(blk.type)
         if role is None:
+            continue
+        if role in linked:                   # a companion's: saved to ITS set
+            images[_co.PREFIX + role] = bytes(blk.data)
             continue
         m = next((m for m in s.members if m.role == role), None)
         if m is None:

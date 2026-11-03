@@ -31,10 +31,11 @@ EEPROM or **stores** one; otherwise it is hidden. The editor opens no files.
   not only by correct checksums, so an EEPROM edited elsewhere, with wrong
   checksums, still loads (the editor then offers to correct them). It **opens in this
   editor by itself**, instead of the hex editor; the menu item brings it back.
-- **A paired EEPROM.** An EEPROM paired with a flash in the project (asked when
+- **A linked EEPROM.** An EEPROM linked to a flash in the project (asked when
   you import it into a project that holds the flash; automatic when both are
-  imported together) is that flash's EEPROM: with the flash in the tab, the
-  menu item opens it. See [An ECU's EEPROM in a
+  imported together, and for a `.dim`'s) is that flash's EEPROM: with the flash
+  in the tab, the menu item opens it, and **Apply** + **File > Save** save the
+  edit as a new version of the EEPROM's own set. See [An ECU's EEPROM in a
   project](../projects.md#an-ecus-eeprom-in-a-project).
 - **Stored in the file.** The EEPROM a `.dim`, `.edc15` or `.edc16` carries, a
   full backup's, or an EEPROM read from the car in the flasher (EDC15: **Read
@@ -78,7 +79,7 @@ Both layouts show an **Immobiliser** box above the fields with **On** and **Off*
 
 | Button | What it does |
 |---|---|
-| **Apply** | Puts the edits into the tab as one undoable edit (**Edit > Undo** takes them out). **File > Save** keeps them in the project as a new version of its own, named for what changed (*EEPROM edit: VIN, Odometer*); with a paired flash it is a version of the flash's branch that changes only the EEPROM. |
+| **Apply** | Puts the edits into the tab as one undoable edit (**Edit > Undo** takes them out). **File > Save** keeps them in the project as a new version of its own, named for what changed (*EEPROM edit: VIN, Odometer*); the EEPROM's set keeps those versions, apart from the flash's. |
 | **Export...** | Writes the EEPROM alone as a `.bin`. The tab and the project are not changed by it. |
 | **Revert** | Goes back to the EEPROM as it was opened or last applied or saved. |
 | The layout's own | EDC15: **Virginize...**. EDC16: **Correct checksums**. See each module's page. |

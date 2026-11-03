@@ -3,12 +3,15 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Pairing an ECU's EEPROM with its flash in a project (EDC15, EDC16).
+"""Pairing an ECU's EEPROM (EDC15, EDC16) or internal flash (EDC16 MPC) with
+its flash in a project.
 
-An EEPROM image is a set of its own until it is *paired*: then it is the
-``eeprom`` member of the flash's set, and the EEPROM editor on that flash's
-tab opens it (Tools > EEPROM editor) instead of asking for a file. Pairing is
-offered wherever the two meet:
+An EEPROM or MPC image is a **companion**: a set of its own, with its own
+versions and tab, exported on its own. *Pairing* links it to a flash set of
+the same control unit (``ovtsuite.project.companions``): the flash follows the
+companion's latest version, its tab holds it in the EEPROM / MPC part, and the
+EEPROM editor on that tab edits it (saved as a version of the companion). One
+companion can serve several flashes. Pairing is offered wherever they meet:
 
 * importing an EEPROM while the project already holds that control unit's
   flash (one flash: asked; several: asked which),
@@ -38,11 +41,12 @@ CANCEL = None
 
 # ------------------------------------------------------------- identification
 def eeprom_ecu(path: str) -> str:
-    """The control unit (``"edc15"`` / ``"edc16"``) whose EEPROM the file at
-    ``path`` is, or "". By content, never by name; only files of an EEPROM's
-    size are read."""
+    """The control unit (``"edc15"`` / ``"edc16"``) whose EEPROM or internal
+    flash (MPC) the file at ``path`` is, or "". By content, never by name; only
+    files of such a size are read."""
     try:
-        if os.path.getsize(path) not in (512, 4096):
+        n = os.path.getsize(path)
+        if n not in (512, 4096) and not 0x80000 <= n <= 0x81000:
             return ""
         with open(path, "rb") as fh:
             data = fh.read()
@@ -57,7 +61,7 @@ def data_eeprom_ecu(data: bytes) -> str:
         got = identify(bytes(data))
     except Exception:
         return ""
-    return _platforms.EEPROM_OF.get(got.platform, "")
+    return _platforms.COMPANION_OF.get(got.platform, ("",))[0]
 
 
 def _ecu_name(ecu: str) -> str:
@@ -153,19 +157,6 @@ def tabs_of(win, doc, sid):
     return [t for t in doc.tabs(win) if t.project_ref.sid == sid]
 
 
-def _blocked_by_edits(win, doc, *sids) -> Optional[str]:
-    """Why pairing must wait: a tab of one of the sets holds unsaved edits
-    (the new version is made from what was saved, so they would not be in
-    it)."""
-    for sid in sids:
-        for t in tabs_of(win, doc, sid):
-            if t.is_dirty():
-                return ("The tab \"%s\" has unsaved changes. Save or close it "
-                        "first: pairing adds a version made from what is "
-                        "saved." % t.tab_label())
-    return None
-
-
 def refresh(win, doc, flash_sid) -> None:
     """Bring the open tabs of the flash set up to date with its new head
     (they were opened without the EEPROM)."""
@@ -177,45 +168,27 @@ def refresh(win, doc, flash_sid) -> None:
 
 
 def merge(win, doc, eeprom_sid: str, flash_sid: str) -> bool:
-    """Pair the project's stand-alone EEPROM set with a flash set; the
-    EEPROM's tab closes. True when done (said otherwise)."""
+    """Link the project's companion set (EEPROM / MPC) to a flash set. The
+    companion keeps its own tab and versions; the flash's tab is brought up to
+    date (unless it holds unsaved edits). True when done (said otherwise)."""
     from .project import importers as _imp
-    from . import gui_project as _gp
-    why = _blocked_by_edits(win, doc, eeprom_sid, flash_sid)
-    if why:
-        QtWidgets.QMessageBox.information(win, "Pair EEPROM", why)
-        return False
-    proj = doc.project
-    tabs = tabs_of(win, doc, eeprom_sid)
-    doc.__dict__["_hold"] = True        # its last tab going keeps the project
     try:
-        for t in tabs:
-            win._remove_workspace(t, remember=False)
-        _imp.merge_eeprom_set(proj, eeprom_sid, flash_sid)
+        _imp.merge_eeprom_set(doc.project, eeprom_sid, flash_sid)
     except Exception as ex:
-        QtWidgets.QMessageBox.warning(win, "Pair EEPROM", str(ex))
+        QtWidgets.QMessageBox.warning(win, "Pair", str(ex))
         return False
-    finally:
-        doc.__dict__.pop("_hold", None)
-    if not doc.tabs(win):
-        s = proj.set(flash_sid)
-        _gp.open_branch(win, doc, s.id, s.active_branch or s.branches[0].id)
     refresh(win, doc, flash_sid)
     return True
 
 
 def pair_file(win, doc, flash_sid: str, data: bytes, filename: str) -> bool:
-    """Add the EEPROM image ``data`` to flash set ``flash_sid`` of an open
-    project."""
+    """Import the EEPROM / MPC image ``data`` into an open project as a
+    companion set linked to flash set ``flash_sid``."""
     from .project import importers as _imp
-    why = _blocked_by_edits(win, doc, flash_sid)
-    if why:
-        QtWidgets.QMessageBox.information(win, "Import EEPROM", why)
-        return False
     try:
         _imp.pair_eeprom(doc.project, flash_sid, data, filename)
     except Exception as ex:
-        QtWidgets.QMessageBox.warning(win, "Import EEPROM", str(ex))
+        QtWidgets.QMessageBox.warning(win, "Import", str(ex))
         return False
     refresh(win, doc, flash_sid)
     return True
@@ -228,7 +201,7 @@ def pair_with_flash(win, doc, eeprom_sid: str) -> bool:
     from .project import importers as _imp
     proj = doc.project
     e = proj.set(eeprom_sid)
-    ecu = _platforms.EEPROM_OF.get(e.platform)
+    ecu = _platforms.COMPANION_OF.get(e.platform, ("",))[0]
     sets = _imp.flash_sets_for(proj, ecu) if ecu else []
     if not sets:
         QtWidgets.QMessageBox.information(
@@ -289,19 +262,25 @@ def import_eeprom(win, doc, proj, path: str, ecu: str, came, before):
 
 def flash_met_eeprom(win, doc, proj, s, before, with_eeprom) -> bool:
     """A flash set ``s`` was just imported: when the project (``doc`` open)
-    held an EEPROM of its unit on its own, ask whether it is this flash's.
-    ``with_eeprom``: control units whose EEPROM comes in with this import
-    (they pair with it instead). True when paired."""
+    held an EEPROM / internal flash of its unit that no flash links, ask
+    whether it goes with this flash (per kind: EEPROM, MPC). ``with_eeprom``:
+    control units whose companion comes in with this import (they pair with it
+    instead). True when something was linked."""
     from .project import importers as _imp
     if doc is None or s.platform not in _platforms.EEPROM_FOR \
             or s.platform in with_eeprom:
         return False
+    done = False
     alone = [e for e in _imp.standalone_eeprom_sets(proj, s.platform)
              if e.id in before]
-    if not alone:
-        return False
-    got = ask_eeprom_for_flash(win, proj, s.name, s.platform, alone)
-    return hasattr(got, "id") and merge(win, doc, got.id, s.id)
+    for role in ("eeprom", "mpc"):
+        cands = [e for e in alone if _platforms.COMPANION_OF[e.platform][1] == role]
+        if not cands:
+            continue
+        got = ask_eeprom_for_flash(win, proj, s.name, s.platform, cands)
+        if hasattr(got, "id") and merge(win, doc, got.id, s.id):
+            done = True
+    return done
 
 
 # ------------------------------------------------------------ version names

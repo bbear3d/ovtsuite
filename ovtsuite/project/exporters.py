@@ -50,6 +50,15 @@ def export_raw(project: Project, sid: str, mid: str, *,
     return data
 
 
+def _want(project: Project, sid: str, cid: str):
+    """The set's images at ``cid`` with its linked companions' current heads
+    in the EEPROM / MPC parts (a flash follows its companions)."""
+    from . import companions as _co
+    want = dict(project.state(sid, cid))
+    want.update(_co.injected(project, sid))
+    return want
+
+
 def export_pcmflash(project: Project, sid: str, *, branch: Optional[str] = None,
                     checkpoint: Optional[str] = None,
                     with_eeprom: bool = False) -> bytes:
@@ -59,7 +68,7 @@ def export_pcmflash(project: Project, sid: str, *, branch: Optional[str] = None,
     EDC16 set that holds both flash parts, whatever it was imported from."""
     from .. import pcmflash_edc16 as _pcm
     cid = _cid(project, sid, branch, checkpoint)
-    want = project.state(sid, cid)
+    want = _want(project, sid, cid)
     flash, mpc = want.get("flash"), want.get("mpc")
     if flash is None or mpc is None:
         raise ExportRefused("a PCMFlash file needs both the external flash and "
@@ -93,7 +102,7 @@ def export_original(project: Project, sid: str, oid: str, *,
         raise KeyError(oid)
     raw = project.original_bytes(sid, oid)
     cid = _cid(project, sid, branch, checkpoint)
-    want = project.state(sid, cid)
+    want = _want(project, sid, cid)
     if o.checkpoint:
         then = project.state(sid, o.checkpoint)
         if all(then.get(m) == want.get(m) for m in o.members):

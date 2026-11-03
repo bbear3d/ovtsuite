@@ -96,6 +96,13 @@ class ProjectDoc:
 
     def __init__(self, project: Project, path: Optional[str]):
         self.project = project
+        try:
+            # EEPROM / MPC members of an older project become companion sets
+            # (not opened in tabs); saved with the project's next save
+            from .project import companions as _co
+            _co.split_all(project)
+        except Exception:
+            pass
         self.path = os.path.abspath(path) if path else None
         self.tmpdir = tempfile.mkdtemp(prefix="ovt-project-")
         self.saver = _as.AutoSaver(project)
@@ -735,6 +742,9 @@ def _commit(ws, label="") -> bool:
     # a scratch file read straight back: no compression, fsync or .bak
     ws.primary.save(ref.workfile, durable=False)
     images, defn = _sb.read_back(proj, ref.sid, ref.workfile)
+    from .project import companions as _co
+    edits = {k[len(_co.PREFIX):]: images.pop(k) for k in list(images)
+             if k.startswith(_co.PREFIX)}
     lines, named, renames = _sb.read_log(proj, ref.sid, head,
                                         _cl.read_text(ref.workfile))
     for cid, name in renames.items():
@@ -765,6 +775,8 @@ def _commit(ws, label="") -> bool:
                 lines = list(lines) + [what]
     proj.commit(ref.sid, ref.bid, images, label=label or named or auto,
                 kind=kind, log=lines)
+    # an EEPROM / MPC edited in this tab is a new version of that companion
+    touched = _co.commit_edits(proj, ref.sid, edits)
     # tables resized in the tab (ovtsuite.resize) go with the version
     from . import resize as _rz
     if _rz.mods(ws.primary):
@@ -774,12 +786,30 @@ def _commit(ws, label="") -> bool:
     proj.set_cache(ref.sid, ref.bid, defn or None)
     _resync_log(ws)
     _name(ws)
+    refresh_followers(ws, touched)
     # the first save of a new project: now there is an original to compare with
     if ws.comparison is None:
         root = ref.set.root_of(ref.branch.head)
         if root is not None and root.id != ref.branch.head:
             compare_with_checkpoint(ws, root.id, quiet=True)
     return True
+
+
+def refresh_followers(ws, touched_sids=()) -> None:
+    """Tabs showing a set that follows a companion this tab just saved to, and
+    tabs of the companion itself when it was saved from a flash's tab, are
+    brought up to date (a tab with unsaved edits is left as it is)."""
+    ref = ws.project_ref
+    doc = ref.doc
+    from .project import companions as _co
+    sids = set(touched_sids) | {s.id for s in _co.flashes_using(doc.project, ref.sid)}
+    for t in doc.tabs(ws.win):
+        if t is ws or t.project_ref.sid not in sids or t.is_dirty():
+            continue
+        try:
+            reload_tab(t)
+        except Exception:
+            pass
 
 
 def _name(ws):
@@ -2604,9 +2634,10 @@ def has_flash_and_mpc(ws) -> bool:
     ref = getattr(ws, "project_ref", None)
     if ref is None:
         return False
+    from .project import companions as _co
     p, s = ref.doc.project, ref.set
-    return all(p.member_bytes(s.id, m, branch=ref.bid) is not None
-               for m in ("flash", "mpc"))
+    return (p.member_bytes(s.id, "flash", branch=ref.bid) is not None
+            and _co.bytes_of(p, s.id, "mpc", branch=ref.bid) is not None)
 
 
 def export_pcmflash(ws) -> None:
@@ -2617,7 +2648,8 @@ def export_pcmflash(ws) -> None:
         return
     s = ref.set
     with_ee = False
-    have = ref.doc.project.member_bytes(s.id, "eeprom", branch=ref.bid)
+    from .project import companions as _co
+    have = _co.bytes_of(ref.doc.project, s.id, "eeprom", branch=ref.bid)
     if have is not None:
         SB = QtWidgets.QMessageBox.StandardButton
         r = QtWidgets.QMessageBox.question(
@@ -3479,12 +3511,25 @@ class ProjectPanel(AutoHideDock):
                            "original of this binary; the original it has "
                            "becomes a version based on it.")
             from . import platforms as _pf
-            if d.project.set(sid).platform in _pf.EEPROM_OF:
+            if d.project.set(sid).platform in _pf.COMPANION_OF:
                 m.addSeparator()
                 pw = m.addAction("Pair with a flash...", lambda: self._pair_eeprom(d, sid))
-                pw.setToolTip("Make this EEPROM the companion of a flash in "
-                              "the project: the EEPROM editor on that flash "
-                              "then opens it")
+                pw.setToolTip("Link this EEPROM / internal flash to a flash of "
+                              "the project: that flash follows its latest "
+                              "version, and it keeps its own versions and tab")
+                from .project import companions as _co
+                for fs in _co.flashes_using(d.project, sid):
+                    role = next(r for r, c in _co.links(d.project, fs.id).items()
+                                if c.id == sid)
+                    m.addAction("Unlink from %s" % fs.name,
+                                lambda _c=False, f=fs.id, r=role:
+                                (_co.unlink(d.project, f, r), self.refresh()))
+            else:
+                from .project import companions as _co
+                for role, c in _co.links(d.project, sid).items():
+                    m.addAction("Open %s (%s)" % (c.name, role.upper() if role == "mpc" else "EEPROM"),
+                                lambda _c=False, cid=c.id: open_branch(
+                                    self.win, d, cid, d.project.set(cid).active.id))
             main = _sb._main_member(d.project, sid)
             if main is not None:
                 m.addSeparator()
