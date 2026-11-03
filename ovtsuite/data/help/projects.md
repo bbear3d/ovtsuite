@@ -127,6 +127,43 @@ project...**, or drop it on the window and pick **Import into <project>**.
 A closed project comes back with **File > Restore project from history** or
 **File > Reopen last closed project** (Ctrl+Shift+T), with the tabs it had.
 
+## An ECU's EEPROM in a project
+
+An EDC15 EEPROM (512 bytes) or an EDC16 EEPROM (4 KB) is recognised as one
+by its own structure -- the module knows its layout and the file's checksums
+must agree with it -- instead of being "an unrecognised binary". It is listed
+as *Bosch EDC15 EEPROM* / *Bosch EDC16 EEPROM*, and File information shows what it
+holds (VIN, immobiliser, odometer ...). The Bosch EDC15 / EDC16 modules are needed
+for this.
+
+- **On its own** (a set of its own, no flash beside it) it opens in the
+  [EEPROM editor](tools/eeprom.md), not the hex editor, every time you open
+  it. **Tools > Hex editor** is still there for the raw bytes. Edits you
+  **Apply** (or leave in the editor when you close it) are one undoable edit
+  in its tab, and **File > Save** keeps them in the project.
+- **Paired with a flash** it is the `EEPROM` part of the flash's set. The
+  flash's tab then opens it from **Tools > EEPROM editor**: no file to pick.
+  Saving the tab saves flash and EEPROM together, as one version.
+
+Pairing is offered wherever the two meet:
+
+- **File > Import > Into this project...** (or **Add files to the project**)
+  with an EEPROM, when the project already holds that control unit's flash:
+  *Import it as the companion of ...?* -- with several flashes you pick which.
+  **Import it separately** keeps it a set of its own.
+- An EEPROM and a flash imported **together** are paired without a question
+  (with several flashes, you pick).
+- A flash imported into a project that holds an EEPROM of its unit on its own
+  asks whether that EEPROM is this flash's.
+- **Tools > EEPROM editor** on a flash with no EEPROM, in a project that holds
+  one on its own, offers to pair it.
+- **Pair with a flash...** on the EEPROM's set in the Project panel.
+
+Pairing adds a version to the flash's branch (*Imported <file>*), so earlier
+versions keep the EEPROM they had; pairing a second EEPROM replaces it in a
+new version. A tab with unsaved changes is asked to be saved first.
+An EEPROM of another control unit is refused.
+
 ## Comparing
 
 A project tab opens with **the original as read** as its comparison, so the
@@ -268,7 +305,9 @@ Right-click an item for what can be done with it:
 
 - **Project** -- project information, **Add files to the project** (each
   becomes a set), save, rename, set how many logs are kept, close.
-- **Set** -- rename; **Attach a definition** (XDF, A2L, KP, OLS or DAM) to a
+- **Set** -- rename; for a set that is just an ECU's EEPROM, **Pair with a
+  flash...** (see [An ECU's EEPROM in a project](#an-ecus-eeprom-in-a-project));
+  **Attach a definition** (XDF, A2L, KP, OLS or DAM) to a
   binary no module recognises, so it opens with that definition's tables and
   values in the main view instead of only the hex editor; **Definition
   placement...** to see how its tables were placed, give the offset or the
@@ -303,13 +342,20 @@ Right-click an item for what can be done with it:
   compare it, export it -- but nothing in it can be edited or saved, it is
   not added to Open Recent, and closing it asks nothing. To work on it, use
   **Revert the branch to this version** or **New branch from this version**.
-- **Log** -- **Open in Data logging**, **Export...**, **Pin** / **Unpin**,
-  **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
+- **Log** -- **Open in Data logging**, **Export...**, **Rename...**,
+  **Pin** / **Unpin**, **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
 - **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,
-  **Remove**.
+  **Rename...**, **Remove**.
 - **Attachment** -- **Open externally** (or double-click it), **Open
-  with...**, **Show copy in folder**, **Export...**, **Remove**. A kept
-  fault-code read also has **View fault code report**.
+  with...**, **Show copy in folder**, **Export...**, **Rename...**,
+  **Remove**. A kept fault-code read also has **View fault code report**.
+
+**Rename...** (or select the log, patch or attachment and press **F2**)
+changes the file name it is kept under and exports under; its contents, pin
+and note stay. A name typed without an extension keeps the old one (`run 3`
+on `run1.csv` becomes `run 3.csv`), so the file still opens in its program.
+A kept fault-code read has no file name in the panel -- it shows its date and
+code count -- so renaming it gives it a title that replaces them.
 
 Logs, patches and attachments all have the three *open* commands; see
 [Opening a kept file in another program](#opening-a-kept-file-in-another-program).

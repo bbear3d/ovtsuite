@@ -964,6 +964,10 @@ class TunerSession:
     def _limited_text(self, platform, data) -> str:
         """What would support this binary, and -- when its module is here
         but cannot check this binary's checksum -- why not."""
+        from .platforms import is_eeprom as _is_eeprom
+        if _is_eeprom(platform):
+            return ("It is the control unit's EEPROM, not a flash image: the "
+                    "EEPROM editor (Tools > EEPROM editor) edits it.")
         text = _registry.missing_text(platform,
                                       checksum=self.support == "checksum")
         if self.support == "none" and _registry.can(platform, _modapi.CHECKSUM):

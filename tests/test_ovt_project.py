@@ -888,3 +888,48 @@ def test_an_earlier_flash_does_not_stop_a_merge_but_the_last_one_does():
     b = p2.commit(s2.id, None, {"flash": _edit(flash2, (2, b"\x02"))}).id
     p2.mark_flashed(s2.id, stock2.id, b, tool="test")
     assert p2.merge_checkpoints(s2.id, [a, b]).id == b
+
+
+# ------------------------------------------------- renaming logs/attachments
+def test_rename_log_attachment_and_patch_survive_a_round_trip():
+    p = ovt.Project("rename")
+    lg = p.add_log("run1.csv", b"log-bytes")
+    at = p.add_attachment("notes.txt", b"note-bytes")
+    pt = p.add_patch("fix.patch", b"patch-bytes")
+    assert p.rename_attachment("log", lg.id, "pull 3rd gear.csv") == "pull 3rd gear.csv"
+    assert p.log_bytes(lg.id) == b"log-bytes"
+    # a name typed without an extension keeps the old one
+    assert p.rename_attachment("attachment", at.id, "dyno sheet") == "dyno sheet.txt"
+    assert p.attachment_bytes(at.id) == b"note-bytes"
+    p.rename_attachment("patch", pt.id, "stage1.patch")
+    assert p.patch_bytes(pt.id) == b"patch-bytes"
+    q = ovt.Project.from_bytes(p.to_bytes())
+    assert [a.filename for a in q.logs] == ["pull 3rd gear.csv"]
+    assert q.log_bytes(q.logs[0].id) == b"log-bytes"
+    assert q.attachments[0].filename == "dyno sheet.txt"
+    assert q.attachment_bytes(q.attachments[0].id) == b"note-bytes"
+    assert q.patches[0].filename == "stage1.patch"
+    assert q.patch_bytes(q.patches[0].id) == b"patch-bytes"
+
+
+def test_rename_attachment_refuses_empty_and_cleans_the_name():
+    p = ovt.Project("rename2")
+    at = p.add_attachment("a.bin", b"x")
+    with pytest.raises(ValueError):
+        p.rename_attachment("attachment", at.id, "   ")
+    with pytest.raises(KeyError):
+        p.rename_attachment("attachment", "nope", "b.bin")
+    assert p.rename_attachment("attachment", at.id, "dir/b?.bin") == "b_.bin"
+    assert p.attachment_bytes(at.id) == b"x"
+
+
+def test_rename_a_kept_fault_code_read_sets_its_title():
+    from ovtsuite import dtc_report as dr
+    p = ovt.Project("rename3")
+    a = p.add_attachment("fault-codes-x.json", b"{}")
+    a.extra["kind"] = dr.KIND
+    a.extra["codes"] = 2
+    assert dr.label(a).startswith("Fault codes")
+    p.rename_attachment("attachment", a.id, "Before the EGR fix")
+    assert dr.label(a) == "Before the EGR fix"
+    assert a.filename == "fault-codes-x.json"

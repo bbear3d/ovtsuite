@@ -5749,6 +5749,8 @@ if HAVE_QT:
         "hvac": ("HVAC", "Climatronic", QtGui.QColor(90, 160, 110)),
         "vdo": ("CLU", "VDO cluster", QtGui.QColor(150, 110, 190)),
         "aisin": ("TCU", "Aisin", QtGui.QColor(200, 90, 70)),
+        "edc15eeprom": ("ECU", "EDC15 EEPROM", QtGui.QColor(61, 124, 201)),
+        "edc16eeprom": ("ECU", "EDC16 EEPROM", QtGui.QColor(61, 124, 201)),
         "unknown": ("BIN", "Unrecognised binary", QtGui.QColor(128, 128, 128)),
     }
 
@@ -7492,6 +7494,11 @@ if HAVE_QT:
             in the hex editor -- the universal tools all still work."""
             if getattr(self, "_quiet", False):
                 return                      # reopening tabs: no popup each
+            if self.is_eeprom_image():
+                # an ECU's EEPROM: the EEPROM editor is its view, not the hex
+                # editor (which stays on Tools > Hex editor)
+                self.open_own_eeprom_editor()
+                return
             reason = (getattr(loaded, "unsupported_reason", None)
                       or "This binary has no parameter definition.")
             box = QtWidgets.QMessageBox(self)
@@ -8599,6 +8606,8 @@ if HAVE_QT:
             undoable edit -- else an EEPROM image picked from disk."""
             from . import gui_eeprom
             from .recent import get_last_dir, set_last_dir
+            if self.is_eeprom_image():
+                return self.open_own_eeprom_editor()
             name = "%s [EEPROM]" % (self.primary.binfile.name
                                     if self.primary else "backup")
             held = getattr(self, "_eeprom", None)
@@ -8626,6 +8635,10 @@ if HAVE_QT:
                 if dlg.data != self._container_eeprom():
                     self._container_eeprom_adopt(dlg.data)
                 return
+            # a flash with no EEPROM of its own: the project may hold one
+            # that was imported alone -- offer to pair it (and open it)
+            if self.project_ref is not None and _gp.offer_pair_eeprom(self):
+                return self.open_eeprom_editor()
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self, "Open an EEPROM image", get_last_dir("eeprom"),
                 gui_eeprom.FILTER)
@@ -8637,6 +8650,46 @@ if HAVE_QT:
             dlg = gui_eeprom.open_editor(self, data, path=path)
             if dlg is not None:
                 dlg.exec()
+
+        def is_eeprom_image(self) -> bool:
+            """This tab holds an ECU's EEPROM image itself (not a flash with
+            an EEPROM beside it): identified as one by its bytes, or kept as
+            one by its project (an EEPROM read, whose checksums may be
+            wrong, is an EEPROM all the same)."""
+            p = self.primary
+            if p is None:
+                return False
+            if _platforms.is_eeprom(p.platform):
+                return True
+            ref = getattr(self, "project_ref", None)
+            return ref is not None and _platforms.is_eeprom(ref.set.platform)
+
+        def open_own_eeprom_editor(self):
+            """This tab IS an ECU's EEPROM (a stand-alone EEPROM image): the
+            EEPROM editor on it, in front of the tab -- how such a file opens.
+            Apply (and closing it) put the edits into the tab as one undoable
+            edit; File > Save keeps them in the project."""
+            from . import gui_eeprom
+            p = self.primary
+            if not self.is_eeprom_image():
+                return None
+            if not gui_eeprom.available():
+                # no module knows the layout any more: the hex editor then
+                return self.open_hex()
+            cur = bytes(p.binfile.data)
+
+            def _adopt(edited, _self=self, _p=p):
+                edited = bytes(edited)
+                if _self.primary is _p and edited != bytes(_p.binfile.data):
+                    _p.edit_bytes(0, edited)
+                    _self.win._workspace_changed(_self)
+            dlg = gui_eeprom.open_editor(
+                self, cur, name="%s [EEPROM]" % p.binfile.name, on_save=_adopt)
+            if dlg is None:
+                return None
+            dlg.exec()
+            _adopt(dlg.data)
+            return dlg
 
         def show_file_info(self, session=None, loaded=False):
             """Identification strings + what the parser found, for the primary
@@ -10770,6 +10823,8 @@ def run(primary_path: Optional[str] = None,
     confirm_licences()          # a module installed without its licence asked
     from .gui_help import install_f1
     install_f1(app)             # F1 anywhere: help for the window in front
+    from . import gui_textcopy
+    gui_textcopy.install(app)   # Ctrl+C copies selected text in a text view
     # Everything start-up asks comes first, on the screen the window will
     # use, so the splash then runs once, start to finish, on that screen too.
     from . import gui_options, gui_splash
@@ -10862,6 +10917,8 @@ def _run_tool(tool: str, app_id: str, make_dialog):
         gui_splash.end()
     from .gui_help import install_f1
     install_f1(app)
+    from . import gui_textcopy
+    gui_textcopy.install(app)
     if tool in branding.TOOL_NAMES:
         # no main window, so no Help menu: help, the version, credits and
         # licences are a button away instead

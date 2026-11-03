@@ -36,6 +36,7 @@ from typing import List, Optional, Tuple
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import gui_project as _gp
+from . import platforms as _platforms
 
 #: File > Import's file types
 IMPORT_FILTER = (
@@ -193,23 +194,51 @@ def _attach_definitions(win, doc, made, defs) -> List[str]:
     return left
 
 
-def _import_each(win, proj, paths):
-    """``[(path, set)]`` of the files that went in; the rest are reported."""
+def _import_each(win, proj, paths, doc=None):
+    """``([(path, set)], [(path, set)])``: the files that went in as sets of
+    their own, and the EEPROM files that went into a flash set as its
+    companion (:mod:`ovtsuite.gui_eeprompair`). The rest are reported.
+
+    An EEPROM is paired with the flash of its control unit that came in with
+    it, else -- importing into an open project, ``doc`` -- asked about: the
+    project's flash of that unit (which one, when there are several). A flash
+    imported into a project that holds an EEPROM of its unit on its own is
+    asked about the same way."""
     from .project import importers as _imp
     from . import gui_olsversions as _ov
-    made, problems = [], []
-    for path in paths:
+    from . import gui_eeprompair as _pair
+    made, paired, problems = [], [], []
+    before = {s.id for s in proj.sets}
+    order, ecus = _pair.plan(paths)
+    with_eeprom = {e for e in ecus.values() if e}
+    for path in order:
+        name = os.path.basename(path)
+        if ecus[path]:
+            got = _pair.import_eeprom(win, doc, proj, path, ecus[path],
+                                      [s for _p, s in made], before)
+            if got is _pair.CANCEL:
+                continue
+            if got is not _pair.SEPARATE:
+                paired.append((path, got))
+                continue
         which = _ov.choose(win, path)           # a WinOLS project's versions
         if which == _ov.CANCEL:
             continue
+        QtWidgets.QApplication.setOverrideCursor(
+            QtCore.Qt.CursorShape.WaitCursor)
         try:
             _p, s = _imp.import_file(path, proj, ols_versions=which)
             made.append((path, s))
         except Exception as ex:
-            problems.append("%s: %s" % (os.path.basename(path), ex))
+            problems.append("%s: %s" % (name, ex))
+            continue
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        if _pair.flash_met_eeprom(win, doc, proj, s, before, with_eeprom):
+            paired.append((path, s))
     if problems:
         QtWidgets.QMessageBox.warning(win, "Import", "\n".join(problems))
-    return made
+    return made, paired
 
 
 def import_files(win, paths: List[str], target: str = "new",
@@ -267,16 +296,22 @@ def import_files(win, paths: List[str], target: str = "new",
     try:
         new = doc is None
         if new:
-            name = os.path.splitext(os.path.basename(bins[0]))[0]
+            from . import gui_eeprompair as _pair
+            lead = next((b for b in bins if not _pair.eeprom_ecu(b)), bins[0])
+            name = os.path.splitext(os.path.basename(lead))[0]
             proj = Project(name)
         else:
             proj = doc.project
-        made = _import_each(win, proj, bins)
     finally:
         QtWidgets.QApplication.restoreOverrideCursor()
+    # (the questions about pairing an EEPROM come with the cursor normal)
+    made, paired = _import_each(win, proj, bins, doc=doc)
     if not made:
         if doc is not None and not doc.tabs(win):
             _gp._drop_doc(win, doc)
+        if paired:
+            _say_paired(win, doc, paired)
+            return True
         return ok
     sets = [s for _p, s in made]
     if new:
@@ -306,6 +341,10 @@ def import_files(win, paths: List[str], target: str = "new",
     warn = getattr(proj.report, "warnings", None)
     msg = "Imported %s into %s" % (
         ", ".join(os.path.basename(b) for b in bins), doc.title)
+    if paired:
+        msg += " (%s)" % "; ".join(
+            "%s is the EEPROM of %s" % (os.path.basename(p), t.name)
+            for p, t in paired)
     if warn:
         msg += " -- " + warn[0]
     if first is not None:
@@ -313,6 +352,17 @@ def import_files(win, paths: List[str], target: str = "new",
     _gp.show_panel(win)
     _info_on_open(win, first)
     return True
+
+
+def _say_paired(win, doc, paired) -> None:
+    """EEPROM files that went into flash sets of the open project and nothing
+    else: say so on the tab in front."""
+    msg = "; ".join("%s is now the EEPROM of %s: Tools > EEPROM editor opens it"
+                    % (os.path.basename(p), t.name) for p, t in paired)
+    cur = win.current
+    if cur is not None:
+        cur.statusBar().showMessage(msg, 10000)
+    _gp.show_panel(win)
 
 
 # ------------------------------------------------------------ comparison

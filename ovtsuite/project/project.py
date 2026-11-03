@@ -193,7 +193,8 @@ class Project:
         """A set stored as ``unknown`` (imported by an app that had no
         detector for it) that the base app now identifies as ``platform``:
         describe it as an import would today -- the set's platform and kind,
-        its unidentified members', and a ``raw`` main image becomes ``flash``.
+        its unidentified members', and a ``raw`` main image becomes ``flash``
+        (``eeprom`` when the platform is an ECU EEPROM's).
 
         It is a correction, not an edit, so the project is NOT marked
         modified: it is written with the next save, and until then every
@@ -212,7 +213,8 @@ class Project:
                 m.endian = _endian(platform)
         raw = next((m for m in s.members if m.role == "raw"), None)
         if raw is not None and not any(m.role == "flash" for m in s.members):
-            raw.role = "flash"
+            from ..platforms import is_eeprom
+            raw.role = "eeprom" if is_eeprom(platform) else "flash"
         return s
 
     # ============================================================== history
@@ -1122,6 +1124,41 @@ class Project:
             raise KeyError(aid)
         self._blobs[self._att_path(coll, a)] = bytes(data)
         self._touch()
+
+    def rename_attachment(self, kind: str, aid: str, name: str) -> str:
+        """Give a kept ``"log"``, ``"patch"`` or ``"attachment"`` a new file
+        name (its contents, id, set, pin and note stay). A name typed without
+        an extension keeps the old one, so the file still opens with its
+        program. A kept fault-code read is shown by its date and code count
+        rather than a file name: renaming it sets the title shown instead.
+        Returns the name now held. ValueError for an empty name."""
+        coll, lst = {"log": ("logs", self.logs), "patch": ("patches", self.patches),
+                     "attachment": ("attachments", self.attachments)}[kind]
+        a = next((a for a in lst if a.id == aid), None)
+        if a is None:
+            raise KeyError(aid)
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("A name is needed.")
+        from .. import dtc_report as _dr
+        if _dr.is_read(a):
+            if (a.extra.get("title") or "") != name:
+                a.extra["title"] = name
+                self._touch()
+            return name
+        new = _safe_name(name).strip(" .") or "file"
+        old_ext = os.path.splitext(a.filename)[1]
+        if old_ext and not os.path.splitext(new)[1]:
+            new += old_ext
+        if new == a.filename:
+            return new
+        old_path = self._att_path(coll, a)
+        blob = self._blobs.pop(old_path, None)
+        a.filename = new
+        if blob is not None:
+            self._blobs[self._att_path(coll, a)] = blob
+        self._touch()
+        return new
 
     def remove_attachment(self, aid: str) -> None:
         self._remove_att("attachments", self.attachments, aid)

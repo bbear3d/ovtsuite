@@ -50,6 +50,7 @@ class SimClusterLink:
         self.custom_on = False
         self.writes: List[int] = []
         self.ended = False
+        self.resets = 0                   # custom 0x82 (reset) requests
         # wire state
         self._out: List[int] = []         # bytes waiting for the tester to read
         self._tx_block: List[int] = []    # cluster block being sent
@@ -189,6 +190,9 @@ class SimClusterLink:
                 v = body[1]
                 data = self.version_bytes if v == 0 else bytes([v, 0x19])
                 return [[_vc.BT_CUSTOM, data]]
+            if cmd == _vc.CMD_RESET:
+                self.resets += 1
+                return [ACK]
             if cmd == 0x9D:
                 self.code_ok = bytes(body[1:5]) == self.unlock_code
                 if self.code_ok and not self.require_seed_key:

@@ -27,8 +27,17 @@ EEPROM a module knows:
   or EEPROM read from the flasher, or an imported `.dim`, `.edc15`, `.edc16`
   or KWHack `.edc15bak` that carries one -- has it in its tab, and the menu
   item opens it, titled *... [EEPROM]*.
-- **From a file.** With no EEPROM in the tab, the menu item asks for an
-  EEPROM image (`.bin`, `.eep`, `.rom`). **Open...** in the editor opens
+- **A stand-alone EEPROM.** An EEPROM imported on its own (File > Import, or a
+  file opened or dropped) is recognised as one and **opens in this editor
+  by itself**, instead of the hex editor; **Tools > EEPROM editor** brings
+  it back after you close it.
+- **Paired with a flash.** An EEPROM paired with a flash in the project (asked
+  when you import it into a project that holds the flash; automatic when both
+  are imported together) is that flash's EEPROM: with the flash in the tab,
+  the menu item opens it. See [An ECU's EEPROM in a
+  project](../projects.md#an-ecus-eeprom-in-a-project).
+- **From a file.** With no EEPROM in the tab, and none the project holds on its
+  own, the menu item asks for an EEPROM image (`.bin`, `.eep`, `.rom`). **Open...** in the editor opens
   another one.
 - **From the car.** **Read EEPROM** in the flasher (EDC15) reads it into a
   project -- a new one, or a new branch (*EEPROM read <date>*) of the EDC15

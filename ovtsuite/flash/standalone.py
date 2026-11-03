@@ -32,6 +32,7 @@ from .. import recent as _recent
 PLATFORM_TO_ECU = {
     "edc16": "EDC16",
     "edc15": "EDC15",
+    "edc15eeprom": "EDC15",         # its Write EEPROM takes the open EEPROM
     "zf6hp": "ZF6HP",
     "hvac": "Climatronic",
     "vdo": "Cluster (VDO K-line)",

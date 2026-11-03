@@ -383,7 +383,17 @@ def load_into(ws, doc, sid, bid) -> bool:
         ws.adopt_primary(loaded, work)
     finally:
         ws._quiet = quiet
-    if not quiet and getattr(loaded, "support", "full") not in ("full", "definition"):
+    from . import platforms as _pf
+    if not quiet and (_pf.is_eeprom(getattr(loaded, "platform", ""))
+                      or _pf.is_eeprom(s.platform)):
+        # an ECU's EEPROM on its own opens in the EEPROM editor (every time
+        # it is opened, not just the first), not the hex editor
+        # (only the tab in front: several EEPROMs opened at once would stack
+        # one modal editor on another)
+        QtCore.QTimer.singleShot(
+            0, lambda: ws.primary is loaded and ws.win.current is ws
+            and ws.open_own_eeprom_editor())
+    elif not quiet and getattr(loaded, "support", "full") not in ("full", "definition"):
         # what the binary is and which module would support it: once per set
         # while the project is open (not for every tab, nor at start-up)
         told = doc.__dict__.setdefault("_limited_told", set())
@@ -1253,7 +1263,8 @@ def open_eeprom_read(win, data, name, source=None):
     # no EDC15 project in front: a project of its own
     proj = Project(name)
     try:
-        s = _imp.import_read(proj, data, name, source=source)
+        s = _imp.import_read(proj, data, name, source=source,
+                             eeprom_of="edc15")
     except Exception as ex:
         QtWidgets.QMessageBox.critical(win, "EEPROM read",
                                        "The read could not be opened: %s" % ex)
@@ -1269,18 +1280,7 @@ def open_eeprom_read(win, data, name, source=None):
     except Exception:
         pass
     show_panel(win)
-    from . import gui_eeprom
-    if gui_eeprom.layouts_for(bytes(data)):
-        def _adopt(edited, _ws=ws):
-            if bytes(edited) != bytes(_ws.primary.binfile.data):
-                _ws.primary.edit_bytes(0, bytes(edited))
-                _ws.win._workspace_changed(_ws)
-        dlg = gui_eeprom.open_editor(ws, bytes(data),
-                                     name="%s [EEPROM]" % doc.title,
-                                     on_save=_adopt)
-        if dlg is not None:
-            dlg.exec()
-            _adopt(dlg.data)
+    # (an EEPROM set opens in the EEPROM editor by itself: load_into)
     return ws
 
 
@@ -1638,13 +1638,28 @@ _FILES_FILTER = ("Binaries and containers (*.bin *.ori *.sgo *.frf *.dim *.ols *
                  "*.edc16 *.edc15 *.6hp *.8hp *.vdo);;All files (*)")
 
 
-def _import_paths(win, proj, paths) -> list:
-    """Import each file into ``proj``; returns the new sets. A definition
-    beside a binary (same name, .xdf / .a2l / .kp / .dam) comes with it."""
+def _import_paths(win, proj, paths, doc=None):
+    """Import each file into ``proj`` (``doc``: its open project, if any);
+    returns ``(new sets, number of EEPROM images paired)``. A definition beside a binary (same name, .xdf /
+    .a2l / .kp / .dam) comes with it. An ECU's EEPROM image pairs with the
+    flash of its control unit (gui_eeprompair): the one imported with it, else
+    the project's, asked about; a paired EEPROM makes no set of its own."""
     from .project import importers as _imp
     from . import gui_olsversions as _ov
-    sets, problems = [], []
-    for path in paths:
+    from . import gui_eeprompair as _pair
+    sets, problems, paired = [], [], 0
+    before = {s.id for s in proj.sets}
+    order, ecus = _pair.plan(paths)
+    with_eeprom = {e for e in ecus.values() if e}
+    for path in order:
+        if ecus[path]:
+            got = _pair.import_eeprom(win, doc, proj, path, ecus[path], sets,
+                                      before)
+            if got is _pair.CANCEL:
+                continue
+            if got is not _pair.SEPARATE:
+                paired += 1
+                continue
         which = _ov.choose(win, path)           # a WinOLS project's versions
         if which == _ov.CANCEL:
             continue
@@ -1655,9 +1670,12 @@ def _import_paths(win, proj, paths) -> list:
             sets.append(s)
         except Exception as ex:
             problems.append("%s: %s" % (os.path.basename(path), ex))
+            continue
+        if _pair.flash_met_eeprom(win, doc, proj, s, before, with_eeprom):
+            paired += 1                     # the flash set still opens
     if problems:
         QtWidgets.QMessageBox.warning(win, "Add files", "\n".join(problems))
-    return sets
+    return sets, paired
 
 
 def new_project(win) -> bool:
@@ -1674,7 +1692,8 @@ def new_project(win) -> bool:
             os.path.splitext(os.path.basename(paths[0]))[0])
     proj = Project(name)
     _apply_info(proj, values)
-    if not _import_paths(win, proj, paths):
+    sets, _paired = _import_paths(win, proj, paths)
+    if not sets:
         return False
     t = _open_new_doc(win, proj)
     if t is not None:
@@ -1692,7 +1711,7 @@ def add_files(win, doc) -> bool:
     if not paths:
         return False
     set_last_dir(paths[0])
-    sets = _import_paths(win, doc.project, paths)
+    sets, paired = _import_paths(win, doc.project, paths, doc=doc)
     first = None
     for s in sets:
         t = open_branch(win, doc, s.id, s.active.id)
@@ -1701,7 +1720,7 @@ def add_files(win, doc) -> bool:
     if first is not None:
         from . import gui_files as _gf
         _gf._info_on_open(win, first)
-    return bool(sets)
+    return bool(sets) or paired > 0
 
 
 def attach_definition(win, doc, sid, path) -> bool:
@@ -1867,6 +1886,13 @@ def definition_placement(win, doc, sid) -> bool:
     reload_set(win, doc, sid)
     refresh_panel(win)
     return True
+
+
+def offer_pair_eeprom(ws) -> bool:
+    """Tools > EEPROM editor on a flash tab with no EEPROM: pair the project's
+    stand-alone EEPROM of its control unit with it, when there is one."""
+    from . import gui_eeprompair as _pair
+    return _pair.offer_pair_eeprom(ws)
 
 
 def reload_set(win, doc, sid):
@@ -3445,6 +3471,13 @@ class ProjectPanel(AutoHideDock):
             io_.setToolTip("Make another file of the same software the "
                            "original of this binary; the original it has "
                            "becomes a version based on it.")
+            from . import platforms as _pf
+            if d.project.set(sid).platform in _pf.EEPROM_OF:
+                m.addSeparator()
+                pw = m.addAction("Pair with a flash...", lambda: self._pair_eeprom(d, sid))
+                pw.setToolTip("Make this EEPROM the companion of a flash in "
+                              "the project: the EEPROM editor on that flash "
+                              "then opens it")
             main = _sb._main_member(d.project, sid)
             if main is not None:
                 m.addSeparator()
@@ -3546,6 +3579,8 @@ class ProjectPanel(AutoHideDock):
             m.addAction("Show copy in folder", lambda: _ext.reveal(
                 self.win, d, kind, aid))
             m.addAction("Export...", lambda: self._export_att(data))
+            rn = m.addAction("Rename...", lambda: self._rename_att(data))
+            rn.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2))
             if kind == "log":
                 a = next(x for x in d.project.logs if x.id == aid)
                 m.addAction("Unpin" if a.pinned else "Pin (never auto-deleted)",
@@ -3587,6 +3622,11 @@ class ProjectPanel(AutoHideDock):
             d.project._touch()
             self._changed(d)
 
+    def _pair_eeprom(self, d, sid):
+        from . import gui_eeprompair as _pair
+        if _pair.pair_with_flash(self.win, d, sid):
+            self.refresh()
+
     def _rename_set(self, d, sid):
         s = d.project.set(sid)
         name, ok = QtWidgets.QInputDialog.getText(
@@ -3606,6 +3646,27 @@ class ProjectPanel(AutoHideDock):
             self._rename_set(data[1], data[2])
         elif data[0] == "branch":
             self._rename_branch(data[1], data[2], data[3])
+        elif data[0] in self._REMOVABLE:
+            self._rename_att(data)
+
+    def _rename_att(self, data):
+        """Rename a kept log, patch or attachment (F2 / right-click)."""
+        kind, d, aid = data[0], data[1], data[2]
+        try:
+            a, _raw = _att(d, kind, aid)
+        except (KeyError, StopIteration):
+            return
+        from . import dtc_report as _dr
+        if _dr.is_read(a):
+            prompt = "Title:"
+        else:
+            ext = os.path.splitext(a.filename)[1]
+            prompt = "Name%s:" % (" (typed without an extension it keeps %s)"
+                                  % ext if ext else "")
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Rename %s" % kind, prompt, text=_att_text(a))
+        if ok and name.strip() and name.strip() != _att_text(a):
+            self._do(d, lambda: d.project.rename_attachment(kind, aid, name))
 
     def _view_version(self, d, sid, bid, cid):
         from . import gui_viewonly as _vo

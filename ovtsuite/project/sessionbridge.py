@@ -105,7 +105,9 @@ def set_platform(project: Project, sid: str, state: Images) -> str:
         ident = identify(bytes(data))
     except Exception:
         return s.platform
-    if ident.known and _c.format_for_kind(ident.platform) is not None:
+    from ..platforms import is_eeprom
+    if ident.known and (_c.format_for_kind(ident.platform) is not None
+                        or is_eeprom(ident.platform)):
         project.adopt_platform(sid, ident.platform)
     return s.platform
 

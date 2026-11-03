@@ -29,7 +29,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..flash import diag as _diag
 from ..flash import j2534 as _j2534
 from ..flash import keepawake as _keepawake
-from ..flash.transport import KLine, KLineError
+from ..flash.transport import KLine, KLineError, KLineTimeout
 from ..flash.gui_flash import (list_ports, kline_devices, is_j2534, open_j2534,
                                no_device_hint,
                                cable_allows_high)

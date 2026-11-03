@@ -2486,7 +2486,7 @@ class FlashDialog(QtWidgets.QDialog):
         self._apply_staged_default()                 # boot mode has no staged job
         boot = self.boot_mode.isChecked() and self._ecu() == "EDC15"
         # boot mode has no speed negotiation / sector logic and cannot reach the EEPROM
-        self.speed_box.setEnabled(not boot)
+        self.speed_box.setEnabled(not boot and self._speed_applies())
         self.force_full.setEnabled(not boot)
         for w in (self.ee_read_btn, self.ee_write_btn, self.backup_btn, self.restore_btn,
                   self.irom_btn):
@@ -2500,6 +2500,17 @@ class FlashDialog(QtWidgets.QDialog):
     def _transport_kind(self):
         tb = getattr(self, "transport_box", None)
         return tb.currentData() if tb is not None else "kline"
+
+    #: control units whose K-line speed is the user's choice (the rest talk at
+    #: a rate of their own: the VDO cluster 10400, the TCUs/HVAC over CAN)
+    _SPEED_ECUS = ("EDC16", "EDC15")
+
+    def _speed_applies(self) -> bool:
+        """The Speed list means something for the control unit picked (and
+        the transport): K-line EDC15 / EDC16. One rule, so a finished job
+        (``_busy(False)``) does not switch the list back on for a unit that
+        never offered it."""
+        return self._ecu() in self._SPEED_ECUS and not self._is_can()
 
     def _is_can(self):
         return self._transport_kind() == "can"
@@ -2521,7 +2532,7 @@ class FlashDialog(QtWidgets.QDialog):
         finally:
             self._ecu_from_transport = False
         self.ecu_box.setEnabled(True)               # EDC16 is the one ECU on both transports
-        self.speed_box.setEnabled(not can)
+        self.speed_box.setEnabled(not can and self._speed_applies())
         self.fast_disable_chk.setVisible(not can and self._ecu() not in ("EDC15", VDO_ECU))  # K-line, EDC16 only
         # Ask the upcoming rescan for the cable this (controller, transport)
         # last used. The scan is off-thread, so this is the same hand-off
@@ -3022,6 +3033,10 @@ class FlashDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._shown_ecu = new
+        # Force full write is a one-off for the write in front of you, never a
+        # setting: it is not remembered, and a tick made for one control unit
+        # does not carry over to the next one picked.
+        self.force_full.setChecked(False)
         self._apply_module_settings(
             new, transport=not getattr(self, "_ecu_from_transport", False))
 
@@ -3783,6 +3798,17 @@ class FlashDialog(QtWidgets.QDialog):
         beside the flash), else the one a native .edc15 container carries."""
         ee = getattr(self._window, "_eeprom", None)
         if ee is None:
+            # a tab that IS an EEPROM image (opened on its own): that is the
+            # EEPROM Write EEPROM sends
+            is_ee = getattr(self._window, "is_eeprom_image", None)
+            prim = getattr(self._window, "primary", None)
+            try:
+                if callable(is_ee) and is_ee() and prim is not None \
+                        and len(prim.binfile.data) == _edc15.EEPROM_SIZE:
+                    ee = bytes(prim.binfile.data)
+            except Exception:
+                ee = None
+        if ee is None:
             fn = getattr(self._window, "_container_eeprom", None)
             try:
                 ee = fn() if callable(fn) else None
@@ -4243,14 +4269,37 @@ class FlashDialog(QtWidgets.QDialog):
         rep = result.get("report")
         self.stage.setText("Cluster write complete.")
         self._flashed("cluster EEPROM")
-        QtWidgets.QMessageBox.information(
-            self, "Write cluster",
-            rep.describe()
-            + "\n\nSwitch the ignition off and on for the cluster to reload it.")
+        # a cluster that was sent the reset restarts by itself; otherwise the
+        # report already says to switch the ignition off and on
+        QtWidgets.QMessageBox.information(self, "Write cluster", rep.describe())
+
+    #: operations that write to the control unit; when one fails at a speed
+    #: above the lowest, the message suggests the next one down
+    _WRITE_OPS = ("write", "ee_write", "restore", "write_program")
+
+    def _lower_speed_hint(self, msg):
+        """``msg`` with a suggestion to try the next lower speed, when a
+        write failed and the speed list (K-line EDC15 / EDC16 only) has one.
+        Unchanged for a Cancel, for a read, and when the speed picked is
+        already the lowest."""
+        if getattr(self, "_op", None) not in self._WRITE_OPS:
+            return msg
+        if (msg or "").strip().rstrip(".") == "Stopped":
+            return msg
+        if not self._speed_applies() or self.boot_mode.isChecked():
+            return msg                       # no speed is chosen for these
+        i = self.speed_box.currentIndex()
+        if i <= 0:
+            return msg
+        lower = self.speed_box.itemText(i - 1)
+        return "%s\n\nIf this keeps failing, try a lower speed (%s) in the " \
+               "Speed list: a slower link is more forgiving of a noisy cable " \
+               "or a weak connection." % (msg.rstrip(), lower)
 
     def _error(self, msg):
         self._busy(False)
-        self.stage.setText("Failed: %s" % msg)
+        msg = self._lower_speed_hint(msg)
+        self.stage.setText("Failed: %s" % msg.split("\n\n")[0])
         QtWidgets.QMessageBox.critical(self, "Flashing", msg)
 
 

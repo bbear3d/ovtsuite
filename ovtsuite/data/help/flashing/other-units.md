@@ -86,6 +86,9 @@ Flasher it is saved as an `.ovt` project by default, or as the raw image
    refused before the cluster is touched.
 3. The app connects and unlocks the cluster, writes the whole 2 KB EEPROM,
    then reads every block back and compares it.
+4. Once every block reads back correctly the app sends the cluster a
+   **reset**, so it restarts on the new EEPROM by itself. A write that failed
+   or did not verify is never followed by a reset.
 
 Nothing is read from the cluster before the write: there is **no automatic
 backup**, and the file is not compared with the cluster's layout or vehicle
@@ -94,8 +97,10 @@ the cluster holds. Writing a file from another car moves that car's immobiliser 
 VIN and odometer into this cluster — see
 [Reading and writing the cluster](../modules/vdo/read-write.md#writing).
 
-When it finishes, switch the ignition off and on so the cluster loads the new
-EEPROM. The version written is marked in the project as last flashed.
+When it finishes the cluster has been reset and restarts on the new EEPROM.
+If the reset request could not be sent (the message says so), switch the
+ignition off and on instead. The version written is marked in the project as
+last flashed.
 **Force full write** does not apply and is hidden.
 
 ## ABS

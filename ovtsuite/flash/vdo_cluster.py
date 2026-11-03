@@ -26,7 +26,9 @@ Session, exactly as KWHack drives it:
 5. EEPROM: ReadEeprom ``19 <count> <hi> <lo>`` / WriteEeprom
    ``1A <count> <hi> <lo> <data>`` in 16-byte blocks; a NAK is a permission
    refusal.
-6. End communication (block 0x06).
+6. After a *write* that read back clean: Reset (custom 0x82), so the cluster
+   starts on the EEPROM it was just given instead of running on what it
+   loaded at power-up. Otherwise (a read) End communication (block 0x06).
 
 :func:`write_cluster` writes the whole file, as KWHack does, then reads every
 block back and compares. Nothing is read from the cluster before the write
@@ -59,6 +61,12 @@ BT_CUSTOM = 0x1B
 BT_READ_EEPROM_RESP = 0xEF
 BT_ASCII = 0xF6
 BT_WRITE_EEPROM_RESP = 0xF9
+
+#: VDO custom command 0x82 -- reset the cluster (KWHack's ``CustomReset``). It
+#: is above 0x80, so :meth:`VdoCluster.custom` sends the extended-command
+#: unlock first unless the session has already done so (it has, by the time
+#: an EEPROM write is finished).
+CMD_RESET = 0x82
 
 MAX_ACCESS_LEVEL = 7
 
@@ -525,6 +533,32 @@ class VdoCluster:
                 on_percent(lo + (hi - lo) * (addr + n - start) // length)
         return bytes(out)
 
+    def reset(self) -> bool:
+        """Ask the cluster to reset itself (custom command 0x82). True when
+        the request went out. A cluster that reboots at once may never answer
+        it, so an answer is not required -- only that the block was sent; the
+        dialog is over either way, so the session is not ended afterwards
+        (a restarting cluster would not hear it)."""
+        self._check_stop()
+        sent = False
+        try:
+            self.log("Resetting the cluster...")
+            if not self._custom_unlocked:            # (an EEPROM session has)
+                self._send([BT_CUSTOM, 0x80, 0x01, 0x02, 0x03, 0x04])
+                self._custom_unlocked = True
+            self.kw.send_block([BT_CUSTOM, CMD_RESET])
+            sent = True
+            try:
+                self.kw._receive_blocks()               # ACK/NAK, if it still can
+            except (KLineError, KLineTimeout):
+                pass
+        except (KLineError, KLineTimeout, AttributeError) as ex:
+            if not sent:
+                self.log("The reset request could not be sent: %s" % ex)
+        if sent:
+            self.kw = None                      # nothing more to say to it
+        return sent
+
     def end(self) -> None:
         try:
             if self.kw is not None:
@@ -557,8 +591,21 @@ class WriteReport:
     blocks_written: List[int]
     verified: bool
     changed_params: List[str] = field(default_factory=list)
+    #: the cluster was sent a reset after the verify (None: not tried)
+    reset: Optional[bool] = None
 
     def describe(self) -> str:
+        s = self._written()
+        if self.reset:
+            s += ("\n\nThe cluster was sent a reset and restarts on the new "
+                  "EEPROM.")
+        elif self.reset is False:
+            s += ("\n\nThe reset request could not be sent: switch the "
+                  "cluster's ignition off and on to make it use the new "
+                  "EEPROM.")
+        return s
+
+    def _written(self) -> str:
         if not self.blocks_written:
             return "The cluster already holds this EEPROM: nothing was written."
         if len(self.blocks_written) == EEPROM_SIZE // BLOCK:
@@ -653,6 +700,8 @@ def write_cluster(link, image: bytes, log=None, on_percent=None,
         if bad:
             raise ClusterError("verify failed at %s: the cluster reads back "
                                "different bytes" % ", ".join("0x%03X" % a for a in bad))
-        return WriteReport(version, todo, True)
+        # Written and read back clean: reset it so it runs on the new EEPROM.
+        # Last, and never a reason to call a good write a failure.
+        return WriteReport(version, todo, True, reset=c.reset())
     finally:
         c.end()

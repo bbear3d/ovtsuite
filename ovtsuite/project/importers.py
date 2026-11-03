@@ -449,6 +449,10 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
         from ..platforms import zf5hp as _z5p
         if _z5p.byte_swapped(data):
             ident = _identify(_z5p.swap16(data))
+    from ..platforms import is_eeprom as _is_eeprom
+    if _is_eeprom(ident.platform):
+        return _import_eeprom(project, data, ident, filename, into_set, branch,
+                              sidecar_log)
     s = _new_or_existing_set(project, into_set, ident.platform, filename,
                              ident.facts)
     role = "flash" if ident.known else "raw"
@@ -467,6 +471,84 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
         project.add_definition(s.id, mid, dname, ddata,
                                definition_type(ddata) or None)
     return s
+
+
+def _import_eeprom(project, data, ident, filename, into_set, branch,
+                   sidecar_log):
+    """A control unit's EEPROM image (EDC15 512 bytes, EDC16 4 KB).
+
+    Into a set of that control unit's flash (``into_set``) it becomes that
+    set's EEPROM -- the companion the EEPROM editor opens beside the flash
+    (:func:`pair_eeprom`). Otherwise it is a set of its own, one ``eeprom``
+    member, which opens straight in the EEPROM editor and can be paired with
+    a flash later (:func:`merge_eeprom_set`)."""
+    from ..platforms import EEPROM_OF
+    if into_set is not None:
+        target = project.set(into_set)
+        if target.platform == EEPROM_OF[ident.platform]:
+            return pair_eeprom(project, target.id, data, filename)
+    s = _new_or_existing_set(project, None, ident.platform, filename,
+                             ident.facts)
+    if s.member("eeprom") is None:
+        project.add_member(s.id, _member("eeprom", "eeprom", ident.platform))
+    _add_history(project, s.id, {"eeprom": bytes(data)}, sidecar_log or "",
+                 root_kind="import", root_label="Imported %s" % filename,
+                 source={"file": filename, "format": "bin"}, branch=branch)
+    return s
+
+
+def pair_eeprom(project: Project, sid: str, data: bytes, filename: str = "", *,
+                label: str = ""):
+    """Make ``data`` (an EEPROM image of the same control unit) the EEPROM of
+    flash set ``sid``: a new version of the set's active branch whose
+    ``eeprom`` member is the image (the member is added when the set has
+    none; one that has an EEPROM gets it replaced, and the older version
+    keeps the old one). Returns the set. ImportRefused when the image is no
+    EEPROM of this set's control unit."""
+    from ..platforms import EEPROM_OF
+    ident = _identify(bytes(data))
+    s = project.set(sid)
+    if EEPROM_OF.get(ident.platform) != s.platform:
+        raise ImportRefused(
+            "%s is not an EEPROM of %s (%s)" % (
+                filename or "this file", s.name,
+                ident.describe() if ident.known else "unrecognised"))
+    if s.member("eeprom") is None:
+        project.add_member(s.id, _member("eeprom", "eeprom", s.platform))
+    project.commit(s.id, None, {"eeprom": bytes(data)}, kind="import",
+                   label=label or "Imported %s" % (filename or "EEPROM"),
+                   source={"file": filename, "format": "bin"})
+    return s
+
+
+def merge_eeprom_set(project: Project, eeprom_sid: str, flash_sid: str):
+    """Pair the stand-alone EEPROM set ``eeprom_sid`` with flash set
+    ``flash_sid``: its EEPROM becomes the flash set's (:func:`pair_eeprom`)
+    and the stand-alone set goes. Returns the flash set."""
+    e = project.set(eeprom_sid)
+    main = next((m for m in e.members if m.role == "eeprom"), None) \
+        or (e.members[0] if e.members else None)
+    if main is None:
+        raise ImportRefused("%s holds no EEPROM" % e.name)
+    data = project.state(e.id, e.active.head)[main.id]
+    name = e.name
+    out = pair_eeprom(project, flash_sid, data, name)
+    project.remove_set(e.id)
+    return out
+
+
+def standalone_eeprom_sets(project: Project, ecu: Optional[str] = None):
+    """The sets that are just an EEPROM image (no flash), optionally only
+    those of control unit ``ecu`` (``"edc15"`` / ``"edc16"``)."""
+    from ..platforms import EEPROM_OF
+    return [s for s in project.sets if s.platform in EEPROM_OF
+            and (ecu is None or EEPROM_OF[s.platform] == ecu)]
+
+
+def flash_sets_for(project: Project, ecu: str):
+    """The sets holding the flash of control unit ``ecu`` that an EEPROM of
+    it can be paired with."""
+    return [s for s in project.sets if s.platform == ecu]
 
 
 def ols_versions(data: bytes) -> List[Tuple[str, str, int, int]]:
@@ -785,13 +867,15 @@ def import_bytes(project: Project, data: bytes, filename: str, *,
 
 def import_read(project: Project, data: bytes, name: str, *,
                 eeprom: Optional[bytes] = None, source: Optional[dict] = None,
-                into_set: Optional[str] = None):
+                into_set: Optional[str] = None, eeprom_of: str = ""):
     """A read from a module, as a set whose root is the read itself (kind
     ``read`` -- the as-read original). ``data`` is the flash image, or a
     native container a reader produced (a VDO cluster read); ``eeprom`` an
     EEPROM read alongside the flash (an EDC15 full backup). ``into_set``
     adds it to an existing set as a new branch with its own root. Returns
-    the set."""
+    the set. ``eeprom_of`` (``"edc15"``): ``data`` is that control unit's
+    EEPROM, read as one -- a set of its own even when its checksums are not
+    right (a read says what it is)."""
     from .. import container as _c
     import time as _t
     label = "Read %s" % _t.strftime("%Y-%m-%d %H:%M")
@@ -804,6 +888,18 @@ def import_read(project: Project, data: bytes, name: str, *,
         root.kind, root.label, root.source = "read", label, src
         return s
     ident = _identify(bytes(data))
+    from ..platforms import EEPROM_FOR as _EF, is_eeprom as _is_eeprom
+    if eeprom_of in _EF and eeprom is None and not ident.known:
+        from ..platforms.identify import Identity as _Identity
+        ident = _Identity(_EF[eeprom_of], "structure")
+    if _is_eeprom(ident.platform) and eeprom is None:
+        # an EEPROM read on its own: a set holding just that EEPROM
+        s = _new_or_existing_set(project, None, ident.platform, name,
+                                 ident.facts)
+        _ensure_members(project, s, [_member("eeprom", "eeprom", ident.platform)])
+        project.add_root(s.id, {"eeprom": bytes(data)}, kind="read", label=label,
+                         source=src, branch="Stock")
+        return s
     s = _new_or_existing_set(project, into_set, ident.platform, name, ident.facts)
     role = "flash" if ident.known else "raw"
     specs = [_member("flash", role, ident.platform,
@@ -861,6 +957,7 @@ def import_file(path: str, project: Optional[Project] = None, *,
     return project, s
 
 
-__all__ = ["import_bytes", "import_file", "original_images", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
+__all__ = ["import_bytes", "import_file", "pair_eeprom", "merge_eeprom_set",
+           "standalone_eeprom_sets", "flash_sets_for", "original_images", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
            "OLS_LAYOUTS", "OLS_STORED_PLACEMENT",
            "DEFINITION_EXTS", "definition_type", "new_id"]

@@ -94,10 +94,26 @@ PLATFORMS: Dict[str, Platform] = {p.id: p for p in (
     Platform("aisin", "Aisin", "AISIN", "aisin", 2, ()),
     Platform("vdo", "VDO instrument cluster", "VDO", "vdo", 4, ("vdo",)),
     Platform("hvac", "Climatronic 4F/4L HVAC", "HVAC", "hvac", 4, ("hvac",)),
+    # An ECU's serial EEPROM on its own (512 bytes EDC15, 4 KB EDC16). Not an
+    # image a module builds a parameter tree from -- so no module is named
+    # here (a session would hand it to the module's flash builder) -- but
+    # something the EEPROM editor opens and that pairs with the ECU's flash.
+    Platform("edc15eeprom", "Bosch EDC15 EEPROM", "EDC15 EEPROM", "", 1, ()),
+    Platform("edc16eeprom", "Bosch EDC16 EEPROM", "EDC16 EEPROM", "", 1, ()),
     Platform("unknown", "Unrecognised binary", "?", "", 1, ()),
 )}
 
 UNKNOWN = "unknown"
+
+#: EEPROM platform id -> the platform of the flash it belongs to.
+EEPROM_OF = {"edc15eeprom": "edc15", "edc16eeprom": "edc16"}
+#: ...and back: flash platform id -> its EEPROM platform id.
+EEPROM_FOR = {v: k for k, v in EEPROM_OF.items()}
+
+
+def is_eeprom(pid: str) -> bool:
+    """``pid`` is the platform of an ECU EEPROM image (not of a flash)."""
+    return pid in EEPROM_OF
 
 
 def platform(pid: str) -> Platform:
