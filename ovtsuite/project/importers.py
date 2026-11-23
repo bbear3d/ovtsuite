@@ -437,6 +437,14 @@ def _full_image(ident, data: bytes, source: dict):
 def _import_raw(project, data, filename, into_set, branch, sidecar_log,
                 definition):
     ident = _identify(data)
+    mpc_fmt = {}
+    if ident.platform == "edc16mpc":
+        # kept as the plain image; the form it came in is remembered so an
+        # export can give it back the same way (or in another)
+        from ..platforms import edc16 as _e16m
+        got = _e16m.decode_mpc(data)
+        if got is not None:
+            data, mpc_fmt = got
     if not ident.known:
         # A 16-bit bench/BDM read of a ZF 5HP flash is stored with the two
         # bytes of every word exchanged, so it identifies as "unknown" as-is.
@@ -449,6 +457,10 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
         from ..platforms import zf5hp as _z5p
         if _z5p.byte_swapped(data):
             ident = _identify(_z5p.swap16(data))
+    from ..platforms import is_companion as _is_eeprom
+    if _is_eeprom(ident.platform):
+        return _import_eeprom(project, data, ident, filename, into_set, branch,
+                              sidecar_log, mpc_fmt)
     s = _new_or_existing_set(project, into_set, ident.platform, filename,
                              ident.facts)
     role = "flash" if ident.known else "raw"
@@ -467,6 +479,95 @@ def _import_raw(project, data, filename, into_set, branch, sidecar_log,
         project.add_definition(s.id, mid, dname, ddata,
                                definition_type(ddata) or None)
     return s
+
+
+def _import_eeprom(project, data, ident, filename, into_set, branch,
+                   sidecar_log, mpc_fmt=None):
+    """A control unit's EEPROM image (EDC15 512 bytes, EDC16 4 KB) or an EDC16
+    internal flash (MPC): a **companion** -- a set of its own, one ``eeprom`` /
+    ``mpc`` member, with its own versions, tab and exports. Into a flash set of
+    the same control unit (``into_set``) it is also linked to it
+    (:func:`pair_eeprom`); otherwise it can be linked later
+    (:func:`merge_eeprom_set`)."""
+    from ..platforms import COMPANION_OF
+    ecu, role = COMPANION_OF[ident.platform]
+    s = _new_or_existing_set(project, None, ident.platform, filename,
+                             ident.facts)
+    if s.member(role) is None:
+        project.add_member(s.id, _member(role, role, ident.platform))
+    src = {"file": filename, "format": "bin"}
+    if mpc_fmt:
+        src["mpc_format"] = mpc_fmt["format"]
+        if mpc_fmt.get("trailer"):
+            src["mpc_trailer"] = mpc_fmt["trailer"]
+        s.extra["mpc_format"] = dict(mpc_fmt)
+        project._touch()
+    _add_history(project, s.id, {role: bytes(data)}, sidecar_log or "",
+                 root_kind="import", root_label="Imported %s" % filename,
+                 source=src, branch=branch)
+    if into_set is not None:
+        target = project.set(into_set)
+        if target.platform == ecu:
+            from . import companions as _co
+            _co.link(project, target.id, s.id)
+            return target
+    return s
+
+
+def pair_eeprom(project: Project, sid: str, data: bytes, filename: str = "", *,
+                label: str = ""):
+    """Import ``data`` (an EEPROM / MPC image of the same control unit) as a
+    companion set and link it to flash set ``sid`` -- replacing the companion
+    that flash had in that role (it stays in the project as a set of its own).
+    Returns the flash set. ImportRefused when the image is no companion of
+    this set's control unit."""
+    from ..platforms import COMPANION_OF
+    from . import companions as _co
+    ident = _identify(bytes(data))
+    s = project.set(sid)
+    want = COMPANION_OF.get(ident.platform)
+    if want is None or want[0] != s.platform:
+        raise ImportRefused(
+            "%s is not an EEPROM or internal flash of %s (%s)" % (
+                filename or "this file", s.name,
+                ident.describe() if ident.known else "unrecognised"))
+    mpc_fmt = {}
+    if ident.platform == "edc16mpc":
+        from ..platforms import edc16 as _e16m
+        got = _e16m.decode_mpc(bytes(data))
+        if got is not None:
+            data, mpc_fmt = got
+    c = _import_eeprom(project, data, ident, filename, None, "Stock", None,
+                       mpc_fmt)
+    _co.link(project, s.id, c.id)
+    return s
+
+
+def merge_eeprom_set(project: Project, eeprom_sid: str, flash_sid: str):
+    """Link the companion set ``eeprom_sid`` to flash set ``flash_sid``. The
+    companion stays a set of its own. Returns the flash set."""
+    from . import companions as _co
+    try:
+        _co.link(project, flash_sid, eeprom_sid)
+    except ValueError as ex:
+        raise ImportRefused(str(ex))
+    return project.set(flash_sid)
+
+
+def standalone_eeprom_sets(project: Project, ecu: Optional[str] = None):
+    """The companion sets (EEPROMs, MPCs) that no flash links yet, optionally
+    only those of control unit ``ecu`` (``"edc15"`` / ``"edc16"``)."""
+    from ..platforms import COMPANION_OF
+    from . import companions as _co
+    return [c for c in project.sets if c.platform in COMPANION_OF
+            and (ecu is None or COMPANION_OF[c.platform][0] == ecu)
+            and not _co.flashes_using(project, c.id)]
+
+
+def flash_sets_for(project: Project, ecu: str):
+    """The sets holding the flash of control unit ``ecu`` that an EEPROM of
+    it can be paired with."""
+    return [s for s in project.sets if s.platform == ecu]
 
 
 def ols_versions(data: bytes) -> List[Tuple[str, str, int, int]]:
@@ -631,11 +732,21 @@ def _import_ols(project, data, filename, into_set, branch, which=None,
 
 def original_images(project: Project, sid: str, data: bytes, filename: str
                     ) -> Tuple[Images, dict, list]:
-    """``(images, source, originals)`` of file ``data`` read the way importing
+    """:func:`original_parts` without the companion images."""
+    return original_parts(project, sid, data, filename)[:3]
+
+
+def original_parts(project: Project, sid: str, data: bytes, filename: str
+                   ) -> Tuple[Images, dict, list, Images]:
+    """``(images, source, originals, companions)`` of file ``data`` read the way importing
     it into a project would, with its parts named as set ``sid`` names its
     own, ready for :meth:`Project.rebase_original`. ``originals`` are the
     container files the import kept byte for byte (``(filename, format,
     bytes, member ids)``). ImportRefused says why a file will not do.
+    ``companions`` is ``{role: image}`` of the EEPROM / MPC the file carries
+    that the set's original does not hold: they are not part of the new
+    original (the linked companion set holds them, see
+    :mod:`ovtsuite.project.companions`) and are for the caller to offer.
 
     An EDC16 calibration-only file (512 KB, which an import makes the full
     2 MB image) carries nothing outside its calibration window: where the
@@ -663,6 +774,17 @@ def original_images(project: Project, sid: str, data: bytes, filename: str
         # one main image either way (a module names it "flash", the base app
         # "raw"): the same part under the other's name
         images[mine.id] = images.pop(theirs.id)
+    extra: Images = {}
+    if old is not None:
+        # An EEPROM / MPC the file carries beside the flash (an .sgo with the
+        # internal flash, a PCMFlash file) is the linked companion set's, not
+        # this original's: where the original holds the flash only, leave it
+        # out of the original rather than refusing the file for being larger,
+        # and hand it back for the caller to offer as the companion.
+        scratch_roles = {m.id: m.role for m in s2.members}
+        for k in [k for k in images
+                  if k not in old.sizes and scratch_roles.get(k) in ("mpc", "eeprom")]:
+            extra[scratch_roles[k]] = images.pop(k)
     source = dict(root.source or {})
     source.setdefault("file", filename)
     mid = mine.id if mine is not None else None
@@ -689,8 +811,9 @@ def original_images(project: Project, sid: str, data: bytes, filename: str
             # becomes a version over the image's calibration window
             source["embed_previous"] = {mid: _e16.CAL_START}
     originals = [(o.filename, o.format, scratch.original_bytes(s2.id, o.id),
-                  list(o.members)) for o in s2.originals]
-    return images, source, originals
+                  [m for m in o.members if m in images] or list(images))
+                 for o in s2.originals]
+    return images, source, originals, extra
 
 
 def definition_type(data: bytes) -> Optional[str]:
@@ -704,7 +827,41 @@ def definition_type(data: bytes) -> Optional[str]:
 
 
 # --------------------------------------------------------------- public API
-def import_bytes(project: Project, data: bytes, filename: str, *,
+def _branch_ids(project, sid) -> set:
+    try:
+        return {b.id for b in project.set(sid).branches} if sid else set()
+    except KeyError:
+        return set()
+
+
+def _new_branch(s, seen: set):
+    """The branch an import into set ``s`` just added (the last one)."""
+    return next((b for b in reversed(s.branches) if b.id not in seen),
+                s.branches[-1] if s.branches else None)
+
+
+def import_bytes(project: Project, data: bytes, filename: str, **kw):
+    """Import one file's bytes into ``project`` (see :func:`_import_bytes`);
+    an EDC15 / EDC16 flash that came with an EEPROM or an internal flash (a
+    .dim, a PCMFlash file, a backup) has them split out as companion sets,
+    linked to it.
+
+    ``held`` (a dict, with ``into_set``): filled with ``{role: bytes}`` of the
+    EEPROM / MPC the file holds for a role the set already links -- the import
+    keeps the linked one; the caller may compare and ask
+    (:mod:`ovtsuite.project.importparts`)."""
+    held = kw.pop("held", None)
+    seen = _branch_ids(project, kw.get("into_set"))
+    s = _import_bytes(project, data, filename, **kw)
+    from . import companions as _co
+    if held is not None and kw.get("into_set") is not None:
+        from . import importparts as _ip
+        held.update(_ip.held_linked(project, s.id, _new_branch(s, seen)))
+    _co.split(project, s.id)
+    return s
+
+
+def _import_bytes(project: Project, data: bytes, filename: str, *,
                  into_set: Optional[str] = None, branch: str = "",
                  sidecar_log: Optional[str] = None,
                  definition: Optional[Tuple[str, bytes]] = None,
@@ -785,25 +942,41 @@ def import_bytes(project: Project, data: bytes, filename: str, *,
 
 def import_read(project: Project, data: bytes, name: str, *,
                 eeprom: Optional[bytes] = None, source: Optional[dict] = None,
-                into_set: Optional[str] = None):
+                into_set: Optional[str] = None, eeprom_of: str = "",
+                held: Optional[dict] = None):
     """A read from a module, as a set whose root is the read itself (kind
     ``read`` -- the as-read original). ``data`` is the flash image, or a
     native container a reader produced (a VDO cluster read); ``eeprom`` an
     EEPROM read alongside the flash (an EDC15 full backup). ``into_set``
     adds it to an existing set as a new branch with its own root. Returns
-    the set."""
+    the set. ``eeprom_of`` (``"edc15"``): ``data`` is that control unit's
+    EEPROM, read as one -- a set of its own even when its checksums are not
+    right (a read says what it is). ``held``: see :func:`import_bytes`."""
     from .. import container as _c
     import time as _t
     label = "Read %s" % _t.strftime("%Y-%m-%d %H:%M")
     src = dict(source or {})
     if _c.format_for_magic(bytes(data[:8])) is not None and eeprom is None:
         s = import_bytes(project, data, name, into_set=into_set,
-                         branch="" if into_set is None else label)
+                         branch="" if into_set is None else label, held=held)
         b = s.branches[-1]
         root = s.root_of(b.head)
         root.kind, root.label, root.source = "read", label, src
         return s
+    seen = _branch_ids(project, into_set)
     ident = _identify(bytes(data))
+    from ..platforms import EEPROM_FOR as _EF, is_eeprom as _is_eeprom
+    if eeprom_of in _EF and eeprom is None and not ident.known:
+        from ..platforms.identify import Identity as _Identity
+        ident = _Identity(_EF[eeprom_of], "structure")
+    if _is_eeprom(ident.platform) and eeprom is None:
+        # an EEPROM read on its own: a set holding just that EEPROM
+        s = _new_or_existing_set(project, None, ident.platform, name,
+                                 ident.facts)
+        _ensure_members(project, s, [_member("eeprom", "eeprom", ident.platform)])
+        project.add_root(s.id, {"eeprom": bytes(data)}, kind="read", label=label,
+                         source=src, branch="Stock")
+        return s
     s = _new_or_existing_set(project, into_set, ident.platform, name, ident.facts)
     role = "flash" if ident.known else "raw"
     specs = [_member("flash", role, ident.platform,
@@ -816,13 +989,19 @@ def import_read(project: Project, data: bytes, name: str, *,
     _ensure_members(project, s, specs)
     project.add_root(s.id, images, kind="read", label=label, source=src,
                      branch="Stock" if into_set is None else label)
+    from . import companions as _co
+    if held is not None and into_set is not None:
+        from . import importparts as _ip
+        held.update(_ip.held_linked(project, s.id, _new_branch(s, seen)))
+    _co.split(project, s.id)
     return s
 
 
 def import_file(path: str, project: Optional[Project] = None, *,
                 into_set: Optional[str] = None, branch: str = "",
                 definition_path: Optional[str] = None, ols_versions=None,
-                ols_layout: str = "star", ols_stored: bool = False):
+                ols_layout: str = "star", ols_stored: bool = False,
+                held: Optional[dict] = None):
     """Import the file at ``path``; returns ``(project, set)``.
 
     A ``.log`` beside the file is migrated as its history. A definition with
@@ -857,10 +1036,11 @@ def import_file(path: str, project: Optional[Project] = None, *,
     s = import_bytes(project, data, os.path.basename(path), into_set=into_set,
                      branch=branch, sidecar_log=log, definition=definition,
                      ols_versions=ols_versions, ols_layout=ols_layout,
-                     ols_stored=ols_stored)
+                     ols_stored=ols_stored, held=held)
     return project, s
 
 
-__all__ = ["import_bytes", "import_file", "original_images", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
+__all__ = ["import_bytes", "import_file", "pair_eeprom", "merge_eeprom_set",
+           "standalone_eeprom_sets", "flash_sets_for", "original_images", "original_parts", "ols_versions", "import_read", "legacy_chain", "ImportRefused",
            "OLS_LAYOUTS", "OLS_STORED_PLACEMENT",
            "DEFINITION_EXTS", "definition_type", "new_id"]

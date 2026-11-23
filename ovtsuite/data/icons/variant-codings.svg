@@ -1,0 +1,24 @@
+<!-- OVT-Suite icon: Variant codings (one coding node branching to two table copies) -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <circle cx="4.5" cy="12" r="2.5" />
+  <path d="M7 12h2.5" />
+  <path d="M9.5 6.5v11" />
+  <path d="M9.5 6.5H12" />
+  <path d="M9.5 17.5H12" />
+  <rect x="12" y="3" width="9.5" height="7" rx="1.5" />
+  <path d="M12 6.5h9.5" />
+  <path d="M16.75 3v7" />
+  <rect x="12" y="14" width="9.5" height="7" rx="1.5" />
+  <path d="M12 17.5h9.5" />
+  <path d="M16.75 14v7" />
+</svg>

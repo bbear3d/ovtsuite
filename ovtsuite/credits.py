@@ -181,10 +181,17 @@ CREDITS: Tuple[Credit, ...] = (
         "Copyright (c) Emmanuel Blot and contributors",
         "BSD-3-Clause", RUNTIME, "https://github.com/eblot/pyftdi", dists=("pyftdi",)),
     Credit(
-        "libusb-win32", "USB back end for PyUSB on Windows (libusb0.dll)",
-        "Copyright (c) Stephan Meyer, Travis Robinson and contributors",
-        "LGPL-3.0-or-later", RUNTIME, "https://sourceforge.net/projects/libusb-win32/",
-        ("libusb-win32.txt", "LGPL-3.0.txt", "GPL-3.0.txt")),
+        "libusb", "USB back end for PyUSB (libusb-1.0.dll in the 64-bit Windows build; "
+        "a libusb-1.0 dylib in the macOS app when one was available at build time)",
+        "Copyright (c) Johannes Erdfelt, Daniel Drake, Peter Stuge, Nathan Hjelm, "
+        "Pete Batard and the libusb contributors",
+        "LGPL-2.1-or-later", RUNTIME, "https://libusb.info/",
+        ("libusb.txt", "LGPL-2.1.txt"),
+        note="The unmodified 1.0.30 release DLL, loaded as a separate library and "
+             "replaceable by any compatible build. A macOS app that carries a "
+             "libusb dylib has it unmodified, as a separate library in Contents/Frameworks; "
+             "otherwise, and on Linux, the system's libusb (MacPorts, Homebrew, "
+             "package manager) is used."),
     Credit(
         "PyInstaller bootloader", "Starts the frozen program",
         "Copyright (c) 2010-2023, PyInstaller Development Team",

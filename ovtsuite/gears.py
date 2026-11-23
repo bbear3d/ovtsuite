@@ -263,6 +263,11 @@ class GearRatios:
                 cp.label = tx[:1].upper() + tx[1:]
                 if cp.is_primary:
                     cp.label += " · main block"
+                # the coding number tells two copies apart when the file's
+                # own gearbox type makes their transmissions read alike. After
+                # the " · " so the comparison match (the part before it, in
+                # the gear-ratio dialog) is unchanged.
+                cp.label += " · coding %d" % code
 
     # -- edit -----------------------------------------------------------
     def set_value(self, entity, value: float):

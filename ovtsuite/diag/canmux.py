@@ -37,6 +37,7 @@ import threading
 import time
 from typing import Any, Callable, List, Optional, Set
 
+from .. import realtime as _realtime
 from ..flash.transport import KLineError
 
 Log = Callable[[str], None]
@@ -203,6 +204,13 @@ class CanMux:
 
     # ---- the reader
     def _run(self):
+        _realtime.begin_thread()
+        try:
+            self._read_loop()
+        finally:
+            _realtime.end_thread()
+
+    def _read_loop(self):
         # The mux is the channel's only reader, so it can block in the driver
         # (PassThruReadMsgs with a timeout releases the GIL) instead of
         # polling: a Python spin here would peg a core and starve the GUI and

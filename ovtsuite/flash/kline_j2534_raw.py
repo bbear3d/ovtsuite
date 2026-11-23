@@ -116,8 +116,9 @@ class J2534RawKLine:
     rx_settle_s = 0.001
 
     def __init__(self, dev, baud: int = 10400, log: Optional[Callable[[str], None]] = None,
-                 protocol: int = J.ISO9141):
+                 protocol: int = J.ISO9141, on_trace=None):
         self._dev = dev
+        self._trace = on_trace             # optional (dir, bytes) wire-log hook
         self._proto = protocol
         self._baud = int(baud)
         self._log = log or (lambda s: None)
@@ -126,6 +127,9 @@ class J2534RawKLine:
         self._held: Optional[bytes] = None   # a write that goes out with the next read
         self._timeout = 8.0
         self._data_rate_by_config: Optional[bool] = None
+        self._parity_changed = False
+        #: W4 (ms) to give the channel for a 5-baud init, or None for the device's own
+        self._w4: Optional[int] = None
         self.five_baud_mod_ok = False
         self.last_sync = -1
         #: optional callable()->bool, checked between read slices and init tries
@@ -149,10 +153,24 @@ class J2534RawKLine:
             except Exception:
                 refused.append("%s=%d" % (name, val))
         try:
+            # A prior Audi C5 unlock on this device (see VdoCluster.set_parity)
+            # leaves its UART at even parity; some firmwares keep that setting
+            # across a channel close/reopen instead of resetting it, so a KW1281
+            # wake on a fresh channel can silently inherit it and fail. Force
+            # it back to none explicitly rather than assume a clean default.
+            self._ch.set_config(PARITY=0)
+        except Exception:
+            pass
+        try:
             self._ch.set_config(FIVE_BAUD_MOD=FIVE_BAUD_TESTER_COMPLEMENT_ONLY)
             self.five_baud_mod_ok = True
         except Exception:
             self.five_baud_mod_ok = False
+        if self._w4 is not None:
+            try:
+                self._ch.set_config(W4=self._w4)
+            except Exception:
+                pass
         if refused:
             self._log("J2534 K-line: the device kept its default for %s; byte timing "
                       "may be slower." % ", ".join(refused))
@@ -162,6 +180,12 @@ class J2534RawKLine:
             self._flush_held()
         except Exception:
             pass
+        if self._parity_changed and self._ch is not None:
+            try:
+                self._ch.set_config(PARITY=0)      # see set_parity: never leave it at even
+            except Exception:
+                pass
+            self._parity_changed = False
         ch, self._ch = self._ch, None
         if ch is not None:
             try:
@@ -193,6 +217,20 @@ class J2534RawKLine:
     def read_timeout(self, seconds: float):
         self._timeout = float(seconds)
 
+    def set_five_baud_w4(self, ms: int):
+        """How long after the ECU's key bytes the device sends its inverted
+        key byte 2 in a 5-baud init (J2534 W4, ISO 14230 allows 25-50 ms).
+        The default of 50 ms is too late for the EDC15's KWP2000 boot stub (it
+        then never sends the address complement or answers anything); about
+        35 ms is what a serial cable's host timing gives.  Kept across a channel
+        reopen (a baud change reopens it on the OpenPort)."""
+        self._w4 = int(ms)
+        if self._ch is not None:
+            try:
+                self._ch.set_config(W4=self._w4)
+            except Exception:
+                pass
+
     def set_baud(self, baud: int):
         """DATA_RATE first; a device that only takes the rate when a channel
         opens (the OpenPort 2.0) gets its channel reopened at the new rate --
@@ -213,6 +251,28 @@ class J2534RawKLine:
         self.close()
         self._baud = baud
         self._open()
+
+    def set_parity(self, p: str):
+        """Audi C5-family VDO clusters switch to even parity after login
+        (vdo_cluster.VdoCluster._set_parity); J2534's PARITY SCONFIG param is
+        0/1/2 for none/odd/even. Tracked so close() can put a device that
+        never got asked back to "N" (a crash, a cancel, anything that skips
+        VdoCluster.end()) back the way it found it -- left at even parity, a
+        device's firmware can carry that into whoever opens it next, with no
+        hint why its OWN unrelated 5-baud init then fails (confirmed on the
+        bench: a fresh process, same device, same cluster, "ERR_FAILED" on
+        every wake attempt until parity was forced back to none)."""
+        value = {"N": 0, "O": 1, "E": 2}.get(p.upper())
+        if value is None:
+            raise KLineError("unknown parity %r" % p)
+        if self._ch is None:
+            raise KLineError("J2534 K-line: channel closed")
+        try:
+            self._ch.set_config(PARITY=value)
+            self._parity_changed = value != 0
+        except Exception as ex:
+            raise KLineError("this J2534 device would not switch to %s parity: %s"
+                             % ({"N": "no", "O": "odd", "E": "even"}[p.upper()], ex))
 
     def set_break(self, on: bool):
         """The line belongs to the device; its init does what a break did."""
@@ -269,13 +329,38 @@ class J2534RawKLine:
         kb1, kb2 = kb[first], kb[first + 1]
         version = ((kb2 & 0x7F) << 7) + (kb1 & 0x7F)
         self.last_sync = 0x55
+        if self._trace:
+            self._trace("tx", bytes([addr]))            # the 5-baud address
+            self._trace("rx", kb)                       # the key bytes the device returned
         self._log("J2534 5-baud init 0x%02X -> key bytes %02X %02X (KW %d)"
                   % (addr, kb1, kb2, version))
         # The device sent ~KB2. A KWP2000 controller answers it with ~address;
         # in mode 1 the device leaves that in the stream, in its default mode
-        # it consumed it already.
+        # it consumed it already -- in THEORY. On the bench (a Tactrix
+        # OpenPort, direct libusb, EDC15) the ECU plainly never sends it:
+        # sniffed on the wire, our own ~KB2 goes out clean and nothing comes
+        # back, ever, confirmed 3/3 and mode-independent (forcing the
+        # channel to mode 0 and redoing the whole wake made no difference --
+        # same silence). Whatever reads it on an SM2 isn't universal, so a
+        # missing complement here is a warning, not a reason to fail the
+        # whole wake: nothing downstream of wake_up() actually depends on
+        # having read it.
         if version >= 2000 and self.five_baud_mod_ok:
-            self.read_complement(addr)
+            # Capped at 1s rather than the full self._timeout (8s): tried on
+            # the theory that burning 8s here before the first real request
+            # was blowing some ECU-side session window, which turned out
+            # not to be it (shortening this changed nothing downstream) --
+            # kept anyway since there is no reason to wait out the full
+            # timeout for a byte already known not to be coming.
+            saved = self._timeout
+            self._timeout = 1.0
+            try:
+                self.read_complement(addr)
+            except KLineError as ex:
+                self._log("J2534 5-baud init: no ~address complement from the "
+                          "ECU (%s) -- continuing without it" % ex)
+            finally:
+                self._timeout = saved
         return version
 
     # ---- device steps -------------------------------------------------------
@@ -290,6 +375,8 @@ class J2534RawKLine:
         if data is not None:
             budget = max(1000, 1000 + len(data) * 20000 // max(self._baud, 300))
         xfer = getattr(self._ch, "kline_xfer", None)
+        if self._trace and data:
+            self._trace("tx", bytes(data))
         try:
             if xfer is not None:
                 before, after = xfer(data, budget, wait_ms, drain)
@@ -303,6 +390,8 @@ class J2534RawKLine:
         for m in after:
             if not getattr(m, "is_tx_echo", False):
                 tail += bytes(getattr(m, "payload", b"") or b"")
+        if self._trace and tail:
+            self._trace("rx", bytes(tail))
         return bytes(tail)
 
     def _flush_held(self):
@@ -357,6 +446,8 @@ class J2534RawKLine:
             if data:
                 self._rx += data
                 got = True
+                if self._trace:
+                    self._trace("rx", data)
         return got
 
     def _drain(self):

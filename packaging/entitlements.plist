@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened runtime (Developer ID builds): without this the app can load
+         only libraries signed by Apple or by the same team, so a libusb that
+         the user installed with MacPorts or Homebrew (other signature) would
+         be refused. The bundled libusb is signed with the app's identity. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

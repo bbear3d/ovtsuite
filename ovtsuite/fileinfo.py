@@ -88,10 +88,41 @@ def ident16(data: bytes, region=None) -> dict:
     return out
 
 
+#: the EEPROM fields worth a line in File information, by their layouts' keys
+_EEPROM_SHOWN = ("vin", "immo", "immo_status", "immo_number", "immo_id", "skc",
+                 "odometer", "mileage", "vmax")
+
+
+def eeprom_rows(data, indent: str = "") -> list:
+    """File-information rows for an ECU EEPROM image: the layout that fits
+    it (an installed module's, ovtsuite.gui_eeprom) names its control unit,
+    VIN, immobiliser, odometer and the state of its checksums. Empty when no
+    layout fits."""
+    try:
+        from . import gui_eeprom
+        lays = gui_eeprom.layouts_for(bytes(data))
+        if not lays:
+            return []
+        lay, data = lays[0], bytes(data)
+        rows = [(indent + "EEPROM", "%s, %d bytes" % (lay.name, len(data)))]
+        for f in lay.fields:
+            if f.key in _EEPROM_SHOWN:
+                v = lay.get(data, f)
+                if f.key == "vin" and not any(c.isalnum() for c in str(v)):
+                    v = "(not set)"
+                rows.append(("%s  %s" % (indent, f.name), str(v)))
+        rows.append((indent + "  Checksums", lay.checksum_text(data)))
+        return rows
+    except Exception:
+        return []
+
+
 def rows_for_session(session, eeprom=None):
     """(label, value) rows describing a loaded session."""
     data = bytes(session.binfile.data)
-    rows = [("File", session.binfile.name), ("Size", "%d bytes (%d KB)" % (len(data), len(data) // 1024))]
+    rows = [("File", session.binfile.name),
+            ("Size", "%d bytes (%d KB)" % (len(data), len(data) // 1024)
+             if len(data) >= 1024 else "%d bytes" % len(data))]
     cont = getattr(session, "_container", None)
     if cont is not None:
         held = ", ".join(b.label() for b in cont.blocks)
@@ -102,6 +133,15 @@ def rows_for_session(session, eeprom=None):
                          if st == "used" else
                          "not used (%s) - re-save to store it for faster "
                          "opening" % st))
+    from .platforms import is_eeprom as _is_eeprom
+    if _is_eeprom(getattr(session, "platform", "")):
+        # an ECU's EEPROM on its own: what it holds (the EEPROM editor opens it)
+        got = eeprom_rows(data)
+        if got:
+            rows.append(("Identified as", session.binary_identity.describe()))
+            rows.append(("Opens in", "the EEPROM editor (Tools > EEPROM editor)"))
+            rows.extend(got[1:])
+            return rows
     if getattr(session, "support", "full") != "full":
         # The platform's module is not installed (or has no definition for
         # this binary): say what the base app recognised, and why there is no
@@ -384,13 +424,10 @@ def rows_for_session(session, eeprom=None):
     except Exception:
         pass
     if eeprom is not None:
-        try:
-            from .edc15 import eeprom15 as E
-            rows.append(("EEPROM", "512 bytes loaded alongside"))
-            rows.append(("  VIN", E.get(eeprom, E.FIELD_BY_KEY["vin"])))
-            rows.append(("  Immobiliser", "%s (%s)" % (E.get(eeprom, E.FIELD_BY_KEY["immo_status"]),
-                                                       E.get(eeprom, E.FIELD_BY_KEY["immo_number"]))))
-            rows.append(("  Odometer", "%.2f km" % E.get(eeprom, E.FIELD_BY_KEY["odometer"])))
-        except Exception:
-            pass
+        got = eeprom_rows(eeprom)
+        if got:
+            got[0] = ("EEPROM", "%s loaded alongside (paired)" % got[0][1])
+            rows.extend(got)
+        else:
+            rows.append(("EEPROM", "%d bytes loaded alongside" % len(eeprom)))
     return rows

@@ -20,13 +20,20 @@ do (2,000+ images, see docs/MODULES_PLAN.md):
 6. Aisin -- the 09D checksum descriptor or the TR-80 block trailers;
 7. EDC17 -- the EPK Bosch stamps in the calibration (``35/1/EDC17_CP14/5/P680//C680I3WF///``);
 8. EDC16 -- its CAFEAFFE calibration descriptor;
-9. otherwise **unknown**. Nothing is forced into a platform by elimination.
+9. an ECU's own EEPROM (512 bytes EDC15, 4 KB EDC16) whose installed module's
+   layout finds its structure -- an ``edc15eeprom`` / ``edc16eeprom``
+   (never a flash: no module builds a tree from it, the EEPROM editor opens it);
+10. otherwise **unknown**.
+
+(The EDC16 internal flash -- ``edc16mpc`` -- is tested just before EDC16: it
+carries the same descriptor, but a vector table at 0 and a smaller size.) Nothing is forced into a platform by elimination.
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-from . import PLATFORMS, MODULES, UNKNOWN, platform as _platform
+from . import (PLATFORMS, MODULES, UNKNOWN, EEPROM_FOR, EEPROM_OF,
+               platform as _platform)
 from . import aisin as _aisin
 from . import edc15 as _edc15
 from . import edc16 as _edc16
@@ -106,6 +113,9 @@ def _facts(pid: str, data: bytes) -> Dict[str, str]:
             if i.get("system"):
                 out["system"] = i["system"]
             return out
+        if pid == "edc16mpc":
+            i = _edc16.mpc_ident(data)
+            return {"part": i["hw"], "software": i["software"]} if i else {}
         if pid == "edc17":
             i = _edc17.ident(data) or {}
             out = {k: i[k] for k in ("software", "part") if i.get(k)}
@@ -144,14 +154,71 @@ def identify(data: bytes, container_kind: Optional[str] = None,
                         _facts(container_kind, data))
     if hvac:
         return Identity("hvac", "container")
+    # a compressed .MPC (XOR / zlib) is the internal flash, whatever its size
+    if _edc16.mpc_format_of(data).get("format") == "encoded":
+        return Identity("edc16mpc", "structure",
+                        _facts("edc16mpc", _edc16.decode_mpc(data)[0]))
     for pid, test in (("vdo", _vdo.detect), ("edc15", _edc15.detect),
                       ("zf8hp", _zf8hp.detect), ("zf6hp", _zf6hp.detect),
                       ("zf5hp", _zf5hp.detect),
                       ("aisin", _aisin.detect), ("edc17", _edc17.detect),
-                      ("edc16", _edc16.detect)):
+                      ("edc16mpc", _edc16.is_mpc), ("edc16", _edc16.detect)):
         if test(data):
             return Identity(pid, "structure", _facts(pid, data))
+    pid = eeprom_platform(data)
+    if pid:
+        return Identity(pid, "structure", _eeprom_facts(pid, data))
     return Identity(UNKNOWN, "none")
+
+
+#: sizes an ECU EEPROM image can have (EDC15 24C04, EDC16 external 4 KB)
+_EEPROM_SIZES = (512, 4096)
+
+
+def eeprom_layout(data: bytes):
+    """The EEPROM layout (``ovtsuite.gui_eeprom`` protocol) of the installed
+    module that recognises ``data`` -- right size and the layout's own
+    structure, whether or not its checksums agree -- or None. Needs the
+    module: what an EEPROM holds is the module's."""
+    if len(data) not in _EEPROM_SIZES:
+        return None
+    try:
+        from ..modules import registry as _registry
+        layouts = [lay for _spec, lay in _registry.eeprom_layouts()]
+    except Exception:
+        return None
+    for lay in layouts:
+        try:
+            if lay.size == len(data) and int(lay.identify(bytes(data))) >= 1 \
+                    and getattr(lay, "platform", "") in EEPROM_FOR:
+                return lay
+        except Exception:
+            continue
+    return None
+
+
+def eeprom_platform(data: bytes) -> str:
+    """``"edc15eeprom"`` / ``"edc16eeprom"`` when ``data`` is that ECU's
+    EEPROM (see :func:`eeprom_layout`), else ""."""
+    lay = eeprom_layout(data)
+    return EEPROM_FOR.get(getattr(lay, "platform", ""), "") if lay else ""
+
+
+def _eeprom_facts(pid: str, data: bytes) -> Dict[str, str]:
+    """VIN (when the image holds a printable one) for naming and the
+    project's information; never raises."""
+    out: Dict[str, str] = {}
+    try:
+        lay = eeprom_layout(data)
+        for f in lay.fields:
+            if f.key == "vin":
+                vin = str(lay.get(bytes(data), f)).strip()
+                if len(vin) == 17 and vin.isalnum():
+                    out["vin"] = vin
+                    out["variant"] = "VIN " + vin
+    except Exception:
+        pass
+    return out
 
 
 def identify_read(data: bytes) -> Identity:
@@ -186,6 +253,9 @@ def read_info(ident: Identity) -> Dict[str, str]:
     if not ident.known:
         return {}
     f = ident.facts
+    if ident.platform in EEPROM_OF:
+        # an EEPROM names the car, not the control unit's part or software
+        return {"vin": f["vin"]} if f.get("vin") else {}
     ecu = ident.name + f.get("family", "")
     if f.get("part"):
         ecu += " " + f["part"]

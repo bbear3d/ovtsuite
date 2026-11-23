@@ -359,6 +359,17 @@ def title_key(e) -> str:
     return h.hexdigest()
 
 
+def _coding_query(session, query: str) -> str:
+    """``query`` with a scan tool's coding number read the way ``session``'s
+    dataset holds it (``variant.coding_query``); as typed for any session that
+    is not an EDC16 one."""
+    try:
+        from .variant import coding_query
+        return coding_query(session, query)
+    except Exception:
+        return query
+
+
 class _TextMatcher:
     def __init__(self, query: str, opts: SearchOptions):
         self.q = query.strip()
@@ -856,10 +867,18 @@ class SearchEngine:
 
     # -- text ---------------------------------------------------------------
     def _text(self, query, opts, sources, cancel, progress):
-        m = _TextMatcher(query, opts)
+        m0 = _TextMatcher(query, opts)
+        matchers = {query: m0}
         hits: List[Hit] = []
         total = len(sources)
         for si, src in enumerate(sources):
+            # a coding typed the way a scan tool shows it is read the way
+            # this file's dataset holds it (variant.coding_query)
+            q = query if opts.match == "regex" else _coding_query(
+                src.session, query)
+            m = matchers.get(q)
+            if m is None:
+                m = matchers[q] = _TextMatcher(q, opts)
             corpus = self.corpus(src, cancel)
             n = len(corpus.docs)
             for i, d in enumerate(corpus.docs):

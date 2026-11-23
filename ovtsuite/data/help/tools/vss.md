@@ -57,17 +57,22 @@ the one used. Both changes are one undoable step.
 
 ### Correct a speed that reads wrong
 
-The **Read-vs-actual corrector (primary)** works from one measurement:
+The **Read-vs-actual corrector** works from one measurement:
 
 1. Drive at a steady speed and note what the ECU-derived speed reads (for
    example on a logged road-speed channel) and the true speed from GPS.
-2. Enter them in **Speedo reads** and **Actual**.
-3. The line below shows the pulse count it would set — *Would set primary to
-   ... pulses/km* — and the old value.
-4. Click **Apply to primary**.
+2. In **Correct**, choose the row the measurement was made on: the primary
+   or a variant (each is named by the gearbox its coding stands for), or
+   **All rows**.
+3. Enter the two speeds in **Speedo reads** and **Actual**.
+4. The lines below show the pulse count it would set for each row — *Would
+   set ... to ... pulses/km* — and the old value.
+5. Click **Apply**.
 
-It changes only the primary row; use **Copy primary settings to all
-variants** afterwards if the variants should follow.
+Each row is scaled from its own pulse count, so a variant with a different
+count keeps its difference. With **All rows** one measurement corrects every
+coding block by the same factor, in one undo step. To give the variants the
+primary's exact count instead, use **Copy primary settings to all variants**.
 
 With a comparison file open, **Pulses/km (cmp)** and **Source (cmp)** show
 its values (highlighted where they differ), **Copy comparison → primary**

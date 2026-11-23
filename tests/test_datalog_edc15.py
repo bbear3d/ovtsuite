@@ -286,12 +286,15 @@ def test_raw_j2534_link_write_raw_leaves_its_echo():
         link.read_byte()
 
 
-def test_logger_picks_the_raw_link_for_edc15_only():
+def test_logger_picks_the_raw_link_for_edc15_and_the_09d():
     pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
     from ovtsuite.datalog import gui_log as G
     from ovtsuite.flash.kline_j2534 import J2534KLine
     ecu = MockEdc15()
     assert isinstance(G.kline_over_j2534(_RawDev(ecu), "EDC15", True, None), J2534RawKLine)
+    # the 09D takes only a 5-baud init and its replies reach the byte-stream link
+    assert isinstance(G.kline_over_j2534(_RawDev(ecu), "Aisin TRx", True, None), J2534RawKLine)
+    assert "Aisin TRx" in G.KLINE_ECUS and "Aisin TRx" in G.SLOW_INIT_ECUS
 
     class _KwpDev:
         def connect(self, *a, **k):

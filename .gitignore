@@ -47,3 +47,8 @@ tools/j2534logger/j2534log_*.txt
 docs/multimap/
 docs/BHW*.pdf
 docs/EDC15+ Funktionsbeschreibung*.pdf
+
+# native J2534 driver build products (tools/j2534drv/build.sh)
+tools/j2534drv/*.dll
+tools/j2534drv/*.exe
+packaging/j2534_driver/native/

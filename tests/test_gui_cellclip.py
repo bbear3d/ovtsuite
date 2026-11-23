@@ -207,7 +207,8 @@ def _vss_dialog(app, rows):
 def test_vss_pulses_raw_is_the_stored_form(app):
     from ovtsuite import gui
     assert gui.VssDialog._pulses_raw16(4000) == (900000000).to_bytes(4, "big")
-    assert gui.VssDialog._pulses_raw16(0) == (0).to_bytes(4, "big")
+    assert gui.VssDialog._pulses_raw16(0) is None         # never a stopped car
+    assert gui.VssDialog._pulses_raw16(-5) is None
     assert gui.VssDialog._pulses_raw16(0.001) is None     # does not fit 32 bits
 
 
@@ -225,6 +226,17 @@ def test_vss_paste_sets_pulses_and_source_in_one_step(app):
     # row 1: Imp/m 2.5; no source switch of its own -> not touched
     assert (0x14, (1440000000).to_bytes(4, "big")) in s.writes
     assert n == 3          # row 0 pulses (its col 3 repeats it), source, row 1
+
+
+def test_vss_typed_zero_pulses_is_refused(app, monkeypatch):
+    rows = [{"addr": 0x10, "src_addr": None, "primary": True}]
+    d = _vss_dialog(app, rows)
+    warned = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a))
+    d._write_pulses16(0, 0)
+    assert warned and d.session.writes == []
+    assert d._paste16(0, 3, [["0"]]) == 0 and d.session.writes == []
 
 
 def test_vss_paste_skips_role_address_and_comparison_columns(app):
@@ -296,6 +308,22 @@ def test_vss16_rows_keep_primary_and_variant_when_the_coding_is_not_resolved(app
         raise RuntimeError("no coding arrays")
     monkeypatch.setattr(variant, "row_transmissions", boom)
     assert d._role_labels16(rows) == plain
+
+
+@pytest.fixture(autouse=True)
+def _codings_by_digits(monkeypatch):
+    """row_transmissions names a coding through describe_codings, which reads
+    the session's file; these tests pass no session, so describe each coding by
+    its decimal digits (what a dataset without function bits does)."""
+    from ovtsuite import variant
+    monkeypatch.setattr(variant, "describe_codings", lambda session, tables=None:
+                        _DescribeAll())
+
+
+class _DescribeAll(dict):
+    def get(self, c, default=None):
+        from ovtsuite import variant
+        return {"transmission": variant.decode_coding(c)[0]}
 
 
 def _rows():

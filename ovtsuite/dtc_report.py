@@ -663,7 +663,11 @@ def history(project, set_id: Optional[str] = None) -> List[Tuple[object, Read]]:
 
 
 def label(att) -> str:
-    """A kept read in the Project panel: when, and how many codes."""
+    """A kept read in the Project panel: the title it was given
+    (Rename...), else when, and how many codes."""
+    title = ((att.extra or {}).get("title") or "").strip()
+    if title:
+        return title
     n = (att.extra or {}).get("codes")
     when = (att.added or "").replace("T", " ")[:16]
     return "Fault codes %s%s" % (when, "" if n is None else " (%s code%s)" % (

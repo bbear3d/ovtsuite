@@ -91,7 +91,8 @@ to view it in the logger's **Log file** tab, or right-click it for:
 connection (Medium or High) ends, its messages go into the project as a text
 attachment named `fastlog_session_<date>_<time>.txt`, under **Attachments** in
 the Project panel: the connect steps, a refused extended session, every run of
-slow rows with the failed requests behind it, and the totals. They are kept
+slow rows with the failed requests behind it, the raw bytes of the first few
+replies that could not be read, and the totals. They are kept
 even when the connection failed or no recording was made. If the log was
 recorded to a file instead, the notes are written next to it. Send this file
 along when a fast-logging session is slow or fails.

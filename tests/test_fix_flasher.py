@@ -13,7 +13,7 @@
   tooltip / confirmation that do not refer to the hidden, ineffective Force
   full write. (The separate ZF6HP-UDS entry was merged into ZF6HP; see
   test_fix_zf6hp_unified.py.)
-* ABS: its own note, and Log CAN traffic / Probe the bus actually reach the run.
+* ABS: its own note, and Probe the bus actually reaches the run (tracing is the global flash trace).
 * Every CAN-only ECU (and every K-line-only one) keeps the ECU / transport pair
   valid in both directions.
 * Aisin TRx: the note says writing is not available; the GUI still refuses
@@ -104,6 +104,7 @@ class _FakeWorker(QtCore.QObject):
     percent = QtCore.Signal(int)
     finished_ok = QtCore.Signal(object)
     failed = QtCore.Signal(str)
+    vdo_mismatch = QtCore.Signal(str, str, str)
     last = None
 
     def __init__(self, op, ecu, port, speed, **kw):
@@ -159,7 +160,22 @@ def test_every_ecu_entry_has_a_transport_rule(app):
     d = _dialog()
     entries = [d.ecu_box.itemText(i) for i in range(d.ecu_box.count())]
     both = set(entries) - set(gui_flash.CAN_ONLY_ECUS) - set(gui_flash.KLINE_ONLY_ECUS)
-    assert both == {"EDC16"}
+    assert both == {"EDC16"} | set(gui_flash.EITHER_BUS_TCU)
+
+
+def test_aisin_trx_stays_selected_on_either_transport(app):
+    d = _dialog(ecu="Aisin TRx")
+    for kind in ("kline", "can"):
+        d.transport_box.setCurrentIndex(d.transport_box.findData(kind))
+        assert d._ecu() == "Aisin TRx"
+    d.transport_box.setCurrentIndex(d.transport_box.findData("kline"))
+    assert not d._is_can()
+    assert not d.write_btn.isEnabled()          # read-only on both buses
+    assert not d.fast_disable_chk.isChecked()   # fast init first, like EDC16
+    assert not d.fast_disable_chk.isHidden()    # and the user can switch it off
+    assert d.speed_box.isEnabled()              # baud escalation is offered
+    d.transport_box.setCurrentIndex(d.transport_box.findData("can"))
+    assert not d.speed_box.isEnabled()
 
 
 # ---- ZF6HP: unreadable checksum layout is asked about (bug 4) ----------------
@@ -317,23 +333,22 @@ def test_abs_probe_reaches_the_worker(app, monkeypatch, no_worker):
     d.show()                                  # _start checks isVisible()
     _with_port(d)
     d.adv_toggle.setChecked(True)             # both live in Advanced
-    assert d.probe_chk.isVisibleTo(d) and d.can_log_chk.isVisibleTo(d)
+    assert d.probe_chk.isVisibleTo(d)
     d.probe_chk.setChecked(True)
     d._start("read")
     assert no_worker.last.args["probe"] is True
 
 
-def test_abs_can_log_reaches_the_worker(app, monkeypatch, no_worker, tmp_path):
+def test_the_flasher_has_no_can_log_checkbox_of_its_own(app, no_worker):
+    # tracing is the global one (Tools > Options > Flasher): no per-ECU checkbox,
+    # no Save dialog per run, and the worker is not handed a path
     d = _dialog(ecu="ABS")
     d.show()
     _with_port(d)
     d.adv_toggle.setChecked(True)
-    d.can_log_chk.setChecked(True)
-    log = str(tmp_path / "abs.log")
-    monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName",
-                        lambda *a, **k: (log, ""))
+    assert not hasattr(d, "can_log_chk")
     d._start("read")
-    assert no_worker.last.args["can_log"] == log
+    assert "can_log" not in no_worker.last.args
 
 
 # ---- Aisin TRx: the note's checksum claim, and the write refusal (bug 18) ----
@@ -352,15 +367,108 @@ def test_aisin_worker_refuses_write(app):
         w._run_aisin09d(types.SimpleNamespace(tp=types.SimpleNamespace()))
 
 
+def test_aisin_worker_refuses_write_over_kline_too(app):
+    w = gui_flash._Worker("write", "Aisin TRx", None, "Medium", image=b"\0" * 16,
+                          transport="kline")
+    with pytest.raises(KLineError, match="not enabled"):
+        w._run_aisin09d(types.SimpleNamespace())
+
+
 # ---- EDC16: diagnostics in Advanced, dialog no longer ~2100 px (bug 44) -----
 
-_DIAG = ("prog_cksumprobe_btn", "prog_seedprobe_btn", "prog_ramread_btn",
-         "prog_immoread_btn", "prog_findeep_btn", "prog_gptverify_btn",
-         "prog_gptverify_find_btn", "gpt_crank_only_chk", "gpt_gap_chk",
-         "gpt_force_ee_chk")
+_DIAG = gui_flash._gui16.RESEARCH_WIDGETS
 
 
-def test_edc16_diagnostics_are_in_advanced(app):
+def test_edc16_research_tools_are_off(app):
+    """The research probes are kept in the code but not offered: even with
+    Advanced open they stay hidden (gui_edc16.RESEARCH_TOOLS)."""
+    d = _dialog(ecu="EDC16")
+    d.adv_toggle.setChecked(True)
+    for name in _DIAG:
+        assert not getattr(d, name).isVisibleTo(d), name
+    for name in ("read_btn", "write_btn", "prog_arm_btn", "prog_readfull_btn"):
+        assert getattr(d, name).isVisibleTo(d), name
+
+
+def _picker(monkeypatch, tick=None, accept=True):
+    """Answer the EDC16 block picker: record what it offered and had ticked,
+    then (``tick``) set the ticks and accept or cancel."""
+    from ovtsuite.flash import gui_edc16_blocks as pick
+    seen = []
+
+    def ask(dlg):
+        seen.append({k: (c.isEnabled(), c.isChecked()) for k, c in dlg.chks.items()})
+        if tick is not None:
+            for k, c in dlg.chks.items():
+                c.setChecked(k in tick)
+        return accept
+    monkeypatch.setattr(pick, "_ask", ask)
+    return seen
+
+
+def test_edc16_buttons_say_what_they_do(app):
+    d = _dialog(ecu="EDC16")
+    assert d.read_btn.text() == "Read calibration"
+    assert d.write_btn.text() == "Write calibration"
+    assert d.prog_readfull_btn.text() == "Read full..."
+    assert d.prog_arm_btn.text() == "Write full..."
+    assert not hasattr(d, "_block_chks")           # no Blocks: row any more
+    d.ecu_box.setCurrentText("EDC15")
+    assert d.read_btn.text() == "Read flash" and d.write_btn.text() == "Write flash"
+
+
+def test_edc16_read_full_ticks_every_readable_block_then_remembers(
+        app, monkeypatch, no_worker):
+    d = _dialog(ecu="EDC16")
+    _with_port(d)
+    seen = _picker(monkeypatch, tick=("cal", "mpc"))
+    d._start("read_program_full")
+    first = seen[0]
+    assert all(first[k] == (True, True) for k in ("program", "cal", "mpc"))
+    assert first["boot"][1] is False                 # boot is never read
+    assert no_worker.last.args["edc16"] == {"blocks": ["cal", "mpc"]}
+    seen = _picker(monkeypatch)                      # next time: as left
+    d._start("read_program_full")
+    assert [k for k, (_on, t) in seen[0].items() if t] == ["cal", "mpc"]
+
+
+def test_edc16_read_full_cancelled_does_nothing(app, monkeypatch, no_worker):
+    d = _dialog(ecu="EDC16")
+    _with_port(d)
+    _picker(monkeypatch, accept=False)
+    d._start("read_program_full")
+    assert no_worker.last is None
+
+
+def test_edc16_write_full_needs_a_file(app, monkeypatch, no_worker):
+    d = _dialog(ecu="EDC16")
+    _with_port(d)
+    seen = _picker(monkeypatch)
+    warned = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
+    d._start("write_program")
+    assert warned and "Open the file" in warned[0]
+    assert not seen and no_worker.last is None
+
+
+def test_edc16_write_full_offers_only_what_the_file_holds(app, monkeypatch):
+    from ovtsuite.flash import edc16_blocks as B
+    from ovtsuite.flash import gui_edc16_blocks as pick
+    img = bytearray(b"\xFF" * B.FULL_SIZE)
+    img[0x10000:0x10010] = b"\x01" * 16                   # boot
+    img[0x40000:0x40010] = b"\x02" * 16                   # program
+    img[0x1C0000:0x1C0010] = b"\x03" * 16                 # calibration
+    seen = _picker(monkeypatch, accept=False)
+    assert pick.pick(None, pick.WRITE, B.available(bytes(img), None)) is None
+    got = seen[0]
+    assert got["mpc"] == (False, False)                   # not in the file: grey
+    assert got["program"] == (True, True) and got["cal"] == (True, True)
+    assert got["boot"] == (True, True)                    # in the file: ticked too
+
+
+def test_edc16_diagnostics_are_in_advanced(app, monkeypatch):
+    monkeypatch.setattr(gui_flash._gui16, "RESEARCH_TOOLS", True)
     d = _dialog(ecu="EDC16")
     for name in _DIAG:
         w = getattr(d, name)
@@ -375,7 +483,8 @@ def test_edc16_diagnostics_are_in_advanced(app):
     assert d.sizeHint().width() < 1200
 
 
-def test_edc16_diagnostics_stay_hidden_for_other_ecus(app):
+def test_edc16_diagnostics_stay_hidden_for_other_ecus(app, monkeypatch):
+    monkeypatch.setattr(gui_flash._gui16, "RESEARCH_TOOLS", True)
     d = _dialog(ecu="EDC15")
     d.adv_toggle.setChecked(True)
     for name in _DIAG:
@@ -394,7 +503,7 @@ def test_climatronic_offers_write_only(app, monkeypatch, no_worker):
     d = _dialog(ecu="Climatronic")
     assert not d.read_btn.isVisibleTo(d) and d.write_btn.isVisibleTo(d)
     d.adv_toggle.setChecked(True)          # nothing of the Climatronic's in Advanced
-    assert not d.probe_chk.isVisibleTo(d) and not d.can_log_chk.isVisibleTo(d)
+    assert not d.probe_chk.isVisibleTo(d)
     _with_port(d)
     warned = []
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning",
@@ -426,18 +535,23 @@ def test_short_labels_details_in_tooltips(app, ecu):
 
 
 @pytest.mark.parametrize("ecu,offered", [
-    ("EDC16", True), ("EDC15", True), ("Cluster", True), ("ABS", True),
+    ("EDC16", False),                  # nothing there with the research probes off
+    ("EDC15", True), ("Cluster", True), ("ABS", True),
     ("Climatronic", False), ("ZF6HP", True),
-    ("Aisin TRx", False), (gui_flash.VDO_ECU, False)])
+    ("Aisin TRx", False), (gui_flash.VDO_ECU, True)])
 def test_advanced_only_when_it_has_something(app, ecu, offered):
     d = _dialog(ecu=ecu)
-    assert d.adv_toggle.isVisibleTo(d) is offered
+    assert d.adv_toggle.isVisibleTo(d)             # always there: the window keeps its shape
+    assert d.adv_toggle.isEnabled() is offered     # ...but unusable with nothing in it
+    assert bool(d.adv_toggle.toolTip())
 
 
 def test_calibration_only_sits_with_the_other_options(app):
     d = _dialog(_zf28_primary(), ecu="ZF6HP")
-    lay = d.layout()
-    assert lay.indexOf(d.uds_cal_only_chk) == lay.indexOf(d.force_full) + 1
+    grid = d.options_grid                   # one block of options: they share a cell
+    assert grid.indexOf(d.uds_cal_only_chk) >= 0 and grid.indexOf(d.force_full) >= 0
+    assert grid.getItemPosition(grid.indexOf(d.uds_cal_only_chk))[:2] == \
+        grid.getItemPosition(grid.indexOf(d.force_full))[:2]
     assert d.uds_cal_only_chk.isVisibleTo(d) and not d.force_full.isVisibleTo(d)
 
 
@@ -461,12 +575,19 @@ def test_an_edc16_full_read_is_handed_to_the_window(app, monkeypatch):
     Building the container named a constant edc16_container no longer
     exports, and the AttributeError in this slot meant neither happened."""
     from ovtsuite import container as _c
+    shown = []
     monkeypatch.setattr(QtWidgets.QMessageBox, "information",
-                        lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Ok)
+                        lambda *a, **k: shown.append(a[2]))
     win = _ReadWindow()
     d = gui_flash.FlashDialog(win)
+    d.show()
     ext, mpc = b"\x11" * 0x200000, b"\x22" * 0x80000
     d._done("read_program_full", {"external": ext, "internal": mpc})
+    # the flasher closes first, then the read opens (on the next event-loop turn)
+    assert not d.isVisible()
+    app.processEvents()
+    assert shown == [], "an ordinary read needs no extra 'Read complete' box"
+    assert "Read full complete" in d.stage.text()
     assert len(win.loaded) == 1, "the read never reached the window"
     data, name = win.loaded[0]
     assert name.startswith("edc16-full-")
@@ -556,3 +677,241 @@ def test_without_the_module_the_write_asks_before_anything_connects(app, monkeyp
     with pytest.raises(gui_flash._WriteCancelled):
         d._prepare_write_image()
     assert len(q.texts) == 1 and "NOT be corrected" in q.texts[0][1]
+
+
+# ---- VDO cluster: Speed list, optional verify in Advanced --------------------
+
+def test_vdo_speed_list_is_low_and_high_and_starts_at_high(app):
+    d = _dialog(ecu=gui_flash.VDO_ECU)
+    assert [d.speed_box.itemData(i) for i in range(d.speed_box.count())] == ["Low", "High"]
+    assert d.speed_box.currentData() == "High" and d.speed_box.isEnabled()
+    d.ecu_box.setCurrentText("EDC16")                 # another unit has its own list
+    assert "Very Low" in [d.speed_box.itemData(i) for i in range(d.speed_box.count())]
+
+
+def test_vdo_verify_is_an_off_by_default_advanced_option(app):
+    d = _dialog(ecu=gui_flash.VDO_ECU)
+    assert not d.vdo_verify_chk.isChecked()
+    assert d.vdo_verify_chk._adv_wanted
+    d.ecu_box.setCurrentText("EDC15")
+    assert not d.vdo_verify_chk._adv_wanted
+
+
+def test_vdo_read_hands_the_worker_the_verify_choice(app, no_worker):
+    d = _dialog(ecu=gui_flash.VDO_ECU)
+    _with_port(d)
+    d.vdo_verify_chk.setChecked(True)
+    d._start("read")
+    assert no_worker.last.args["vdo_verify"] is True
+    d.vdo_verify_chk.setChecked(False)
+    d._start("read")
+    assert no_worker.last.args["vdo_verify"] is False
+
+
+# ---- VDO cluster: the buttons say what they move --------------------------------
+
+def test_vdo_buttons_read_and_write_eeprom(app):
+    d = _dialog(ecu=gui_flash.VDO_ECU)
+    assert d.read_btn.text() == "Read EEPROM" and d.write_btn.text() == "Write EEPROM"
+    d._transport_changed()                      # nothing a later refresh does undoes it
+    d._port_changed()
+    d._busy(True)
+    d._busy(False)
+    assert d.read_btn.text() == "Read EEPROM" and d.write_btn.text() == "Write EEPROM"
+    d.ecu_box.setCurrentText("EDC15")           # and another unit has its own words
+    assert d.read_btn.text() == "Read flash"
+    d.ecu_box.setCurrentText(gui_flash.VDO_ECU)
+    assert d.read_btn.text() == "Read EEPROM"
+
+
+def test_vdo_restored_from_settings_keeps_the_eeprom_labels(app):
+    d = _dialog(ecu=gui_flash.VDO_ECU)
+    d._save_settings()
+    again = _dialog()
+    assert again.ecu_box.currentText() == gui_flash.VDO_ECU
+    assert again.read_btn.text() == "Read EEPROM"
+    assert again.write_btn.text() == "Write EEPROM"
+
+
+# ---- the window keeps its shape ---------------------------------------------------
+
+def _every_ecu_and_transport(d):
+    for ecu in [d.ecu_box.itemText(i) for i in range(d.ecu_box.count())]:
+        for kind in ("kline", "can"):
+            d.transport_box.setCurrentIndex(d.transport_box.findData(kind))
+            d.ecu_box.setCurrentText(ecu)
+            yield ecu, kind
+
+
+def test_window_shape_is_the_same_for_every_unit_and_transport(app):
+    d = _dialog()
+    d.show()
+    app.processEvents()
+    d.adv_toggle.setChecked(False)
+    size0 = d.size()
+    pos0 = d.read_btn.mapTo(d, QtCore.QPoint(0, 0))
+    wpos0 = d.cancel_btn.mapTo(d, QtCore.QPoint(0, 0))
+    for ecu, kind in _every_ecu_and_transport(d):
+        app.processEvents()
+        assert d.size() == size0, (ecu, kind, d.size(), size0)
+        assert d.read_btn.mapTo(d, QtCore.QPoint(0, 0)) == pos0, (ecu, kind)
+        assert d.cancel_btn.mapTo(d, QtCore.QPoint(0, 0)).y() == wpos0.y(), (ecu, kind)
+        assert d.write_btn.mapTo(d, QtCore.QPoint(0, 0)).x() > pos0.x() + 20
+    d.close()
+
+
+def test_write_button_does_not_move_between_units(app):
+    d = _dialog()
+    d.show()
+    app.processEvents()
+    seen = set()
+    for ecu, kind in _every_ecu_and_transport(d):
+        app.processEvents()
+        seen.add(d.write_btn.mapTo(d, QtCore.QPoint(0, 0)).x())
+    assert len(seen) == 1, seen
+    d.close()
+
+
+def test_advanced_grows_the_window_downwards_only_and_returns(app):
+    d = _dialog(ecu="EDC15")
+    d.show()
+    app.processEvents()
+    before = d.size()
+    pos = d.read_btn.mapTo(d, QtCore.QPoint(0, 0))
+    d.adv_toggle.setChecked(True)
+    app.processEvents()
+    assert d.width() == before.width() and d.height() > before.height()
+    assert d.read_btn.mapTo(d, QtCore.QPoint(0, 0)) == pos
+    d.adv_toggle.setChecked(False)
+    app.processEvents()
+    assert d.size() == before
+    d.close()
+
+
+def test_advanced_height_is_not_remembered_as_the_base_size(app):
+    d = _dialog(ecu="EDC15")
+    d.show()
+    app.processEvents()
+    base = d.size()
+    d.adv_toggle.setChecked(True)
+    app.processEvents()
+    d.accept()                                  # closed while expanded
+    again = _dialog(ecu="EDC15")
+    again.adv_toggle.setChecked(False)
+    again.show()
+    app.processEvents()
+    assert again.size().height() <= base.height() + 2
+    assert again.size().width() == base.width()
+    again.close()
+
+
+def test_a_size_the_user_made_is_kept(app):
+    d = _dialog()
+    d.show()
+    d.resize(d.width() + 120, d.height() + 80)
+    want = d.size()
+    d.accept()
+    again = _dialog()
+    assert again.size() == want
+    again.close()
+
+
+def test_progress_bar_shows_its_percentage(app):
+    d = _dialog()
+    assert d.bar.isTextVisible() and d.bar.format() == "%p%"
+    assert "chunk" in d.bar.styleSheet()
+
+
+def test_a_padded_full_read_still_warns(app, monkeypatch):
+    warned = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
+    win = _ReadWindow()
+    d = gui_flash.FlashDialog(win)
+    d._done("read_program_full", {"external": b"\x11" * 0x200000,
+                                  "padded": [(0, 16)]})
+    app.processEvents()
+    assert warned and "0xFF" in warned[0]
+    assert len(win.loaded) == 1
+
+
+def test_a_generic_read_closes_the_flasher_before_the_read_opens(app):
+    order = []
+    win = _ReadWindow()
+    win.load_from_image = lambda data, name, **k: order.append(
+        ("load", d.result(), d.isVisible()))
+    d = gui_flash.FlashDialog(win)
+    d.show()
+    d._done("read", b"\x00" * 16)
+    assert order == []                          # not inside the slot...
+    app.processEvents()
+    assert order and order[0][2] is False       # ...and the window is gone by then
+
+
+# ---- Advanced: a manual resize survives, persisted-open meets an empty section ----
+
+def test_manual_resize_while_advanced_open_survives_collapse(app):
+    d = _dialog(ecu="EDC15")
+    d.show()
+    app.processEvents()
+    base = d.size()
+    d.adv_toggle.setChecked(True)
+    app.processEvents()
+    opened = d.size()
+    d.resize(opened.width() + 90, opened.height() + 60)       # the user drags the corner
+    app.processEvents()
+    d.adv_toggle.setChecked(False)
+    app.processEvents()
+    assert d.size() == QtCore.QSize(base.width() + 90, base.height() + 60)
+    d.adv_toggle.setChecked(True)                             # and back: same extra
+    app.processEvents()
+    assert d.size() == QtCore.QSize(opened.width() + 90, opened.height() + 60)
+    d.close()
+
+
+def test_manual_resize_while_advanced_open_is_what_is_remembered(app):
+    d = _dialog(ecu="EDC15")
+    d.show()
+    app.processEvents()
+    base = d.size()
+    d.adv_toggle.setChecked(True)
+    app.processEvents()
+    d.resize(d.width() + 70, d.height() + 40)
+    want = QtCore.QSize(base.width() + 70, base.height() + 40)
+    d.accept()                                                 # closed while expanded
+    again = _dialog(ecu="EDC15")
+    again.adv_toggle.setChecked(False)
+    assert again.size() == want
+    again.close()
+
+
+def test_persisted_open_advanced_with_nothing_in_it_keeps_the_collapsed_shape(app):
+    s = QtCore.QSettings(*gui_flash.branding.QSETTINGS)
+    s.setValue("flash/advanced_open", True)
+    s.sync()
+    d = _dialog(ecu="EDC16")                       # nothing in Advanced for it
+    d.show()
+    app.processEvents()
+    assert d.adv_toggle.isChecked() and not d.adv_panel.isVisibleTo(d)
+    assert d._adv_base is None
+    collapsed = d.size()
+    d.ecu_box.setCurrentText("EDC15")              # something there: it opens
+    app.processEvents()
+    assert d.adv_panel.isVisibleTo(d) and d.height() > collapsed.height()
+    d.ecu_box.setCurrentText("EDC16")              # and back to nothing: the same shape
+    app.processEvents()
+    assert d.size() == collapsed and d._adv_base is None
+    d.close()
+
+
+def test_hand_over_shows_an_error_from_the_deferred_load(app, monkeypatch):
+    shown = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical",
+                        lambda *a, **k: shown.append((a[1], a[2])))
+    d = _dialog()
+
+    def boom(*a):
+        raise ValueError("bad image")
+    d._hand_over(boom, 1)
+    app.processEvents()
+    assert shown and "bad image" in shown[0][1]

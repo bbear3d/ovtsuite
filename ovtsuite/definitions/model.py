@@ -147,7 +147,8 @@ class Definition:
 
     def base_in(self, data) -> int:
         """The base for this image: found in it when the definition can,
-        else from its size."""
+        else from its size. ``base_note`` describes the last image only."""
+        self.base_note = ""
         if self.locate is not None:
             try:
                 b = self.locate(data)
@@ -175,6 +176,7 @@ class Definition:
         a guess about where an image sits (an A2L / DAMOS stating no
         segments: "a 512 KB image at 0x80000") must not throw away tables
         the addresses place inside it."""
+        self.base_note = ""
         guess = self.base_of(size)
         total = sum(1 for t in self.tables if t.z.addr is not None)
         if not total or guess == self.base:

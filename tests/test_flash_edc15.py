@@ -744,34 +744,31 @@ def test_read_flash_1m_roundtrip():
     assert ecu.closed == 1
 
 
-def test_per_sector_write_1m_force_full():
+def test_per_sector_write_1m_refused():
     f, ecu = _make(size=0x100000)
     image = bytes((i * 11 + 5) & 0xFF for i in range(0x100000))
+    before = bytes(ecu.flash)
     f.connect("V", "Low", loader="sector")
     f.detect_layout()
-    written = f.write_flash_sectors(image, force_full=True)
-    assert written == list(range(len(E.SECTORS_1M)))
-    assert bytes(ecu.flash) == image
+    with pytest.raises(E.KLineError, match="1 MB EDC15 image is not currently supported"):
+        f.write_flash_sectors(image, force_full=True)
+    assert bytes(ecu.flash) == before and ecu.erased == []
 
 
-def test_per_sector_write_1m_only_changed():
-    f, ecu = _make(size=0x100000)
-    image = bytearray(ecu.flash)
-    image[0x90000:0x90010] = b"\x00" * 16             # a 64 KB sector (index 9)
-    image[0xFD000] ^= 0xFF                            # the top 16 KB boot sector (index 18)
-    f.connect("V", "Medium", loader="sector")
+def test_write_1m_image_refused_on_512k_ecu():
+    f, ecu = _make()
+    f.connect("V", "Low", loader="sector")
     f.detect_layout()
-    written = f.write_flash_sectors(bytes(image))
-    assert written == [9, 18]
-    assert ecu.erased == [0x90000, 0xFC000]
-    assert bytes(ecu.flash) == bytes(image)
+    with pytest.raises(E.KLineError, match="not currently supported"):
+        f.write_flash_sectors(b"\x00" * 0x100000)
+    assert ecu.erased == []
 
 
 def test_write_1m_rejects_512k_image():
     f, _ = _make(size=0x100000)
     f.connect("V", "Low", loader="sector")
     f.detect_layout()
-    with pytest.raises(ValueError):
+    with pytest.raises(E.KLineError, match="not currently supported"):
         f.write_flash_sectors(b"\x00" * 0x80000)      # a 512 KB file on a 1 MB ECU
 
 

@@ -49,7 +49,9 @@ The error is shown in a **Flashing** dialog and on the status line.
 ## A transfer fails part-way
 
 - Lower the **Speed** and try again. An unstable cable or a low battery shows
-  up as a read or write that stops in the middle.
+  up as a read or write that stops in the middle. When a K-line **write** to
+  an EDC15 or EDC16 fails, the error message itself names the next lower
+  speed to try; at the lowest speed it says nothing about speed.
 - Keep the battery on a charger.
 - Reads lose nothing: just read again. For writes, see
   [Backups and recovery](backups-and-recovery.md).

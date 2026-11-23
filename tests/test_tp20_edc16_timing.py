@@ -645,9 +645,10 @@ def _write_ecu():
             return bytes([0x71, req[1]])
         if s == 0x33 and req[1] == 0xC4:
             return bytes([0x73, 0xC4, 0x00])
-        if s == 0x33 and req[1] == 0xC5:                 # mismatch, then match
+        if s == 0x33 and req[1] == 0xC5:
+            # a match: a write stops on a block the ECU reports a mismatch for
             polls["n"] += 1
-            return bytes([0x73, 0xC5, 0x00 if polls["n"] % 2 == 0 else 0x01])
+            return bytes([0x73, 0xC5, 0x00])
         if s == 0x36:
             written.extend(req[1:])
             return b"\x76"

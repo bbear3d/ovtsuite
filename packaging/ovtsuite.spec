@@ -145,7 +145,7 @@ HIDDEN = _base_modules() + MODULE_IMPORTS + [
     # OpenPort 2.0 over USB (pyusb) and the pyftdi FTDI route; both optional
     # at runtime, both imported lazily.
     "usb", "usb.core", "usb.util", "usb.backend.libusb1",
-    "pyftdi", "pyftdi.ftdi", "pyftdi.serialext",
+    "pyftdi", "pyftdi.ftdi", "pyftdi.serialext", "pyftdi.serialext.protocol_ftdi",
     # module signatures (Ed25519) and the ZF 8HP Gen2 AES codec
     "cryptography.hazmat.primitives.asymmetric.ed25519",
     "cryptography.hazmat.primitives.serialization",
@@ -178,6 +178,69 @@ EXCLUDES = [
 # ovtsuite/flash/ftdi.py loads the copy that package (or Windows Update) puts
 # in System32.
 binaries = []
+
+# libusb-1.0 IS bundled (Windows, 64-bit build only): PyUSB's back end for the
+# OpenPort 2.0 direct route. The official, unmodified release DLL lives in
+# packaging/vendor/libusb (README there: source, hash, how to update it); the
+# 32-bit environment is only the J2534 bridge and never opens USB itself.
+# ovtsuite/flash/libusb_dll.py makes PyUSB load it from _internal.
+_LIBUSB = ROOT / "packaging" / "vendor" / "libusb" / "libusb-1.0.dll"
+_BUNDLE_LIBUSB = sys.platform == "win32" and sys.maxsize > 2 ** 32
+if _BUNDLE_LIBUSB:
+    if not _LIBUSB.is_file():
+        raise SystemExit("missing %s (packaging/vendor/libusb/README.md)" % _LIBUSB)
+    binaries.append((str(_LIBUSB), "."))
+
+
+def _macos_libusb():
+    """A libusb-1.0 dylib for the macOS bundle (the locator finds it in
+    Contents/Frameworks), or None. Order: packaging/vendor/libusb/macos, the
+    libusb-package wheel, an installed MacPorts / Homebrew copy. Nothing is
+    downloaded. A copy that lacks the architecture(s) of this build is skipped
+    (build_mac.sh's architecture check would fail the build on it)."""
+    import glob
+    import subprocess
+    want = os.environ.get("OVTSUITE_ARCH", "") or ""
+    if want in ("", "native"):
+        want = os.uname().machine
+    cands = sorted(glob.glob(str(ROOT / "packaging" / "vendor" / "libusb" / "macos" / "libusb-1.0*.dylib")))
+    try:
+        import libusb_package
+        lp = libusb_package.get_library_path()
+        if lp:
+            cands.append(str(lp))
+    except Exception:
+        pass
+    for d in ("/opt/local/lib", "/opt/homebrew/lib", "/usr/local/lib"):
+        cands += [os.path.join(d, "libusb-1.0.dylib"), os.path.join(d, "libusb-1.0.0.dylib")]
+    skipped = []
+    for c in cands:
+        if not os.path.isfile(c):
+            continue
+        c = os.path.realpath(c)
+        try:
+            archs = subprocess.run(["lipo", "-archs", c], capture_output=True, text=True,
+                                   check=True).stdout.split()
+        except Exception:
+            archs = []
+        need = ["arm64", "x86_64"] if want == "universal2" else [want]
+        if archs and all(a in archs for a in need):
+            return c
+        skipped.append("%s (%s)" % (c, " ".join(archs) or "unknown arch"))
+    if skipped:
+        print("WARNING: libusb found but not usable for a %s build: %s" % (want, "; ".join(skipped)))
+    return None
+
+
+if sys.platform == "darwin":
+    _mac_libusb = _macos_libusb()
+    if _mac_libusb:
+        print("libusb: bundling %s" % _mac_libusb)
+        binaries.append((_mac_libusb, "."))
+    else:
+        print("WARNING: no libusb-1.0 dylib to bundle (packaging/vendor/libusb/README.md, "
+              "macOS section): the app falls back to a system libusb "
+              "(brew install libusb / sudo port install libusb) for the OpenPort and FTDI direct routes")
 
 # -- one copy of the code ------------------------------------------------------
 # The code is in ONE place: the PYZ archive appended to OVTSuite.exe (the
@@ -244,6 +307,24 @@ _before = len(a.binaries) + len(a.datas)
 a.binaries = [e for e in a.binaries if not _qt_unused(e[0])]
 a.datas = [e for e in a.datas if not _qt_unused(e[0])]
 print("ovtsuite.spec: left out %d unused Qt files" % (_before - len(a.binaries) - len(a.datas)))
+
+# -- libusb: only the vendored copy ---------------------------------------------
+# PyInstaller's pyusb hook also collects whatever libusb it finds on the BUILD
+# machine -- that is how a stray libusb-win32 libusb0.dll (needs a GPL kernel
+# driver that is not shipped) got into earlier builds. Drop every libusb DLL
+# except the vendored one, so the build is the same on every computer.
+def _stray_libusb(entry):
+    if sys.platform != "win32":
+        return False                     # Linux / macOS builds are not touched
+    base = os.path.basename(entry[0]).lower()
+    if not (base.startswith("libusb") or base in ("usb-1.0.dll", "usb.dll")):
+        return False
+    return os.path.normcase(os.path.abspath(entry[1])) != os.path.normcase(str(_LIBUSB))
+
+
+_n = len(a.binaries)
+a.binaries = [e for e in a.binaries if not _stray_libusb(e)]
+print("ovtsuite.spec: left out %d stray libusb libraries" % (_n - len(a.binaries)))
 
 # -- Linux: ship only what the Python environment provides ---------------------
 # PyInstaller copies every shared library the bundle links against, including
@@ -378,6 +459,10 @@ if sys.platform == "darwin" and not ONEFILE:
             "CFBundleVersion": APP_VERSION,
             "LSMinimumSystemVersion": "11.0",
             "NSHighResolutionCapable": True,
+            # keep timing-sensitive flash / log I/O out of App Nap (see ovtsuite/realtime.py)
+            "LSAppNapIsDisabled": True,
+            "NSSupportsAutomaticTermination": False,
+            "NSSupportsSuddenTermination": False,
             "NSHumanReadableCopyright": "Copyright (c) 2026 Blair Campbell",
             "CFBundleDocumentTypes": [{
                 "CFBundleTypeName": _branding.APP_NAME + " project",

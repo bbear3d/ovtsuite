@@ -104,7 +104,7 @@ def _apply(win, key: str) -> None:
         t = win.__dict__.get("_ovt_disksync_timer")
         if t is not None:
             t.setInterval(_opt.get(key) * 1000)
-    elif key == _opt.PROGRAM_AREA_KEY:
+    elif key in (_opt.PROGRAM_AREA_KEY, _opt.FIX_CVN_KEY):
         sync = getattr(win, "_sync_program_area", None)
         if sync is not None:
             sync()                          # every open ZF 6HP tab follows
@@ -143,6 +143,47 @@ class _FolderBox(QtWidgets.QWidget):
             self, self._title, self.edit.text().strip() or "")
         if d:
             self.edit.setText(d)
+
+
+class _FileBox(_FolderBox):
+    """A file path with Browse and Default buttons (an option of kind "file").
+    Empty means the default, which is shown greyed in the box."""
+
+    def __init__(self, title: str, default: str = "", parent=None):
+        super().__init__(title, parent)
+        self._default = default
+        self.edit.setPlaceholderText(default or "a file")
+        b = QtWidgets.QPushButton("Default")
+        b.setToolTip("Use the default file" + (": " + default if default else ""))
+        b.clicked.connect(lambda: self.edit.setText(""))
+        self.layout().addWidget(b)
+
+    def _browse(self) -> None:
+        # (the file is added to, so no "replace it?" question)
+        path, _f = QtWidgets.QFileDialog.getSaveFileName(
+            self, self._title, self.edit.text().strip() or self._default,
+            "Log files (*.log *.txt);;All files (*)",
+            options=QtWidgets.QFileDialog.Option.DontConfirmOverwrite)
+        if path:
+            self.edit.setText(path)
+
+
+#: options that are greyed out while the switch above them is off
+_ENABLED_BY = {
+    "projects/default_dir": "projects/default_dir_on",
+    "flash/trace_file": "flash/trace_on",
+    "flash/trace_max_mb": "flash/trace_on",
+    "flash/trace_keep": "flash/trace_on",
+}
+
+
+def _file_default(key: str) -> str:
+    """What an empty file option stands for."""
+    if key == "flash/trace_file":
+        from .flash import flashtrace
+        return flashtrace.default_path()
+    return ""
+
 
 class _CloseWatcher(QtCore.QObject):
     """Remembers the window's size and position as it closes."""
@@ -321,6 +362,10 @@ class OptionsDialog(QtWidgets.QDialog):
             box = _FolderBox(o.label)
             box.setText(str(val or ""))
             widget, label = box, o.label + ":"
+        elif o.kind == "file":
+            box = _FileBox(o.label, _file_default(o.key))
+            box.setText(str(val or ""))
+            widget, label = box, o.label + ":"
         else:
             box = QtWidgets.QComboBox()
             for v, text in o.choices:
@@ -335,8 +380,8 @@ class OptionsDialog(QtWidgets.QDialog):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
                                  QtWidgets.QSizePolicy.Policy.Fixed)
         form.addRow(label, widget)
-        if o.key == "projects/default_dir":          # follows the switch above
-            sw = self.widgets.get("projects/default_dir_on")
+        if o.key in _ENABLED_BY:                     # follows the switch above
+            sw = self.widgets.get(_ENABLED_BY[o.key])
             if sw is not None:
                 widget.setEnabled(sw.isChecked())
                 sw.toggled.connect(widget.setEnabled)

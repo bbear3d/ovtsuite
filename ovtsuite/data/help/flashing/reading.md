@@ -58,13 +58,13 @@ asked what to do with it:
 The OVT Flasher has no tabs, so it always saves the read: as an `.ovt`
 project by default, or the raw image (`.bin`). A raw `.bin` holds only the
 main flash: the EEPROM of an EDC15 **Read flash + EEPROM** is saved beside it as
-`<name>_EEPROM.bin`, and the MPC flash of an EDC16 **Full read...** is kept
+`<name>_EEPROM.bin`, and the MPC flash of an EDC16 **Read full...** is kept
 only in an `.ovt`.
 
 | ECU | What is read |
 |---|---|
-| **EDC16** (**Read flash**) | The 512 KB calibration region (0x180000–0x1FFFFF), as a 2 MB image with the rest filled with 0xFF |
-| **EDC16** (**Full read...**) | The whole external flash and the internal (MPC) flash, as one set |
+| **EDC16** (**Read calibration**) | The 512 KB calibration region (0x180000–0x1FFFFF), as a 2 MB image with the rest filled with 0xFF |
+| **EDC16** (**Read full...**) | The ticked blocks: the external flash and, with **MPC** ticked, the internal flash, as one set |
 | **EDC15** (**Read flash**) | The whole 512 KB flash |
 | **EDC15** (**Read EEPROM**) | The 512-byte EEPROM -- with an EDC15 project in front, you are asked **Add to <project>** (a new branch of its ECU set, *EEPROM read <date>*: the flash of the version in front plus the read EEPROM) or **New project** (or **Export to file...**, as above). Either way the [EEPROM editor](../tools/eeprom.md) then opens on it (with the EDC15 module). |
 | **EDC15** (**Read flash + EEPROM**) | Flash, then EEPROM, as one set (flash + EEPROM) |

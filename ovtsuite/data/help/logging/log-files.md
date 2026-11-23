@@ -6,7 +6,7 @@ order: 60
 
 Logs are CSV — kept in the car's project, or as files. The logger writes its
 own layout (the same one the KWHack tool uses, so logs move between the two
-unchanged), reads that layout and the VCDS CSV layout, and exports either.
+unchanged), reads that layout and the VCDS CSV layouts, and exports to them.
 The **Log file** tab opens a log, charts it and shows its rows.
 
 ![The Log file tab with a ZF 6HP19 drive log](../images/log-viewer.png)
@@ -49,14 +49,26 @@ names in an old log.
 
 ## Export
 
-| Button | Writes | Default name |
-|---|---|---|
-| **Export as VCDS CSV...** | the VCDS CSV layout, which existing VCDS-log viewers and analysers open | the log's name + `_vcds.csv` |
-| **Export as KWHack CSV...** | the native layout — useful for turning a VCDS log into one | the log's name + `_kwhack.csv` |
+**Export As...** writes the log that is open in the tab, every row, in the layout
+you pick from a list:
 
-Both export the log that is open in the tab, every row. A log kept in a
-project is exported as it is with **File > Export > Data log...**, or
-**Export...** on its right-click menu in the Project panel.
+| Format | Writes |
+|---|---|
+| **OVT-Suite log (CSV)** | the log's own layout (below), which KWHack also reads. A log opened from this layout is copied as it is. |
+| **VCDS CSV - advanced measuring blocks (ADVMB)** | the layout recent VCDS writes for advanced measuring blocks, any number of cells |
+| **VCDS CSV - classic (groups A, B and C)** | the layout VCDS wrote for KW1281 measuring blocks, which simple log viewers read: at most three groups of four cells to a log |
+
+The suggested file name is the log's name plus `_ovt`, `_vcds` or `_vcds_classic`.
+What you chose is offered again next time. A log kept in a project is exported the
+same way with **File > Export > Data log...**, or **Export...** on its right-click
+menu in the Project panel.
+
+The classic layout has one option, which the window shows when you pick it:
+
+- **More than three groups.** A classic log holds three groups, so a log of four or
+  more becomes several: by default **one file, one log after another**, from which a
+  viewer that reads one log at a time asks which to open; or **several files** (one for
+  each three groups, named `..._part1_groups_1-4-10.csv`, `..._part2_groups_11.csv`).
 
 ## The native layout
 
@@ -82,13 +94,41 @@ brackets, for example `(177 128 12)`. When the log is opened again, those are
 decoded with whatever formulas the app knows by then, so updating the app can
 recover such a column.
 
-## The VCDS CSV layout
+## The VCDS CSV layouts
 
-On export the file gets a short header (date, the app's version, the control
-unit's identification when known), a row of group/field markers, the column
-titles and a row of units, then one row per sample. Each cell has its own
-time column in seconds from the start; values are written as plain numbers,
-since the units are on their own row. When a VCDS log is opened, the groups,
-labels, units and start time are read from those header rows.
+**Advanced measuring blocks (ADVMB).** The file gets a short header (date, the app's
+version, the control unit's identification when known), a row of group/field markers,
+the column titles and a row of units, then one row per sample. Each cell has its own
+time column in seconds from the start; values are written as plain numbers, since the
+units are on their own row, with the digits the logger showed (`0.0` stays `0.0`).
+Lines end in CRLF and the column titles are plain, as VCDS writes them (the `(G1/1)`
+tag the logger adds to a name used twice is left off; the marker row says which group
+and field a column is). A switch's bytes in binary (`00101011`, or `01001001 00001000`
+for two) and `N/A` are written as they are, as VCDS writes them, and are read back as
+text, not as the number 101011.
+
+**Classic.** The file has the date, the part number and description (the log's
+identity, split at its double space; a description cell that starts with a space
+is how this app reads that double space back), a row naming
+the groups (`Group A:` `'115`, `Group B:`, `Group C:`; an unused one says `Not
+Running`), the field names, a `TIME` row and a row of units that starts with
+`Marker`, then one row per sample: a time and four values for each group. Text is
+Windows ANSI (a degree sign is one byte), lines end in CRLF, and rpm is `/min`. A cell
+is a number, `N/A`, a switch's bytes in binary (`01001001 00001000`, written as they are, as
+VCDS does -- a viewer that reads only numbers cannot take them) or empty; any other text
+(a state such as "idle") is written as `N/A`.
+
+In both, an injection angle is one signed column: after TDC is negative, and the unit
+row says `°BTDC`.
+
+When a VCDS log is opened -- either layout, UTF-8 or ANSI, in any of VCDS's languages
+(the date line is read in English, German, French, Spanish, Italian or Dutch, and
+with the extra fields recent VCDS puts after the seconds) -- the groups, labels,
+units and start time are read from those header rows; a name that VCDS wraps over two
+header lines is joined. A log added to a project with **Add log...** is listed with
+"(VCDS)" after its name when it is one, and opens in the Log file tab like any other. A classic file
+that holds several logs one after another, as this app writes them when asked, opens
+as one log with the cells side by side again. A log taken from a plain CSV has no
+control unit identification, so that part of the header stays empty.
 
 Next: [Reading fault codes](fault-codes.md).

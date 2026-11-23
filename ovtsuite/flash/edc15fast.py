@@ -38,7 +38,7 @@ SUBFN_STORE = 0x93          # v2.6: store up to STORED_MAX addresses on the ECU 
 SUBFN_LIST = 0x91           # v2.6: read the stored list (10 91 <s0bg>, 3-byte request)
 STORED_RAM = 0xD1A0         # v2.7 list (GN): count word + STORED_MAX address words; read zero/stable at key-on
 FLAG_RAM = 0xD086           # the GN's arm flag; every other build names its own (fasthook.HookBuild)
-STORED_MAX = 12
+STORED_MAX = 12             # addresses the stored list holds, for a build that does not say
 # The stored list writes ECU RAM. On the GN the first slot (0xD372, v2.6) turned out to be
 # live data; v2.7 uses 0xD1A0, nominated by edc15.freeram and read all-zero on the car. Each
 # build names its own RAM (HookBuild; the patcher, edc15.fastpatch15, picks and checks it --
@@ -57,6 +57,14 @@ def stored_addr(link):
     """RAM address of the connected build's stored list (its count word)."""
     b = getattr(link, "_fl_build", None)
     return b.stored if b is not None else STORED_RAM
+
+
+def stored_max(link):
+    """How many addresses the connected build's stored list holds: what its footer says
+    (12 for every build made before the size was a setting, and for a hand-built one)."""
+    b = getattr(link, "_fl_build", None)
+    n = getattr(b, "list_max", STORED_MAX) if b is not None else STORED_MAX
+    return n if isinstance(n, int) and 1 <= n <= MAX_BURST else STORED_MAX
 SUBFN_GROUP = 0x91          # v1.3: fast measuring-group read (10 91 <s0bg> <group>)
 GROUP_TITLE = 0xE7          # KW1281 measuring-block response title (BT_GROUP_READ_RESPONSE)
 MAGIC_ARM_GROUP = 0xFB      # v1.8: KW1281 group number that arms the de-ACK burst (29 FB)
@@ -183,6 +191,108 @@ def _decode_frame(buf):
 # path always leaves ~58 ms.  Sleep granularity (15 ms on Windows) made the
 # serial path land below the limit about a quarter of the time.
 P3_MIN_S = 0.058
+#: On the 4Z7907401B the short ``10 91`` read after a long reply (the 13-word list, ~32
+#: bytes) drew NRC 0x13 (a request the ECU mis-received) 18-70 % of the time -- idle worst --
+#: while the long ``10 93`` that followed the short NRC reply always worked: the ECU seems to
+#: need longer after a long reply than the 58 ms that is enough after a short one. So the
+#: gap before a request adapts: it grows by P3_STEP_S after each request the ECU did not
+#: take, up to P3_MAX_S, and shrinks by P3_DECAY_S after P3_DECAY_EVERY good ones.
+#: The 2026-11-06 logs (CH340 and FT232RL, 38400 and 125000, standing and driving) lost 3-5 %
+#: of the requests at every gap from 58 to 150 ms, with no trend, and the longer gaps only
+#: cost rows per second (3.6 Hz where the gap had climbed, 4.7 Hz where it stayed low): so the
+#: cap leaves only a little room over the floor.
+P3_STEP_S = 0.025
+P3_MAX_S = 0.070
+P3_DECAY_S = 0.010
+P3_DECAY_EVERY = 8
+#: a burst: this many of the last P3_BURST_WINDOW requests lost lets the gap climb to P3_BURST_MAX_S
+P3_BURST_WINDOW = 20
+P3_BURST_LOST = 8
+#: 0.5.1.7 logs (2026-11-13/14): at 150 ms 44-50 % of requests were still lost, as at 70 ms, and
+#: rows got slower -- the gap does not cure a burst, so it stays at the driving cap
+P3_BURST_MAX_S = P3_MAX_S
+#: NRCs that are an answer to the sub-function, not a request lost on the way
+_NRC_ANSWERS = (0x11, 0x12)
+
+
+def _gap_now(link):
+    """The gap to leave after the ECU's last reply byte before the next request."""
+    return getattr(link, "_fl_p3", None) or P3_MIN_S
+
+
+def _gap_update(link, out):
+    """Adapt the gap to how the request that has just ended did (``out`` from
+    :func:`_outcome`); the first time a longer gap is reached is said in the log."""
+    cur = _gap_now(link)
+    recent = getattr(link, "_fl_recent", None)
+    if recent is None:
+        recent = link._fl_recent = []
+    if not (out.startswith("NRC") and int(out[-4:], 16) in _NRC_ANSWERS):
+        recent.append(out != "ok")
+        del recent[:-P3_BURST_WINDOW]
+    # standing at idle the losses come in bursts of dozens of rows (2026-11-11/12 logs); only
+    # then may the gap climb past the cap that serves driving (0.5.1.5 let it reach 150 ms
+    # always and was slower driving, faster standing)
+    cap = P3_BURST_MAX_S if sum(recent) >= P3_BURST_LOST else P3_MAX_S
+    if out == "ok":
+        n = getattr(link, "_fl_p3_ok", 0) + 1
+        link._fl_p3_ok = n
+        if n >= P3_DECAY_EVERY and cur > P3_MIN_S:
+            link._fl_p3 = max(P3_MIN_S, cur - P3_DECAY_S)
+            link._fl_p3_ok = 0
+        return
+    link._fl_p3_ok = 0
+    if out.startswith("NRC") and int(out[-4:], 16) in _NRC_ANSWERS:
+        return
+    new = min(max(cap, cur), cur + P3_STEP_S)
+    if new != cur:
+        link._fl_p3 = new
+        seen = getattr(link, "_fl_p3_seen", None)
+        if seen is None:
+            seen = link._fl_p3_seen = set()
+        if round(new * 1000) not in seen:
+            seen.add(round(new * 1000))
+            _say(link, "a request was lost (%s): the gap before a request is now %.0f ms."
+                 % (out, 1000 * new))
+
+
+#: Experiment (2026-11-15): while requests are being lost in a burst, the client cycles the
+#: inter-byte gap (P4) of its requests through these values, P4_BLOCK requests each (None = the
+#: P4 the connect chose), and the session notes count the losses per value.  If the ECU's
+#: receive path is polled or slow, the spacing of the request's bytes would change the loss;
+#: if the loss stays the same at every spacing, the cause is elsewhere.  A larger P4 makes a
+#: request slower (7 bytes), so it runs only inside a burst; the run ends when the losses stop.
+P4_EXPERIMENT = True
+P4_TRIES = (None, 0.005, 0.010, 0.0005)
+P4_BLOCK = 40
+P4_START_LOST = 8        # of the last P3_BURST_WINDOW requests
+P4_STOP_LOST = 1
+
+
+def _p4_pick(link, kwp):
+    """Set ``kwp.P4`` for the next request; the P4 in ms when an experiment value is in
+    use, else None.  Does nothing before the connect has fixed the base P4."""
+    base = getattr(link, "_fl_p4_base", None)
+    if not P4_EXPERIMENT or base is None:
+        return None
+    lost = sum(getattr(link, "_fl_recent", ()) or ())
+    active = getattr(link, "_fl_p4_active", False)
+    if not active and lost >= P4_START_LOST:
+        active = link._fl_p4_active = True
+        _say(link, "losses are running: trying other inter-byte gaps (P4) for the requests "
+                   "until they stop (experiment; the per-P4 counts are in the summary).")
+    elif active and lost <= P4_STOP_LOST:
+        active = link._fl_p4_active = False
+    if not active:
+        if getattr(link, "_fl_p4_changed", False):
+            kwp.P4, link._fl_p4_changed = base, False
+        return None
+    n = getattr(link, "_fl_p4_n", 0)
+    link._fl_p4_n = n + 1
+    t = P4_TRIES[(n // P4_BLOCK) % len(P4_TRIES)]
+    kwp.P4 = base if t is None else t
+    link._fl_p4_changed = True
+    return round(kwp.P4 * 1000, 1)
 
 
 def _set_baud(link, baud):
@@ -199,12 +309,12 @@ def _set_baud(link, baud):
 
 
 def _p3_wait(link, p3=None):
-    """Block until ``p3`` (default P3_MIN_S) has passed since the last reply
-    byte; coarse sleep, then spin for the last ~2 ms."""
+    """Block until ``p3`` (default: the gap :func:`_gap_now`, at least P3_MIN_S) has
+    passed since the last reply byte; coarse sleep, then spin for the last ~2 ms."""
     last = getattr(link, "_fl_last_rx", None)
     if last is None:
         return
-    end = last + (P3_MIN_S if p3 is None else p3)
+    end = last + (_gap_now(link) if p3 is None else p3)
     while True:
         rem = end - time.perf_counter()
         if rem <= 0:
@@ -229,7 +339,9 @@ def _fast_cmd(link, kwp, sub, params, fast_baud, window=0.5, send_baud=10400,
         nwords = params[0] if params else 0      # 0x90: params = [n] + addr words
     _set_baud(link, send_baud)                    # slow driver calls first, ...
     link.clear_rx()
-    _p3_wait(link)                                # ... then wait out P3 right before TX
+    gap_used = _gap_now(link)
+    p4_used = _p4_pick(link, kwp)
+    _p3_wait(link)                              # ... then wait out P3 right before TX
     # Kwp2000.send() sleeps P3 itself before every frame; _p3_wait above has
     # already guaranteed the gap measured from the last reply byte, so that
     # second sleep only stacked ~25 ms onto every cycle (sniff 2026-10-31 19:45:
@@ -253,7 +365,9 @@ def _fast_cmd(link, kwp, sub, params, fast_baud, window=0.5, send_baud=10400,
         cap2 = _read_frame(link, nwords, window)
         w = _decode_frame(cap2)
         cap = cap + cap2
-    _diag_request(link, sub, w, cap, nwords, time.perf_counter() - t_req)
+    _gap_update(link, _outcome(w, cap, nwords))
+    _diag_request(link, sub, w, cap, nwords, time.perf_counter() - t_req, fast_baud, gap_used,
+                  p4_used)
     return w, cap
 
 
@@ -369,6 +483,7 @@ def fast_stream_connect(link, fast_baud, log=None, is_stop=None, expect_part=Non
     here -- the patcher picks it and checks it on the ECU (edc15.fastprobe15)."""
     log = log or (lambda m: None)
     link._fl_build = build
+    link._fl_p4_base = None              # (the P4 experiment starts after this connect's timing probe)
     link._fl_log = log
     link.set_baud(9600); link.clear_rx()
     link.wake_up(0x01, even_parity=False)
@@ -417,8 +532,20 @@ def fast_stream_connect(link, fast_baud, log=None, is_stop=None, expect_part=Non
     # then keep a margin. Failures here only cost a 0.2 s read window each.
     kwp.fast = False
     fl = flag_addr(link)
-    if fast_read(link, kwp, [fl], fast_baud, first=True) is None and \
-       fast_read(link, kwp, [fl], fast_baud, first=False) is None:
+    # A first read that draws no clean reply does not show the ECU switched its UART: a
+    # mangled request draws no reply at all and leaves it listening at 10400 (CH340 at
+    # 125000, 2026-11-06: every later request, sent at 125000, went unheard and the ECU was
+    # left needing an ignition cycle).  So ask once more at 10400 before sending at the fast
+    # rate; when the ECU did switch (the reply was only garbled), that second request is
+    # unheard and the third, at the fast rate, gets through.
+    first_ok = fast_read(link, kwp, [fl], fast_baud, first=True) is not None
+    if not first_ok:
+        log("EDC15-fast: no clean reply to the first raw-RAM read; asking again at 10400 "
+            "before using %d." % fast_baud)
+        first_ok = fast_read(link, kwp, [fl], fast_baud, first=True) is not None
+    if not first_ok:
+        first_ok = fast_read(link, kwp, [fl], fast_baud, first=False) is not None
+    if not first_ok:
         why = explain_no_answer(link)
         log("EDC15-fast: first raw-RAM read of 0x%04X failed at %d baud -- %s"
             % (fl, fast_baud, why))
@@ -469,6 +596,9 @@ def fast_stream_connect(link, fast_baud, log=None, is_stop=None, expect_part=Non
     link._fl_stored_ok = None if STORED_LIST_ENABLED else False
     link._fl_stats = None
     link._fl_diag = None                 # the session's own diagnostics start with its first row
+    link._fl_p3, link._fl_p3_ok, link._fl_p3_seen = None, 0, None     # ... and the gap at its floor
+    link._fl_recent = []
+    link._fl_p4_base, link._fl_p4_active, link._fl_p4_n, link._fl_p4_changed = kwp.P4, False, 0, False
     return kwp
 
 
@@ -576,8 +706,16 @@ def _diag(link):
     d = getattr(link, "_fl_diag", None)
     if d is None:
         d = link._fl_diag = {"req": {}, "rows": 0, "slow": 0, "runs": 0, "longest": 0,
-                             "run": None, "events": []}
+                             "run": None, "events": [], "samples": 0, "gaps": {}}
     return d
+
+
+#: The raw bytes of this many replies that were not a usable frame (junk or cut short)
+#: are written to the session notes, the first of the session: the 4Z7907401B drew 156
+#: junk replies in a 3 minute idle session and nothing said what they were.
+DIAG_JUNK_KEEP = 8
+#: ... at most this many bytes of each.
+DIAG_JUNK_BYTES = 64
 
 
 def _outcome(w, cap, nwords):
@@ -593,17 +731,43 @@ def _outcome(w, cap, nwords):
     return "silent" if not cap else "junk"
 
 
-def _diag_request(link, sub, w, cap, nwords, dt):
+def _diag_request(link, sub, w, cap, nwords, dt, baud=None, gap=None, p4=None):
     try:
         d = _diag(link)
         out = _outcome(w, cap, nwords)
+        if p4 is not None and sub in (SUBFN_LIST, SUBFN_STORE, SUBFN_FASTLOG):
+            q = d.setdefault("p4", {}).setdefault(p4, [0, 0])
+            q[0] += 1
+            q[1] += 0 if out == "ok" or out in ("NRC 0x11", "NRC 0x12") else 1
+        if gap is not None and sub in (SUBFN_LIST, SUBFN_STORE, SUBFN_FASTLOG):
+            g = d["gaps"].setdefault(int(round(gap * 1000)), [0, 0])
+            g[0] += 1
+            g[1] += 0 if out == "ok" or out in ("NRC 0x11", "NRC 0x12") else 1
         c = d["req"].setdefault("%02X" % sub, {}).setdefault(out, [0, 0.0])
         c[0] += 1
         c[1] += dt
         d["events"].append((sub, out, dt))
         del d["events"][:-64]
+        if out in ("junk", "short") and d["samples"] < DIAG_JUNK_KEEP:
+            d["samples"] += 1
+            _say(link, _sample_text(d["samples"], sub, out, w, cap, nwords, dt, baud))
     except Exception:                                # noqa: BLE001 -- never break a read
         pass
+
+
+def _sample_text(n, sub, out, w, cap, nwords, dt, baud=None):
+    """One line for the session notes: what a reply that was not a usable frame
+    contained (``cap`` is every byte read after the request), how much of the
+    expected frame there was, and how long the read took. ``junk`` has no ``50 90`` in it; ``short`` has the marker but fewer
+    words than were asked for."""
+    b = bytes(cap or b"")
+    shown = " ".join("%02X" % x for x in b[:DIAG_JUNK_BYTES])
+    if len(b) > DIAG_JUNK_BYTES:
+        shown += " ... (+%d)" % (len(b) - DIAG_JUNK_BYTES)
+    got = "%d word(s)" % len(w) if w else "no marker"
+    return "%s reply #%d to 10 %02X (%d word(s) asked, %d byte(s) received, %s, %.0f ms%s): %s" % (
+        out, n, sub, nwords or 0, len(b), got, 1000 * dt,
+        ", %d baud" % baud if baud else "", shown or "(nothing)")
 
 
 def _events_text(events):
@@ -624,7 +788,7 @@ def _end_run(link, d):
         return
     d["runs"] += 1
     d["longest"] = max(d["longest"], run["rows"])
-    if run["rows"] >= 2:
+    if run["rows"] >= 2 and not getattr(link, "_fl_diag_quiet", False):
         _say(link, "slow rows: %d in a row, %.1f s (%.0f ms each) -- %s. First row: %s." % (
             run["rows"], run["t"], 1000 * run["t"] / run["rows"],
             ", ".join("%s x%d" % kv for kv in sorted(run["causes"].items(),
@@ -656,12 +820,19 @@ def fast_diag_summary(link, log):
     """The session's requests by sub-function and outcome, and its slow rows, as log
     lines; nothing when the session read nothing (a probe, a failed connect)."""
     d = getattr(link, "_fl_diag", None)
-    if not d or not d["rows"]:
+    if not d or not d["rows"] or getattr(link, "_fl_diag_quiet", False):
         return
     try:
         _end_run(link, d)
         log("EDC15-fast: %d row(s), %d slow (over %.0f ms) in %d run(s), longest %d row(s)." % (
             d["rows"], d["slow"], 1000 * DIAG_SLOW_ROW, d["runs"], d["longest"]))
+        if d["gaps"]:
+            log("EDC15-fast: requests lost by the gap before them: %s." % ", ".join(
+                "%d ms %d of %d" % (ms, bad, n) for ms, (n, bad) in sorted(d["gaps"].items())))
+        if d.get("p4"):
+            log("EDC15-fast: requests lost by the inter-byte gap (P4) while losses were running "
+                "(experiment): %s." % ", ".join("%g ms %d of %d" % (ms, bad, n)
+                                                for ms, (n, bad) in sorted(d["p4"].items())))
         for sub in sorted(d["req"]):
             log("EDC15-fast: 10 %s requests: %s" % (sub, ", ".join(
                 "%s %d (avg %.0f ms)" % (o, n, 1000 * t / n)
@@ -671,7 +842,7 @@ def fast_diag_summary(link, log):
 
 
 def fast_read_stored(link, kwp, addrs, fast_baud, window=0.15):
-    """v2.6: read ``addrs`` (1..STORED_MAX) through the ECU-side stored list.
+    """v2.6: read ``addrs`` (1..:func:`stored_max`) through the ECU-side stored list.
 
     The first call for a given address tuple sends ``10 93 <s0bg> <n> <addrs>``
     (stores the list AND returns its values); every call after that for the same
@@ -701,9 +872,11 @@ def fast_read_stored(link, kwp, addrs, fast_baud, window=0.15):
     _note(link, time.perf_counter() - t0, ok)
     if not ok:
         link._fl_nrc = _nrc_of(cap)
-        # A silent miss does not mean the ECU forgot the list: retry the short
-        # 0x91 once before falling back to a full 0x93 re-store.
-        if sub == SUBFN_LIST and MARK not in cap and link._fl_nrc is None and not getattr(link, "_fl_silent", False):
+        # A silent miss, or NRC 0x13 (the ECU mis-received the request; 0x12 is the
+        # list refused), does not mean the ECU forgot the list: retry the short 0x91 once
+        # before falling back to a full 0x93 re-store -- which costs ~240 ms against ~120.
+        if sub == SUBFN_LIST and MARK not in cap and link._fl_nrc in (None, 0x13) \
+                and not getattr(link, "_fl_silent", False):
             link._fl_silent = True
             return None
         link._fl_silent = False
@@ -722,13 +895,13 @@ def _say(link, msg):
 
 
 def _try_stored(link, kwp, addrs, fast_baud, window):
-    """Stored-list read of the first STORED_MAX addresses, with retries.
+    """Stored-list read of the first :func:`stored_max` addresses, with retries.
     Returns the {addr: word} map, or None to make the caller use plain 0x90.
     The feature is switched off for the session on a 'sub-function not
     supported' NRC (flash older than v2.6) or after three failed rows in a row."""
     if not STORED_LIST_ENABLED or getattr(link, "_fl_stored_ok", None) is False:
         return None
-    part = list(addrs[:STORED_MAX])
+    part = list(addrs[:stored_max(link)])
     for _try in range(3):
         got = fast_read_stored(link, kwp, part, fast_baud, window=window)
         if got is not None:
@@ -744,7 +917,13 @@ def _try_stored(link, kwp, addrs, fast_baud, window):
                     chk = fast_read(link, kwp, [sa], fast_baud, window=window)
                     if chk is not None:
                         break
-                link._fl_slot_checked = bool(chk) and chk.get(sa) == len(part)
+                if chk is None:
+                    # no answer at all is not "the list is elsewhere" (2026-11-13 FT232RL
+                    # 125000 standing: three lost reads at the start switched the stored list
+                    # off for the whole session, and the plain 0x90 rows ran 2.1 Hz): leave the
+                    # check for the next store
+                    return got
+                link._fl_slot_checked = chk.get(sa) == len(part)
                 if not link._fl_slot_checked:
                     link._fl_stored_ok = False
                     link._fl_list = None
@@ -883,14 +1062,15 @@ def _read_group(link, kwp, addrs, fast_baud, window=0.15, use_list=True):
         return {}
     out = {}
     # 13..16 addresses fit ONE 0x90 burst, which beats list(12) + a second request.
-    if use_list and not (STORED_MAX < len(addrs) <= MAX_BURST):
-        # v2.6 flash: the first STORED_MAX addresses go through the ECU-side list
+    smax = stored_max(link)
+    if use_list and not (smax < len(addrs) <= MAX_BURST):
+        # v2.6 flash: the first ``smax`` addresses go through the ECU-side list
         # (a 3-byte request per row once stored); any rest, or a flash without
         # the feature, uses the plain 0x90 bursts below.
         got = _try_stored(link, kwp, addrs, fast_baud, window)
         if got is not None:
             out.update(got)
-            addrs = addrs[STORED_MAX:]
+            addrs = addrs[smax:]
             if not addrs:
                 return out
     step = getattr(link, "_fl_max", MAX_BURST)

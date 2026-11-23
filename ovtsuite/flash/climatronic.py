@@ -184,11 +184,10 @@ def list_interfaces() -> List[Interface]:
             out.append(Interface("j2534", d.label, device=d, loadable=d.loadable))
     else:
         try:
-            from .openport import labels
-            found = labels()
-        except Exception as ex:                     # pyusb missing / no device
+            from .openport import find_devices
+            found = find_devices()                  # [] without pyusb or a device
+        except Exception:
             found = []
-            out_err = str(ex)
         for lbl in (found or []):
             out.append(Interface("openport", lbl or "OpenPort 2.0 (Tactrix)"))
         if not found:
@@ -219,67 +218,6 @@ def open_interface(prefer: Optional[str] = None, log=None) -> Tuple[Interface, o
     log("Interface: %s" % chosen.label)
     dev, ch = chosen.open()
     return chosen, dev, ch
-
-
-# ---------------------------------------------------------------- CAN traffic log
-class CanTap:
-    """Debug wrapper around a raw CAN channel that logs every TX and RX frame.
-
-    Presents the same surface a Tp20Channel uses (write_can / read / pass_all /
-    pass_ids / clear_rx / pass), so it drops in transparently:
-    ``tp.can = CanTap(tp.can, emit)``.  ``emit`` is a callable taking one text
-    line.  Timestamps are ms since the tap was created.  Read-only w.r.t. the
-    bus — it only observes; it never injects or drops frames.
-    """
-    def __init__(self, chan, emit):
-        self._c = chan
-        self._emit = emit
-        self.frames = 0
-
-    def _line(self, tx, can_id, payload, extended=False):
-        # Same wire format as the bridge's _FrameTap and sniff.capture:
-        #   (<epoch>) can-tx <ID>#<HEX>   /   (<epoch>) can <ID>#<HEX>
-        import time as _t
-        self.frames += 1
-        ident = ("%08X" % can_id) if extended else ("%03X" % (can_id or 0))
-        try:
-            self._emit("(%.6f) %s %s#%s" % (_t.time(), "can-tx" if tx else "can",
-                                            ident, bytes(payload).hex().upper()))
-        except Exception:
-            pass
-
-    def write_can(self, can_id, payload, extended=False, timeout_ms=100):
-        self._line(True, can_id, payload, extended)
-        return self._c.write_can(can_id, payload, extended, timeout_ms)
-
-    def write(self, data, flags=0, timeout_ms=100):
-        # ISO15765 / raw message write: data is <4-byte can id><payload>. Log it
-        # as a TX frame so an ISO15765 read (which writes whole messages, not
-        # per-frame) still shows TX in the trace.
-        d = bytes(data)
-        cid = int.from_bytes(d[:4], "big") if len(d) >= 4 else 0
-        self._line(True, cid, d[4:])
-        return self._c.write(d, flags, timeout_ms)
-
-    def read(self, max_msgs=32, timeout_ms=100):
-        msgs = self._c.read(max_msgs, timeout_ms)
-        for m in msgs:
-            self._line(False, getattr(m, "can_id", None), getattr(m, "payload", b""),
-                       bool(getattr(m, "tx_flags", 0) & 0x100))
-        return msgs
-
-    def pass_all(self, *a, **k):
-        return self._c.pass_all(*a, **k)
-
-    def pass_ids(self, *a, **k):
-        return self._c.pass_ids(*a, **k)
-
-    def clear_rx(self, *a, **k):
-        fn = getattr(self._c, "clear_rx", None)
-        return fn(*a, **k) if fn else None
-
-    def __getattr__(self, name):          # delegate anything else to the real channel
-        return getattr(self._c, name)
 
 
 # ---------------------------------------------------------------- KWP over TP2.0

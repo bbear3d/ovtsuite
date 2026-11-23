@@ -42,6 +42,7 @@ and sniffer use them too (the theme, for example).
 | **Opening a WinOLS project (.ols)** | What **File > Open** does with one: **As stored** (default) takes every binary it holds, as the versions it lists, and shows only the project's own maps (the module builds no tree of its own; **right-click > Load the module's built-in maps** adds it); **Ask which versions to take**; or **The original only**, with the module's maps beside the project's. Adding files and New project always ask. It is saved as an `.ovt` project either way. See [WinOLS projects](projects.md#winols-projects-and-definitions). |
 | **Versions of a WinOLS project in the history** | **Each version a branch of its own, from the original** (default), or **one chain**, each version following the one before it. |
 | **ZF 6HP: also correct the program-area checksums** | Shown while the ZF 6HP module is installed; off unless you change it. On: a save or flash of a ZF 6HP file also rewrites the program and boot area's self-checks, not just the calibration checksum. A calibration tune never changes those areas; turn it on only when you edit program or boot bytes. Every open tab follows at once. See [ZF 6HP program-area checksums](editing.md#zf-6hp-program-area-checksums). |
+| **EDC17: also patch the CVN back to its stock value when correcting checksums** | Shown while the EDC17 module is installed; off by default. On: correcting an EDC17 file's checksums (a save, or the correction before a flash) first patches the calibration verification number back to its stock value, in a padding run of the dataset, and then does the block checksum fixes over the result. It is refused, with the reason, when the file has no safe place for the patch or the CVN cannot survive the block fixes. Every open tab follows at once. The `ovtsuite checksum` command takes `--fix-cvn` for the same. The EDC17 module's checksum help describes the order and the rule for the patch. |
 
 ![Tools > Options, the Projects and saving page](images/options-projects.png)
 
@@ -52,11 +53,23 @@ and sniffer use them too (the theme, for example).
 | **Versions listed in Compare with saved version** | How many saves the menu lists before **Version history...**. |
 | **3D surface and dyno chart** | Where the two panels go around the table: stacked above it, side by side above it, or beside it on the right. Also in **View > Table panels**. See [3D surface](editor/3d-surface.md). |
 | **Comparison table** | Where a loaded comparison's copy of the table goes. **In the same grid, under the table** (the default): below a banner, in the table's own grid. **Below the table** or **Beside the table**: in a read-only grid of its own, which scrolls, sizes its columns and selects together with the table, from either grid. **In the same grid, matching cells marked**: the default layout, with the cells matching the selection framed in the other copy. **Ctrl+J** jumps to the matching cells and back (not in the default). Takes effect at once. See [Comparing files](editor/comparison.md#scrolled-together). |
-| **Comparison values** | How a comparison's table is shown: **Resampled onto the primary's axes** (default) or **Original size**, in a grid of its own that is linked to yours only when the two have the same size (when they differ, every cell is outlined). This is the default; each table can have its own (the **Comparison** button on the edit bar, right-click, **View > Comparison size**). See [Comparison size](editor/comparison.md#comparison-size-resampled-or-original). |
+| **Comparison values** | How a comparison's table is shown: **Resampled onto the primary's rows and columns** (default; a table of the same size is compared cell for cell), **Aligned to the primary's axes** (also a table of the same size on other breakpoints, so each cell is compared at the same operating point) or **Original size**, in a grid of its own that is linked to yours only when the two have the same size (when they differ, every cell is outlined). This is the default; each table can have its own (the **Comparison** button on the edit bar, right-click, **View > Comparison size**). See [Comparison size](editor/comparison.md#comparison-size-resampled-aligned-or-original). |
 | **Difference view: show as** | While a comparison is loaded: the cells as **Values** (default) or as the difference between the primary and the comparison (either way round), a percentage or a ratio. Also in the **Difference view** button on the edit bar, View > Difference view, and the toolbar. See [Showing the difference](editor/comparison.md#showing-the-difference). |
 | **Difference view: show it in** | Which table shows it: **the comparison block** (default), **the primary table** (read only while it shows differences) or **both**. |
 | **Blank the cells that do not differ in a difference view** | Leaves only the changes on screen. |
 | **Tint a difference by direction** | Red where the primary is higher than the comparison, blue where it is lower, whether the table shows values or a difference; the same light colour with dark text in both themes. Not shown while a table's heat map is on. The orange outline of a differing cell stays either way. |
+
+## Flasher
+
+| Setting | What it does |
+|---|---|
+| **Trace flash reads and writes** | Off by default. On: every read and write of any unit writes what the cable carried (CAN frames, K-line bytes) and the flasher's status messages to the file below, to find out why a session failed. It does not change what is sent. |
+| **Trace file** | Where. Empty is the default, `flash-trace.log` in the **Flash trace** folder of a folder named for the app in your Documents folder (shown greyed in the box); **Browse...** picks another, **Default** goes back. The file is added to from one session to the next and loads into the [Bus Sniffer](sniffer.md). |
+| **Largest trace file** | 25 MB to start with. When the file reaches it, it is renamed `.1` and a new one starts, so it never grows past this. |
+| **Older trace files kept** | How many full files (`.1`, `.2`...) are kept; the oldest is deleted when a new one starts. 0 just empties a full file. |
+
+The file, size and older files are greyed until the trace is on. See
+[Tracing a session](flashing/advanced.md#tracing-a-session).
 
 ## Appearance
 

@@ -127,6 +127,54 @@ project...**, or drop it on the window and pick **Import into <project>**.
 A closed project comes back with **File > Restore project from history** or
 **File > Reopen last closed project** (Ctrl+Shift+T), with the tabs it had.
 
+## An ECU's EEPROM and internal flash in a project
+
+An EDC15 EEPROM (512 bytes), an EDC16 EEPROM (4 KB) and an EDC16 internal flash
+(**MPC**, 0x81000 bytes) are recognised by their own structure -- the module
+knows the layout; an EEPROM's checksums need not be right -- instead of being
+"an unrecognised binary". Each is a **companion**: a set of its own, with its
+own versions and branches, its own tab, exported on its own (**File > Export >
+EEPROM (.bin)...** / **MPC / internal flash (.bin)...**). The EEPROM opens in
+the [EEPROM editor](tools/eeprom.md), an MPC in the hex editor.
+
+A companion is **linked** to a flash set of the same control unit (an EDC15
+EEPROM to an EDC15 flash; an EDC16 EEPROM or MPC to an EDC16 flash; nothing
+else matches). The flash **follows the companion's latest version**: its tab
+holds the companion in its EEPROM / MPC part, and **Tools > EEPROM editor** on
+the flash edits it -- saved as a new version of the *companion*, never of the
+flash. One companion can serve several flashes (the stock EEPROM under every
+tune). Flasher, PCMFlash export and the original `.dim` rebuild use the linked
+companions' latest versions.
+
+Where links are made:
+
+- A `.dim`, a PCMFlash file or a backup is imported as the flash set **plus** its
+  EEPROM and MPC as companion sets, already linked; only the flash opens in a
+  tab. Projects from before are split the same way when they are opened (and
+  saved with the project's next Save).
+- **File > Import > Into this project...** (or **Add files to the project**) with
+  an EEPROM or MPC, when the project holds that control unit's flash: *Import it
+  as the companion of ...?* -- with several flashes you pick which. **Import it
+  separately** keeps it unlinked.
+- An EEPROM or MPC and a flash imported **together** are linked without a
+  question. A flash imported into a project that holds an unlinked companion of
+  its unit asks whether to link it.
+- **Pair with a flash...** on a companion's set in the Project panel; **Unlink
+  from ...** takes the link away (the companion stays); a flash's set menu lists
+  **Open <companion>**.
+- A read added to a flash set that already links an EEPROM or MPC, when the read
+  holds that part too (a one-file or full read), **compares first**: each part
+  is shown against the linked one as *identical* (nothing to do), *differs in N
+  bytes* or *different identity* (VIN, part number or software). For a part
+  that differs you choose **Keep the linked one** (the default), **Add the
+  file's as a new version of the linked one** (only when the sizes match;
+  *Imported from <file>* in the companion's history, so it can be reverted), or
+  **Add it as a separate set and link it** (the old companion stays in the
+  project as a set of its own). The window names every other flash set that
+  shares the companion, and warns when an EEPROM of another identity would
+  replace this one: an EEPROM carries the car's immobiliser data, and a donor's
+  can stop the engine starting. Closing the window keeps every linked one.
+
 ## Comparing
 
 A project tab opens with **the original as read** as its comparison, so the
@@ -268,7 +316,9 @@ Right-click an item for what can be done with it:
 
 - **Project** -- project information, **Add files to the project** (each
   becomes a set), save, rename, set how many logs are kept, close.
-- **Set** -- rename; **Attach a definition** (XDF, A2L, KP, OLS or DAM) to a
+- **Set** -- rename; for a set that is just an ECU's EEPROM, **Pair with a
+  flash...** (see [An ECU's EEPROM in a project](#an-ecus-eeprom-in-a-project));
+  **Attach a definition** (XDF, A2L, KP, OLS or DAM) to a
   binary no module recognises, so it opens with that definition's tables and
   values in the main view instead of only the hex editor; **Definition
   placement...** to see how its tables were placed, give the offset or the
@@ -295,6 +345,9 @@ Right-click an item for what can be done with it:
   **Rename...** (or select it and press **F2**; leave the name empty to give
   it back its automatic name). The new name shows in **Version history** too,
   and a name given or cleared there shows here.
+  **Insert a file as a version after this...** / **before this...** puts
+  another file of the same software into the history at that point (see
+  [Inserting a file as a version](#inserting-a-file-as-a-version)).
   **Export this version...** saves that version as it was saved: one part
   of the set as a raw `.bin` (you pick which, for a set of several), or the
   set's original file (`.dim`, `.sgo` ...) rebuilt with that version's
@@ -303,13 +356,20 @@ Right-click an item for what can be done with it:
   compare it, export it -- but nothing in it can be edited or saved, it is
   not added to Open Recent, and closing it asks nothing. To work on it, use
   **Revert the branch to this version** or **New branch from this version**.
-- **Log** -- **Open in Data logging**, **Export...**, **Pin** / **Unpin**,
-  **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
+- **Log** -- **Open in Data logging**, **Export...**, **Rename...**,
+  **Pin** / **Unpin**, **Remove**, **Summarise with AI...** (see [the assistant](ai/assistant.md#asking-from-where-you-are)).
 - **Patch** -- **Apply to this tab...** (or double-click it), **Export...**,
-  **Remove**.
+  **Rename...**, **Remove**.
 - **Attachment** -- **Open externally** (or double-click it), **Open
-  with...**, **Show copy in folder**, **Export...**, **Remove**. A kept
-  fault-code read also has **View fault code report**.
+  with...**, **Show copy in folder**, **Export...**, **Rename...**,
+  **Remove**. A kept fault-code read also has **View fault code report**.
+
+**Rename...** (or select the log, patch or attachment and press **F2**)
+changes the file name it is kept under and exports under; its contents, pin
+and note stay. A name typed without an extension keeps the old one (`run 3`
+on `run1.csv` becomes `run 3.csv`), so the file still opens in its program.
+A kept fault-code read has no file name in the panel -- it shows its date and
+code count -- so renaming it gives it a title that replaces them.
 
 Logs, patches and attachments all have the three *open* commands; see
 [Opening a kept file in another program](#opening-a-kept-file-in-another-program).
@@ -326,6 +386,20 @@ among them), select them with Ctrl-click or Shift-click and choose **Remove
 Each project lists its **Logs**, **Patches** and **Attachments** under its
 sets, newest first (as do **File > Export** and the pickers that offer
 them); sets and branches stay in the order they were made.
+
+### Dragging patches and files in and out
+
+**In.** Drop a patch file (`.patch`) on the window and a menu offers **Keep
+in** *project* (it is stored in the project, for the set of the tab in
+front), **Keep in** *project* **and apply to this tab**, and **Apply to this
+tab** (nothing is stored). Applying opens the usual Apply Patch dialog, so
+you still choose what goes in. With several projects open the menu lists
+each; a file that is not a readable patch is reported, not imported. Other
+files dropped with it are imported as before.
+
+**Out.** Drag a log, patch or attachment from the Project panel to a folder
+or another program: a copy of the file as kept is written there. Dropping
+it back on the window does nothing.
 
 ### Opening a kept file in another program
 
@@ -370,6 +444,14 @@ before you confirm, and the change is kept when you save the project. The file
 has to be the same software -- the same parts and sizes -- as the original it
 replaces; for another software, add it as a binary of its own.
 
+A file that also carries the EDC16's **internal flash (MPC)** -- an `.sgo` that
+includes it, say -- can still be the new original of a binary whose original is
+the flash only: the MPC is not part of the original. After the original is
+replaced you are asked whether to add it: as a new version of the MPC set linked
+to the binary, or, where none is linked, as an MPC set of its own linked to it.
+Answer No and the MPC is left out (the `.sgo` itself is kept whole with the
+original).
+
 An EDC16 **calibration-only file** (512 KB) is the 2 MB image it is a window of
 once imported. As a new original it replaces only that window of the original's
 image: the boot and program areas stay as the original has them, so the other
@@ -383,6 +465,26 @@ rest of each of them is the 2 MB image's). Every version keeps the bytes it
 had. Save or discard the unsaved changes in the binary's open tabs first; a
 history that changed the file's size cannot move.
 
+### Inserting a file as a version
+
+A file can go into a binary's history at any point, not only as the original
+or as the latest version: a tune you had saved outside the project, an older
+revision a customer sends back. Right-click a version in the Project panel >
+**Insert a file as a version after this...** (or **before this...**) and pick
+the file: a read, a `.bin`, an `.sgo`, `.frf`, `.dim` or a container, of the
+same software and size.
+
+The file becomes a new version straight after the one you picked, on that
+branch's line. **The version that followed keeps exactly the bytes it had**
+-- only what it is recorded against changes -- so every later version,
+branch, comparison and flash record stays as it is. Inserted after a branch's
+latest version, the file becomes the branch's latest (its tab reloads; save
+or undo its unsaved changes first). Before the original, it becomes the new
+original ([A new original](#a-new-original)). Another branch that forks from
+the version you picked is not touched. An EDC16 calibration-only file fills
+the calibration window of the version it follows; the rest stays as that
+version has it. The change is kept when you save the project.
+
 ## WinOLS projects and definitions
 
 **A WinOLS project** (`.ols`) holds a binary *and* its map definitions.
@@ -390,7 +492,8 @@ history that changed the file's size cannot move.
 new, unsaved project (saved as an `.ovt`), the way Options > Projects and saving >
 *Opening a WinOLS project* says;
 importing one (**File > New project...**, or **Add files to the project**) makes
-it a set of a project you already have:
+it a set of a project you already have (an encrypted `.olsx` export is asked
+about the same way):
 
 - its binary becomes the set's original, named after the WinOLS version it
   holds (*WinOLS: Original*); an image WinOLS put together from an EDC16's
@@ -398,7 +501,8 @@ it a set of a project you already have:
 - a project can hold **several versions of the binary** (the original and
   what was made from it in WinOLS). **File > Open** takes all of them, as
   the project lists them; importing asks what to take: **the original
-  only**, **all versions**, or **the versions you tick** in the list (it shows
+  only**, **all versions**, or **the versions you tick** in the list (with
+  none ticked it warns instead of taking the original; it shows
   the date WinOLS lists for each, and its comment as a tooltip). All of them
   go into the one set: the first is its original, each later one a saved
   version named *WinOLS: <name>*, dated as WinOLS dates it, with WinOLS's
@@ -476,7 +580,10 @@ are always shown in English (*mg/Hub* reads *mg/stroke*, *Grad C* reads
 - **Original file (.sgo / .dim / .frf)...** -- the file the set was imported
   from, with the saved version in it (byte for byte the original when
   nothing changed). An edited `.frf` cannot be rebuilt yet --
-  export the `.bin` instead;
+  export the `.bin` instead. A PCMFlash file that can no longer be put
+  together (a part changed size) says so and points to *Export the parts*
+  (a calibration-only 512 KB flash is padded to the full 2 MB first, as the
+  raw export does);
 - **Definition as XDF...** -- the tab's parameters as a TunerPro
   definition;
 - **Data log...**, **Patch...** and **Attachment...** -- each picks one of
@@ -495,7 +602,10 @@ the branch's own versions. A patch
 applied and saved is listed by Remove patch whenever the project is opened
 again. Adjacent versions can be merged (Version history, or select them in
 the Project panel and right-click **Merge N versions into one...**); see
-[Version history](editing.md#where-the-history-is-kept).
+[Version history](editing.md#where-the-history-is-kept). A merged version
+keeps the **earliest** time of the versions it holds and every version merged
+into it, also across merges of merges; a flash recorded for a version that was
+merged away is counted for the version it went into (the 6HP logs follow it).
 
 ## Recovering after a crash
 

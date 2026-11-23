@@ -78,6 +78,11 @@ The **Match** column says which field matched — `symbol:`, `title:` (the
 name shown in the tree), `category:`, `description:` or `units:` — with the
 matching text.
 
+A coding typed the way your scan tool shows it finds the copies it selects:
+on an EDC16 whose coding carries function bits (P447), `coding 786437` finds
+what the stored `coding 786432+` does. The EDC16
+help page *How maps are found and named* explains how a coding reads.
+
 ### Values
 
 Finds the parameters whose data holds a value. Type, then press Enter or

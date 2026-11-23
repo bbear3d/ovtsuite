@@ -36,8 +36,9 @@ tool's name.
    `ovtsuite-fault.log` from your settings folder (see
    [Installing](installing.md#where-the-app-keeps-things)).
 4. For a flashing problem, attach the read / write dialog's log; for a CAN
-   problem with the C6 cluster or the ABS, a CAN traffic log (see
-   [Advanced and diagnostic tools](flashing/advanced.md#cluster-and-abs)).
+   problem, the flash trace of the session (turn it on in **Tools > Options >
+   Flasher** before you try again; see
+   [Tracing a session](flashing/advanced.md#tracing-a-session)).
 
 ## The Credits & licences tab
 
@@ -48,7 +49,7 @@ The list on the left is grouped:
 | Group | What is in it |
 |---|---|
 | **Incorporated code** | Source code from other projects that was ported or copied into OVT-Suite — for example kw1281test (the KW1281 / KWP2000 dialogs, the FTDI K-line interface, the EDC15 flash and the VDO cluster unlock), the Linux OpenPort 2.0 driver, and the `.frf` decryption from VW_Flash. Their licences require their copyright notice and licence text to travel with the program. |
-| **Runtime components** | Libraries the program ships and runs on: Python, Qt and PySide6, cryptography, pySerial, PyUSB, PyFtdi, libusb-win32, the PyInstaller bootloader. (FTDI's D2XX driver is not shipped; the Windows installer can download it.) |
+| **Runtime components** | Libraries the program ships and runs on: Python, Qt and PySide6, cryptography, pySerial, PyUSB, PyFtdi, libusb, the PyInstaller bootloader. (FTDI's D2XX driver is not shipped; the Windows installer can download it.) |
 | **Module data** | Third-party data a module brings — the VDO cluster sweep patches, one entry per author and licence. Listed only while that module is installed. |
 | **Acknowledgements** | Projects that were cross-checked but from which no code was taken. |
 

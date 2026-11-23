@@ -261,5 +261,5 @@ directly with the parts as its container regions and saves it back whole.
 
 **Export > PCMFlash file (flash + MPC)...** (`exporters.export_pcmflash`)
 makes such a file from any set that holds both flashes (a `.dim`, `.sgo`, a
-Full read ...): the internal flash cut to PCMFlash's 0x80200, the EEPROM
+Read full ...): the internal flash cut to PCMFlash's 0x80200, the EEPROM
 behind it on request.

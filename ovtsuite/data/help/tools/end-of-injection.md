@@ -124,7 +124,10 @@ table** pastes without its headers), **Set target EOI for the selection...**,
 
 The **Modify selection** bar works as the table editor's: **Set**, **Add**,
 **Subtract**, **Multiply** (1.05 to start with) or **Divide** the selected
-cells by a number and click **Apply** (or press Enter); with nothing selected
+cells by a number and click **Apply** (or press Enter); **Average with
+comparison %** moves them that many percent of the way to the comparison's
+values (50 to start with: the average; the comparison is calculated at the
+grid's own points, so every cell is compared at the same operating point); with nothing selected
 it applies to the whole grid. **Fill** (**↔**, **↕**, **▦**) interpolates the
 selection and **Smooth** averages each selected cell with its neighbours. It
 works on what the grid shows -- EOI, SOI or Duration, or a duration table's

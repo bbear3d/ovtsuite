@@ -8,8 +8,8 @@
 KWP2000 (ISO 14230) services carried inside VW TP 2.0 on a raw CAN channel --
 the *same* transport the Climatronic module uses, so this reuses the suite's
 validated device + TP2.0 layers wholesale (see :mod:`ovtsuite.flash.climatronic`
-for the interface enumeration, ``open_interface`` and the ``CanTap`` debug wrap;
-they are imported here, not duplicated).
+for the interface enumeration and ``open_interface``; they are imported here, not
+duplicated; the wire trace is :mod:`ovtsuite.flash.flashtrace`).
 
 WHAT IS KNOWN (solid):
 * Transport: TP 2.0 / KWP2000 over CAN, logical dest **0x17** (VAG instrument
@@ -51,7 +51,6 @@ from .climatronic import (            # noqa: F401  (re-exported for the GUI)
     Interface,
     list_interfaces,
     open_interface,
-    CanTap,
     NegativeResponse,
     CAN_RATE,
 )

@@ -235,6 +235,32 @@ def test_paste_at_the_primarys_current_cell(different, app):
     assert m._vals[1][2] == n._vals[0][0]
 
 
+def test_paste_anchors_at_the_current_cell_not_the_selection_corner(different, app):
+    ws = different
+    nv = _go(ws)
+    n, m = nv.model, ws.model
+    nv.view.selectionModel().select(n.index(1, 1), SEL.ClearAndSelect)
+    ws.table.selectionModel().select(
+        QtCore.QItemSelection(m.index(0, 0), m.index(1, 3)), SEL.ClearAndSelect)
+    ws.table.selectionModel().setCurrentIndex(m.index(1, 2), SEL.NoUpdate)
+    assert nv.paste_at_current() == 1
+    assert m._vals[0][1] == n._vals[0][0]       # grid (1, 2); not the corner (0, 0)
+
+
+def test_primary_edits_recompute_the_outline_once(same, app):
+    ws = same
+    nv = _go(ws)
+    calls = []
+    orig = nv._outline_differences
+    nv._outline_differences = lambda: (calls.append(1), orig())[1]
+    m = ws.model
+    for _ in range(5):
+        m.dataChanged.emit(m.index(0, 0), m.index(0, 0))
+    assert not calls
+    app.processEvents()
+    assert len(calls) == 1
+
+
 def test_same_sizes_link_the_grids_and_outline_only_what_differs(same, app):
     ws = same
     nv = _go(ws)

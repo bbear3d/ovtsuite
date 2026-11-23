@@ -7,6 +7,31 @@ order: 40
 Once connected and with cells selected, the lower right of the connection tab
 records the log.
 
+## Watch before you record
+
+As soon as you are connected, every ticked cell is read and shown live: its
+value in the **Value** column of **Selected cells** and its line on the strip
+chart, without pressing **Start logging**. Cells from several groups (and
+from several presets, if you tick one after another) are all read together,
+so you can look at them side by side before you commit to a log. The group
+you are browsing on the left is read in the same pass. Cells read from
+memory (the AST cells) join once the ECU has been checked for memory reads. If you
+press **Start logging** before that check has run, it runs as recording
+begins; a failed check is tried again.
+
+Each group read is a request to the control unit, so ticking many groups
+slows every one of them down: the counter beside the buttons then shows the
+number of groups, the one you are browsing included ("2.4 Hz, 5 groups"),
+and its tooltip says so. Disconnecting clears both. The K-line,
+and KW1281 on EDC15 in particular, is slow -- tick only what you need. In
+EDC15 fast logging the groups are read in one burst, so this costs far less.
+
+Un-ticking or ticking a cell restarts the chart with the new set of cells. A new connection starts with an empty chart too.
+**Start logging** records the cells that are ticked at that moment and
+carries on from the running chart; **Stop** returns to watching without
+clearing it. Nothing can be read before the connection is up: the ECU only
+answers inside a session.
+
 ## Record a log
 
 1. Check where the log goes. When the controller's binary is open in a
@@ -63,13 +88,14 @@ a working copy the same way, and goes into the project when you press
 ## The live chart
 
 The strip along the bottom of the tab charts the last 30 seconds of the
-current log.
+ticked cells, from the moment you connect (before, during and between logs).
 
 - Every selected cell is a line in its own colour, scaled to its own minimum
   and maximum over what is on screen — the chart shows the shape and timing of
   each value, not values against a common axis.
 - The legend across the top gives each cell's name and its latest value.
-- The time at the left and right edges is seconds since logging started.
+- The time at the left and right edges is seconds since you connected (or since
+  the ticked cells last changed).
 - Cells that are not numbers (or read "N/A") leave gaps.
 
 For a whole log, with a cursor and the rows beside it, use the

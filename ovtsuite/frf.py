@@ -120,6 +120,18 @@ from .flash import crypto as _crypto
 #: header states addresses in it.
 EDC17_FLASH_BASE = 0x80000000
 EDC17_FLASH_SPAN = 0x01000000
+#: the same flash through the TriCore's non-cached segment: a dataset header
+#: may state its addresses there (0xA0xxxxxx) instead
+EDC17_FLASH_BASE_UNCACHED = 0xA0000000
+EDC17_FLASH_BASES = (EDC17_FLASH_BASE, EDC17_FLASH_BASE_UNCACHED)
+
+
+def _edc17_base(addr: int) -> Optional[int]:
+    """The segment base (cached or uncached) an EDC17 flash address is in."""
+    for base in EDC17_FLASH_BASES:
+        if base <= addr < base + EDC17_FLASH_SPAN:
+            return base
+    return None
 #: ``ENCRYPT-COMPRESS-METHOD`` of an EDC17 block: XOR (KEY_EDC17) + 10-bit LZSS.
 EDC17_METHOD = "A1"
 EDC17_LZ_DIST_BITS = 10
@@ -156,13 +168,13 @@ def edc17_block_start(plain: bytes) -> Optional[int]:
     if plain is None or len(plain) < 16:
         return None
     _t, length, _link, end = struct.unpack_from("<4I", plain, 0)
-    if length != len(plain) or not (EDC17_FLASH_BASE <= end
-                                    < EDC17_FLASH_BASE + EDC17_FLASH_SPAN):
+    base = _edc17_base(end)
+    if length != len(plain) or base is None:
         return None
     start = end + 4 - length
-    if start < EDC17_FLASH_BASE or start % 4:
+    if start < base or start % 4:
         return None
-    return start - EDC17_FLASH_BASE
+    return start - base
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 _FRF_KEY_PATH = os.path.join(_DATA_DIR, "frf.key")
@@ -529,12 +541,12 @@ def parse_odx(odx_bytes: bytes, name: str = "") -> FrfContainer:
                             pass
                 # An EDC17 header states TriCore bus addresses (0x80xxxxxx);
                 # a block's base is its offset in the flash window.
-                if (block.start_address is not None
-                        and EDC17_FLASH_BASE <= block.start_address
-                        < EDC17_FLASH_BASE + EDC17_FLASH_SPAN):
-                    block.start_address -= EDC17_FLASH_BASE
+                _seg = (None if block.start_address is None
+                        else _edc17_base(block.start_address))
+                if _seg is not None:
+                    block.start_address -= _seg
                     if block.end_address is not None:
-                        block.end_address -= EDC17_FLASH_BASE
+                        block.end_address -= _seg
             crc_expected = crc_by_db.get(short_name)
             crc_mask = crc_mask_by_db.get(short_name, 0xFFFFFFFF)
             if (crc_expected is None and short_name in bosch_crc16

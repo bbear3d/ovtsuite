@@ -34,6 +34,7 @@ class Edc16Like:
         self.part = b"03G906016LQ "
         self.coding = 71
         self.wsc6 = WSC6
+        self.text = b"R4 1,9L EDC G000SG"
         # two faults as VAG words (16785 = P0401, 16683 = P0299): the word
         # encoding is a per-calibration fact the module document states, so
         # the generic engine document reads KWP2000 words as VAG numbers
@@ -53,7 +54,7 @@ class Edc16Like:
 
     def record(self):
         return (b"\x9B" + self.part + SW4 + b"\x03" + self.coding.to_bytes(3, "big") + self.wsc6
-                + b"R4 1,9L EDC G000SG")
+                + self.text)
 
     def __call__(self, req):
         self.log.append(bytes(req))
@@ -246,6 +247,40 @@ def test_kw1281_only_functions_on_kwp2000():
         sess.read_memory_kw("eeprom", 0, 8)
     with pytest.raises(NotSupported):
         sess.kw1281
+    sess.close()
+
+
+def test_zf6hp_part_numbers_get_the_gs19_measuring_blocks():
+    """The logger's fixed GS19 layout names a 6HP19A's groups in OVT Diag. The
+    gearbox code in the ident text ("AG6 09L ...") decides, not the TCU's part
+    number; the 6HP26A (09E), the Aisin 09D, the 8HP and a UDS 6HP28 are not it."""
+    from ovtsuite.datalog import msblock6hp as M
+    # every 6HP19A ident family in the corpus, whatever the TCU part number
+    for part, ident in (("4F9910156A", "4F9910156A  SW 0020  AG6 09L 3,0TFSI RdW"),
+                        ("8E1910156K", "8E1910156K  SW 3000  AG6 09L 2.0TFSI RdW"),
+                        ("4E1910156A", "4E1910156A  SW 1001  AG6 09L 3,0 TDI RdW"),
+                        ("4L0910156C", "4L0910156C  SW 0020  AG6 0AT 3,0 TDI RdW")):
+        assert M.is_6hp19(part, "kwp2000", ident), ident
+    assert M.is_6hp19("09L927156C", "kwp2000")                 # gearbox-level number, no text
+    assert not M.is_6hp19("4E0910156D", "kwp2000", "4E0910156D  SW 0100  AG6 09E 3,7L5V RdW")  # 6HP26A
+    assert not M.is_6hp19("4F9910156A", "kwp2000")             # a part number alone is not enough
+    assert not M.is_6hp19("09D927750HN", "kwp2000", "09D927750HN  SW 3403")        # Aisin 09D
+    assert not M.is_6hp19("4G0927158AA", "kwp2000", "4G0927158AA  SW 1006")        # 8HP
+    assert not M.is_6hp19("4F9910156A", "uds", "AG6 09L")      # 6HP28 has its own DIDs
+    assert not M.is_6hp19("4F9910156A", "kw1281", "AG6 09L")
+    assert M.namer_for_part("09D927750HN", "kwp2000") is None
+    ecu = Edc16Like()
+    ecu.part = b"4F9910156A  "
+    ecu.text = b"AG6 09L 3,0TFSI RdW"
+    sess = _session(ecu)
+    assert sess.info.platform == "zf6hp19"           # from the gearbox code in the ident text
+    namer = sess.catalogue_namer
+    assert namer is not None and namer.available
+    assert namer.populated_groups() == list(range(1, 18))
+    names = sess.group_names(1)
+    assert names[:4] == ["Engine speed (Tcu_nEng)", "Turbine speed (G182) (Tcu_nTurb)",
+                         "Output shaft speed (G195) (Tcu_nOut)", "Engaged gear (Tcu_stGear)"]
+    assert sess.group_names(15)[0] is None           # an unlabelled cell stays unnamed
     sess.close()
 
 

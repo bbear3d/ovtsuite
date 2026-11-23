@@ -119,6 +119,10 @@ def _say(ws, text: str):
 
 def _editable(ws) -> bool:
     m = ws.model
+    if getattr(m, "primary_delta", lambda: "abs")() != "abs":
+        _say(ws, "The primary table shows differences, so it is read only. "
+                 "Set the Difference view to Values to edit.")
+        return False
     if m.readonly or getattr(m.entity, "read_only", False):
         _say(ws, "This table is read-only.")
         return False
@@ -148,7 +152,8 @@ def _write(ws, cells, what: str) -> int:
         _say(ws, "No map cells selected.")
         return 0
     m = ws.model
-    m._edit_cells(cells)
+    if not m._edit_cells(cells):
+        return 0                        # blocked: its own message stays
     m.refresh()
     _say(ws, "%s: %d cell(s)." % (what, len(cells)))
     try:
@@ -692,6 +697,11 @@ def _run(win, text: str, fn) -> None:
     fn(win)
 
 
+def _average():
+    from . import gui_average
+    return gui_average
+
+
 #: (menu text, default shortcut, handler(win))
 ACTIONS = [
     ("Step up", "Alt+Up", lambda w: step(w, 1)),
@@ -705,6 +715,8 @@ ACTIONS = [
     ("Smooth selection", "Ctrl+Shift+M", smooth),
     (None, None, None),
     ("Copy selected cells from comparison", "Ctrl+R", from_comparison),
+    ("Average with comparison", None, lambda w: _average().average(w)),
+    ("Average with comparison...", None, lambda w: _average().ask(w)),
     ("Revert to as-read values", "Ctrl+Shift+R", revert),
     ("Revert to last saved values", "F11", revert_saved),
     (None, None, None),
@@ -730,6 +742,7 @@ def add_menu(win, edit_menu) -> QtWidgets.QMenu:
         acts.append(a)
         win._needs_file.append(a)
     win._needs_file.append(sub.menuAction())
+    sub.aboutToShow.connect(lambda: _average().refresh_actions(win))
     for ws in getattr(win, "workspaces", lambda: [])():
         attach(ws)
     return sub
@@ -737,6 +750,7 @@ def add_menu(win, edit_menu) -> QtWidgets.QMenu:
 
 #: The cell actions the table's right-click menu repeats.
 MENU_ACTIONS = ("Copy selected cells from comparison",
+                "Average with comparison", "Average with comparison...",
                 "Revert to last saved values", "Revert to as-read values")
 
 
@@ -744,6 +758,7 @@ def add_to_menu(win, menu, skip=()):
     """The revert actions in a table's right-click menu (the same actions,
     so they show their shortcuts and follow Options); ``skip``: texts to
     leave out."""
+    _average().refresh_actions(win)         # greyed while it cannot be averaged
     acts = {a.text(): a for a in getattr(win, "_cell_actions", ())}
     have = [acts[t] for t in MENU_ACTIONS if t in acts and t not in skip]
     if have:
@@ -760,6 +775,9 @@ def attach(ws):
     t._cellkeys_ws = ws
     for a in getattr(ws.win, "_cell_actions", ()):
         t.addAction(a)
+    # the averaging actions follow whether the comparison is on this table's axes
+    ws.model.modelReset.connect(lambda: _average().refresh_actions(ws.win))
+    ws.model.dataChanged.connect(lambda *_: _average().refresh_actions(ws.win))
     t._cellkeys = _TableKeys(ws)
     t.installEventFilter(t._cellkeys)
 

@@ -244,7 +244,7 @@ def test_turned_runs_pair_cell_for_cell_and_count_their_differences():
     theirs = _Run(b"4E0910156C", flat=False)
     pairs = G._cell_pairs(mine, theirs)
     assert pairs[3] == ((0, 3), (3, 0))
-    n, first = G.DiffListDialog._summarize(None, mine, theirs)
+    n, first = G.DifferencesWindow._summarize(None, mine, theirs)
     assert n == 3                                   # F/E, 9/0, A/C
     assert first.startswith("[1] ")
 

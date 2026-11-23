@@ -406,6 +406,10 @@ class DiagSession:
         self._arm_stop(is_stop)
         if self.ecu == "EDC15":
             self._connect_kw1281(is_stop)
+        elif self.ecu == "Aisin TRx" and getattr(self.k, "tp", None) is None:
+            # The 09D over K-line: 5-baud init at 0x02, then asked in whichever
+            # header form it answers (no address bytes, or its own address)
+            self._connect_kline_tcu(is_stop)
         elif self.ecu in ("ZF6HP", "Aisin TRx"):
             # Both are KWP2000-over-TP2.0 TCUs with no K-line: same connect
             # (session 0x86, ident 1A 9B, no security, no baud raise). The only
@@ -503,6 +507,48 @@ class DiagSession:
         except (KLineError, KLineTimeout):
             self.identity = ""
 
+    def _connect_kline_tcu(self, is_stop=None):
+        """The Aisin 09D TCU over K-line.
+
+        What differs from the EDC16 (:meth:`_connect_kwp2000`): it is woken by
+        5-baud init at 0x02 (it takes no fast init), it is not asked at 0x10 --
+        it answers a header with no address bytes, or its own 0x1A -- so the
+        form is found by asking (:meth:`Kwp2000.detect_header`), the session is
+        0x86 as on CAN, and there is no baud raise. The byte-stream link is the
+        one that carries its replies on a J2534 device.
+        """
+        from . import aisin09d as _a
+        self.k.set_baud(10400)
+        self.log("Connecting (5-baud init at 0x%02X)..." % _a.K_ADDRESS)
+        self._check_stop(is_stop)
+        self.k.wake_up(_a.K_ADDRESS, even_parity=False)
+        self.baud = 10400
+        d = self._new_kwp(_a.K_REQUEST_ADDRESS)
+        d.P3, d.P4 = 0.025, 0.0
+        d.fast = True
+        self.kwp = d
+        time.sleep(0.05)
+        self._check_stop(is_stop)
+        found = d.detect_header(_a.HEADER_CANDIDATES)
+        if found is None:
+            raise KLineError("The TCU woke but answers no header form (without "
+                             "addresses, to 0x%02X or to 0x10)." % _a.K_REQUEST_ADDRESS)
+        cand, msg = found
+        self.log("The TCU answers %s." % ("a header with no address bytes" if cand is None
+                                          else "requests addressed to 0x%02X" % cand))
+        self._check_stop(is_stop)
+        d.send_receive(0x10, b"\x86")
+        self.log("TCU diagnostic session open (10 86).")
+        self.identity = ""
+        try:
+            rec = d.send_receive(0x1A, b"\x9B").body
+            self.identity = format_identity(rec)
+            self.log("TCU: %s" % self.identity)
+        except LinkStopped:
+            raise
+        except (KLineError, KLineTimeout):
+            pass                                # the 09D may refuse 1A 9B (NRC 0x12)
+
     def probe_groups(self, first=1, last=0xFE, service=0x21):
         """Which measuring-block groups this ECU actually answers.
 
@@ -538,7 +584,18 @@ class DiagSession:
         self.kwp = d
         time.sleep(0.05)
         self._check_stop(is_stop)
-        d.send_receive(0x10, b"\x89")
+        try:
+            d.send_receive(0x10, b"\x89")
+        except KLineTimeout:
+            # No answer at the EDC16's 0x10: some other KWP2000 module, asked
+            # another way. Find the form it answers before giving up.
+            found = d.detect_header(_kwp.header_candidates(0x01))
+            if found is None:
+                raise
+            self.log("The module answers %s." % (
+                "a header with no address bytes" if found[0] is None
+                else "requests addressed to 0x%02X" % found[0]))
+            d.send_receive(0x10, b"\x89")
         self.log("Diagnostic session open (10 89).")
         self._check_stop(is_stop)
         try:

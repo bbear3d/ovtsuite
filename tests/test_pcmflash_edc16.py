@@ -76,7 +76,10 @@ def test_project_import_and_exports():
     blob = e + m + ee
     proj = Project("t")
     s = imp.import_bytes(proj, blob, "full.bin")
-    assert sorted(x.id for x in s.members) == ["eeprom", "flash", "mpc"]
+    # the MPC and the EEPROM are split out into companion sets the flash links
+    assert [x.id for x in s.members if x.role == "flash"] == ["flash"]
+    from ovtsuite.project import companions as co
+    assert sorted(co.links(proj, s.id)) == ["eeprom", "mpc"]
     assert [o.format for o in s.originals] == ["pcmflash"]
     assert ex.export_raw(proj, s.id, "flash") == e
     # the BDM-style internal image: 0x81000 (516 KB)
@@ -86,6 +89,42 @@ def test_project_import_and_exports():
     # unchanged: the original file, byte for byte
     oid = s.originals[0].id
     assert ex.export_original(proj, s.id, oid) == blob
+    # every part is the companion's CURRENT head, not a copy kept in the branch
+    mc = co.links(proj, s.id)["mpc"]
+    new = bytearray(co.head_bytes(proj, mc))
+    new[0x1000] ^= 0xFF
+    proj.commit(mc.id, None, {co.main_member(mc).id: bytes(new)}, label="edit")
+    assert ex.export_raw(proj, s.id, "mpc") == bytes(new)
+    assert all(ex.has_part(proj, s.id, m.id) for m in s.members)
+    assert ex.export_original(proj, s.id, oid)[P.EXT_SIZE + 0x1000] == new[0x1000]
+
+
+def test_export_original_of_a_pcmflash_that_cannot_be_put_together():
+    e, m = _ext(), _mpc()
+    proj = Project("t")
+    s = imp.import_bytes(proj, e + m, "full.bin")
+    from ovtsuite.project import companions as co
+    mc = co.links(proj, s.id)["mpc"]
+    # an external flash of another size: the join refuses, the export says how
+    proj.commit(s.id, None, {"flash": e[:-16]}, label="short")
+    with pytest.raises(ex.ExportRefused, match="export the parts"):
+        ex.export_original(proj, s.id, s.originals[0].id)
+
+
+def test_export_original_pads_a_calibration_only_flash():
+    from ovtsuite.platforms import edc16 as e16
+    e, m = _ext(), _mpc()
+    proj = Project("t")
+    s = imp.import_bytes(proj, e + m, "full.bin")
+    assert s.platform == "edc16"
+    cal = bytearray(b"\xFF" * e16.CAL_SIZE)           # a calibration-only file
+    cal[0x30:0x34] = e16.CAL_MARKER
+    cal[0x40:0x48] = b"\xFA\xDE\xCA\xFE" + e16.DESCRIPTOR
+    assert e16.is_cal_only(bytes(cal))
+    proj.commit(s.id, None, {"flash": bytes(cal)}, label="cal only")
+    out = ex.export_original(proj, s.id, s.originals[0].id)
+    assert len(out) == P.EXT_SIZE + 0x80200
+    assert out[:P.EXT_SIZE] == e16.pad_cal_only(bytes(cal))
 
 
 @pytest.mark.skipif(not os.path.exists(r"C:\Users\bbear3D\Documents\EDC16\Alberta-BPW-BHW"),

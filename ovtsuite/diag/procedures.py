@@ -37,6 +37,19 @@ Log = Callable[[str], None]
 _CH_RE = re.compile(r"^adaptation\.ch(\d+)$")
 
 
+def _live_seconds(v) -> float:
+    """A live step's ``seconds``: a number, or ``until done`` (0: it reads
+    until the user finishes it). Missing: 15."""
+    if v is None:
+        return 15.0
+    if isinstance(v, str) and v.strip().lower() in ("until done", "open", "0"):
+        return 0.0
+    try:
+        return max(0.0, float(v))
+    except (TypeError, ValueError):
+        raise ProcedureError("live step: seconds is a number or 'until done', not %r" % (v,))
+
+
 class Cancelled(Exception):
     """The user stopped the procedure."""
 
@@ -61,9 +74,17 @@ class Prompter:
         the user stopped instead (the engine cancels the run)."""
         return True
 
-    def live(self, title: str, read: Callable[[], List[List[str]]], seconds: float, text: str = "") -> bool:
+    def live(self, title: str, read: Callable[[], List[List[str]]], seconds: float, text: str = "",
+             plot: Optional[Dict[str, Any]] = None) -> bool:
         """Call ``read()`` repeatedly for ``seconds`` (or until the user
-        stops), showing the rows; False when the user cancelled."""
+        stops), showing the rows; False when the user cancelled. ``seconds``
+        0: until the user finishes the step -- no least or longest time. ``plot``
+        (only passed when the step has one): draw two of the rows against
+        each other -- ``x`` / ``y`` (1-based row numbers; a row's fifth
+        element is its number), labels, ``band`` ``[x0, x1, y0, y1]``."""
+        if seconds <= 0:            # until done: nobody here to say so -- one read
+            read()
+            return True
         end = time.time() + seconds
         while time.time() < end:
             read()
@@ -159,6 +180,7 @@ class ProcedureRun:
         self.wsc = wsc
         self.result = RunResult(procedure_id=str(doc.get("id", "")), name=str(doc.get("name", "")))
         self.values: Dict[str, Any] = self.result.values
+        self._raw: Dict[int, bytes] = {}                # group -> last raw read
 
     # ------------------------------------------------------------ running
     def run(self) -> RunResult:
@@ -209,8 +231,20 @@ class ProcedureRun:
                 return str(r.entry.get("name", "")) or str(entry_id)
         return str(entry_id)
 
-    def _group_rows(self, group: int) -> List[List[str]]:
-        reading = self.sess.read_group_full(group)
+    def _group_rows(self, group: int, spec=None) -> List[List[str]]:
+        spec = spec or {}
+        if spec.get("basic"):
+            reading = self.sess.basic_setting_read(group)
+        else:
+            reading = self.sess.read_group_full(group)
+        raw = getattr(reading, "raw", None) if reading is not None else None
+        if raw is not None and spec.get("layout"):
+            # group 0: raw bytes, read through the engine's layout (raw0);
+            # the fifth element is the number a plot or a check uses
+            from . import raw0 as _raw0
+            self._raw[group] = bytes(raw)
+            return [["%03d.%d" % (group, i), f.name, _raw0.fmt(f, v), "%d" % b, v]
+                    for i, (f, b, v) in enumerate(_raw0.decode(raw, spec["layout"]), start=1)]
         if reading is None or not getattr(reading, "available", False) or reading.cells is None:
             return [["%03d" % group, "", "not available", ""]]
         names = self.sess.group_names(group)
@@ -312,21 +346,96 @@ class ProcedureRun:
         groups = self._groups(spec)
         if not groups:
             raise ProcedureError("live step names no group")
-        seconds = float(spec.get("seconds") or 15)
+        seconds = _live_seconds(spec.get("seconds"))
         title = str(spec.get("title") or "Live: group%s %s" % ("" if len(groups) == 1 else "s", ", ".join("%03d" % g for g in groups)))
         last: Dict[int, List[List[str]]] = {}
+        self._raw: Dict[int, bytes] = {}
+        chk = self._live_check(spec.get("check"), spec)
+        best: Dict[str, Any] = {}
 
         def read():
             rows: List[List[str]] = []
             for g in groups:
-                last[g] = self._group_rows(g)
+                last[g] = self._group_rows(g, spec)
                 rows += last[g]
+            if chk is not None and 0 in self._raw:
+                raw = self._raw[0]
+                # the reading taken under the manual's condition (its engine
+                # speed in range) wins; any reading at all until there is one
+                if chk["in_window"](raw) or not best.get("window"):
+                    best.update(raw=raw, window=chk["in_window"](raw))
             return rows
 
-        if not self.p.live(title, read, seconds, str(spec.get("text") or "")):
+        plot = self._live_plot(spec.get("plot"), spec)
+        extra = {"plot": plot} if plot else {}
+        if not self.p.live(title, read, seconds, str(spec.get("text") or ""), **extra):
             raise Cancelled("stopped during the live step")
         for g, rs in last.items():
-            self.values["live.%d" % g] = rs
+            self.values["live.%d" % g] = [r[:4] for r in rs]
+        if chk is not None:
+            self._report_check(chk, best)
+
+    def _ref(self, v):
+        """``@id``: the answer of the choose step ``id``."""
+        if isinstance(v, str) and v.startswith("@"):
+            return self.values.get(v[1:])
+        return v
+
+    def _live_check(self, c, spec):
+        """A live step's ``check``: ``engines`` (raw0.SPECS key, or ``@id``)
+        and ``condition`` (idle / full)."""
+        if not c:
+            return None
+        from . import raw0 as _raw0
+        eng, cond = self._ref(c.get("engines")), str(c.get("condition") or "idle")
+        if eng not in _raw0.SPECS or cond not in _raw0.SPECS[eng]:
+            raise ProcedureError("no group 0 specification for engines %r, %r" % (eng, cond))
+        rpm = _raw0.SPECS[eng][cond].get(1)
+        return {"engines": eng, "condition": cond, "layout": spec.get("layout") or "edc15vm",
+                "in_window": (lambda raw: rpm is None or (len(raw) > 0 and rpm[0] <= raw[0] <= rpm[1]))}
+
+    def _report_check(self, chk, best):
+        from . import raw0 as _raw0
+        raw = best.get("raw")
+        if raw is None:
+            raise ProcedureError("group 0 gave no reading to check")
+        res = _raw0.check(raw, chk["engines"], chk["condition"], chk["layout"])
+        rows = [["000.%d" % i, f.name, "%s  (%d)" % (_raw0.fmt(f, f.value(b)), b),
+                 ("ignore" if ok is None else "OK" if ok else "OUT") + "  " + sp]
+                for i, f, b, ok, sp in res]
+        bad = [f.name for _i, f, _b, ok, _s in res if ok is False]
+        self.values["check"] = rows
+        self.values["check.ok"] = not bad
+        when = ("" if best.get("window") else
+                " The engine speed was never in the specified range, so this is the last reading.")
+        text = ("All values are within the specification (%s, %s)." % (
+            _raw0.ENGINE_GROUPS.get(chk["engines"], chk["engines"]), chk["condition"]) if not bad
+            else "Out of specification: %s." % ", ".join(bad)) + when
+        if self.p.show(text, rows) is False:
+            raise Cancelled("stopped")
+
+    def _live_plot(self, p, spec):
+        """A live step's ``plot``: ``x`` / ``y`` row numbers, ``band``
+        ``{engines, condition}`` (the manual's window of those two fields)."""
+        if not p:
+            return None
+        x, y = int(p.get("x", 1)), int(p.get("y", 2))
+        out = {"x": x, "y": y, "title": str(p.get("title") or ""), "band": None,
+               "xlabel": str(p.get("xlabel") or ""), "ylabel": str(p.get("ylabel") or "")}
+        lay = spec.get("layout")
+        if lay:
+            from . import raw0 as _raw0
+            fs = _raw0.fields(lay)
+            out["xlabel"] = out["xlabel"] or "%s (%s)" % (fs[x - 1].name, fs[x - 1].unit)
+            out["ylabel"] = out["ylabel"] or "%s (%s)" % (fs[y - 1].name, fs[y - 1].unit)
+            b = p.get("band")
+            if b:
+                eng, cond = self._ref(b.get("engines")), str(b.get("condition") or "idle")
+                bx = _raw0.value_band(eng, cond, x, lay) if eng in _raw0.SPECS else None
+                by = _raw0.value_band(eng, cond, y, lay) if eng in _raw0.SPECS else None
+                if bx and by:
+                    out["band"] = [bx[0], bx[1], by[0], by[1]]
+        return out
 
     def _step_check(self, spec):
         items = spec if isinstance(spec, list) else [spec]

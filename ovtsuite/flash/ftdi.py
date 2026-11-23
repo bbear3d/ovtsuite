@@ -38,8 +38,12 @@ ordinary COM / tty ports.  Everything is optional -- when neither library is
 present the lists are simply empty and pyserial keeps working as before.
 """
 import ctypes
+import ctypes.util
+import glob
 import os
 import sys
+import time
+import types
 from typing import List, Optional, Tuple
 
 LATENCY_MS = 2                       # KWHack: FT_SetLatencyTimer(handle, 2)
@@ -53,7 +57,8 @@ PYFTDI_PREFIX = "ftdi://"
 
 def is_ftdi_name(name: str) -> bool:
     n = name or ""
-    return n.upper().startswith(D2XX_PREFIXES) or n.lower().startswith(PYFTDI_PREFIX)
+    return (n.upper().startswith(D2XX_PREFIXES) or n.lower().startswith(PYFTDI_PREFIX)
+            or n.lower().startswith("ch34x://"))
 
 
 # =================================================================== D2XX
@@ -73,6 +78,9 @@ _FT_STATUS = {
 FT_OPEN_BY_SERIAL_NUMBER = 1
 FT_PURGE_RX, FT_PURGE_TX = 1, 2
 FT_BITS_8, FT_STOP_BITS_1, FT_PARITY_NONE, FT_FLOW_NONE = 8, 0, 0, 0
+FT_PARITY_ODD, FT_PARITY_EVEN = 1, 2
+#: pyserial parity letters -> FT_SetDataCharacteristics parity constants.
+_PARITY_BY_LETTER = {"N": FT_PARITY_NONE, "O": FT_PARITY_ODD, "E": FT_PARITY_EVEN}
 FT_FLAGS_OPENED = 1
 
 
@@ -114,11 +122,32 @@ def _lib_names() -> List[str]:
         sysdir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
         return ([os.path.join(sysdir, n) for n in names]
                 + [os.path.join(d, n) for d in _bundled_dirs() for n in names] + names)
+    from . import libusb_locate
     if sys.platform == "darwin":
-        name = "libftd2xx.dylib"
-        return ([name, "/usr/local/lib/" + name, "/opt/homebrew/lib/" + name]
-                + [os.path.join(d, name) for d in _bundled_dirs()])
-    return ["libftd2xx.so", "ftd2xx.so", "/usr/local/lib/libftd2xx.so"]
+        names = ["libftd2xx.dylib"]
+        extra = ["/usr/local/lib", "/opt/local/lib", "/opt/homebrew/lib",
+                 "/Library/Application Support/FTDI", "/Library/Application Support/FTDI/D2XX"]
+    else:
+        names = ["libftd2xx.so", "ftd2xx.so"]
+        extra = ["/usr/local/lib"]
+    dirs = extra + _bundled_dirs()
+    found = libusb_locate.find_native("ftd2xx", names, dirs)
+    ordered = [found] if found else []
+    # FTDI ships versioned files (libftd2xx.1.4.30.dylib, libftd2xx.so.1.4.24): the plain
+    # name is a symlink that a manual install often lacks
+    pattern = "libftd2xx*.dylib" if sys.platform == "darwin" else "libftd2xx.so*"
+    versioned = []
+    for d in dirs:
+        versioned += sorted(glob.glob(os.path.join(d, pattern)), reverse=True)
+    try:
+        sysname = ctypes.util.find_library("ftd2xx")
+    except Exception:
+        sysname = None
+    out = ordered + names + [os.path.join(d, n) for d in dirs for n in names] + versioned
+    if sysname:
+        out.append(sysname)
+    seen = set()
+    return [n for n in out if not (n in seen or seen.add(n))]
 
 
 def d2xx() -> Optional[ctypes.CDLL]:
@@ -231,9 +260,16 @@ class D2xxPort:
                  write_timeout: Optional[float] = None, **_ignored):
         lib = d2xx()
         if lib is None:
-            raise FtdiError("FTDI D2XX library not found (ftd2xx64.dll / libftd2xx); "
-                            "install FTDI's driver (ftdichip.com, D2XX/VCP) or use the "
-                            "cable's COM port.")
+            if sys.platform == "darwin":
+                hint = ("macOS: install FTDI's D2XX library (libftd2xx.dylib from ftdichip.com, "
+                        "into /usr/local/lib or /opt/local/lib), or use the cable's "
+                        "/dev/cu.usbserial port or the libusb route")
+            elif sys.platform.startswith("linux"):
+                hint = ("Linux: install FTDI's libftd2xx.so (ftdichip.com, into /usr/local/lib "
+                        "or /usr/lib/<multiarch>), or use the cable's /dev/ttyUSB port")
+            else:
+                hint = "install FTDI's driver (ftdichip.com, D2XX/VCP) or use the cable's COM port"
+            raise FtdiError("FTDI D2XX library not found (ftd2xx64.dll / libftd2xx); " + hint + ".")
         self._lib = lib
         self._h = ctypes.c_void_p()
         self.name = name
@@ -252,6 +288,7 @@ class D2xxPort:
         self._wtimeout = write_timeout if write_timeout is not None else timeout
         self._break = False
         self._dtr = self._rts = False
+        self._parity = "N"
         try:
             self.baudrate = baudrate
             _check(lib.FT_SetDataCharacteristics(self._h, FT_BITS_8, FT_STOP_BITS_1, FT_PARITY_NONE),
@@ -295,6 +332,26 @@ class D2xxPort:
     def write_timeout(self, seconds: Optional[float]):
         self._wtimeout = seconds
         self.timeout = self._timeout
+
+    @property
+    def parity(self) -> str:
+        return self._parity
+
+    @parity.setter
+    def parity(self, letter: str):
+        """pyserial-shaped: 'N'/'O'/'E'. Audi C5-family VDO clusters switch
+        to even parity after their login (VdoCluster._set_parity) -- this
+        D2XX path hard-coded FT_PARITY_NONE at open and exposed no way to
+        change it, so every C5 read/write over an "FTDI direct" port failed
+        with "this K-line interface cannot switch to even parity" even
+        though the exact same cluster works fine over the plain COM port
+        (pyserial's own .parity already supports this)."""
+        value = _PARITY_BY_LETTER.get(letter.upper())
+        if value is None:
+            raise FtdiError("unsupported parity %r" % letter)
+        _check(self._lib.FT_SetDataCharacteristics(self._h, FT_BITS_8, FT_STOP_BITS_1, value),
+              "FT_SetDataCharacteristics")
+        self._parity = letter.upper()
 
     @property
     def break_condition(self) -> bool:
@@ -378,15 +435,39 @@ class D2xxPort:
 
 
 # ================================================================= pyftdi
+_pyftdi_reason = ""                  # the two reasons below, joined
+_libusb_reason = ""                 # libusb-1.0 cannot be found / loaded
+_pyftdi_missing = ""                # the pyftdi package cannot be imported
+
+
+def pyftdi_unavailable_reason() -> str:
+    """Why the direct (pyftdi/libusb) route is not available, or "" (not
+    checked yet, or available).  Recomputed on every :func:`_pyftdi` call; a
+    missing libusb and a missing pyftdi are kept apart and both are reported."""
+    return _pyftdi_reason
+
+
 def _pyftdi():
+    global _pyftdi_reason, _libusb_reason, _pyftdi_missing
+    _pyftdi_reason = _libusb_reason = _pyftdi_missing = ""      # a fresh look every time
     if sys.platform.startswith("win"):
         return None                             # would need WinUSB instead of the VCP driver
+    try:
+        from . import libusb_locate
+        libusb_locate.install_backend()         # MacPorts / Homebrew / bundled libusb
+        if libusb_locate.find_libusb() is None:
+            _libusb_reason = libusb_locate.not_found_message()
+    except Exception:
+        pass
     try:
         import importlib
         from pyftdi.ftdi import Ftdi
         importlib.import_module("pyftdi.serialext")       # registers the ftdi:// scheme
-    except Exception:
+    except Exception as ex:
+        _pyftdi_missing = "pyftdi is not available (%s)" % ex
+        _pyftdi_reason = "; ".join(r for r in (_libusb_reason, _pyftdi_missing) if r)
         return None
+    _pyftdi_reason = _libusb_reason
     for vid, pid, name in KNOWN_NONSTANDARD:
         try:
             Ftdi.add_custom_product(vid, pid, name.lower().replace(" ", "-"))
@@ -404,7 +485,13 @@ def list_pyftdi_devices() -> List[Tuple[str, str]]:
         for desc, iface in Ftdi.list_devices():
             if iface != 1:
                 continue
-            name = "ftdi://0x%04x:0x%04x:%d:%d/1" % (desc.vid, desc.pid, desc.bus or 0, desc.address or 0)
+            # by serial number when it has one: pyftdi cannot match a bus:address URL on
+            # macOS ("No USB device matches URL"), and the address changes on a replug anyway
+            if desc.sn:
+                name = "ftdi://0x%04x:0x%04x:%s/1" % (desc.vid, desc.pid, desc.sn)
+            else:
+                # pyftdi reads bus and address as HEX, so format them as hex
+                name = "ftdi://0x%04x:0x%04x:%x:%x/1" % (desc.vid, desc.pid, desc.bus or 0, desc.address or 0)
             label = "%s — %s%s (FTDI via libusb)" % (
                 name, desc.description or "FTDI device",
                 (", S/N " + desc.sn) if desc.sn else "")
@@ -414,34 +501,112 @@ def list_pyftdi_devices() -> List[Tuple[str, str]]:
     return out
 
 
+def _rematch_url(url: str) -> Optional[str]:
+    """``ftdi://VID:PID:BUS:ADDR/IF`` that no longer matches -> a URL for the
+    first listed cable with that VID:PID (by serial number when it has one)."""
+    import re
+    m = re.match(r"(?i)^ftdi://(0x[0-9a-f]+):(0x[0-9a-f]+):[0-9a-f]+:[0-9a-f]+(/\d+)?$", url or "")
+    if not m:
+        return None
+    vid, pid = int(m.group(1), 16), int(m.group(2), 16)
+    for name, _label in list_pyftdi_devices():
+        mm = re.match(r"(?i)^ftdi://(0x[0-9a-f]+):(0x[0-9a-f]+):", name)
+        if mm and int(mm.group(1), 16) == vid and int(mm.group(2), 16) == pid:
+            return name
+    return None
+
+
+def _read_polling(self, size=1):
+    """Replacement for pyftdi's ``Serial.read``, which does ``sleep(0.01)``
+    whenever a poll comes back empty. The FT232R holds only 128 received bytes
+    and nothing drains them while the host is not polling USB: at 124800 baud
+    that is ~10 ms and at 244898 baud ~5 ms, so the sleep let the FIFO overrun
+    and bytes of every upload packet were lost ("cut short" corrupt packets at
+    Medium/High on macOS and Linux). Poll again at once instead."""
+    data = bytearray()
+    start = time.monotonic()
+    while True:
+        buf = self.udev.read_data(size - len(data))
+        data.extend(buf)
+        if len(data) >= size:
+            break
+        if self._timeout is not None:
+            if buf:
+                break
+            if time.monotonic() - start > self._timeout:
+                break
+    return bytes(data)
+
+
 def open_pyftdi(url: str, baudrate: int = 10400, timeout: float = 8.0,
                 write_timeout: Optional[float] = None, **_ignored):
     Ftdi = _pyftdi()
     if Ftdi is None:
         raise FtdiError("pyftdi is not available on this platform")
     from pyftdi.serialext import serial_for_url
-    port = serial_for_url(url, baudrate=baudrate, timeout=timeout,
-                          write_timeout=write_timeout if write_timeout is not None else timeout)
+    wt = write_timeout if write_timeout is not None else timeout
     try:
-        port.udev.set_latency_timer(LATENCY_MS)
-        port.udev.set_dynamic_latency(LATENCY_MS, LATENCY_MS, 0)   # keep it fixed
+        port = serial_for_url(url, baudrate=baudrate, timeout=timeout, write_timeout=wt)
     except Exception:
-        pass
+        # A saved bus:address URL goes stale on a replug (and older builds wrote
+        # the numbers in decimal, which pyftdi reads as hex): re-find the cable
+        # by vendor/product instead.
+        alt = _rematch_url(url)
+        if not alt or alt == url:
+            raise
+        port = serial_for_url(alt, baudrate=baudrate, timeout=timeout, write_timeout=wt)
+    port.read = types.MethodType(_read_polling, port)
+    _fix_latency(port)
+    # pyftdi's serial layer re-arms its "dynamic latency" (12 ms, doubling up
+    # to 200 ms whenever the line is quiet) every time the port is configured --
+    # a baud change included -- which undoes the fixed 2 ms above: replies then
+    # reach the host up to 12 ms late, and after a quiet spell a byte can sit
+    # in the chip for 100-250 ms.  Re-apply the fixed setting after each one.
+    keep = port._reconfigure_port
+
+    def _reconfigure_port(self):
+        keep()
+        _fix_latency(self)
+    port._reconfigure_port = types.MethodType(_reconfigure_port, port)
     return port
 
 
+def _fix_latency(port):
+    try:
+        port.udev.set_dynamic_latency(LATENCY_MS, LATENCY_MS, 0)   # no adaptation
+        port.udev.set_latency_timer(LATENCY_MS)
+    except Exception:
+        pass
+
+
 # ================================================================== facade
+def _list_ch34x() -> List[Tuple[str, str]]:
+    """CH340/CH341 cables driven directly over libusb (macOS/Linux): see ch34x.py."""
+    try:
+        from . import ch34x
+        return ch34x.list_ch34x_devices()
+    except Exception:
+        return []
+
+
 def list_ftdi_ports() -> List[Tuple[str, str]]:
     """Every directly-drivable FTDI cable, D2XX entries first."""
     out = list_d2xx_devices()
     if not out:
         out = list_pyftdi_devices()
+    out = out + _list_ch34x()
     return out
 
 
 def open_port(name: str, baudrate: int = 10400, timeout: float = 8.0,
               write_timeout: Optional[float] = None):
     """Open an ``FTDI:`` / ``FTDIIDX:`` / ``ftdi://`` port; pyserial-shaped."""
+    if name.lower().startswith("ch34x://"):
+        from . import ch34x
+        try:
+            return ch34x.open_ch34x(name, baudrate, timeout, write_timeout)
+        except ch34x.Ch34xError as ex:
+            raise FtdiError(str(ex))
     if name.lower().startswith(PYFTDI_PREFIX):
         return open_pyftdi(name, baudrate, timeout, write_timeout)
     return D2xxPort(name, baudrate, timeout, write_timeout)

@@ -29,8 +29,10 @@ the comparison's value is no longer shaded. A cell the edit would change is
 "held, not applied yet", shown as the fault-code and measuring-block windows
 show theirs (:data:`PENDING_BG`, bold, dark text); in the primary table the
 outline of a difference lies over it, as it does there. When the comparison has no
-matching set (another gearbox, other lines) or a schedule another shape,
-the status beside the switch says so and those parts stay off.
+matching set (another gearbox, or no line in common) the status beside the switch
+says so and those parts stay off. Lines are matched by name (a lock-up map of 30
+columns has three per gear, one of 40 has four), and a schedule with more or fewer
+pedal points than the comparison's has its pedal axis different (see below).
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ from . import gearbox_edit as GE
 from .gui_cellmarks import PENDING_BG, dark_fg, mark_differs
 
 SHOW_TEXT = "Show comparison"
+ALIGN_TEXT = "Align to this file's pedal axis"
 
 #: item data on a primary cell the edit changes
 PENDING_ROLE = int(QtCore.Qt.UserRole) + 41
@@ -84,6 +87,7 @@ class CompareView(QtCore.QObject):
         self.pairing: Optional[GE.Pairing] = None
         self.chk = self.lbl = self.box = self.cmp_table = self.link = None
         self._vals: Dict[int, List[float]] = {}
+        self._vals_aligned: Dict[tuple, Optional[List[float]]] = {}
         self._rev = None
         self._sel: List[int] = []
         if self.session is None:
@@ -108,13 +112,28 @@ class CompareView(QtCore.QObject):
         self.chk.setEnabled(self.pairing.ok)
         self.chk.toggled.connect(lambda *_: dlg._redraw())
         row.addWidget(self.chk)
+        # a pair whose pedal axis differs can be read at this file's pedal
+        # points (gui_cmpsize "Aligned to the primary's axes")
+        self.align_chk = QtWidgets.QCheckBox(ALIGN_TEXT)
+        self.align_chk.setToolTip(
+            "Read the comparison's values at this file's pedal points where the "
+            "two pedal axes differ, so every cell is compared (and can be "
+            "copied) at the same pedal. Off: those schedules are drawn on their "
+            "own axis and not compared. The chart always draws the comparison's "
+            "own points.")
+        self.align_chk.setVisible(bool(self.pairing.axis_differs))
+        self.align_chk.setEnabled(self.pairing.ok)
+        from . import gui_cmpsize as _gcs
+        self.align_chk.setChecked(_gcs.default() == "aligned")
+        self.align_chk.toggled.connect(self._align_toggled)
+        row.addWidget(self.align_chk)
         self.lbl = QtWidgets.QLabel()
         self.lbl.setStyleSheet("color: palette(mid);")
         sp = self.lbl.sizePolicy()          # its text never widens the window
         sp.setHorizontalPolicy(QtWidgets.QSizePolicy.Ignored)
         self.lbl.setSizePolicy(sp)
-        self.lbl.setText("%s: %s" % (name, self.pairing.summary()))
-        self.lbl.setToolTip(self.lbl.text())
+        self._name = name
+        self._set_aligned(self.align_chk.isChecked())
         row.addWidget(self.lbl, 1)
         layout.insertLayout(max(0, layout.indexOf(split)), row)
         if not self.pairing.ok:
@@ -156,6 +175,51 @@ class CompareView(QtCore.QObject):
         return bool(self.pairing is not None and self.pairing.ok
                     and self.chk is not None and self.chk.isChecked())
 
+    def _set_aligned(self, on: bool) -> None:
+        """Compare the schedules whose pedal axis differs at this file's pedal
+        points (``on``), or leave them uncompared; the summary says which."""
+        pr = self.pairing
+        pr.aligned = set(pr.axis_differs) if on else set()
+        self._vals_aligned = {}
+        self.lbl.setText("%s: %s" % (self._name, pr.summary()))
+        self.lbl.setToolTip(self.lbl.text())
+
+    def _align_toggled(self, on: bool) -> None:
+        self._set_aligned(on)
+        self.dlg._redraw()
+
+    def cvalues(self, i: int):
+        """``(pedal, values)`` of the comparison's schedule paired with primary
+        schedule ``i``, in the primary schedule's shape (rows x lines): the
+        comparison's own pedal points, or -- aligned, or when they match -- read at
+        the primary's. A cell the comparison has no value for (a line it lacks, a
+        pedal row beyond its own) is None. Lines are matched by name."""
+        pr = self.pairing
+        j = pr.pairs[i]
+        t, s = self.cset.schedules[j], self.dlg.sset.schedules[i]
+        vals = self.values(j)
+        cols = [pr.cmp_col(c) for c in range(s.cols)]
+        identity = cols == list(range(t.cols))
+        same_axis = i not in pr.axis_differs
+        if identity and same_axis:
+            return tuple(t.pedal), vals
+        key = (j, self._rev, i in pr.aligned)
+        got = self._vals_aligned.get(key)
+        if got is None:
+            if i in pr.aligned:
+                got = GE.align_values(t.pedal, vals, t.cols, s.pedal, t.is_off, cols)
+                if got is None:
+                    pr.aligned.discard(i)       # its axis cannot be read along
+            if got is None:
+                # its own points; the rows past its last are not there
+                own = GE.align_values(t.pedal, vals, t.cols, t.pedal, t.is_off, cols)                     or [None] * (t.rows * s.cols)
+                n = s.rows * s.cols
+                got = (own + [None] * n)[:n]
+            self._vals_aligned[key] = got
+        if i in pr.aligned or same_axis:
+            return tuple(s.pedal), got
+        return tuple((list(t.pedal) + [None] * s.rows)[:s.rows]), got
+
     def values(self, j: int) -> List[float]:
         """Comparison schedule ``j``'s stored values (read again when the
         comparison changed -- it may be another tab's live file)."""
@@ -181,9 +245,13 @@ class CompareView(QtCore.QObject):
                 continue
             t = self.cset.schedules[j]
             f = dlg._factor(dlg.sset.schedules[i], line)
+            col = pr.cmp_col(line)
+            if col is None or col >= t.cols:
+                d["tip"] = d.get("tip", d["key"]) + "\nThis line is not in the comparison"
+                continue
             vals, K = self.values(j), t.cols
-            d["cmp"] = [(p, vals[r * K + line] * f) for r, p in enumerate(t.pedal)
-                        if not t.is_off(vals[r * K + line])]
+            d["cmp"] = [(p, vals[r * K + col] * f) for r, p in enumerate(t.pedal)
+                        if not t.is_off(vals[r * K + col])]
             if i in pr.axis_differs:
                 d["tip"] = d.get("tip", d["key"]) + "\nThe comparison's pedal axis differs"
         return "   (faded dashes: comparison)"
@@ -219,20 +287,31 @@ class CompareView(QtCore.QObject):
                 for r in range(s.rows):
                     it = QtWidgets.QTableWidgetItem("—")
                     it.setTextAlignment(QtCore.Qt.AlignCenter)
-                    it.setToolTip("%s is not in the comparison file (or has another shape)"
-                                  % s.key)
+                    it.setToolTip("%s is not in the comparison file" % s.key)
                     ct.setItem(row, r, it)
                 continue
             t = self.cset.schedules[j]
             f = dlg._factor(s, line)
-            cv_all, grid = self.values(j), dlg.result.grid[i]
-            axis = i in pr.axis_differs
+            cped, cv_all = self.cvalues(i)
+            grid = dlg.result.grid[i]
+            axis = not pr.comparable(i)
             for r in range(s.rows):
-                cv = cv_all[r * t.cols + line]
+                cv = cv_all[r * s.cols + line]
                 pv = grid[r * s.cols + line]
+                if cv is None:
+                    it = QtWidgets.QTableWidgetItem("—")
+                    it.setTextAlignment(QtCore.Qt.AlignCenter)
+                    it.setToolTip("%s has no value here in the comparison (%s)" % (
+                        s.key, "that line is not in it" if pr.cmp_col(line) is None
+                        else "it has fewer pedal points"))
+                    ct.setItem(row, r, it)
+                    continue
                 it = QtWidgets.QTableWidgetItem("%.0f" % (cv * f))
                 it.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                tip = "Comparison %s at %.1f %% pedal" % (t.key, t.pedal[r])
+                tip = "Comparison %s at %.1f %% pedal" % (t.key, cped[r])
+                if i in pr.aligned:
+                    tip += (" (read at this file's pedal points from its own %.1f.."
+                            "%.1f %%)" % (t.pedal[0], t.pedal[-1]))
                 if axis:
                     tip += "\nThe pedal axes differ: not compared cell for cell"
                 elif cv != pv:
@@ -255,7 +334,7 @@ class CompareView(QtCore.QObject):
 
     # ------------------------------------------------------- copying
     def _cmp_values(self, idx: Iterable[int]) -> Dict[int, List[float]]:
-        return {self.pairing.pairs[i]: self.values(self.pairing.pairs[i])
+        return {self.pairing.pairs[i]: self.cvalues(i)[1]
                 for i in idx if i in self.pairing.pairs}
 
     def copy_cells_op(self, cells: List[Tuple[int, int, int]]):
@@ -281,6 +360,38 @@ class CompareView(QtCore.QObject):
                           "copy whole %s from comparison" % sset.line(line).label,
                           current=cur)
 
+    def average_cells_op(self, cells: List[Tuple[int, int, int]], weight: float):
+        """A step moving the ``(schedule, row, line)`` cells ``weight`` percent of the way
+        to the comparison's values (the preview's, as the copy does); None when nothing
+        would change."""
+        if self.pairing is None or not self.pairing.ok or self.dlg.result is None:
+            return None
+        n = len({k for k in cells if self.pairing.comparable(k[0])})
+        return GE.average_op(
+            self.pairing, cells, self._cmp_values({k[0] for k in cells}),
+            "average %d cell%s with the comparison (%g %%)" % (n, "" if n == 1 else "s", weight),
+            weight, self.dlg.result.grid)
+
+    def average_line_op(self, schedules: List[int], line: int, weight: float):
+        """The same for the whole of ``line`` (every pedal row) of each schedule."""
+        sset = self.dlg.sset
+        cells = [(i, r, line) for i in schedules for r in range(sset.schedules[i].rows)]
+        op = self.average_cells_op(cells, weight)
+        if op is not None:
+            op.label = "average whole %s with the comparison (%g %%)" % (
+                sset.line(line).label, weight)
+        return op
+
+    def _ask_weight(self) -> Optional[float]:
+        from . import gui_average as ga
+        w, ok = QtWidgets.QInputDialog.getDouble(
+            self.dlg, ga.OP_TEXT, "Percent of the comparison in the result:\n" + ga.WEIGHT_TIP,
+            ga.last_weight(), 0.0, 100.0, 1)
+        if not ok:
+            return None
+        QtCore.QSettings(*ga.branding.QSETTINGS).setValue(ga.KEY, w)
+        return w
+
     def add_step(self, op) -> None:
         """``op`` into the window's steps, as Add step puts one there."""
         if op is None:
@@ -303,7 +414,7 @@ class CompareView(QtCore.QObject):
         if not any(i in pr.pairs for i in schedules):
             return "not in the comparison file"
         if not any(pr.comparable(i) for i in schedules):
-            return "the pedal axes differ"
+            return "the pedal axes differ -- tick Align to this file's pedal axis"
         return "no difference"
 
     def table_menu(self, table, pos=None) -> QtWidgets.QMenu:
@@ -326,7 +437,23 @@ class CompareView(QtCore.QObject):
         if op2 is None and rows:
             b.setText(b.text() + " (%s)" % self._why_not(rows))
         b.triggered.connect(lambda *_, op=op2: self.add_step(op))
+        # average with the comparison: 50 %, or the weight asked for
+        menu.addSeparator()
+        for text, ask in (("Average selected cells with comparison", False),
+                          ("Average selected cells with comparison...", True)):
+            act = menu.addAction(text)
+            ok = bool(keys) and any(self.pairing.comparable(i) for i in rows)
+            act.setEnabled(ok)
+            if not ok:
+                act.setToolTip(self._why_not(rows) if keys else "Select cells first")
+            act.triggered.connect(
+                lambda *_, keys=keys, ask=ask: self._average_cells(keys, ask))
         return menu
+
+    def _average_cells(self, keys, ask: bool) -> None:
+        w = self._ask_weight() if ask else 50.0
+        if w is not None:
+            self.add_step(self.average_cells_op(keys, w))
 
     def chart_menu(self, key: str) -> QtWidgets.QMenu:
         """The right-click menu of a schedule's line on the chart."""
@@ -340,6 +467,14 @@ class CompareView(QtCore.QObject):
         if op is None and i is not None:
             a.setText(a.text() + " — " + self._why_not([i]))
         a.triggered.connect(lambda *_, op=op: self.add_step(op))
+        avg = menu.addAction("Average whole line with comparison (%s, %s)"
+                             % (key, self.dlg.sset.line(line).label))
+        avg.setEnabled(i is not None and self.pairing.comparable(i))
+        if i is not None and not avg.isEnabled():
+            avg.setText(avg.text() + " — " + self._why_not([i]))
+        avg.triggered.connect(
+            lambda *_, i=i, line=line: i is not None and self.add_step(
+                self.average_line_op([i], line, 50.0)))
         return menu
 
     @staticmethod

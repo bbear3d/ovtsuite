@@ -91,15 +91,14 @@ installed; when it cannot, it asks before writing. Details:
 | **Force full write** | Rewrite everything the write covers, without first asking the unit which parts already match. |
 | **Run on the head unit** | Only with a paired head unit and an EDC16 or EDC15: the head unit runs the whole job by itself, so a dropped connection does not stop it. |
 | **Disable Fast Init** | K-line, EDC16 only: use the 5-baud slow init instead of fast init. |
-| **Blocks:** | EDC16 only: which regions **Write blocks...** writes. See [EDC16](flashing/edc16.md). |
 | Status line, timer and bar | What the flasher is doing now, the elapsed time, and the progress. |
 | Grey note | A short summary of what Read and Write do for the selected unit. |
 | **Cancel** | Asks a running job to stop. Do not use it during a write unless something is clearly wrong — see [Writing](flashing/writing.md#cancel-during-a-write). |
 | **Close** | Closes the dialog (not while a job runs). Your selections are remembered. |
-| **Advanced** | Rarely needed diagnostics and recovery: EDC15 boot mode and internal-ROM read; the EDC16 probes (boot read-level, checksum-range, security level, RAM / coding, immo / coding, Find EEPROM) and GPT crank/cam test; for the Cluster and ABS, the CAN-traffic log and bus probe; and the ZF6HP **Transport:** override. See [Advanced and diagnostic tools](flashing/advanced.md). |
+| **Advanced** | Rarely needed diagnostics and recovery: EDC15 boot mode and internal-ROM read; for the Cluster and ABS, the CAN-traffic log and bus probe; and the ZF6HP **Transport:** override. See [Advanced and diagnostic tools](flashing/advanced.md). |
 
 Buttons and options that appear only for some units (the EDC15 EEPROM and
-backup buttons, EDC16 **Write blocks...** and **Full read...**, the ZF6HP's
+backup buttons, EDC16 **Write full...** and **Read full...**, the ZF6HP's
 **Calibration only** for a 6HP28, the Climatronic's **Write changed sectors only**) are
 described on the page for that unit.
 
@@ -107,14 +106,14 @@ described on the page for that unit.
 
 | ECU entry | Transport | Read | Write | Page |
 |---|---|---|---|---|
-| **EDC16** | K-line or CAN | Calibration (top 512 KB); full read (whole flash + MPC) | Calibration blocks; boot / program / MPC blocks (armed, high risk) | [EDC16](flashing/edc16.md) |
+| **EDC16** | K-line or CAN | Calibration (top 512 KB); full read (the ticked blocks: program, calibration, MPC) | Calibration blocks; boot / program / MPC blocks (armed, high risk) | [EDC16](flashing/edc16.md) |
 | **EDC15** | K-line | Whole flash (512 KB or 1 MB, detected); EEPROM; flash + EEPROM | Changed sectors; EEPROM; flash + EEPROM; boot mode | [EDC15](flashing/edc15.md) |
 | **Climatronic** | CAN | No (it cannot be read over OBD) | The Climatronic set in the active tab, or a `.sgo` / `.hvac` file | [Other units](flashing/other-units.md#climatronic) |
 | **Cluster** | CAN | Experimental flash dump | No | [Other units](flashing/other-units.md#cluster-can) |
 | **Cluster (VDO K-line)** | K-line | 2 KB EEPROM | The whole 2 KB EEPROM, read back and verified (no automatic backup) | [Other units](flashing/other-units.md#cluster-vdo-k-line) |
 | **ABS** | CAN | Flash dump | No | [Other units](flashing/other-units.md#abs) |
 | **ZF6HP** | CAN (TP 2.0 or UDS, picked for you) | Calibration window (6HP19 / 6HP26); calibration (6HP28) | Calibration areas (6HP19 / 6HP26); calibration, or program + calibration (6HP28) | [Transmissions](flashing/transmissions.md#zf6hp) |
-| **Aisin TRx** | CAN | Whole 1 MB flash | No (disabled in this version) | [Transmissions](flashing/transmissions.md#aisin-trx) |
+| **Aisin TRx** | CAN, or K-line | Whole flash (1 MB over CAN, 512 KB over K-line) | No (disabled in this version) | [Transmissions](flashing/transmissions.md#aisin-trx) |
 
 Reading and writing never need a module: the flasher supports every unit on
 its own. A [module](modules.md) is needed to correct the checksum of an edited

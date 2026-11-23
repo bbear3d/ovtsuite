@@ -59,6 +59,42 @@ For the serial tap:
 | **Follow speed changes** | when the ECU accepts a link-speed change, the tap switches to the new rate itself, and back to the start rate after 8 seconds of silence |
 | **Show raw bytes** | also list the unframed bursts of bytes as they arrived ("k raw" rows) |
 
+## Capture several buses at once
+
+To watch a K-line **and** a CAN bus together (a KKL cable and a J2534 / SM2 /
+OpenPort device, say), press **Add source**. A second row appears under the
+first, with its own kind (**J2534 CAN**, **J2534 K-line** or **Serial K-line
+tap**), device or port, rate and options; add more the same way (up to six,
+named A, B, C...) and **Remove** the ones you do not want. **Start** opens
+every source and **Stop** closes them all.
+
+- Each source needs its own device or port. Two sources set to the same one
+  are refused with a message naming them, because a device cannot be opened
+  twice.
+- If one source cannot start or fails while running, you are told which one
+  and the others keep capturing.
+- All sources are stamped on one shared clock, and the records are merged by
+  time (held for a tenth of a second so a slower source's burst slots into
+  place), so the K-line request and the CAN frame it caused line up.
+- Each source is decoded on its own: the same CAN ids on two buses never mix
+  their TP 2.0 state, and **dt ms** is the time since that source's previous
+  row.
+- The upper table gains a **Source** column, tinted per source (hover it for
+  the source's description), and a **Show sources:** box per source in the
+  filter row hides or shows one without losing its records. Hiding a source
+  also hides its decoded TP 2.0 / KWP messages in the lower table.
+- A device that gives no usable hardware timestamp (the OpenPort's K-line
+  packets carry none) is stamped with the computer's clock when its data is
+  read, so its rows still fall in time order.
+- **Send** gets a source box when there are several J2534 sources: pick which
+  one transmits; the data template follows that source's bus (CAN or
+  K-line), and a source that has stopped is said to have stopped. Serial taps
+  never transmit. Changing a rate box applies live
+  to its own source.
+
+With a single source the window looks and behaves as before: no Source
+column, no source box.
+
 ## The two tables
 
 The upper table has one row per frame:
@@ -67,6 +103,7 @@ The upper table has one row per frame:
 |---|---|
 | **Time** | seconds since the first frame |
 | **dt ms** | milliseconds since the previous frame |
+| **Source** | only with several sources: A, B, ... (see above) |
 | **Bus** | `can`, `kline`, `k-line` (wake-up and framing notes) or `k raw`; `tx` is added to frames this device sent |
 | **ID** | the CAN identifier (three hex digits, eight for 29-bit ids) |
 | **Len**, **Data** | the payload length and bytes |
@@ -116,8 +153,16 @@ saved a log to; **...** picks another. Each line is one frame:
 ```
 
 Lines starting with `#` are comments; the file starts with one naming the
-device, bus and rate. The layout follows candump logs, so plain candump logs
+device, bus and rate (with several sources, one per source). A capture of
+several sources tags each line with its source, for example
+`(1760000000.002000) can 200#01C00010000301 @A`; lines without a tag, from
+single-source captures and older files, load as before. The layout follows candump logs, so plain candump logs
 open here too, as do the byte logs of KWHack's K-line sniffer.
+
+The file is written as the records arrive. Should a record turn up later than
+the merge window and out of time order, the file is rewritten sorted when you
+press **Stop**; **Time** counts from the earliest record seen, so it is never
+negative.
 
 **Open capture...** loads a `.log` or `.txt` capture and decodes it exactly as
 if it were live, filters included. The status line gives the number of
@@ -126,7 +171,8 @@ records, rows shown and TP 2.0 messages decoded.
 ## Sending a frame
 
 The **Send** row transmits one frame through the device while the sniffer is
-running:
+running (with several sources, through the one chosen in the box beside
+**Send:**):
 
 - On CAN: the identifier (hex) in the first box and the data bytes (hex) in the
   second.
@@ -149,6 +195,7 @@ running:
 | No frames at all on CAN | Check the bit rate, that the device is on the same CAN pair, and that the bus is powered (the status line shows the battery voltage). |
 | CAN frames appear but nothing decodes | The tool may not use TP 2.0 (for example UDS on ISO-TP); the frames are still recorded. |
 | K-line through J2534 shows nothing after the other tool connects | It has raised the link speed: change **Baud:** to match. |
+| "...can only be opened once" on Start | Two sources use the same device or port: give each its own. |
 | The serial tap shows garbage | Wrong start **Baud:**; tick **Show raw bytes** to see what arrives. |
 
 See also: [ECU simulator](simulator.md) — to make a tool walk its whole

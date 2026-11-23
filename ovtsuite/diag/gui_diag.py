@@ -32,6 +32,7 @@ from typing import Callable, Dict, List, Optional
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import branding
+from .. import realtime as _realtime
 from ..gui_cellmarks import OFF_FG, PENDING_BG, CellDelegate, dark_fg, mark_pending
 from . import defs as D
 from . import garage as G
@@ -110,6 +111,10 @@ class _Worker(QtCore.QThread):
         self._stop = True
 
     def run(self):
+        with _realtime.realtime_session(keep_awake=False):
+            self._run_job()
+
+    def _run_job(self):
         try:
             self.done.emit(self._job(_Ctx(self)))
         except Exception as ex:
@@ -164,6 +169,10 @@ class LiveSession(QtCore.QThread):
         self._q.put(_STOP)
 
     def run(self):
+        with _realtime.realtime_session():
+            self._run_session()
+
+    def _run_session(self):
         reason = ""
         try:
             if self.bus is not None:
@@ -457,6 +466,10 @@ class DiagWindow(QtWidgets.QDialog):
         self._trace_file = None
         self._basic_running = False
         self._pending_adapt = None
+        # the Adaptation and Basic settings pages keep their measured cells updating while the module has a session
+        self._poll_on = {"adapt_poll": True, "basic_view": True}      # cleared by a refused read, set again by the user's action
+        self._poll_inflight: set = set()                              # ops with a read on the session's queue
+        self._adapt_test_pending = False                              # a test value is applied, not saved: do not re-read over it
         self._transport_idx = 0                        # the transport in use, to put back when a change is refused
         self._busy_what = ""                           # the running one-shot job's label
         self._closing = False                          # closeEvent under way: reject() asks nothing more
@@ -737,6 +750,7 @@ class DiagWindow(QtWidgets.QDialog):
         self.rail = ModuleRail()
         self.scan_btn = self.rail.scan_btn
         self.rail.selected.connect(self._rail_selected)
+        self.rail.knownToggled.connect(self._known_toggled)
         self.rail.connectRequested.connect(self._rail_connect)
         self.rail.connectByAddressRequested.connect(self.connect_by_address)
         self.rail.scanRequested.connect(self.scan_all)
@@ -1025,6 +1039,7 @@ class DiagWindow(QtWidgets.QDialog):
         row.addWidget(QtWidgets.QLabel("Channel:"))
         self.adapt_ch = QtWidgets.QSpinBox()
         self.adapt_ch.setRange(0, 255)
+        self.adapt_ch.valueChanged.connect(self._adapt_channel_changed)
         row.addWidget(self.adapt_ch)
         self.adapt_read_btn = QtWidgets.QPushButton("Read")
         self.adapt_read_btn.clicked.connect(self.adapt_read)
@@ -1141,6 +1156,7 @@ class DiagWindow(QtWidgets.QDialog):
         row.addWidget(QtWidgets.QLabel("Group:"))
         self.basic_group = QtWidgets.QSpinBox()
         self.basic_group.setRange(0, 255)
+        self.basic_group.valueChanged.connect(self._basic_group_changed)
         row.addWidget(self.basic_group)
         self.basic_btn = QtWidgets.QPushButton(_icon("sliders-horizontal"), "Start basic setting")
         self.basic_btn.setToolTip("Reads the group in basic-setting mode until stopped; the module "
@@ -1317,7 +1333,12 @@ class DiagWindow(QtWidgets.QDialog):
         self._last_iface = s.value("interface", "")
         self._last_vehicle = s.value("vehicle", "")
         self.record_chk.setChecked(str(s.value("record", "false")).lower() == "true")
+        # "All known addresses" is open the first time; after that, as it was left
+        self.rail.known_head.setChecked(str(s.value("rail_known_open", "true")).lower() == "true")
         self.refresh_interfaces()
+
+    def _known_toggled(self, on: bool):
+        self._settings().setValue("rail_known_open", bool(on))
 
     def _save(self):
         s = self._settings()
@@ -1938,6 +1959,7 @@ class DiagWindow(QtWidgets.QDialog):
             rr = _row(t, "%03d" % as_int(e.get("channel"), 0), e.get("name", ""), e.get("unit", ""),
                       "%s (%s)" % (r.pack_id, r.confidence))
             t.item(rr, 0).setData(QtCore.Qt.ItemDataRole.UserRole, eid)
+        self._default_pick(t, self.adapt_ch)
         # coding
         self.coding_cur.setText(m.coding_text if m and m.coding_text else "-")
         kwp = bool(m and m.protocol == "kwp2000")
@@ -2004,7 +2026,20 @@ class DiagWindow(QtWidgets.QDialog):
             e = r.entry
             _row(t, "%03d" % as_int(e.get("group"), 0), e.get("name", ""), _pre_text(e.get("precondition")),
                  "%s (%s)" % (r.pack_id, r.confidence))
+        self._default_pick(t, self.basic_group)
         self._fill_procedures(ident)
+
+    @staticmethod
+    def _default_pick(table: QtWidgets.QTableWidget, spin: QtWidgets.QSpinBox):
+        """The definitions list of a page picks its first row when the number
+        in the page's spin box is not one of the listed ones, so the page has
+        something to show (and read) as soon as the module is selected."""
+        if table.rowCount() == 0:
+            return
+        for r in range(table.rowCount()):
+            if int(table.item(r, 0).text()) == spin.value():
+                return
+        table.selectRow(0)
 
     def _fill_procedures(self, ident: Optional[D.Identity] = None):
         """The Procedures page's gallery: every procedure the packs hold, with
@@ -2053,6 +2088,18 @@ class DiagWindow(QtWidgets.QDialog):
         if items:
             self.adapt_ch.setValue(int(self.adapt_defs.item(items[0].row(), 0).text()))
             self.adapt_name.setText(self.adapt_defs.item(items[0].row(), 1).text())
+
+    def _adapt_channel_changed(self, _v: int):
+        self._poll_on["adapt_poll"] = True
+        self._adapt_test_pending = False
+        self.adapt_current.setStyleSheet(_pending_style(False))
+        self._poll_kick()
+
+    def _basic_group_changed(self, _v: int):
+        self._poll_on["basic_view"] = True
+        if not self._basic_running:
+            self.basic_state.setText("")
+        self._poll_kick()
 
     def _basic_def_picked(self):
         items = self.basic_defs.selectedItems()
@@ -2408,6 +2455,9 @@ class DiagWindow(QtWidgets.QDialog):
             self._log("%s: %d queued operation(s) dropped, the session did not open" % (live.addr, len(dropped)))
         live.logged_in = False
         self._palette_readings = {k: v for k, v in self._palette_readings.items() if k[0] != live.addr}
+        self._poll_inflight.clear()
+        self._poll_on = {k: True for k in self._poll_on}
+        self._adapt_test_pending = False
         if live.addr == self._current_addr():
             self._basic_running = False
             self.basic_btn.setText("Start basic setting")
@@ -2451,6 +2501,7 @@ class DiagWindow(QtWidgets.QDialog):
         return True
 
     def _live_result(self, live: LiveSession, op: str, payload):
+        self._poll_inflight.discard(op)
         if op == "multi":
             self._on_multi(live, payload)
             return
@@ -2470,6 +2521,9 @@ class DiagWindow(QtWidgets.QDialog):
     def _live_failed(self, live: LiveSession, op: str, msg: str):
         self.status.setText("%s %s: %s" % (live.addr, op.replace("_", " "), msg))
         self._log("%s %s failed: %s" % (live.addr, op, msg))
+        self._poll_inflight.discard(op)
+        if op in self._poll_on:
+            self._poll_on[op] = False               # a refused read is not repeated; the user's own Read / Start tries again
         if op == "multi":
             self._multi_failed(live, msg)
             return
@@ -2561,18 +2615,25 @@ class DiagWindow(QtWidgets.QDialog):
     # group, the next posted when the result arrives.
     def _catalogue_namer(self, m: Optional[ModuleInfo]):
         """The factory catalogue's namer for the module's part number, or None."""
-        if m is None or not m.platform:
+        if m is None or not (m.platform or m.part):
             return None
-        key = (m.platform, m.identity_text)
+        key = (m.platform, m.identity_text, m.part, m.protocol)
         if key not in self._namers:
             namer = None
-            try:
-                from ..datalog import msbcatalogue as _cat
-                namer = _cat.namer_for(m.platform.upper(), m.identity_text)
-                if namer is not None and not namer.available:
+            if m.platform:
+                try:
+                    from ..datalog import msbcatalogue as _cat
+                    namer = _cat.namer_for(m.platform.upper(), m.identity_text)
+                    if namer is not None and not namer.available:
+                        namer = None
+                except Exception:
                     namer = None
-            except Exception:
-                namer = None
+            if namer is None:
+                try:                       # a ZF 6HP: the fixed GS19 layout
+                    from ..datalog import msblock6hp as _6hp
+                    namer = _6hp.namer_for_part(m.part, m.protocol, m.identity_text)
+                except Exception:
+                    namer = None
             self._namers[key] = namer
         return self._namers[key]
 
@@ -2619,6 +2680,8 @@ class DiagWindow(QtWidgets.QDialog):
             entries.append(GroupEntry(g, titles.get(g) or "Group %03d" % g, cells))
         if names and any(any(c) for c in names.values()):
             note = "Named from the definition packs"
+        elif populated and namer is not None and type(namer).__name__ == "Blocks6hp":
+            note = "Named from the ZF 6HP measuring-block table (read from a GS19)"
         elif populated:
             note = "Named from the factory catalogue of %s" % ((m.part or m.identity_text) if m else "this module")
         else:
@@ -2713,6 +2776,60 @@ class DiagWindow(QtWidgets.QDialog):
             self._live_stop()
         elif not want:
             self.live_view.set_running(False)
+        self._poll_kick()
+
+    # The Adaptation and Basic settings pages show the module's measured cells
+    # and keep them updating while their tab is on screen and the module has a
+    # session: one read on the queue at a time, the next a moment after the
+    # result. (Live data has its own rotation above.)
+    POLL_GAP_MS = 250
+
+    def _poll_page_wanted(self, page) -> bool:
+        return bool(not self._closing and self.isVisible() and not self.isMinimized()
+                    and self.stack.currentIndex() == 0 and self.module_stack.currentIndex() == 1
+                    and self.tabs.currentWidget() is page and self._same_module_live())
+
+    def _poll_kick(self):
+        """Post the page's next read when it is wanted and none is on the way."""
+        if not hasattr(self, "tabs") or not hasattr(self, "adapt_ch"):
+            return
+        if ("adapt_poll" not in self._poll_inflight and self._poll_on["adapt_poll"]
+                and not self._adapt_test_pending and self._poll_page_wanted(self._pages["Adaptation"])):
+            ch = self.adapt_ch.value()
+            if self._live_post("adapt_poll", lambda s: (ch, s.adaptation_read(ch), s.group_names(0))):
+                self._poll_inflight.add("adapt_poll")
+        if ("basic_view" not in self._poll_inflight and self._poll_on["basic_view"] and not self._basic_running
+                and self._poll_page_wanted(self._pages["Basic settings"])):
+            g = self.basic_group.value()
+            if self._live_post("basic_view", lambda s: (g, s.read_group_full(g), s.group_names(g))):
+                self._poll_inflight.add("basic_view")
+
+    def _poll_later(self):
+        QtCore.QTimer.singleShot(self.POLL_GAP_MS, self._poll_kick)
+
+    def _on_adapt_poll(self, payload):
+        ch, a, _ = payload
+        if ch == self.adapt_ch.value() and not self._adapt_test_pending:
+            self.adapt_current.setText("Channel %03d: %d  (0x%04X)" % (ch, a.value, a.value))
+            _cells_rows(self.adapt_cells, ch, a.cells)
+        self._poll_later()
+
+    def _on_basic_view(self, payload):
+        g, reading, names = payload
+        if self._basic_running or g != self.basic_group.value():
+            self._poll_later()
+            return
+        if reading is None or not reading.available:
+            self._poll_on["basic_view"] = False
+            self.basic_cells.setRowCount(0)
+            self.basic_state.setText("group %03d has no measured block" % g)
+            return
+        if reading.cells is not None:
+            _cells_rows(self.basic_cells, g, reading.cells, names)
+        elif reading.raw is not None:
+            self.basic_cells.setRowCount(0)
+            _row(self.basic_cells, "%03d" % g, "raw", " ".join("%02X" % b for b in reading.raw), "")
+        self._poll_later()
 
     def _live_start(self):
         self._live_gen += 1
@@ -2888,6 +3005,9 @@ class DiagWindow(QtWidgets.QDialog):
     # ---- adaptation
     def adapt_read(self):
         ch = self.adapt_ch.value()
+        self._adapt_test_pending = False
+        self._poll_on["adapt_poll"] = True
+        self.adapt_current.setStyleSheet(_pending_style(False))
         self._ensure_live("adapt_read", lambda s: (ch, s.adaptation_read(ch), s.group_names(0)))
 
     def _show_adaptation(self, ch, a):
@@ -2900,9 +3020,11 @@ class DiagWindow(QtWidgets.QDialog):
         self._show_adaptation(ch, a)
         self.adapt_current.setStyleSheet(_pending_style(False))
         self.status.setText("Adaptation channel %03d read: %d" % (ch, a.value))
+        self._poll_later()
 
     def adapt_test(self):
         ch, val = self.adapt_ch.value(), self.adapt_val.value()
+        self._adapt_test_pending = True          # no re-read over the applied value until it is read or saved
         self._ensure_live("adapt_test", lambda s: (ch, s.adaptation_test(ch, val)))
 
     def _on_adapt_test(self, payload):
@@ -2910,6 +3032,7 @@ class DiagWindow(QtWidgets.QDialog):
         self._show_adaptation(ch, a)
         self.adapt_current.setText(self.adapt_current.text() + "  test value, not saved")
         self.adapt_current.setStyleSheet(_pending_style(True))        # applied on the module, not written
+        self._adapt_test_pending = True
         self.status.setText("Channel %03d test value %d applied (not saved)" % (ch, a.value))
 
     def adapt_save(self):
@@ -2945,6 +3068,8 @@ class DiagWindow(QtWidgets.QDialog):
                              before=before, after=after, verified=(after == wanted))
         self.adapt_current.setText("Channel %03d: %d  (was %d)" % (ch, after, before))
         self.adapt_current.setStyleSheet(_pending_style(False))
+        self._adapt_test_pending = False
+        self._poll_later()
         self.status.setText("Channel %03d saved: %d -> %d%s" % (
             ch, before, after, "" if after == wanted else "  (module reports %d, not %d)" % (after, wanted)))
 
@@ -3146,6 +3271,8 @@ class DiagWindow(QtWidgets.QDialog):
             self.basic_btn.setText("Start basic setting")
             self.basic_state.setText("stopped")
             self._live_post("basic_stop", lambda s: s.basic_setting_stop())
+            self._poll_on["basic_view"] = True          # back to showing the group's measured cells
+            self._poll_later()
             return
         g = self.basic_group.value()
         if not self._ensure_live("basic", lambda s: (g, s.basic_setting_read(g), s.group_names(g))):

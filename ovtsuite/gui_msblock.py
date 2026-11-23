@@ -15,7 +15,7 @@ The title bar's X and Esc ask first when there are changes not applied.
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .gui_cellmarks import (OFF_FG, PENDING_BG, CellDelegate,  # noqa: F401
-                            cmp_fg, mark_differs, mark_pending,
+                            cmp_fg, draw_outline, mark_differs, mark_pending,
                             follow_current, link_selection,
                             selection_text, selection_tsv)
 from .msblock import MeasuringBlocks
@@ -221,6 +221,10 @@ class MsBlockDialog(QtWidgets.QDialog):
             def initStyleOption(self, opt, index):
                 super().initStyleOption(opt, index)
                 selection_text(opt)         # selected text readable
+
+            def paint(self, painter, option, index):
+                super().paint(painter, option, index)
+                draw_outline(painter, option, index)   # differs from comparison
         self.table.setItemDelegate(CellDelegate(self.table))
         delegate = _Delegate(self._choices, self.catalog, self.table)
         self._delegate = delegate

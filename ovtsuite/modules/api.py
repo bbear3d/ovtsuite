@@ -276,6 +276,7 @@ class ChecksumProvider:
 
     * ``digest`` (EDC16) -- also regenerate the KWP2000 content digest;
     * ``program_area`` (ZF 6HP) -- also rewrite the descriptor self-CRCs;
+    * ``fix_cvn`` (EDC17, default off) -- first patch the CVN back to stock;
     * ``key_image`` (EDC16 MPC) -- the external image the MPC is keyed to.
 
     Unknown options are ignored. ``verify`` returns a report with ``.ok`` and

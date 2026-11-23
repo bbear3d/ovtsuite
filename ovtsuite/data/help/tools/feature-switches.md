@@ -115,12 +115,12 @@ undo step.
 | **Boost pressure (MAP) sensor** (EDC16, EDC15) | Sets the ECU's boost-sensor curve to the Bosch sensor fitted; see [Boost pressure (MAP) sensor](#boost-pressure-map-sensor) below. |
 | **Gearbox type** (EDC16) | **Manual** (0), **Automatic (torque converter / Tiptronic)** (1), **DSG (dual-clutch)** (1) and **Multitronic (CVT)** (3). A torque-converter automatic and a DSG are the same value: stock files of both hold 1 (e.g. 038906016N coding 150034, Tiptronic; 038906016AB coding 150038 and 03G906016AC, DSG), so a file holding 1 shows as *Automatic ... or DSG*. Multitronic files (03G906016LQ, GC, MF) hold 3. The A2L also names 2 (*automatisch shift*) and 4 (automated manual, "Z-car only"); no stock file uses either, so they are offered only as values in the **New** column, not as settings. |
 | **Gear ratios** (EDC16) | For every transmission -- manual, automatic or dual-clutch use the same gear-ratio constants. A form, not a preset: type the gearbox ratio of each gear (a gear left at *not set*, or one the gearbox does not have, is not changed), the reverse ratio, the **final drive**, and -- for a 02M or 02Q, whose top gears run through a second final-drive pair -- the **second final drive**, used for 5th and 6th gear only. The ECU holds the *overall* ratios (`Gearbx_rTrans1..6_C`, `Gearbx_rTransR_C`: gearbox ratio times final drive), so the window writes those and lists each one in the table as you type. Pick the **tyre** by its marking (width / aspect ratio R rim, e.g. 205/55 R16; the window works out its rolling circumference) -- or keep **the file's tyre**, the one its V/N bands already imply -- and tick **Also set the V/N bands** to regenerate the gear-detection bands (`Gearbx_rVn<n>L/H_C`) from the new ratios, as the [gear-ratio editor](gear-ratios.md) does; a gear whose ratio repeats the one above (the 6th of a 5-speed) is left alone. Choose the copy of the coding you are changing under *Apply to*: a file with coding variants holds a copy of these constants per transmission, and the others are not touched. |
-| **Glow plug voltage (5 V / 7 V)** (EDC16) | The glow control programming for 5 V or 7 V plugs. The ECU applies a PWM duty cycle to the battery, and a plug heats with the RMS voltage, so a duty cycle gives a voltage that goes with its square root: the 7 V recall software (038997016 R, S, T) holds **38 %** sustained, a 5 V calibration **17-18 %**. **5 V plugs** and **7 V plugs** write the duty cycles, the duty map and the energy-integrator slope of a stock file of that voltage (resampled onto the axes of your files tables); on the earlier relay-style control (P350U8A7 / U8A6 software, e.g. 038906016R, 038997016H, L, M, N, K) they also write the pre-glow times and the diagnosis limits. A calibration of neither voltage (14 %, a 4.4 V plug; a battery-corrected 45 %) is shown with its estimated voltage. Fit plugs of the voltage you choose: 7 V programming on 5 V plugs burns them out. A file keeps its control code, so software whose glow control is another one is listed with the reason it is not offered. |
+| **Glow plug voltage (5 V / 7 V)** (EDC16) | The glow control programming for 5 V or 7 V plugs. The ECU applies a PWM duty cycle to the battery, and a plug heats with the RMS voltage, so a duty cycle gives a voltage that goes with its square root: the 7 V recall software (038997016 R, S, T) holds **38 %** sustained, a 5 V calibration **17-18 %**. **5 V plugs** and **7 V plugs** write the duty cycles, the duty map and the energy-integrator slope of a stock file of that voltage (resampled onto the axes of your files tables); on the earlier relay-style control (P350U8A7 / U8A6 software, e.g. 038906016R, 038997016H, L, M, N, K) they also write the pre-glow times and the diagnosis limits. A calibration between the two (14 %, a 4.4 V plug) is shown with its estimated voltage. A **45 %** calibration is recognised as a 7 V variant (listed as 7 V, "Already set" for 7 V plugs; 5 V plugs write the 5 V values as for any 7 V file). Its exact effective voltage depends on the battery-correction setting in the file, which is not established. Fit plugs of the voltage you choose: 7 V programming on 5 V plugs burns them out. A file keeps its control code, so software whose glow control is another one is listed with the reason it is not offered. |
 | **Electric heater outputs** (EDC16, EDC15) | The ECU outputs switching the electric heating elements that warm the cabin heater while the engine is cold: on EDC16 the heater switch for outputs 1 and 2 plus the number of connected elements; on EDC15 the number of glow-element outputs of the coolant heater. Files with coding variants (e.g. 1.9 TDI BEW) have a copy per coding: stock files have the outputs on for manual-gearbox codings and off for automatic ones (on EDC15, on in manual datasets, off in automatic ones). **On** sets three elements; enter the number fitted if fewer. |
 | **Cruise control stalk source** (EDC15) | **Cruise control off** (0), **Stalk wired to the ECU** (3, what every stock file of the corpus holds) or **Over CAN (GRA message)** (2, needs a gateway that sends it), with the stalk's input pins switched to match. MSA15 / EDC15V software has no cruise control over CAN and offers only the first two. On files whose definition comes from the disassembly (038906012FD / GN, 038906012HA, the later PD software) the definition places the cruise control type where the code that reads it points. |
 | **Road speed source** (EDC15) | 1: a speed sender wired to the ECU's road-speed input (normally on the gearbox; its pulse constant is in VSS pulse settings). 2: a tachograph's speed output. 3: the CAN message from the ABS / ESP unit. 4: the CAN message from the instrument cluster. 3 and 4 exist only on later (P+ / VGK) software. |
 | **Auto to Manual Conversion** (EDC15 VE pump) | The automatic and manual datasets of a VE-pump file were set up for slightly different injection pump / nozzle builds, and a manual car runs better on the automatic setup. **Automatic map** copies the injection pump's quantity-adjuster voltage map, values and breakpoints, from the automatic dataset into each manual dataset whose map has the same size, as one undo step. Where the automatic datasets hold different maps, **Copy from:** picks the one to copy. **Manual map** is the manual dataset's own map, as the file was opened (choose it to put the map back). A file whose manual map already equals the automatic one shows **Automatic map**, with nothing to change. Unit-injector (PD) files have no such map and do not offer it. |
-| **Smoke limiter: air mass or boost pressure** | Switching to boost pressure fills the boost-pressure limiter map from this file's air-mass limiter, so the limit stays what it is today (a 2 x 2 placeholder map is enlarged first -- moved to free space when it cannot grow where it is -- with new engine-speed and boost-pressure axes), and fills a flat intake-temperature correction. A file that already limits by boost pressure keeps its own map. **By boost pressure is greyed out, with the reason, when the file lacks what the fill is worked out from**: the air-mass limiter, the boost-pressure limiter, the intake-temperature correction or the smoke switch was not found, one of them was placed only by projection from another file's layout, an axis does not rise, or the air-mass limiter holds placeholder bytes (negative values or more than 200 mg per stroke). Nothing is written for such a file. A file that is offered but whose air-mass limiter, boost limiter or correction was found by its structure rather than placed by a definition (every 038906019AN) shows an amber **Check before relying on this** banner above the table, and again when you apply: double-click the map's row to open it and check it reads as what it should (for the air-mass limiter, air mass across, engine speed down, roughly 15 to 60 mg). The list shows the air-mass limiter and the volumetric efficiency too: the fill reads them, it does not write them. |
+| **Smoke limiter: air mass or boost pressure** | Switching to boost pressure fills the boost-pressure limiter map from this file's air-mass limiter, so the limit stays what it is today (a 2 x 2 placeholder map is enlarged first -- moved to free space when it cannot grow where it is -- with new engine-speed and boost-pressure axes), and fills a flat intake-temperature correction. A file that already limits by boost pressure keeps its own map. **By boost pressure is greyed out, with the reason, when the file lacks what the fill is worked out from**: the air-mass limiter, the boost-pressure limiter, the intake-temperature correction or the smoke switch was not found, one of them was placed only by projection from another file's layout, an axis does not rise, or the air-mass limiter holds placeholder bytes (negative values or more than 200 mg per stroke). Nothing is written for such a file. A file that is offered but whose air-mass limiter, boost limiter or correction was found by its structure rather than placed by a definition (every 038906019AN) shows an amber **Check before relying on this** banner above the table, and again when you apply: double-click the map's row to open it and check it reads as what it should (for the air-mass limiter, air mass across, engine speed down, roughly 15 to 60 mg). On an EDC15 PD file whose air-mass limiter is a **set of maps** (`cowRauchKR` = 1: `mrwBRA0KR`, `mrwBRA1KR` ... picked by coolant temperature through the selector `mrwBRA_KL`), the fill is worked out from the set the ECU runs at normal operating temperature -- the selector read at 90 deg C, not simply the first set (a selector between two sets there blends them as the ECU does; ranges that share a set count it once). The amber banner names any other set the selector picks at other coolant temperatures whose cells differ from the warm set by more than 5 % on average (a cold engine is then limited by the warm set's values), and says so when the warm set could not be told -- the selector missing, placed only by projection, or reading a set that is not there -- in which case the first set is used. A selector that picks one set at every temperature (every reference file) gives no warning. The list shows the air-mass limiter and the volumetric efficiency too: the fill reads them, it does not write them. |
 
 A VE pump rebuilt with another pump head (plunger), or fitted with other nozzles, is set up in **Tools > Injector setup** (see [Injector setup](../modules/edc15/injector-setup.md)), which also keeps a file's own voltages and changes only the pump head (what the 10 mm → 11 mm switch here used to do).
 
@@ -170,9 +170,16 @@ points written:
   engine, or a sensor before the turbo. With **6 bar**, check the boost maps
   and limits reach as high as you need. The catalogue lists no 1.5, 2 or
   5 bar absolute sensor; a "2 bar" boost sensor is the 3 bar absolute one.
-- **Only the curve changes.** Bring boost setpoints and limits within the
-  new sensor's range yourself; the window warns when the largest boost
-  setpoint is above it.
+- **Scale the boost readings to the sensor** (ticked by default, EDC16
+  files). Besides the curve, it sets two pressure scale constants so the
+  sensor's top pressure fills their one-byte range: the one for the
+  diagnostic output (what the measuring blocks read) and the one for fault
+  monitoring. The factory value tops out at 2600 hPa absolute (about 22 psi
+  of boost), so a boost block stops reading there however high the boost
+  goes. Untick it and only the curve changes. The box is greyed out, with
+  the reason in its tooltip, when the file has no such constants.
+- Bring boost setpoints and limits within the new sensor's range yourself;
+  the window warns when the largest boost setpoint is above it.
 - **Signal-range check:** its lower voltage limit (0.68 V on stock files)
   is left as it is. With a 3.5 or 4 bar
   sensor it stands for about 650 hPa, the ambient pressure at about 3600 m:
@@ -205,19 +212,24 @@ here.
 
 **EGR > Cut when the engine is warm** fills the warmest coolant line of the
 EGR coolant-temperature correction. On EDC15 a dataset can hold three of
-them -- the EGR setpoint correction (in mg of air) and two corrections of
-the EGR duty (in %) -- and a file may calibrate more than one, so every one
-the dataset holds is cut (a duty correction at 100 %).
+them -- the EGR setpoint correction (in mg of air, `arwTWKORKF`) and two
+corrections of the EGR duty (in %, `arwSTTWKF` and `arw2TW_KF`) -- and only
+the setpoint correction is cut, as a working dynamic-EGR tune does; the two
+duty corrections stay as the OEM calibrated them (cutting all three gave
+erratic EGR at the set temperature). A map an earlier version cut is set back
+to 0 by the next apply. A file without `arwTWKORKF` has the correction it
+calibrates cut instead.
 Many stock maps end well below the usual cut
 temperature (the last coolant breakpoint is often about 51 °C), so a line at
 **Cut above:** has to be made:
 
 - **Keep the OEM breakpoints** ticked (the default): the table is resized
   where it is, by the app's own resize (as **Resize axes...** does), and
-  breakpoints are added after the warmest OEM one -- one a degree below the
-  set temperature, holding the warmest OEM line, and one at it, filled with
-  the cut. A map that ended at 51 °C then ends at *51, 79, 80 °C*: EGR runs
-  as calibrated up to 79 °C and is cut within that last degree.
+  breakpoints are added after the warmest OEM one -- one a few degrees
+  below the set temperature (5 °C on EDC15, as in a working tune; 1 °C on
+  EDC16), holding the warmest OEM line, and one at it, filled with the cut.
+  On EDC15 a map that ended at 51 °C then ends at *51, 75, 80 °C*: EGR runs
+  as calibrated up to 75 °C and is cut within the last 5.
   Sensor-fault breakpoints above (EDC15, about 148-150 °C) stay last. The
   list shows the table with its new size and its axis with the breakpoints
   added.
@@ -225,20 +237,21 @@ temperature (the last coolant breakpoint is often about 51 °C), so a line at
   has no room before the next object (beyond the space its definition
   reserves), it shares its axes with other maps, or its axis already reaches
   the temperature -- and its tooltip says which. Then, or with the box
-  clear, the two warmest breakpoints are raised instead (the second to a
-  degree below the set temperature, so the cut is as sudden), and those two
+  clear, the two warmest breakpoints are raised instead (the second to the
+  step below the set temperature, 5 °C on EDC15), and those two
   OEM breakpoints are overwritten.
 - A map that was **cut already** keeps the cut's own two breakpoints (the
-  warmest, and the one a degree below it): a different **Cut above:** moves
-  them, up or down, and the fill follows. It stops above the warmest OEM
+  warmest, and the step below it): a different **Cut above:** moves
+  them, up or down, and the fill follows. A map cut with a narrower step
+  (EDC15 used 1 °C before) has its step breakpoint moved down to 5 °C. It stops above the warmest OEM
   breakpoint it would otherwise overwrite, and says so ("cannot move below
   ... °C"). The map is not grown a second time.
 - Some EDC15 maps already end in spare breakpoints far above any coolant
   temperature (about 148, 149 and 150 °C) whose lines hold the same as the
   warmest real one. Those are used instead: the first becomes the breakpoint
-  a degree below the set temperature, the second the set temperature, and
+  a step below the set temperature, the second the set temperature, and
   they and the last are filled with the cut. A map whose real breakpoints
-  end at 18 °C then reads *18, 79, 80, 150 °C*, with nothing before 79 °C
+  end at 18 °C then reads *18, 75, 80, 150 °C* on EDC15, with nothing before 75 °C
   changed and no resizing needed.
 - A map with only two coolant breakpoints keeps its cold one: only its
   warmest is raised.

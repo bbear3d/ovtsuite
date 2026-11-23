@@ -503,3 +503,14 @@ def test_quantity_per_stroke_is_not_per_hour():
     assert split_value_unit("3.4 mg/h") == (3.4, "mg/stroke")
     assert split_value_unit("2.1 l/h") == (2.1, "l/h")
 
+
+
+def test_classic_export_keeps_a_double_space_identity_and_a_spaced_part_number():
+    for ident, want in (("038 906 016 AB  SW 4999", "038 906 016 AB  SW 4999"),
+                        ("038906016AB  SW 4999", "038906016AB  SW 4999"),
+                        ("038906012A 1.9l R4 EDC", "038906012A 1.9l R4 EDC")):
+        log = _sample()
+        log.identity = ident
+        p = os.path.join(tempfile.mkdtemp(), "c.csv")
+        L.write_vcds_classic(p, log)
+        assert L.load(p).identity == want

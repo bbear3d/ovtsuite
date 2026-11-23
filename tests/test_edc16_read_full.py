@@ -3,10 +3,11 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""edc16_program.read_full pads with 0xFF only what the ECU explicitly refuses
+"""edc16_read.read_blocks pads with 0xFF only what the ECU explicitly refuses
 (7F 35 / 7F 36). An ECU that stops answering, or an upload that ends early,
 fails the read -- a full read must never hand back 0xFF for data it did not
 get (the image may be saved, compared or written back)."""
+import dataclasses
 import os
 import sys
 
@@ -16,7 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from ovtsuite.flash import edc16 as E  # noqa: E402
-from ovtsuite.flash import edc16_program as P  # noqa: E402
+from ovtsuite.flash import edc16_blocks as B  # noqa: E402
+from ovtsuite.flash import edc16_read as R  # noqa: E402
 from ovtsuite.flash import tp20_transport as TT  # noqa: E402
 from ovtsuite.flash.transport import KLineError, KLineTimeout  # noqa: E402
 from mock_tp20 import MockTp20Ecu  # noqa: E402
@@ -87,22 +89,30 @@ class Ecu(MockTp20Ecu):
         return b"\x7f" + bytes([s, 0x11])
 
 
-def _read(monkeypatch, ecu):
-    monkeypatch.setattr(P, "PROGRAM_START", BASE)
-    monkeypatch.setattr(P, "PROGRAM_END", BASE + SIZE)
+#: the program block cut down to two 32 KB uploads
+SMALL = dataclasses.replace(B.PROGRAM, read=(BASE, BASE + SIZE))
+
+
+def _read(monkeypatch, ecu, blocks=(SMALL,), chunk=0x8000):
     monkeypatch.setattr(E, "EDC16_CAN_READ_REOPEN", False)
     link = TT.CanKLine(ecu, dest=0x01)
     stages = []
     fl = E.Edc16Flash(link, log=stages.append)
     fl._fast = True
-    out = P.read_full(fl, include_program=True, include_mpc=False, full=False,
-                      upload_chunk=0x8000, allow_fast=False, on_stage=stages.append)
+    out = R.read_blocks(fl, blocks, upload_chunk=chunk, allow_fast=False,
+                        on_stage=stages.append)
     return out, stages
+
+
+def _program(out):
+    return out["external"][BASE:BASE + SIZE]
 
 
 def test_full_read_returns_the_data(monkeypatch):
     out, _stages = _read(monkeypatch, Ecu())
-    assert out["program"] == bytes(_byte(a) for a in range(BASE, BASE + SIZE))
+    assert _program(out) == bytes(_byte(a) for a in range(BASE, BASE + SIZE))
+    assert len(out["external"]) == B.FULL_SIZE
+    assert "internal" not in out                       # MPC not ticked
 
 
 def test_refused_range_is_padded_and_logged(monkeypatch):
@@ -110,7 +120,7 @@ def test_refused_range_is_padded_and_logged(monkeypatch):
     out, stages = _read(monkeypatch, Ecu(refuse=refused))
     want = bytearray(_byte(a) for a in range(BASE, BASE + SIZE))
     want[0xC000:0x10000] = b"\xFF" * 0x4000
-    assert out["program"] == bytes(want)
+    assert _program(out) == bytes(want)
     assert any("0x04C000-0x04FFFF padded with 0xFF -- the ECU refused it" in m
                and "7F 35 33" in m for m in stages)
 
@@ -135,6 +145,91 @@ def test_upload_that_ends_early_fails_the_read(monkeypatch):
     assert "0x048000-0x04BFFF could not be read" in str(ei.value)
     assert "ended after" in str(ei.value)
 
+
+class Recorder(Ecu):
+    """Records every requestUpload start address."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.uploads = []
+
+    def _handle(self, req):
+        if req[0] == 0x35:
+            self.uploads.append(int.from_bytes(req[1:4], "big"))
+        return super()._handle(req)
+
+
+def test_boot_is_never_requested(monkeypatch):
+    """Boot is refused over OBD: ticking it asks the ECU for nothing in
+    0x0-0x3FFFF (the boot DB fills it, when there is one)."""
+    ecu = Recorder()
+    out, stages = _read(monkeypatch, ecu, blocks=("boot", SMALL))
+    assert ecu.uploads and all(a >= B.PROGRAM_START for a in ecu.uploads)
+    assert any("Boot is not readable over OBD" in m for m in stages)
+    assert _program(out) == bytes(_byte(a) for a in range(BASE, BASE + SIZE))
+
+
+def test_boot_alone_opens_no_session(monkeypatch):
+    ecu = Recorder()
+    out, _stages = _read(monkeypatch, ecu, blocks=("boot",))
+    assert ecu.uploads == [] and ecu.packets == 0
+    assert len(out["external"]) == B.FULL_SIZE
+
+
+def test_only_the_ticked_blocks_are_read(monkeypatch):
+    """Calibration only: every upload lies inside the calibration."""
+    ecu = Recorder()
+    small_cal = dataclasses.replace(B.CAL, read=(B.CAL_START, B.CAL_START + 0x8000))
+    out, _stages = _read(monkeypatch, ecu, blocks=(small_cal,))
+    assert ecu.uploads == [B.CAL_START]
+    assert "internal" not in out
+    assert out["external"][:B.CAL_START] == b"\xFF" * B.CAL_START
+
+
+def test_the_mpc_lands_at_its_vma_offset(monkeypatch):
+    small_mpc = dataclasses.replace(B.MPC, read=(B.MPC_ADDR, B.MPC_ADDR + 0x8000))
+    out, _stages = _read(monkeypatch, Recorder(), blocks=(small_mpc,))
+    assert "external" not in out
+    img = out["internal"]
+    assert len(img) == B.MPC_IMAGE_SIZE
+    off = B.MPC_ADDR - B.MPC_VMA
+    assert img[:off] == b"\xFF" * off
+    assert img[off:off + 0x8000] == bytes(_byte(a) for a in range(B.MPC_ADDR, B.MPC_ADDR + 0x8000))
+
+
+def test_default_read_ranges_skip_boot():
+    for b in B.ALL:
+        if b.readable:
+            assert b.read[0] >= B.PROGRAM_START or b.chip == B.INTERNAL, b.key
+    assert not B.BOOT.readable
+
+
+class _Addressed:
+    """A K-line link that answers requestUpload in the addressed format."""
+
+    def __init__(self, reply):
+        self.buf = bytearray(reply)
+
+    def clear_rx(self):
+        pass
+
+    def read_byte(self):
+        return self.buf.pop(0)
+
+    def read(self, n):
+        out = bytes(self.buf[:n])
+        del self.buf[:n]
+        return out
+
+
+def test_an_addressed_refusal_is_a_refusal():
+    """83 F1 10 7F 35 33: padded by the read like any refusal, not taken for
+    a damaged packet (which failed the whole read)."""
+    fl = E.Edc16Flash(_Addressed(bytes([0x83, 0xF1, 0x10, 0x7F, 0x35, 0x33, 0x00])))
+    fl._fast = True
+    fl._send = lambda payload: None
+    with pytest.raises(E.RangeRefused, match="7F 35 33"):
+        fl._request_upload(0x010000, 0x10000)
 
 
 # ---------------------------------------------- Edc16Flash.read_flash (calibration)

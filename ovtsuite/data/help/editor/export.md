@@ -13,6 +13,7 @@ to the tab in front are greyed out.
 | Item | Writes | Available for |
 |---|---|---|
 | **Binary (.bin)...** | One part of the set — the flash, the internal flash (MPC) or the EEPROM — as a plain `.bin`. | Every set. |
+| **MPC / internal flash...** | The internal flash (MPC) in the form you pick in the save dialog: plain 0x81000, 0x80100 or 0x80000 bytes, or the compressed `.MPC` (XOR / zlib) the BDM tools write. It starts at the form the file came in; all four open here too. | A tab or set that has an MPC. |
 | **Original file (.sgo / .dim / .frf)...** | The file the set was imported from, with the saved version in it -- byte for byte the original when nothing changed. An edited `.frf` cannot be rebuilt yet: the export says so, and **Binary (.bin)...** is the way out. | A set imported from a `.sgo`, `.dim` or `.frf`. |
 | **Definition as XDF...** | A TunerPro XDF describing every parameter of this binary. | Any binary whose module provides definitions. |
 | **Definition as A2L...** | An ASAP2 description (`.a2l`) of every parameter of this binary, for WinOLS and other tools that import A2L. | Any binary whose module provides definitions. |

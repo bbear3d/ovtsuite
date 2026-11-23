@@ -22,6 +22,7 @@ from ..flash import j2534 as _j
 from ..flash.transport import KLine
 
 OPENPORT_USB = "openport-usb"
+SM2_USB = "sm2-usb"                  # a Scanmatik SM2 over libusb; an "openport"-kind interface
 Log = Callable[[str], None]
 
 
@@ -68,7 +69,13 @@ def interfaces() -> List[Interface]:
     try:
         from ..flash import openport
         for label in openport.find_devices():
-            out.append(Interface(OPENPORT_USB, label + " (USB direct)", "openport"))
+            out.append(Interface(OPENPORT_USB, label + " (Direct-USB)", "openport"))
+    except Exception:
+        pass
+    try:
+        from ..flash import sm2_device
+        for label in sm2_device.find_devices():
+            out.append(Interface(SM2_USB, label + " (Direct-USB)", "openport"))
     except Exception:
         pass
     try:
@@ -82,7 +89,9 @@ def interfaces() -> List[Interface]:
 
 def interface_from_data(data: Any) -> Interface:
     if data == OPENPORT_USB:
-        return Interface(data, "OpenPort 2.0 (USB direct)", "openport")
+        return Interface(data, "OpenPort 2.0 (Direct-USB)", "openport")
+    if data == SM2_USB:
+        return Interface(data, "SM2 (Direct-USB)", "openport")
     if getattr(data, "dll", None) is not None:
         return Interface(data, getattr(data, "label", str(data)), "j2534")
     if getattr(data, "host", None) is not None:
@@ -153,6 +162,9 @@ class _Closing:
 def open_device(iface: Interface):
     """The J2534-faced device behind a CAN-capable interface."""
     if iface.kind == "openport":
+        if iface.data == SM2_USB:
+            from ..flash.sm2_device import Sm2Device
+            return Sm2Device()
         from ..flash.openport import OpenPort
         return OpenPort()
     if iface.kind == "j2534":

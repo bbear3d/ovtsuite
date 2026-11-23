@@ -12,6 +12,7 @@ wording is one place to get it right.
 
 from PySide6 import QtCore, QtWidgets
 
+from .. import realtime as _realtime
 from . import discover, headunits
 
 
@@ -37,6 +38,10 @@ class _Sweep(QtCore.QThread):
         self._stop = True
 
     def run(self):
+        with _realtime.realtime_session(keep_awake=False):
+            self._sweep()
+
+    def _sweep(self):
         try:
             discover.sweep(port=self._port, on_found=self.found.emit,
                            should_stop=lambda: self._stop)

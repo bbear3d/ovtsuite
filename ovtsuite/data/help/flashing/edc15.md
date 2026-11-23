@@ -31,7 +31,9 @@ the sector. **Force full write** skips that comparison and rewrites every
 sector (11 on a 512 KB part, 19 on a 1 MB part).
 
 The image must be a recognisable EDC15 image and its size must match the ECU's
-flash: 512 KB or 1 MB. The size is detected on the ECU (by checking whether it
+flash. **Writing a 1 MB image is not supported yet** (reading one is): the app
+refuses it before connecting, and again if the ECU turns out to have a 1 MB
+part. The size is detected on the ECU (by checking whether it
 decodes the extra address line a 1 MB part needs), so writing a 512 KB file to a
 1 MB ECU, or the reverse, stops before anything is erased. With the
 EDC15 module installed its checksums are corrected first, and a file whose
@@ -111,8 +113,8 @@ setting is never hidden. Untick it to go back to normal reads and writes.
 With a paired head unit, **Run on the head unit** is offered for flash reads
 and writes, EEPROM reads and writes, **Read flash + EEPROM**, **Write flash +
 EEPROM** and boot mode. See [Head units](head-unit.md). The head unit drives a
-512 KB EDC15 only; a 1 MB EDC15 must be read or written over a direct
-connection, which detects the size itself.
+512 KB EDC15 only; a 1 MB EDC15 must be read over a direct connection, which
+detects the size itself (writing a 1 MB EDC15 is not supported yet).
 
 ## See also
 

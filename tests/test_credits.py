@@ -61,7 +61,9 @@ def test_notices_document():
         assert c.name in text
     assert "LICENCE TEXTS" in text and "DISCLAIMER" in text
     # each licence text once, however many credits share it
-    assert text.count("GNU LESSER GENERAL PUBLIC LICENSE\n") == 1
+    # (the LGPL's two versions are two texts: Qt uses 3.0, libusb 2.1)
+    assert text.count("Version 3, 29 June 2007\n\n Copy") == 2        # the LGPL's and the GPL's heading
+    assert text.count("Version 2.1, February 1999") == 1
 
 
 def test_bundled_licences_are_read_by_distribution(tmp_path, monkeypatch):

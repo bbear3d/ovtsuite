@@ -373,6 +373,11 @@ class TunerSession:
         #: the native container holds the image byte-swapped (a project's
         #: working file of a byte-swapped read): saved back the same way
         self._stored_swapped = False
+        #: how a loose internal-flash (MPC) file is stored when it is not the
+        #: plain image -- ``{"format": ..., "trailer": hex}`` of
+        #: ``platforms.edc16.mpc_format_of``: it is opened decoded and saved
+        #: back in the form it came in
+        self._mpc_stored = None
         with open(path, "rb") as _fh:
             _head = _fh.read(0x30)   # sgo.detect() needs this many to check
         if _head[:4] in _dim.MAGICS:
@@ -528,6 +533,18 @@ class TunerSession:
                     " and EEPROM" if _pcm_parts.eeprom is not None else ""))
         else:
             self.binfile = BinaryFile.load(path)
+            from .platforms import edc16 as _e16p
+            _mpcd = _e16p.decode_mpc(bytes(self.binfile.data))
+            if _mpcd is not None and _mpcd[1]["format"] == "encoded":
+                self.binfile = BinaryFile.from_bytes(
+                    _mpcd[0], os.path.basename(path))
+                self._mpc_stored = _mpcd[1]
+                self.load_note = (
+                    "This is a compressed .MPC (the internal flash as BDM "
+                    "tools save it). It is shown decoded and saved back "
+                    "compressed; File > Export gives the plain image too.")
+            elif _mpcd is not None:
+                self._mpc_stored = _mpcd[1]
             # An MSA15 / EDC15V image some readers save with the two bytes of
             # every word exchanged: edited in the ECU's byte order, saved back
             # the way it came (see save()).
@@ -671,6 +688,9 @@ class TunerSession:
         # from the unedited original so a re-stamped descriptor is still fixed.
         # See ovtsuite/zf6hp/checksum6hp.py.
         self.correct_program_area = False
+        # EDC17: also patch the CVN back to stock when correcting checksums
+        # (Options > Projects and saving; off by default). See _checksum_opts.
+        self.fix_cvn = False
         self._variant_entities = None
         # pristine bytes as loaded, for modified-vs-original reporting
         self.original = bytes(self.binfile.data)
@@ -964,6 +984,10 @@ class TunerSession:
     def _limited_text(self, platform, data) -> str:
         """What would support this binary, and -- when its module is here
         but cannot check this binary's checksum -- why not."""
+        from .platforms import is_eeprom as _is_eeprom
+        if _is_eeprom(platform):
+            return ("It is the control unit's EEPROM, not a flash image: the "
+                    "EEPROM editor (Tools > EEPROM editor) edits it.")
         text = _registry.missing_text(platform,
                                       checksum=self.support == "checksum")
         if self.support == "none" and _registry.can(platform, _modapi.CHECKSUM):
@@ -980,10 +1004,12 @@ class TunerSession:
         """The options every provider understands (each ignores the rest):
         EDC16 always checks and regenerates the KWP2000 content digest (a
         verify without it passes an image the ECU's own check refuses), ZF 6HP
-        also rewrites the program/boot descriptor self-CRCs."""
+        also rewrites the program/boot descriptor self-CRCs, EDC17 also
+        patches the CVN back to stock when ``fix_cvn`` is on."""
         return {"digest": True,
                 "program_area": (self.correct_program_area if program_area is None
-                                 else program_area)}
+                                 else program_area),
+                "fix_cvn": bool(self.fix_cvn)}
 
     def _checksum_key(self, cs):
         """What a verify report depends on: the provider, its options and
@@ -1155,8 +1181,11 @@ class TunerSession:
         tables = list(_variant.find_variant_tables(self))
         try:
             codings = _variant.copy_codings(self, tables)
+            # what the codings say (variant, transmission): the way a dataset
+            # holds them differs by platform (see variant.describe_codings)
+            cdesc = _variant.describe_codings(self, tables)
         except Exception:                       # never cost the variants
-            codings = {}
+            codings, cdesc = {}, {}
         for vt in tables:
             # EVERY copy, identical or not: a copy is the table those codings
             # read, so one left out could not be edited for them at all. The
@@ -1179,13 +1208,13 @@ class TunerSession:
                 source="variant", categories=cats, category_path=path,
                 plain=twin.plain,
                 # which coding selects this copy, read from the pointer array
-                coding=(_variant.coding_text(codings.get(vt.sec_z))
+                coding=(_variant.coding_text(codings.get(vt.sec_z), cdesc)
                         or "coding variant"),
                 # the twin's selector note describes the MAIN block's curve
                 set_note="", selector=""))
             # ... and the primary says which coding(s) keep it, so the pair
             # reads both ways in the tree
-            main_txt = _variant.coding_text(codings.get(vt.main_z))
+            main_txt = _variant.coding_text(codings.get(vt.main_z), cdesc)
             if main_txt:
                 twin.coding = main_txt
         # in the order of their main copies: by group, then heading
@@ -1494,6 +1523,10 @@ class TunerSession:
                 _mpc = self._mpc_corrected(_mpc, data)
             data = _pcmflash.join(self._pcm, data, _mpc,
                                   _regions.get(self.EEPROM_REGION))
+        elif self._mpc_stored is not None and self._mpc_stored["format"] == "encoded":
+            # a compressed .MPC opened decoded: compressed again, same trailer
+            from .platforms import edc16 as _e16p
+            data = _e16p.mpc_as(data, "encoded", self._mpc_stored.get("trailer", ""))
         elif self._byte_swapped:
             # a plain file of a byte-swapped original: written the same way
             from .platforms import edc15 as _e15p
@@ -1545,6 +1578,12 @@ class TunerSession:
         elif write_log:
             self.write_change_log(out)
         return out
+
+    @property
+    def mpc_stored(self):
+        """How the loose internal-flash file this session was opened from is
+        stored (``platforms.edc16.mpc_format_of``), or None."""
+        return self._mpc_stored
 
     def save_refusal(self, path: Optional[str] = None) -> Optional[str]:
         """Why :meth:`save` would refuse to write this session to ``path``
@@ -1990,12 +2029,12 @@ class TunerSession:
         if rank(best)[0] > 0:
             return best
 
-        def tx(codes):
-            return {_variant.decode_coding(c)[0] for c in codes} - {None, ""}
-
-        want = tx(mine)
+        # no coding in common: the copy the same transmission reads, by the
+        # label the coding text carries (read from the dataset, not guessed
+        # from the digits)
+        want = _variant.coding_labels(getattr(entity, "coding", ""))
         same = [x for x in cands
-                if want & tx(_coding_values(getattr(x, "coding", "")))]
+                if want & _variant.coding_labels(getattr(x, "coding", ""))]
         return same[0] if len(same) == 1 else None
 
     def _by_group_alias(self, name: str) -> Optional[Entity]:

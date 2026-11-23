@@ -247,6 +247,11 @@ def _ssl_context():
         ctx.load_default_certs()
     except Exception:
         pass
+    try:                                # python.org's macOS Python has no system CA list
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+    except Exception:
+        pass
     return ctx
 
 

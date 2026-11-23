@@ -13,7 +13,7 @@ Leave the CAN rate at **500000 bit/s**. Switching **Transport** back to
 |---|---|---|---|---|
 | **ZF6HP** | ZF 6HP19 / 6HP26 | KWP2000 over TP 2.0 | Calibration window | Calibration |
 | **ZF6HP** | ZF 6HP28 | UDS over ISO-TP | Calibration | Calibration, or program + calibration |
-| **Aisin TRx** | Aisin TR-60SN (VW 09D) | KWP2000 over TP 2.0 | Whole flash | Not in this version |
+| **Aisin TRx** | Aisin TR-60SN (VW 09D) | KWP2000 over TP 2.0 (CAN) or K-line | Whole flash | Not in this version |
 
 The flasher has no entry for the ZF 8HP in this version.
 
@@ -128,9 +128,13 @@ The status line says which way the flasher talks to the TCU (*ISO15765* or
 
 ## Aisin TRx
 
-**Read flash** reads the whole 1 MB flash of a 09D TCU (no security unlock is
+**Read flash** reads the whole flash of a 09D TCU (no security unlock is
 needed) into a project, like every read (see
-[Reading](reading.md#where-the-read-goes)). **Write flash** is greyed out — *This module is read-only in this
+[Reading](reading.md#where-the-read-goes)). Set **Transport** to **CAN / TP 2.0**
+(1 MB flash) or to **K-line** (the early 512 KB unit: 5-baud wake-up at 10400
+baud, no speed-up, so a read takes about ten minutes). The K-line path has only
+been run against the simulator, not on a real TCU, and the 5-baud address (0x02)
+is unconfirmed. **Write flash** is greyed out — *This module is read-only in this
 version.* The 09D checksum is solved (the [Aisin module](../modules/aisin/index.md)
 checks and corrects it) and the write sequence is reproduced from a captured
 write, but it has only been run against the simulator, so writing stays off

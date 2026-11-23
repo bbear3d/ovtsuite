@@ -64,38 +64,57 @@ traffic to a file** and **Probe the bus instead of reading** — see
 ## Cluster (VDO K-line)
 
 **Cluster (VDO K-line)** is the Mk4-era VDO instrument cluster (VWK501,
-VWK503, VMMJ08, VQMJ07, K5MJ07), read and written over **K-line**. The
-transport switches to K-line when you choose it; **Speed** is greyed out
-(the cluster is always woken with the 5-baud init at 10400 baud). Ignition
-on, engine off. The [VDO Cluster module](../modules/vdo/index.md) names the
+VWK503, VMMJ08, VQMJ07, K5MJ07), read and written over **K-line**; Audi
+C5-family clusters (part numbers 4B0 920, 4Z7 920, 8D0 920, 8Z0 920) are
+recognised from their identification and use their own login (10400 baud, then
+19200 baud even parity) under the same entry, see
+[Audi C5-family clusters](../modules/vdo/read-write.md#audi-c5-family-clusters). The
+transport switches to K-line when you choose it. The cluster is always woken
+with the 5-baud init and talks at 10400 baud; **Speed** only changes how the
+blocks are exchanged. **High** (the default) sends the next read or write
+command as the acknowledgement of the previous block, which is what a genuine
+tool does and takes a 2 KB read from about 100 s to about 50 s; **Low** is the
+older, slower dialog that acknowledges every block separately. Ignition on,
+engine off. The [VDO Cluster module](../modules/vdo/index.md) names the
 EEPROM's fields and keeps its checksums.
 
 ![The VDO cluster entry](../images/flash-vdo.png)
 
-**Read flash** unlocks the cluster and reads its 2 KB EEPROM into a project,
+**Read EEPROM** unlocks the cluster and reads its 2 KB EEPROM into a project,
 which also records what the cluster reported about itself. In the OVT
 Flasher it is saved as an `.ovt` project by default, or as the raw image
 (`.bin`).
 
-**Write flash** writes the cluster EEPROM open in the active tab:
+**Write EEPROM** writes the cluster EEPROM open in the active tab:
 
 1. The confirmation lists what you changed since the tab was opened.
    Everything in the image replaces what the cluster holds, including its
    vehicle data (immobiliser, VIN, odometer).
-2. The file must be a recognised VDO Mk4 cluster EEPROM; anything else is
-   refused before the cluster is touched.
-3. The app connects and unlocks the cluster, writes the whole 2 KB EEPROM,
-   then reads every block back and compares it.
+2. The file must be a recognised VDO cluster EEPROM (Mk4 or Audi C5 family);
+   anything else is refused before the cluster is touched.
+3. The app connects and unlocks the cluster. If the file's type (Mk4 or Audi
+   C5 family) differs from the cluster's, it warns and offers **Write
+   anyway** or **Cancel** (the default), keeping the connection alive while
+   you decide; Cancel writes nothing. Then it writes the whole 2 KB EEPROM;
+   the cluster confirms each block as it is written. Tick **Verify the
+   cluster write by reading it back** in **Advanced** (off by default) to also
+   read every block back and compare it (it takes as long again as the write).
+4. Once the write is confirmed the app sends the cluster a **reset**, so it
+   restarts on the new EEPROM by itself. This happens with Verify off too (the
+   result then says the EEPROM was *not read back*); a write that failed, or
+   with Verify on did not read back correctly, is never followed by a reset.
 
 Nothing is read from the cluster before the write: there is **no automatic
-backup**, and the file is not compared with the cluster's layout or vehicle
-data. Use **Read flash** and save the read first if you want to keep what
+backup**, and the file is not compared with the cluster's vehicle data
+(only its family, Mk4 or Audi C5, is checked, as above). Use **Read EEPROM** and save the read first if you want to keep what
 the cluster holds. Writing a file from another car moves that car's immobiliser data,
 VIN and odometer into this cluster — see
 [Reading and writing the cluster](../modules/vdo/read-write.md#writing).
 
-When it finishes, switch the ignition off and on so the cluster loads the new
-EEPROM. The version written is marked in the project as last flashed.
+When it finishes the cluster has been reset and restarts on the new EEPROM.
+If the reset request could not be sent (the message says so), switch the
+ignition off and on instead. The version written is marked in the project as
+last flashed.
 **Force full write** does not apply and is hidden.
 
 ## ABS
@@ -107,6 +126,7 @@ block a factory `.sgo` does not carry), into a project like every read.
 **Write flash** is greyed out:
 the OBD flash-loader sequence is not confirmed yet.
 
-**Log CAN traffic to a file** and **Probe the bus instead of reading** (in
-the **Advanced** section) work for ABS as for the Cluster — see
-[Advanced and diagnostic tools](advanced.md#cluster-and-abs).
+**Probe the bus instead of reading** (in the **Advanced** section) works for
+ABS as for the Cluster — see
+[Advanced and diagnostic tools](advanced.md#cluster-and-abs). To keep the CAN
+frames of a read, turn on the [flash trace](advanced.md#tracing-a-session).

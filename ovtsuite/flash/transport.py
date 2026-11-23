@@ -18,9 +18,10 @@ echo in one read. Reads raise :class:`KLineTimeout` on silence so the higher
 layers can poll.
 """
 import time
+from typing import Optional
 
 try:
-    import serial                                   # pyserial
+    import serial                                  # pyserial
 except Exception:                                   # pragma: no cover
     serial = None
 
@@ -122,6 +123,11 @@ class KLine:
         except Exception:
             pass
         self.last_sync = -1
+        #: how the last successful wake_up got in: "fast" or "slow" (None before)
+        self.last_init = None
+        #: the controller a fast init's StartCommunication is addressed to
+        #: (0x10 = EDC16)
+        self.fast_target = 0x10
         #: optional callable()->bool; the wake-up retry loops give up when true
         self.is_stop = None
 
@@ -224,11 +230,26 @@ class KLine:
         """Write a whole frame, then drain all its echoes in one read."""
         self.write_raw(data)
         got = 0
-        while got < len(data):
-            chunk = self.port.read(len(data) - got)
-            if not chunk:
-                break                               # echo lost; not fatal
-            got += len(chunk)
+        echo = bytearray()
+        # The echo of a frame is back within milliseconds, so a gap of more
+        # than this means bytes were dropped.  Waiting out the whole read
+        # timeout instead (2 s) held up the next frame long enough for the
+        # EDC15's download handler to give up.
+        saved = self.read_timeout
+        self.read_timeout = min(saved, 0.25)
+        try:
+            while got < len(data):
+                chunk = self.port.read(len(data) - got)
+                if not chunk:
+                    break                           # echo lost; not fatal
+                echo += chunk
+                got += len(chunk)
+        finally:
+            self.read_timeout = saved
+        #: what the line gave back for the last frame (an ECU that answers
+        #: before the frame is over shows up in it, in place of the echo)
+        self.last_sent = len(data)
+        self.last_echo = bytes(echo)
 
     def read_complement(self, b: int):
         expected = (~b) & 0xFF
@@ -263,7 +284,9 @@ class KLine:
             for attempt in range(1, _FAST_INIT_TRIES + 1):
                 check_init_stop(self)
                 try:
-                    return self._fast_init(address)
+                    version = self._fast_init(address)
+                    self.last_init = "fast"
+                    return version
                 except KLineError:
                     pass                            # bit-banged fast init is flaky; retry,
                     # each _fast_init re-idles the bus (W5) before its pulse
@@ -272,7 +295,9 @@ class KLine:
         for attempt in range(1, tries + 1):
             check_init_stop(self)
             try:
-                return self._wake_up_once(address, even_parity)
+                version = self._wake_up_once(address, even_parity)
+                self.last_init = "slow"
+                return version
             except KLineError as ex:
                 last = ex
                 if attempt < tries:
@@ -319,7 +344,7 @@ class KLine:
         self.clear_rx()                             # echo/garbage is skipped by the reply scan
         return t0
 
-    def _fast_init(self, address: int = 0x01) -> int:
+    def _fast_init(self, address: int = 0x01, target: Optional[int] = None) -> int:
         """ISO 14230 fast initialisation: a 25 ms low pulse, then StartCommunication
         (81 <addr> F1 81) placed at Twup = 50 ms after the pulse START, at 10400.
         Bit-banging over USB-serial is inherently less reliable than a J2534 device
@@ -336,7 +361,7 @@ class KLine:
             # StartCommunication targets the KWP controller 0x10 (like MPPS's
             # 81 10 F1 81), not the 5-baud init address -- 0x01 gets no reply.
             self.clear_rx()                          # last purge just before the frame
-            req = bytes([0x81, 0x10, 0xF1, 0x81])
+            req = bytes([0x81, self.fast_target if target is None else target, 0xF1, 0x81])
             req = req + bytes([sum(req) & 0xFF])
             self.write_raw(req)                      # send; echo comes back on the line
             # Read the echo + reply together and SCAN for the StartCommunication
@@ -360,6 +385,15 @@ class KLine:
         self.read_timeout = 2.0
         try:
             time.sleep(0.3)
+            # Stale bytes already sitting in the port's input buffer -- left
+            # over from a previous session, or from a previous attempt in
+            # this same wake_up() retry loop -- are read as if they were
+            # this session's own reply, misaligning the byte stream from the
+            # first read on: a VDO cluster seen on the bench desynced this
+            # way (a wrong KW1281 block counter) right after a prior session
+            # on the same port ended uncleanly, and never recovered since
+            # nothing here was flushing before the bit-bang.
+            self.clear_rx()
             self._bitbang_5baud(address, even_parity)
             rb = getattr(self, "wake_reply_baud", None)
             if rb:                                  # ECU left at another rate by an

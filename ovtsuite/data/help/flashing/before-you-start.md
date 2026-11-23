@@ -30,6 +30,12 @@ could not be done.
    sleep off. The flasher asks the operating system to keep the computer and
    the display awake while a job runs (Windows; macOS; Linux where systemd is
    present), but this is best effort and does not cover closing the lid.
+   **Keep the app responsive in the background:** while a job runs the app
+   also asks the system not to slow it down when its window is not in front
+   (macOS App Nap and timer coalescing, Windows' coarse timer and power
+   throttling). Frame timing is what a flash depends on, so a flash still
+   works if you switch to another program, but keep the window visible if you
+   can and do not run heavy programs alongside it.
 5. **Nothing else using the cable**: close other diagnostic programs and the
    app's own [data logger](../logging.md) and [bus sniffer](../sniffer.md)
    before you start. A directly-driven FTDI cable that another program holds

@@ -42,3 +42,12 @@ def test_a_guess_that_holds_the_tables_stands():
 def test_a_definition_with_no_addresses_keeps_its_guess():
     d = _defn([], lambda size: size)
     assert d.base_in(bytes(SIZE)) == 0x80000
+
+
+def test_the_base_note_is_cleared_when_another_image_needs_none():
+    d = _defn([0x3949A + 2 * i for i in range(50)], lambda size: size)
+    assert d.base_in(bytes(SIZE)) == 0 and d.base_note
+    # a 4 KB image: the guess (0x1000) is not the definition's own base, but
+    # the base in force for the first image must not be reported for this one
+    d.base_for = lambda size: 0
+    assert d.base_in(bytes(0x100000)) == 0 and not d.base_note

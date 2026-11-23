@@ -1,0 +1,214 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Blair Campbell
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+"""Ctrl+C copies selected text in a read-only view although Edit > Copy
+cells owns the shortcut for the window (gui_textcopy)."""
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+pytest.importorskip("PySide6")
+from PySide6 import QtCore, QtGui, QtTest, QtWidgets  # noqa: E402
+
+from ovtsuite import gui_textcopy  # noqa: E402
+
+CTRL = QtCore.Qt.KeyboardModifier.ControlModifier
+
+
+@pytest.fixture(scope="module")
+def app():
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+@pytest.fixture
+def window(app):
+    gui_textcopy.install(app)
+    w = QtWidgets.QMainWindow()
+    w.hits = []
+    act = QtGui.QAction("Copy cells", w)
+    act.setShortcut("Ctrl+C")
+    act.triggered.connect(lambda: w.hits.append(1))
+    w.addAction(act)
+    holder = QtWidgets.QWidget()
+    lay = QtWidgets.QVBoxLayout(holder)
+    w.setCentralWidget(holder)
+    w.lay = lay
+    yield w
+    w.close()
+
+
+def _show(w):
+    w.show()
+    w.activateWindow()
+    QtTest.QTest.qWaitForWindowActive(w)
+
+
+def _copy(w, widget):
+    QtWidgets.QApplication.clipboard().setText("sentinel")
+    widget.setFocus()
+    QtTest.QTest.keyClick(widget, QtCore.Qt.Key.Key_C, CTRL)
+    return QtWidgets.QApplication.clipboard().text()
+
+
+def test_text_browser_selection_is_copied(window):
+    tb = QtWidgets.QTextBrowser()
+    tb.setPlainText("hello world")
+    window.lay.addWidget(tb)
+    _show(window)
+    c = tb.textCursor()
+    c.select(c.SelectionType.WordUnderCursor)
+    tb.setTextCursor(c)
+    assert _copy(window, tb) == "hello"
+    assert window.hits == []
+
+
+def test_nothing_selected_leaves_the_key_to_the_window(window):
+    tb = QtWidgets.QTextBrowser()
+    tb.setPlainText("hello world")
+    window.lay.addWidget(tb)
+    _show(window)
+    assert _copy(window, tb) == "sentinel"
+    assert window.hits == [1]
+
+
+def test_selectable_label_selection_is_copied(window):
+    lab = QtWidgets.QLabel("some selectable words")
+    lab.setTextInteractionFlags(
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        | QtCore.Qt.TextInteractionFlag.TextSelectableByKeyboard)
+    window.lay.addWidget(lab)
+    _show(window)
+    lab.setSelection(5, 10)
+    assert _copy(window, lab) == "selectable"
+    assert window.hits == []
+
+
+def test_a_tree_or_list_copies_its_own_rows_not_the_windows_cells(window):
+    tree = QtWidgets.QTreeWidget()
+    tree.setColumnCount(2)
+    tree.addTopLevelItem(QtWidgets.QTreeWidgetItem(["Map A", "12"]))
+    tree.addTopLevelItem(QtWidgets.QTreeWidgetItem(["Map B", "34"]))
+    lst = QtWidgets.QListWidget()
+    lst.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+    lst.addItems(["log 1.csv", "log 2.csv"])
+    window.lay.addWidget(tree)
+    window.lay.addWidget(lst)
+    _show(window)
+    tree.topLevelItem(1).setSelected(True)
+    assert _copy(window, tree) == "Map B\t34"
+    lst.item(0).setSelected(True)
+    lst.item(1).setSelected(True)
+    assert _copy(window, lst) == "log 1.csv\nlog 2.csv"
+    assert window.hits == []
+
+
+def test_a_class_of_our_own_is_copied_unless_it_owns_its_copy_and_a_view_is_left(window):
+    class Mine(QtWidgets.QTreeWidget):
+        pass
+    mine = Mine()
+    mine.addTopLevelItem(QtWidgets.QTreeWidgetItem(["x"]))
+    mine.topLevelItem(0).setSelected(True)
+    window.lay.addWidget(mine)
+    _show(window)
+    assert _copy(window, mine) == "x"    # a subclass is a tree like any other
+    assert window.hits == []
+    mine.setProperty(gui_textcopy.OWNS_COPY, True)
+    _copy(window, mine)
+    assert window.hits == [1]            # opted out: its own code decides
+    view = QtWidgets.QTableView()
+    window.lay.addWidget(view)
+    _copy(window, view)
+    assert window.hits == [1, 1]
+
+
+def test_a_table_with_its_own_clipboard_copies_the_full_rectangle(window):
+    """Cells (0,0) and (0,3) keep their column gap: one copy path."""
+    from ovtsuite import gui_cellmarks
+    t = QtWidgets.QTableWidget(2, 4)
+    for r in range(2):
+        for c in range(4):
+            t.setItem(r, c, QtWidgets.QTableWidgetItem("r%dc%d" % (r, c)))
+    t.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+    gui_cellmarks.install_clipboard(t)
+    window.lay.addWidget(t)
+    _show(window)
+    t.item(0, 0).setSelected(True)
+    t.item(0, 3).setSelected(True)
+    assert _copy(window, t) == "r0c0\t\t\tr0c3"
+    plain = QtWidgets.QTableWidget(1, 2)
+    plain.setItem(0, 0, QtWidgets.QTableWidgetItem("a"))
+    plain.setItem(0, 1, QtWidgets.QTableWidgetItem("b"))
+    window.lay.addWidget(plain)
+    plain.show()
+    plain.selectAll()
+    assert _copy(window, plain) == "a\tb"
+
+
+def test_the_project_panels_tree_copies_its_rows(window):
+    from ovtsuite.gui_patchdrop import DragTree
+    tree = DragTree()
+    tree.setColumnCount(2)
+    tree.addTopLevelItem(QtWidgets.QTreeWidgetItem(["file.bin", "12"]))
+    window.lay.addWidget(tree)
+    _show(window)
+    tree.topLevelItem(0).setSelected(True)
+    assert _copy(window, tree) == "file.bin\t12"
+    assert window.hits == []
+
+
+def test_install_is_idempotent(app):
+    gui_textcopy.install(app)
+    assert gui_textcopy.install(app) is False
+
+
+def test_ctrl_c_in_the_ai_assistants_conversation_in_the_real_window(
+        app, tmp_path, monkeypatch, filtered=True):
+    """The reported bug, end to end: with a file open (that enables Edit >
+    Copy cells, which has Ctrl+C), select text in the assistant's chat and
+    press Ctrl+C."""
+    from PySide6 import QtCore as C
+    C.QSettings.setPath(C.QSettings.IniFormat, C.QSettings.UserScope, str(tmp_path))
+    C.QSettings.setDefaultFormat(C.QSettings.IniFormat)
+    monkeypatch.setenv("OVT_NO_INFO_PROMPT", "1")
+    from ovtsuite import gui
+    from ovtsuite import gui_files
+    if filtered:
+        gui_textcopy.install(app)
+    monkeypatch.setattr(gui.Workspace, "show_file_info", lambda self, *a, **k: None)
+    # (a binary nothing recognises opens with a note and the hex editor; the
+    # test only needs a file open)
+    monkeypatch.setattr(gui.Workspace, "_explain_limited_support",
+                        lambda self, loaded: None)
+    path = tmp_path / "some.bin"
+    path.write_bytes(bytes(range(256)) * 4)
+    w = gui.MainWindow()
+    try:
+        w.show()
+        w.activateWindow()
+        QtTest.QTest.qWaitForWindowActive(w)
+        assert gui_files.import_files(w, [str(path)], target="new")
+        copy_cells = next(a for a in w.findChildren(QtGui.QAction)
+                          if a.text().replace("&", "") == "Copy cells")
+        assert copy_cells.isEnabled(), "a file is open: the window owns Ctrl+C"
+        dock = next((d for d in w.findChildren(QtWidgets.QDockWidget)
+                     if type(d).__name__ == "AssistantDock"), None)
+        assert dock is not None
+        dock.expand()
+        dock.view.setPlainText("The map is the driver's wish torque.")
+        c = dock.view.textCursor()
+        c.setPosition(4)
+        c.setPosition(7, c.MoveMode.KeepAnchor)
+        dock.view.setTextCursor(c)
+        w.activateWindow()                      # (a dialog may have had it)
+        QtTest.QTest.qWait(50)
+        dock.view.setFocus()
+        assert QtWidgets.QApplication.activeWindow() is w
+        assert _copy(w, dock.view) == "map"
+    finally:
+        w.close_discarding()

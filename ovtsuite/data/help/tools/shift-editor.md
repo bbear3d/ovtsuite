@@ -53,9 +53,28 @@ lines), it says so and the comparison features stay off.
   so a cell a step has already brought to the comparison's value is no
   longer outlined in the comparison (in the table above it shows as changed:
   see *Table colours* below).
+- Schedules are paired by key and lines by name, so a lock-up map of 30
+  columns (three characteristics per gear: RO, OR, RC) compares with one of
+  40 (four: the extra COC has nothing to compare with and shows `—`). A
+  schedule with more or fewer pedal points than the comparison's has a
+  pedal axis that differs, as below.
 - Where a paired schedule's pedal axis differs from the comparison's, its
   line is still drawn (on its own axis) but its cells are not compared,
-  shaded or copied.
+  shaded or copied -- unless **Align to this file's pedal axis** (beside *Show
+  comparison*, shown when an axis differs; on by default when the Options >
+  Editor > *Comparison values* default is *Aligned*) is ticked. The comparison
+  is then read at this file's pedal points (each column interpolated along the
+  pedal, the end values held; an "off" value is never blended with a speed), and
+  those schedules are compared, shaded and copied like the rest. The chart
+  keeps drawing the comparison's own points.
+
+**Averaging with the comparison.** Right-click selected cells for **Average
+selected cells with comparison** (halfway) or **...** (asks for the weight: the
+percentage of the comparison in the result, 0 keeps your value, 100 is the
+comparison's), or a line on the chart for **Average whole line with comparison**.
+Each adds a step like a copy. Cells the comparison has no value for, or where either
+side is "off", are left alone, and a schedule whose pedal axis differs is only
+averaged once **Align to this file's pedal axis** is ticked.
 
 **Copying from the comparison.** Right-click selected cells in either table
 for **Copy selected cells from comparison**, or **Copy whole line from

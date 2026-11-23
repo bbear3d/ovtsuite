@@ -218,6 +218,15 @@ def compare_columns(primary, other):
     return e.compare_columns(primary, other) if e is not None else None
 
 
+def label_columns(primary, other):
+    """Identity column map for two same-width maps whose X axis is labels (ZF 6HP
+    TCC and shift schedules), or None: such an axis is not interpolated when a
+    comparison is put onto the primary's axes."""
+    e = _ext()
+    fn = getattr(e, "label_columns", None) if e is not None else None
+    return fn(primary, other) if fn is not None else None
+
+
 def column_headers(entity) -> Optional[List[str]]:
     e = _ext()
     return e.column_headers(entity) if e is not None else None

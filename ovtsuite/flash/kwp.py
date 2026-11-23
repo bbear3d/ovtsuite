@@ -16,15 +16,39 @@ over 63. The checksum is the 8-bit sum of everything before it.
 """
 import time
 
-from .transport import KLineError, KLineTimeout, check_stop
+from .transport import KLineError, KLineTimeout, LinkStopped, check_stop
 
 TESTER = 0xF1
+STALL_S = 0.035            # a gap this long between the bytes of a frame loses it
+STALL_RETRIES = 3
 
 
 def _pause(seconds):
     """``time.sleep``, skipped for nothing to wait (a zero R6)."""
     if seconds > 0:
         time.sleep(seconds)
+
+
+_REAL_SLEEP = time.sleep
+
+
+def _gap(seconds):
+    """The wait between two bytes of a frame, spun rather than slept.
+
+    ``time.sleep`` can oversleep by tens of milliseconds -- macOS coalesces
+    the timers of a process it considers idle.  Between the bytes of a frame
+    that is fatal: a 5 ms gap that came out at 42 ms made an EDC15 drop the
+    frame in the middle of its loader upload, and the ECU then answered
+    nothing until it was power-cycled.  (A ``time.sleep`` that has been
+    replaced, as a test does to skip the waits, is still honoured.)"""
+    if seconds <= 0:
+        return
+    if time.sleep is not _REAL_SLEEP:
+        time.sleep(seconds)
+        return
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        pass
 
 
 def _write_then_read(link):
@@ -49,6 +73,26 @@ NRC_PENDING = 0x78
 #: responsePending frames one request may draw before it is given up on -- the
 #: same bound the CAN transports use, so a stuck ECU cannot loop forever.
 MAX_PENDING = 64
+
+
+def header_candidates(*addresses):
+    """The header forms worth trying on a module woken by 5-baud init at
+    ``addresses`` (its init and table addresses): no address bytes first (the
+    09D TCU answered it), then each address times 16 (the EDC16 is woken at
+    0x01 and asked at 0x10), the address itself, and the engine ECU's 0x10."""
+    out = [None]
+    for a in addresses:
+        if a is None:
+            continue
+        out += [(a << 4) & 0xFF, a & 0xFF]
+    out.append(0x10)
+    seen, res = set(), []
+    for c in out:
+        if c in seen or c == 0:
+            continue
+        seen.add(c)
+        res.append(c)
+    return res
 
 
 class NegativeResponse(KLineError):
@@ -110,17 +154,85 @@ class Kwp2000:
         self.fast = False
         #: optional callable()->bool; a responsePending wait gives up when true
         self.is_stop = None
+        #: frame every request with no address bytes (``02 1A 9B ck``): some
+        #: modules (the Aisin 09D TCU) answer only that, or only their own
+        #: address, and not the engine ECU's 0x10 the others are asked at
+        #: (see :meth:`detect_header`)
+        self.addressless = False
+        #: resend a request whose bytes went out with a stall in between (the
+        #: ECU has dropped such a frame, and answers it with garbage or an NRC
+        #: 0x13): for a flasher whose requests can be repeated harmlessly
+        self.stall_retry = False
+
+    def detect_header(self, candidates, probe=(0x1A, b"\x9B"), timeout=1.5):
+        """Find the header form the module answers, once it is awake.
+
+        ``candidates`` are tried in order: ``None`` is a header with no
+        address bytes, an int is a request addressed to that address. The
+        first form that draws ANY reply -- a negative one too -- wins; the
+        dialog is left framing that way (:attr:`addressless` /
+        :attr:`controller`) and ``(candidate, reply)`` is returned. If none
+        answers the dialog is left as it was and None is returned. The
+        ``probe`` request is a read (ident ``1A 9B``), so trying forms is
+        harmless. A wrong form is silent, so each costs ``timeout`` seconds.
+        """
+        link = self.k
+        saved = None
+        try:
+            saved = link.read_timeout
+            link.read_timeout = timeout
+        except Exception:
+            saved = None
+        keep = (self.controller, self.addressless)
+        try:
+            for cand in candidates:
+                self.addressless = cand is None
+                if cand is not None:
+                    self.controller = cand
+                try:
+                    self.send(probe[0], probe[1])
+                    msg = self.receive()
+                except LinkStopped:
+                    raise
+                except KLineError:
+                    continue
+                return cand, msg
+            self.controller, self.addressless = keep
+            return None
+        finally:
+            if saved is not None:
+                try:
+                    link.read_timeout = saved
+                except Exception:
+                    pass
 
     def send(self, service, body=b"", exclude_addresses=False, _then_read=False):
-        frame = build_frame(service, body, exclude_addresses, dest=self.controller)
+        frame = build_frame(service, body, exclude_addresses or self.addressless,
+                            dest=self.controller)
         time.sleep(self.P3)
         if self.fast:
             (_write_then_read(self.k) if _then_read else self.k.write_bytes)(frame)
             return
-        for b in frame[:-1]:
-            self.k.write_byte(b)
-            time.sleep(self.P4)
-        self.k.write_byte(frame[-1])
+        for attempt in range(STALL_RETRIES if self.stall_retry else 1):
+            last = time.perf_counter()
+            stalled = False
+            for b in frame[:-1]:
+                self.k.write_byte(b)
+                _gap(self.P4)
+                now = time.perf_counter()
+                stalled = stalled or now - last > STALL_S
+                last = now
+            # the last byte's own echo wait is not a gap in the frame: the ECU
+            # already has all of it (and may have acted on it) -- only the gap
+            # BEFORE that byte counts
+            stalled = stalled or time.perf_counter() - last > STALL_S
+            self.k.write_byte(frame[-1])
+            if not stalled or not self.stall_retry:
+                return
+            # the host stalled mid-frame; let the ECU's receiver time out, drop
+            # whatever it answered to the broken frame, and send it again
+            time.sleep(0.3)
+            self.k.clear_rx()
 
     def receive(self):
         fmt = self.k.read_byte()
@@ -136,13 +248,25 @@ class Kwp2000:
         self.k.read_byte()                              # checksum (not enforced, as KWHack)
         return Message(fmt, dest, src, length, service, body)
 
-    def send_receive(self, service, body=b"", exclude_addresses=False):
+    def send_receive(self, service, body=b"", exclude_addresses=False,
+                     accept_echo_reply=False):
+        """Send a request and read the answer.  ``accept_echo_reply``: a
+        positive answer to an addressless request that the echo drain of the
+        write already swallowed (the cable dropped some echoed bytes, so the
+        drain read the answer as echo) counts as the answer; returns None."""
         self.send(service, body, exclude_addresses, _then_read=True)
+        if accept_echo_reply:
+            echo = getattr(self.k, "last_echo", b"")
+            pos = (service + 0x40) & 0xFF
+            if (len(echo) < getattr(self.k, "last_sent", 0) and
+                    echo.endswith(bytes([1, pos, (1 + pos) & 0xFF]))):
+                return None
         msg = self.receive()
         pending = 0
         while True:
             if msg.src is not None:
-                if msg.src != self.controller:
+                # asked with no address, the module still answers from its own
+                if not self.addressless and msg.src != self.controller:
                     raise KLineError("Unexpected SrcAddress 0x%02X" % msg.src)
                 if msg.dest != TESTER:
                     raise KLineError("Unexpected DestAddress 0x%02X" % msg.dest)
@@ -180,11 +304,15 @@ class Kw1281:
     blocks both ways, and a clean end (which flips an EDC15 into its KWP2000
     boot stub on the next slow-init)."""
 
-    def __init__(self, link, log=None, fast=False):
+    def __init__(self, link, log=None, fast=False, r6=None):
         self.k = link
         self._log = log or (lambda s: None)
         self._counter = None
         self._connected = False
+        #: with ``fast``: the wait before answering a byte, instead of the
+        #: R6_FAST formula (the VDO cluster's High speed answers at once: a
+        #: genuine tool's whole exchange is faster than R6_FAST allows)
+        self._r6_fixed = r6
         #: trims the inter-byte and block lead-in delays (KWHack's
         #: Kw1281FastTiming, always on for its live data)
         self.fast = bool(fast)
@@ -197,6 +325,8 @@ class Kw1281:
         link's P1_MAX), so it is not waited twice. Otherwise R6 as always."""
         if not self.fast:
             return R6
+        if self._r6_fixed is not None:
+            return self._r6_fixed
         return max(0.0, R6_FAST - float(getattr(self.k, "rx_settle_s", 0.0) or 0.0))
 
     def connect(self):

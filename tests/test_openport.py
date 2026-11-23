@@ -273,3 +273,33 @@ def test_kline_slow_init_end_to_end_over_usb_openport():
     assert any(m.startswith(b"ato3 ") for m in fw.sent)                  # ISO9141 channel
     assert b"atw3 1\r\n" in fw.sent                                     # 5-baud init
 
+
+
+def test_a_zero_timeout_read_still_reads_the_device():
+    """TP 2.0 polls with timeout 0; that must still pull what the device has queued."""
+    fw = FakeFirmware()
+    dev = OP.OpenPort(fw)
+    ch = dev.connect(J.CAN, 500000)
+    ch.pass_all()
+    fw.inject(pkt(J.CAN, OP.NORM_MSG, 2001, bytes.fromhex("00000201") + bytes.fromhex("00D0000340070101")))
+    got = []
+    for _ in range(20):                      # a 7-byte-chunk stream needs a few polls
+        got += ch.read(16, 0)
+        if got:
+            break
+    assert [m.can_id for m in got] == [0x201]
+    assert ch.read(16, 0) == []
+    dev.close()
+
+
+def test_w2_w3_are_not_sent_to_the_firmware_on_a_k_line_channel():
+    """The firmware sits W2/W3 out before the inverted KB2, which made an EDC16 drop a slow init."""
+    fw = FakeFirmware()
+    dev = OP.OpenPort(fw)
+    ch = dev.connect(J.ISO9141, 10400)
+    n = len(fw.sent)
+    ch.set_config(W2=0xE7, W3=0xE7)
+    assert len(fw.sent) == n                          # nothing went to the device
+    ch.set_config(W4=0x1E)
+    assert fw.sent[-1] == b"ats%d %d %d\r\n" % (J.ISO9141, J.W4, 0x1E)
+    dev.close()

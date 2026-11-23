@@ -14,6 +14,13 @@ the filter field narrows the list by group or cell name. A group the module
 does not serve is greyed out. To read a group that is not in the list, type
 its number under **Group number** and press **Add**.
 
+Where the names come from is shown under the list. EDC15 and EDC16 engines are
+named from the factory calibration of their part number. A ZF 6HP19A gearbox
+(its identification reads `AG6 09L`, or `0AT`) is named from the logger's
+table of its groups 1-17; that table was read from one car, and a few cells in
+group 15 stay unnamed. A 6HP26A (`AG6 09E`) is not named, because its groups
+have not been read.
+
 On the right, every cell of every ticked group is a tile with its name, value
 and unit and a bar showing where the value sits in its usual range; a tile is
 outlined when a value is out of range. The line over the tiles shows how many

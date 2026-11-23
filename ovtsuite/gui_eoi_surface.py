@@ -34,10 +34,14 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from PySide6 import QtCore, QtWidgets
 
+from . import eoi as _eoi
 from .gui_surface3d import Surface3DView
 
 #: width of the surface column, in pixels
 WIDTH = 330
+
+#: the Ctrl+drag snap in microsecond mode, in microseconds
+US_DRAG_STEP = 10.0
 SHOWN_KEY = "eoi/surface"
 
 _UNITS = {"eoi": "° ATDC", "soi": "° BTDC", "dur": "°",
@@ -129,6 +133,21 @@ class _EoiEditor:
     def _new_values(self, delta: float) -> Dict[Tuple[int, int], float]:
         from .gui_eoi_edit import step_for
         d = self.d
+        if d._in_us():
+            # the drag delta is in microseconds: snap it to a microsecond
+            # step, then turn it into degrees cell by cell (a degree is a
+            # different time at every rpm)
+            st = US_DRAG_STEP
+            us = round(delta / st) * st
+            if us == 0:
+                return {}
+            out = {}
+            for rc in sorted(self.selected()):
+                deg = _eoi.us_to_deg(us, d._rpm_at(rc))
+                if deg is None:
+                    continue
+                out.update(d.stepped([rc], deg))
+            return out
         st = step_for(d.edit.view_key())
         step = round(delta / st) * st if st > 0 else delta
         if step == 0:

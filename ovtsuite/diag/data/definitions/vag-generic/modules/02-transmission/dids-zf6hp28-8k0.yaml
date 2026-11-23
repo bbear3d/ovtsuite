@@ -1,0 +1,30 @@
+# ZF 6HP28 (GS19) live values over UDS, the DIDs the logger already names
+# (ovtsuite/datalog/zf6hp_uds_live.py). The seven transmission/ignition ones
+# were identified from Bear's capture of a workshop tool polling the box
+# (Reference/Logs/VCDS-UDS-Trans.log, 2026-10-06); the F4xx ones are SAE J1979
+# PID data served through the TCU. Scaling that the capture did not fix is
+# left out (unit "count", no factor) rather than guessed: 2102/2103/2106/2104
+# and 0805 read as raw counts. Matched on the 8K0927158 part-number family
+# (a 6HP28AF); the 8R0927158 family has its own copy, dids-zf6hp28-8r0.yaml.
+kind: dids
+match: { addr: "02", protocol: uds, part: "8K0927158*" }
+source: capture
+confidence: likely
+dids:
+  - { id: zf6hp28.did.2102, did: 0x2102, name: "Transmission input speed", type: u16, length: 2, live: true, unit: count }
+  - { id: zf6hp28.did.2103, did: 0x2103, name: "Transmission output speed", type: u16, length: 2, live: true, unit: count }
+  - { id: zf6hp28.did.2106, did: 0x2106, name: "Road speed (transmission)", type: u16, length: 2, live: true, unit: count }
+  - { id: zf6hp28.did.2104, did: 0x2104, name: "ATF temperature", type: u8, length: 1, live: true, unit: count }
+  - { id: zf6hp28.did.0285, did: 0x0285, name: "Ignition supply voltage (terminal 15)", type: u8, length: 1, live: true, unit: V, scale: { kind: linear, factor: 0.1, offset: 0, unit: V } }
+  - { id: zf6hp28.did.0288, did: 0x0288, name: "Ignition (terminal 15) on", type: u8, length: 1, live: true, unit: count }
+  - { id: zf6hp28.did.0805, did: 0x0805, name: "Brake signal flags", type: u8, length: 1, live: true, unit: count }
+  - { id: zf6hp28.did.f40c, did: 0xF40C, name: "Engine speed", type: u16, length: 2, live: true, unit: rpm, scale: { kind: linear, factor: 0.25, offset: 0, unit: rpm } }
+  - { id: zf6hp28.did.f40d, did: 0xF40D, name: "Vehicle speed", type: u8, length: 1, live: true, unit: km/h, scale: { kind: linear, factor: 1, offset: 0, unit: km/h } }
+  - { id: zf6hp28.did.f405, did: 0xF405, name: "Coolant temperature", type: u8, length: 1, live: true, unit: "°C", scale: { kind: linear, factor: 1, offset: -40, unit: "°C" } }
+  - { id: zf6hp28.did.f404, did: 0xF404, name: "Calculated load", type: u8, length: 1, live: true, unit: "%", scale: { kind: linear, factor: 0.392157, offset: 0, unit: "%" } }
+  - { id: zf6hp28.did.f443, did: 0xF443, name: "Absolute load", type: u16, length: 2, live: true, unit: "%", scale: { kind: linear, factor: 0.392157, offset: 0, unit: "%" } }
+  - { id: zf6hp28.did.f411, did: 0xF411, name: "Throttle position", type: u8, length: 1, live: true, unit: "%", scale: { kind: linear, factor: 0.392157, offset: 0, unit: "%" } }
+  - { id: zf6hp28.did.f449, did: 0xF449, name: "Accelerator pedal D", type: u8, length: 1, live: true, unit: "%", scale: { kind: linear, factor: 0.392157, offset: 0, unit: "%" } }
+  - { id: zf6hp28.did.f442, did: 0xF442, name: "Battery supply voltage (terminal 30)", type: u16, length: 2, live: true, unit: V, scale: { kind: linear, factor: 0.001, offset: 0, unit: V } }
+  - { id: zf6hp28.did.f430, did: 0xF430, name: "Warm-ups since codes cleared", type: u8, length: 1, live: true, unit: count }
+  - { id: zf6hp28.did.f431, did: 0xF431, name: "Distance since codes cleared", type: u16, length: 2, live: true, unit: km }

@@ -81,6 +81,8 @@ def gf(monkeypatch):
     pytest.importorskip("PySide6")
     from ovtsuite.flash import gui_flash, openport
     monkeypatch.setattr(openport, "find_devices", lambda: ["OpenPort 2.0 bus 1 addr 7"])
+    from ovtsuite.flash import sm2_device
+    monkeypatch.setattr(sm2_device, "find_devices", lambda: [])    # an SM2 on this bench is not the test's
     monkeypatch.setattr(gui_flash, "list_ports", lambda: [("/dev/ttyUSB0", "/dev/ttyUSB0")])
     monkeypatch.setattr(gui_flash, "_j2534_devices", lambda: [])
     monkeypatch.setattr(gui_flash, "remote_devices", lambda: [])
@@ -93,7 +95,7 @@ def test_usb_openport_is_offered_for_kline(gf):
     Medium speed cap)."""
     devs = gf.kline_devices()
     assert [d for d, _ in devs] == ["/dev/ttyUSB0", gf.OPENPORT_USB]
-    assert "OpenPort" in devs[1][1] and "J2534" in devs[1][1]
+    assert "OpenPort" in devs[1][1] and "Direct-USB" in devs[1][1] and "J2534" not in devs[1][1]
     assert gf.is_j2534(gf.OPENPORT_USB) and not gf.is_j2534("/dev/ttyUSB0")
     assert gf.cable_allows_high(gf.OPENPORT_USB) is False
 
@@ -115,3 +117,12 @@ def test_missing_openport_says_why(monkeypatch):
     assert "libusb" in openport.explain_absence()
     monkeypatch.setattr(usb_core, "find", lambda **kw: iter(()))
     assert "no OpenPort" in openport.explain_absence()
+
+
+def test_no_j2534_device_offers_high_including_the_direct_sm2():
+    from ovtsuite.flash import gui_flash as gf
+    assert gf.cable_allows_high(gf.SM2_USB) is False      # libusb SM2: bit errors at ~245 kbaud
+    assert gf.cable_allows_high(gf.OPENPORT_USB) is False  # OpenPort firmware refuses > ~125 kbaud
+    class Dll:                                            # a vendor-DLL J2534 device
+        dll = "x.dll"
+    assert gf.cable_allows_high(Dll()) is False

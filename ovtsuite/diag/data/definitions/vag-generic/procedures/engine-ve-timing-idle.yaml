@@ -1,0 +1,32 @@
+# TDI timing graph for the distributor-pump (VP37, EDC15VM+) engines:
+# measured value block 0 at idle, warm, read through its ten raw bytes
+# (diag/raw0.py, worked out from the ECU's xcwMessw table and checked
+# against the workshop manual's group 000 table, which gives the limits).
+# Coolant temperature across, start of injection up, the manual's window
+# drawn as the band. Read-only.
+kind: procedure
+id: procedure.engine.ve-timing-idle
+name: "TDI timing graph (idle, VE pump)"
+description: "Start of injection against coolant temperature at warm idle (block 000), drawn inside the workshop manual's window for the engine code, then every value of block 000 checked against the manual. Distributor-pump TDIs (VP37: AGR, AHF, ALH, ASV, AGP, AQM)."
+applies: { addr: "01", platform: [edc15], protocol: kw1281 }
+safety: read-only
+category: Diagnosis
+source: vendor-doc          # the workshop manual's group 000; scalings from the binary
+steps:
+  - choose:
+      id: engine
+      label: "Engine code"
+      default: ahf
+      options:
+        ahf: "AGR, AHF, ALH, ASV"
+        agp: "AGP, AQM"
+  - check: [engine_running]
+  - show: "Let the engine idle, warm (coolant 80 C or more), with nothing switched on. The values hold only while the EGR is on: it switches off after about 2 minutes of idling, so rev briefly or restart the engine if it has idled longer. Block 000 is read and drawn live until you press Finish; the point should settle inside the green window."
+  - live:
+      group: 0
+      layout: edc15vm
+      seconds: until done
+      title: "Timing at idle (block 000)"
+      plot: { x: 7, y: 2, band: { engines: "@engine", condition: idle } }
+      check: { engines: "@engine", condition: idle }
+  - log: { journal: true, note: "TDI timing at idle" }

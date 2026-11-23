@@ -96,6 +96,13 @@ class ProjectDoc:
 
     def __init__(self, project: Project, path: Optional[str]):
         self.project = project
+        try:
+            # EEPROM / MPC members of an older project become companion sets
+            # (not opened in tabs); saved with the project's next save
+            from .project import companions as _co
+            _co.split_all(project)
+        except Exception:
+            pass
         self.path = os.path.abspath(path) if path else None
         self.tmpdir = tempfile.mkdtemp(prefix="ovt-project-")
         self.saver = _as.AutoSaver(project)
@@ -138,6 +145,10 @@ class ProjectRef:
         self.sid = sid
         self.bid = bid
         self.workfile = workfile
+        #: ``{role: bytes}`` of the linked companions' heads this tab was
+        #: opened (or last refreshed) with: a save commits a companion part
+        #: only when the tab's copy differs from it (project.companions)
+        self.comp_base = {}
 
     @property
     def set(self):
@@ -323,6 +334,17 @@ def open_branch(win, doc, sid, bid, ws=None):
     return ws
 
 
+def _flash_companion(proj, sid) -> bool:
+    """An MPC set that a flash set links: it is that flash's internal flash,
+    not a file of its own to explain or open in the hex editor."""
+    from .project import companions as _co
+    try:
+        return (proj.set(sid).platform == "edc16mpc"
+                and bool(_co.flashes_using(proj, sid)))
+    except Exception:
+        return False
+
+
 def _work_name(doc, s) -> str:
     """A set's working-file name: "<project> - <set>", or just the project's
     name when the set is called the same (a project made from one file,
@@ -354,6 +376,8 @@ def load_into(ws, doc, sid, bid) -> bool:
         located = _locate_on_original(ws, doc, sid, b, state, reshaped)
         if located is not None:
             defn = located
+    from .project import companions as _co
+    comp_base = _co.injected(proj, sid)     # what the working file will carry
     ext, data = _sb.working_file(proj, sid, state, defn=defn, log=log)
     work = _sb.write_working_file(doc.tmpdir, _work_name(doc, s),
                                   ext, data, log=log)
@@ -380,10 +404,23 @@ def load_into(ws, doc, sid, bid) -> bool:
     try:
         # adopt_primary takes it up (and lets go of a project shown before)
         ws._pending_project_ref = ProjectRef(doc, sid, bid, work)
+        ws._pending_project_ref.comp_base = comp_base
         ws.adopt_primary(loaded, work)
     finally:
         ws._quiet = quiet
-    if not quiet and getattr(loaded, "support", "full") not in ("full", "definition"):
+    from . import platforms as _pf
+    if not quiet and (_pf.is_eeprom(getattr(loaded, "platform", ""))
+                      or _pf.is_eeprom(s.platform)):
+        # an ECU's EEPROM on its own opens in the EEPROM editor (every time
+        # it is opened, not just the first), not the hex editor
+        # (only the tab in front: several EEPROMs opened at once would stack
+        # one modal editor on another)
+        QtCore.QTimer.singleShot(
+            0, lambda: ws.primary is loaded and ws.win.current is ws
+            and ws.open_own_eeprom_editor())
+    elif _flash_companion(proj, sid):
+        pass        # an MPC that goes with a flash: no popup, no hex editor
+    elif not quiet and getattr(loaded, "support", "full") not in ("full", "definition"):
         # what the binary is and which module would support it: once per set
         # while the project is open (not for every tab, nor at start-up)
         told = doc.__dict__.setdefault("_limited_told", set())
@@ -725,6 +762,9 @@ def _commit(ws, label="") -> bool:
     # a scratch file read straight back: no compression, fsync or .bak
     ws.primary.save(ref.workfile, durable=False)
     images, defn = _sb.read_back(proj, ref.sid, ref.workfile)
+    from .project import companions as _co
+    edits = {k[len(_co.PREFIX):]: images.pop(k) for k in list(images)
+             if k.startswith(_co.PREFIX)}
     lines, named, renames = _sb.read_log(proj, ref.sid, head,
                                         _cl.read_text(ref.workfile))
     for cid, name in renames.items():
@@ -739,8 +779,29 @@ def _commit(ws, label="") -> bool:
             auto = src if src.startswith("AI: ") else "patch: %s" % src
         except ValueError:
             auto = "patch"
+    # EEPROM edits are versions of their own: a save that changed only the
+    # EEPROM (a paired one, or an EEPROM tab) is named for what changed in it,
+    # and one that changed it among other things says so in its log
+    if not (label or named) and kind == "save":
+        before = proj.state(ref.sid, head)
+        moved = {m for m, b in images.items() if before.get(m) != b}
+        ee = next((m.id for m in ref.set.members if m.role == "eeprom"), None)
+        if ee in moved:
+            from . import gui_eeprompair as _pair
+            what = _pair.describe_change(before.get(ee), images[ee])
+            if moved == {ee}:
+                auto = what
+            else:
+                lines = list(lines) + [what]
     proj.commit(ref.sid, ref.bid, images, label=label or named or auto,
                 kind=kind, log=lines)
+    # an EEPROM / MPC edited in this tab is a new version of that companion
+    # (only a part that differs from the companion head the tab was opened
+    # with: a stale tab does not put its old copy back)
+    stale = _stale_roles(proj, ref, edits)
+    touched = _co.commit_edits(proj, ref.sid, edits, base=ref.comp_base)
+    ref.comp_base = {**ref.comp_base, **{r: bytes(b) for r, b in edits.items()
+                                         if r not in stale}}
     # tables resized in the tab (ovtsuite.resize) go with the version
     from . import resize as _rz
     if _rz.mods(ws.primary):
@@ -750,12 +811,136 @@ def _commit(ws, label="") -> bool:
     proj.set_cache(ref.sid, ref.bid, defn or None)
     _resync_log(ws)
     _name(ws)
+    refresh_followers(ws, touched)
+    if stale:
+        try:                    # it was saved still showing an old companion
+            reload_tab(ws)
+        except Exception:
+            pass
     # the first save of a new project: now there is an original to compare with
     if ws.comparison is None:
         root = ref.set.root_of(ref.branch.head)
         if root is not None and root.id != ref.branch.head:
             compare_with_checkpoint(ws, root.id, quiet=True)
     return True
+
+
+def _stale_roles(proj, ref, edits) -> set:
+    """Roles whose part in a saved tab is the (unedited) companion head the tab
+    was opened with, while the companion has since moved on: the tab shows an
+    old copy."""
+    from .project import companions as _co
+    out = set()
+    for role, data in edits.items():
+        c = _co.links(proj, ref.sid).get(role)
+        base = ref.comp_base.get(role)
+        if c is None or base is None or bytes(base) != bytes(data):
+            continue
+        head = _co.head_bytes(proj, c)
+        if head is not None and bytes(head) != bytes(base):
+            out.add(role)
+    return out
+
+
+def _tab_companion(ws, role):
+    """The bytes the tab holds in its EEPROM / MPC part right now."""
+    ee = getattr(ws, "_eeprom", None)
+    if role == "eeprom" and ee is not None:
+        return bytes(ee)
+    name = next((n for n, r in _sb.REGION_ROLE.items() if r == role), None)
+    try:
+        for n, buf in ws.primary.region_buffers():
+            if n == name:
+                return bytes(buf)
+    except Exception:
+        pass
+    return None
+
+
+def _inject_companion(ws, role, data) -> bool:
+    """Put ``data`` into the tab's EEPROM / MPC part as an (undoable) edit,
+    leaving the rest of its unsaved edits as they are."""
+    name = next((n for n, r in _sb.REGION_ROLE.items() if r == role), None)
+    sess = ws.primary
+    try:
+        buf = sess.region_edit_buffer(name) if name else None
+        if buf is None or len(buf) != len(data):
+            return False
+        with sess.transaction("companion updated"):
+            sess.edit_region(name, 0, bytes(data))
+    except Exception:
+        return False
+    if role == "eeprom" and getattr(ws, "_eeprom", None) is not None:
+        ws._eeprom = bytes(data)
+    return True
+
+
+def sync_companions(ws) -> bool:
+    """Bring tab ``ws`` (a flash set's) up to date with the heads of the
+    companions it follows. A clean tab is reloaded. A tab with unsaved edits
+    keeps them: only its EEPROM / MPC part is replaced, and only where the
+    tab has not changed that part itself (a part the user edited here is kept,
+    and saved over the companion's head with its own edit). True when
+    something changed."""
+    ref = ws.project_ref
+    if ref is None or ws.primary is None:
+        return False
+    from .project import companions as _co
+    proj = ref.doc.project
+    try:
+        heads = _co.injected(proj, ref.sid)
+    except KeyError:
+        return False
+    if all(ref.comp_base.get(r) == h for r, h in heads.items()) \
+            and set(ref.comp_base) <= set(heads):
+        return False
+    if not ws.is_dirty():
+        reload_tab(ws)
+        return True
+    done = False
+    for role, head in heads.items():
+        base = ref.comp_base.get(role)
+        if base is not None and bytes(base) == bytes(head):
+            continue
+        cur = _tab_companion(ws, role)
+        if cur is not None and base is not None and bytes(cur) != bytes(base):
+            continue                    # edited in this tab: kept
+        if cur is not None and bytes(cur) == bytes(head) \
+                or _inject_companion(ws, role, head):
+            ref.comp_base[role] = bytes(head)
+            done = True
+    if done:
+        ws.win._workspace_changed(ws)
+    return done
+
+
+def refresh_followers(ws, touched_sids=()) -> None:
+    """Every tab showing a flash set that follows a companion changed by this
+    save is brought up to date: the companions ``touched_sids`` (saved from a
+    flash's tab), and the one this tab is itself, when it is one -- and the
+    flashes that follow them, all of them (a flash is one of the touched, and
+    others share a companion). A tab with unsaved edits keeps them and takes
+    only the companion's part (:func:`sync_companions`); tabs of a
+    companion saved from a flash's tab are reloaded when they are clean."""
+    ref = ws.project_ref
+    doc = ref.doc
+    from .project import companions as _co
+    proj = doc.project
+    moved = set(touched_sids) | {ref.sid}
+    sids = set(touched_sids)
+    for cid in moved:
+        sids |= {f.id for f in _co.flashes_using(proj, cid)}
+    for t in doc.tabs(ws.win):
+        if t is ws or t.project_ref.sid not in sids:
+            continue
+        try:
+            if t.project_ref.sid in touched_sids:       # the companion's own tab
+                if not t.is_dirty():
+                    reload_tab(t)
+            else:
+                sync_companions(t)
+        except Exception:
+            pass
 
 
 def _name(ws):
@@ -1076,6 +1261,18 @@ def _read_prompt_skipped() -> bool:
     return os.environ.get("OVT_NO_READ_PROMPT", "").strip() not in ("", "0")
 
 
+def _bring_forward(w):
+    """Raise and activate ``w`` (a window or a box): on macOS the window a
+    finished flasher just closed can leave the prompt behind another one."""
+    try:
+        if w is not None:
+            w = w.window()
+            w.raise_()
+            w.activateWindow()
+    except Exception:                                  # noqa: BLE001 - cosmetic
+        pass
+
+
 def ask_read(win, title, text, informative="", add_label=None, export=None):
     """The "Read complete" prompt: ``"add"`` (to the project in front, offered
     when ``add_label`` is given), ``"new"`` (a new project), ``"export"`` (the
@@ -1099,6 +1296,8 @@ def ask_read(win, title, text, informative="", add_label=None, export=None):
         exp = (box.addButton("Export to file...", Role.ActionRole)
                if export is not None else None)
         box.setDefaultButton(add if add is not None else new)
+        _bring_forward(win)
+        QtCore.QTimer.singleShot(0, lambda b=box: _bring_forward(b))
         box.exec()
         hit = box.clickedButton()
         if add is not None and hit is add:
@@ -1169,9 +1368,15 @@ def open_read(win, data, name, eeprom=None, source=None):
                 plat = "unknown"
             same = next((x for x in proj.sets if x.platform == plat
                          and plat != "unknown"), None)
+            held = {}
             s = _imp.import_read(proj, data, name, eeprom=eeprom, source=source,
-                                 into_set=same.id if same else None)
+                                 into_set=same.id if same else None, held=held)
             doc = target
+            if held:
+                # the read holds an EEPROM / MPC the set already links:
+                # compare, then ask (cancel keeps the linked ones)
+                from . import gui_importparts as _gip
+                _gip.offer(win, doc, s.id, held, name)
         else:
             proj = Project(name)
             s = _imp.import_read(proj, data, name, eeprom=eeprom, source=source)
@@ -1193,6 +1398,7 @@ def open_read(win, data, name, eeprom=None, source=None):
     except Exception:
         pass
     show_panel(win)
+    _bring_forward(win)
     if ws is not None:
         from . import gui_files as _gf
         _gf._info_on_open(win, ws)
@@ -1253,7 +1459,8 @@ def open_eeprom_read(win, data, name, source=None):
     # no EDC15 project in front: a project of its own
     proj = Project(name)
     try:
-        s = _imp.import_read(proj, data, name, source=source)
+        s = _imp.import_read(proj, data, name, source=source,
+                             eeprom_of="edc15")
     except Exception as ex:
         QtWidgets.QMessageBox.critical(win, "EEPROM read",
                                        "The read could not be opened: %s" % ex)
@@ -1269,18 +1476,7 @@ def open_eeprom_read(win, data, name, source=None):
     except Exception:
         pass
     show_panel(win)
-    from . import gui_eeprom
-    if gui_eeprom.layouts_for(bytes(data)):
-        def _adopt(edited, _ws=ws):
-            if bytes(edited) != bytes(_ws.primary.binfile.data):
-                _ws.primary.edit_bytes(0, bytes(edited))
-                _ws.win._workspace_changed(_ws)
-        dlg = gui_eeprom.open_editor(ws, bytes(data),
-                                     name="%s [EEPROM]" % doc.title,
-                                     on_save=_adopt)
-        if dlg is not None:
-            dlg.exec()
-            _adopt(dlg.data)
+    # (an EEPROM set opens in the EEPROM editor by itself: load_into)
     return ws
 
 
@@ -1638,13 +1834,28 @@ _FILES_FILTER = ("Binaries and containers (*.bin *.ori *.sgo *.frf *.dim *.ols *
                  "*.edc16 *.edc15 *.6hp *.8hp *.vdo);;All files (*)")
 
 
-def _import_paths(win, proj, paths) -> list:
-    """Import each file into ``proj``; returns the new sets. A definition
-    beside a binary (same name, .xdf / .a2l / .kp / .dam) comes with it."""
+def _import_paths(win, proj, paths, doc=None):
+    """Import each file into ``proj`` (``doc``: its open project, if any);
+    returns ``(new sets, number of EEPROM images paired)``. A definition beside a binary (same name, .xdf /
+    .a2l / .kp / .dam) comes with it. An ECU's EEPROM image pairs with the
+    flash of its control unit (gui_eeprompair): the one imported with it, else
+    the project's, asked about; a paired EEPROM makes no set of its own."""
     from .project import importers as _imp
     from . import gui_olsversions as _ov
-    sets, problems = [], []
-    for path in paths:
+    from . import gui_eeprompair as _pair
+    sets, problems, paired = [], [], 0
+    before = {s.id for s in proj.sets}
+    order, ecus = _pair.plan(paths)
+    with_eeprom = {e for e in ecus.values() if e}
+    for path in order:
+        if ecus[path]:
+            got = _pair.import_eeprom(win, doc, proj, path, ecus[path], sets,
+                                      before)
+            if got is _pair.CANCEL:
+                continue
+            if got is not _pair.SEPARATE:
+                paired += 1
+                continue
         which = _ov.choose(win, path)           # a WinOLS project's versions
         if which == _ov.CANCEL:
             continue
@@ -1655,9 +1866,12 @@ def _import_paths(win, proj, paths) -> list:
             sets.append(s)
         except Exception as ex:
             problems.append("%s: %s" % (os.path.basename(path), ex))
+            continue
+        if _pair.flash_met_eeprom(win, doc, proj, s, before, with_eeprom):
+            paired += 1                     # the flash set still opens
     if problems:
         QtWidgets.QMessageBox.warning(win, "Add files", "\n".join(problems))
-    return sets
+    return sets, paired
 
 
 def new_project(win) -> bool:
@@ -1674,7 +1888,8 @@ def new_project(win) -> bool:
             os.path.splitext(os.path.basename(paths[0]))[0])
     proj = Project(name)
     _apply_info(proj, values)
-    if not _import_paths(win, proj, paths):
+    sets, _paired = _import_paths(win, proj, paths)
+    if not sets:
         return False
     t = _open_new_doc(win, proj)
     if t is not None:
@@ -1692,7 +1907,7 @@ def add_files(win, doc) -> bool:
     if not paths:
         return False
     set_last_dir(paths[0])
-    sets = _import_paths(win, doc.project, paths)
+    sets, paired = _import_paths(win, doc.project, paths, doc=doc)
     first = None
     for s in sets:
         t = open_branch(win, doc, s.id, s.active.id)
@@ -1701,7 +1916,7 @@ def add_files(win, doc) -> bool:
     if first is not None:
         from . import gui_files as _gf
         _gf._info_on_open(win, first)
-    return bool(sets)
+    return bool(sets) or paired > 0
 
 
 def attach_definition(win, doc, sid, path) -> bool:
@@ -2073,14 +2288,23 @@ def _push_history(win, doc):
 
 
 def _drop_doc(win, doc):
+    from . import gui_external as _ext
+    # edits made in other programs are asked about (and taken in, or
+    # discarded) before their copies are erased -- whichever way the
+    # project is closing; cancelled: the copies stay until the app exits
+    settled = True
+    try:
+        settled = _ext.settle(win, doc)
+    except Exception:
+        pass
     write_definitions(win, doc)
     _push_history(win, doc)
     if doc in docs(win):
         docs(win).remove(doc)
     from .gui_files import unlock_project
     unlock_project(win, doc.path)
-    from . import gui_external as _ext
-    _ext.erase_doc(win, doc)                # copies opened in other programs
+    if settled:
+        _ext.erase_doc(win, doc)            # copies opened in other programs
     doc.close()
 
 
@@ -2486,8 +2710,9 @@ def export_member(ws) -> None:
     if not _saved_first(ws):
         return
     s = ref.set
-    members = [m for m in s.members
-               if ref.doc.project.member_bytes(s.id, m.id, branch=ref.bid) is not None]
+    # (a linked EEPROM / MPC is its companion's current head, not a part
+    # the flash set holds itself)
+    members = _ex.parts(ref.doc.project, s.id, branch=ref.bid)
     if not members:
         return
     m = members[0]
@@ -2515,8 +2740,21 @@ def _member_file(ref, s, m) -> str:
 def _write_member(ws, ref, s, m) -> None:
     name = _member_file(ref, s, m)
     ext = os.path.splitext(name)[1]
-    _write_export(ws, name, "Binary files (*%s)" % ext,
-                  _ex.export_raw(ref.doc.project, s.id, m.id, branch=ref.bid))
+    data = _ex.export_raw(ref.doc.project, s.id, m.id, branch=ref.bid)
+    if m.role == "mpc" and _is_mpc_image(data):
+        # the internal flash: plain (0x81000, 0x80100, 0x80000) or compressed
+        from . import gui_mpcformat as _mf
+        path = _mf.save_mpc(ws, data, os.path.splitext(name)[0],
+                            (s.extra or {}).get("mpc_format"))
+        if path:
+            ws.statusBar().showMessage("Exported %s" % os.path.basename(path), 6000)
+        return
+    _write_export(ws, name, "Binary files (*%s)" % ext, data)
+
+
+def _is_mpc_image(data) -> bool:
+    from .platforms import edc16 as _e16
+    return data is not None and _e16.is_mpc(bytes(data))
 
 
 def _export_all_members(ws, ref, s, members) -> None:
@@ -2526,10 +2764,19 @@ def _export_all_members(ws, ref, s, members) -> None:
         ws, "Export every part to", get_last_dir())
     if not folder:
         return
+    outs = [os.path.join(folder, _member_file(ref, s, m)) for m in members]
+    there = [os.path.basename(o) for o in outs if os.path.exists(o)]
+    if there:
+        SB = QtWidgets.QMessageBox.StandardButton
+        r = QtWidgets.QMessageBox.question(
+            ws, "Export", "These files already exist in %s:\n\n%s\n\n"
+            "Replace them?" % (folder, "\n".join(there)),
+            SB.Yes | SB.Cancel, SB.Cancel)
+        if r != SB.Yes:
+            return
     done = []
     try:
-        for m in members:
-            out = os.path.join(folder, _member_file(ref, s, m))
+        for m, out in zip(members, outs):
             with open(out, "wb") as fh:
                 fh.write(_ex.export_raw(ref.doc.project, s.id, m.id,
                                         branch=ref.bid))
@@ -2571,9 +2818,10 @@ def has_flash_and_mpc(ws) -> bool:
     ref = getattr(ws, "project_ref", None)
     if ref is None:
         return False
+    from .project import companions as _co
     p, s = ref.doc.project, ref.set
-    return all(p.member_bytes(s.id, m, branch=ref.bid) is not None
-               for m in ("flash", "mpc"))
+    return (p.member_bytes(s.id, "flash", branch=ref.bid) is not None
+            and _co.bytes_of(p, s.id, "mpc", branch=ref.bid) is not None)
 
 
 def export_pcmflash(ws) -> None:
@@ -2584,7 +2832,8 @@ def export_pcmflash(ws) -> None:
         return
     s = ref.set
     with_ee = False
-    have = ref.doc.project.member_bytes(s.id, "eeprom", branch=ref.bid)
+    from .project import companions as _co
+    have = _co.bytes_of(ref.doc.project, s.id, "eeprom", branch=ref.bid)
     if have is not None:
         SB = QtWidgets.QMessageBox.StandardButton
         r = QtWidgets.QMessageBox.question(
@@ -2927,6 +3176,10 @@ def export_attachment(parent, doc, kind, aid) -> Optional[str]:
     """A log, patch or attachment kept in the project, written to a file
     (Project panel > Export...). Returns the path written."""
     a, raw = _att(doc, kind, aid)
+    if kind == "log":
+        # a log: Export As... -- the OVT-Suite layout as kept, or VCDS (advanced / classic)
+        from .datalog import gui_export
+        return gui_export.export_stored_log(parent, a.filename, raw)
     from .recent import get_last_dir, set_last_dir
     dkind = {"log": "log", "patch": "patch"}.get(kind)
     filt = {"log": "CSV data log (*.csv);;All files (*)",
@@ -3131,7 +3384,8 @@ class ProjectPanel(AutoHideDock):
     def __init__(self, win):
         super().__init__("Project", win)
         self.setObjectName("ProjectPanel")
-        self.tree = QtWidgets.QTreeWidget()
+        from .gui_patchdrop import DragTree
+        self.tree = DragTree()      # kept files can be dragged out
         self.tree.setHeaderHidden(True)
         # several versions can be picked (Ctrl/Shift-click) to merge them
         self.tree.setSelectionMode(
@@ -3242,8 +3496,10 @@ class ProjectPanel(AutoHideDock):
                 top.addChild(li)
                 for a in newest_first(lst):
                     from . import gui_external as _ext
-                    ai = QtWidgets.QTreeWidgetItem(["%s%s%s" % (
+                    ai = QtWidgets.QTreeWidgetItem(["%s%s%s%s" % (
                         "📌 " if a.pinned else "", _att_text(a),
+                        "  (VCDS)" if kind == "logs"
+                        and (a.extra or {}).get("layout") == "vcds" else "",
                         _ext.badge(self.win, d, _ATT_ITEM[kind], a.id))])
                     where = ""
                     if a.set:
@@ -3445,6 +3701,28 @@ class ProjectPanel(AutoHideDock):
             io_.setToolTip("Make another file of the same software the "
                            "original of this binary; the original it has "
                            "becomes a version based on it.")
+            from . import platforms as _pf
+            if d.project.set(sid).platform in _pf.COMPANION_OF:
+                m.addSeparator()
+                pw = m.addAction("Pair with a flash...", lambda: self._pair_eeprom(d, sid))
+                pw.setToolTip("Link this EEPROM / internal flash to a flash of "
+                              "the project: that flash follows its latest "
+                              "version, and it keeps its own versions and tab")
+                from .project import companions as _co
+                for fs in _co.flashes_using(d.project, sid):
+                    role = next((r for r, c in _co.links(d.project, fs.id).items()
+                                 if c.id == sid), None)
+                    if role is None:        # a link that no longer matches
+                        continue
+                    m.addAction("Unlink from %s" % fs.name,
+                                lambda _c=False, f=fs.id, r=role:
+                                (_co.unlink(d.project, f, r), self.refresh()))
+            else:
+                from .project import companions as _co
+                for role, c in _co.links(d.project, sid).items():
+                    m.addAction("Open %s (%s)" % (c.name, role.upper() if role == "mpc" else "EEPROM"),
+                                lambda _c=False, cid=c.id: open_branch(
+                                    self.win, d, cid, d.project.set(cid).active.id))
             main = _sb._main_member(d.project, sid)
             if main is not None:
                 m.addSeparator()
@@ -3503,6 +3781,17 @@ class ProjectPanel(AutoHideDock):
                         lambda: self._revert(d, sid, bid, cid))
             m.addAction("New branch from this version...",
                         lambda: self._new_branch(d, sid, cid))
+            from . import gui_original as _orig    # a file into the history
+            ia = m.addAction("Insert a file as a version after this...",
+                             lambda: _orig.insert_version(self.win, d, sid, bid, cid))
+            ia.setToolTip("Put another file of the same software into the "
+                          "history right after this version; the versions "
+                          "after it keep their bytes.")
+            ib = m.addAction("Insert a file as a version before this...",
+                             lambda: _orig.insert_version(self.win, d, sid, bid,
+                                                          cid, before=True))
+            ib.setToolTip("Right before this version (before the original: "
+                          "the file becomes the new original).")
             m.addSeparator()
             m.addAction("Open this version (read-only)",
                         lambda: self._view_version(d, sid, bid, cid))
@@ -3546,6 +3835,8 @@ class ProjectPanel(AutoHideDock):
             m.addAction("Show copy in folder", lambda: _ext.reveal(
                 self.win, d, kind, aid))
             m.addAction("Export...", lambda: self._export_att(data))
+            rn = m.addAction("Rename...", lambda: self._rename_att(data))
+            rn.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_F2))
             if kind == "log":
                 a = next(x for x in d.project.logs if x.id == aid)
                 m.addAction("Unpin" if a.pinned else "Pin (never auto-deleted)",
@@ -3587,6 +3878,11 @@ class ProjectPanel(AutoHideDock):
             d.project._touch()
             self._changed(d)
 
+    def _pair_eeprom(self, d, sid):
+        from . import gui_eeprompair as _pair
+        if _pair.pair_with_flash(self.win, d, sid):
+            self.refresh()
+
     def _rename_set(self, d, sid):
         s = d.project.set(sid)
         name, ok = QtWidgets.QInputDialog.getText(
@@ -3606,6 +3902,27 @@ class ProjectPanel(AutoHideDock):
             self._rename_set(data[1], data[2])
         elif data[0] == "branch":
             self._rename_branch(data[1], data[2], data[3])
+        elif data[0] in self._REMOVABLE:
+            self._rename_att(data)
+
+    def _rename_att(self, data):
+        """Rename a kept log, patch or attachment (F2 / right-click)."""
+        kind, d, aid = data[0], data[1], data[2]
+        try:
+            a, _raw = _att(d, kind, aid)
+        except (KeyError, StopIteration):
+            return
+        from . import dtc_report as _dr
+        if _dr.is_read(a):
+            prompt = "Title:"
+        else:
+            ext = os.path.splitext(a.filename)[1]
+            prompt = "Name%s:" % (" (typed without an extension it keeps %s)"
+                                  % ext if ext else "")
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Rename %s" % kind, prompt, text=_att_text(a))
+        if ok and name.strip() and name.strip() != _att_text(a):
+            self._do(d, lambda: d.project.rename_attachment(kind, aid, name))
 
     def _view_version(self, d, sid, bid, cid):
         from . import gui_viewonly as _vo

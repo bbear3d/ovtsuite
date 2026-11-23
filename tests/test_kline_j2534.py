@@ -444,3 +444,33 @@ def test_kline_split_rules():
     assert S(b"\x3F\x55\x55\x55" + REPLY, REQ, final=True) == (4, 8)  # ...until time is up
     assert S(b"\x05\x05\x05\x05" + REPLY, REQ) == (4, 8)            # runs past a bad frame
     assert S(b"") is None and S(REQ, REQ) is None
+
+
+def test_a_5_baud_fallback_waits_for_a_quiet_line_after_unanswered_fast_inits(monkeypatch):
+    """An ECU that did not answer the fast init ignores a 5-baud address sent
+    straight after it (bench EDC16 after a VDO cluster session): the fallback
+    waits FAST_TO_SLOW_QUIET_S first."""
+    from ovtsuite.flash import kline_j2534 as KJ
+    events = []
+    monkeypatch.setattr(KJ.time, "sleep", lambda s: events.append(("sleep", s)))
+
+    class Deaf(MockJ2534Channel):
+        def fast_init(self, request):
+            events.append(("fast", None))
+            raise RuntimeError("ERR_FAILED")
+
+        def five_baud_init(self, address):
+            events.append(("slow", None))
+            return super().five_baud_init(address)
+
+    class Dev(MockJ2534Dev):
+        def connect(self, protocol, baud, flags=0):
+            ch = Deaf(self.ecu, protocol)
+            self.channels.append(ch)
+            return ch
+
+    link = J2534KLine(Dev(MockEcu(bytearray(bytes(E.CAL_SIZE)))), fast_init=True)
+    assert link.wake_up(tries=3) >= 2000
+    kinds = [e for e in events if e[0] != "sleep" or e[1] >= 1.0]
+    assert kinds == [("fast", None), ("fast", None), ("fast", None),
+                     ("sleep", KJ.FAST_TO_SLOW_QUIET_S), ("slow", None)]

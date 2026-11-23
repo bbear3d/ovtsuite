@@ -5,7 +5,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Which binaries of a WinOLS project to import.
 
-A WinOLS project (``.ols``) can embed several versions of its binary: the
+A WinOLS project (``.ols``, or an encrypted ``.olsx`` export of one) can embed several versions of its binary: the
 original and what was made from it. :func:`choose` asks, only when there is
 more than one, whether to import the original, every version (as versions of
 one set) or a single one, and returns what ``import_file(...,
@@ -76,6 +76,17 @@ class OlsVersionsDialog(QtWidgets.QDialog):
                 out.append(it.data(0, QtCore.Qt.ItemDataRole.UserRole))
         return out
 
+    def accept(self):
+        if self.some.isChecked() and not self.picked():
+            # nothing ticked is not "the original only" (that is the first
+            # choice): say so rather than import something else
+            QtWidgets.QMessageBox.warning(
+                self, "Import WinOLS project",
+                "No version is ticked. Tick the versions to import, or choose "
+                "\"The original only\" or \"All\".")
+            return
+        super().accept()
+
     def value(self):
         if self.all.isChecked():
             return "all"
@@ -88,7 +99,8 @@ def choose(parent, path: str, data: Optional[bytes] = None):
     """The ``ols_versions`` to import ``path`` with: None (the original),
     ``"all"`` or ``[index]``; :data:`CANCEL` when the user backs out. A file
     that is not a project with several versions is not asked about."""
-    if not path.lower().endswith(".ols"):
+    low = path.lower()
+    if not low.endswith((".ols", ".olsx")):
         return None
     from .project import importers as _imp
     if data is None:
@@ -97,6 +109,14 @@ def choose(parent, path: str, data: Optional[bytes] = None):
                 data = fh.read()
         except OSError:
             return None
+        if low.endswith(".olsx"):
+            # an encrypted export: the versions are those of the .ols inside
+            # (given ``data`` is taken to be that already)
+            from .definitions import olsx as _olsx
+            try:
+                data = _olsx.decrypt(data)
+            except Exception:                   # noqa: BLE001 - the import says why
+                return None
     versions = _imp.ols_versions(data)
     if len(versions) < 2:
         return None

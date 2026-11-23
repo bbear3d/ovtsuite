@@ -42,7 +42,8 @@ Cells = Dict[Tuple[int, int], float]
 
 #: Modify selection, as on the table editor's edit bar
 OPS = (("Set =", "set"), ("Add +", "add"), ("Subtract −", "sub"),
-       ("Multiply ×", "mul"), ("Divide ÷", "div"))
+       ("Multiply ×", "mul"), ("Divide ÷", "div"),
+       ("Average with comparison %", "avg"))
 
 #: the step of Alt+Up / Alt+Down in each view (degrees); a step set with
 #: **Set step...** is remembered under ``eoistep/<view>``
@@ -208,6 +209,8 @@ ACTION_METHODS = {
     "Interpolate selection": ("interpolate", None),
     "Smooth selection": ("smooth", None),
     "Copy selected cells from comparison": ("from_comparison", None),
+    "Average with comparison": ("average", 50.0),
+    "Average with comparison...": ("average_ask", None),
     "Revert to as-read values": ("revert", "as-read"),
     "Revert to last saved values": ("revert", "last saved"),
     "Set step for this map...": ("set_step", None),
@@ -279,6 +282,9 @@ class EoiEditing(QtCore.QObject):
             self.op_box.addItem(lbl, key)
         self.op_box.setCurrentIndex(3)                  # Multiply, as there
         h.addWidget(self.op_box)
+        self._op_texts = {}
+        self._op_prev = "mul"
+        self.op_box.currentIndexChanged.connect(self._op_changed)
         self.op_val = QtWidgets.QLineEdit("1.05")
         self.op_val.setMaximumWidth(110)
         self.op_val.returnPressed.connect(self.apply_bar)
@@ -399,6 +405,46 @@ class EoiEditing(QtCore.QObject):
         return n
 
     # ----------------------------------------------------------- actions
+    def _op_changed(self, *_a) -> None:
+        """The box keeps a number per operation (1.05 for Multiply, a weight in
+        percent of the comparison for Average, 50 to begin with)."""
+        from . import gui_average as ga
+        self._op_texts[self._op_prev] = self.op_val.text()
+        op = self.op_box.currentData()
+        self._op_prev = op
+        self.op_val.setText(self._op_texts.get(
+            op, "%g" % ga.DEFAULT_WEIGHT if op == "avg" else "1.05"))
+        self.op_val.setToolTip(ga.WEIGHT_TIP if op == "avg" else "")
+
+    def average(self, weight: float = 50.0) -> None:
+        """The selected cells ``weight`` percent of the way to the comparison's
+        values (which this window calculates at its own points, so every cell
+        is compared at the same operating point)."""
+        from . import gui_average as ga
+        d = self.d
+        if not self._ok():
+            return
+        if not (d.cmpv.wanted() and d._cmp_vals):
+            d.say("No comparison is shown.")
+            return
+        if not ga.valid_weight(weight):
+            d.say("Average takes a percentage of the comparison: 0 to 100.")
+            return
+        cur = d._prim_vals
+        self.run({rc: ga.blend(cur[rc], d._cmp_vals[rc], weight)
+                  for rc in self.cells() if rc in d._cmp_vals},
+                 "Averaged %g %% toward the comparison" % weight)
+
+    def average_ask(self) -> None:
+        from . import gui_average as ga
+        w, ok = QtWidgets.QInputDialog.getDouble(
+            self.d, ga.OP_TEXT,
+            "Percent of the comparison in the result:\n" + ga.WEIGHT_TIP,
+            ga.last_weight(), 0.0, 100.0, 1)
+        if ok:
+            QtCore.QSettings(*ga.branding.QSETTINGS).setValue(ga.KEY, w)
+            self.average(w)
+
     def apply_bar(self) -> None:
         if not self._ok():
             return
@@ -408,6 +454,9 @@ class EoiEditing(QtCore.QObject):
             self.d.say("Enter a number to apply.")
             return
         op = self.op_box.currentData()
+        if op == "avg":
+            self.average(v)
+            return
         cur = self.d._prim_vals
         self.run({rc: apply_op(op, cur[rc], v)
                   for rc in self.cells(whole_if_none=True)},

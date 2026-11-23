@@ -1,0 +1,16 @@
+libusb-1.0 (libusb-1.0.dll) -- https://libusb.info/
+
+Copyright (c) 2001 Johannes Erdfelt, 2007-2009 Daniel Drake, 2010-2012 Peter
+Stuge, 2008-2016 Nathan Hjelm, 2009-2013 Pete Batard, 2009-2013 Ludovic
+Rousseau and the libusb contributors (the project's AUTHORS file lists them
+all: https://github.com/libusb/libusb/blob/v1.0.30/AUTHORS).
+
+libusb is free software, distributed under the GNU Lesser General Public
+License, version 2.1 or (at your option) any later version -- see
+LGPL-2.1.txt.
+
+The Windows build of this program ships the official, unmodified libusb 1.0.30
+release DLL, loaded as a separate dynamic library; it may be replaced with any
+compatible build of libusb-1.0. Its source code is available from
+https://github.com/libusb/libusb/releases/tag/v1.0.30 . Linux and macOS use the
+libusb-1.0 library of the system instead.

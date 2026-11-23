@@ -81,6 +81,7 @@ def _install(monkeypatch, lib):
 def test_list_and_names(monkeypatch):
     _install(monkeypatch, FakeD2xx())
     monkeypatch.setattr(F, "list_pyftdi_devices", lambda: [])
+    monkeypatch.setattr(F, "_list_ch34x", lambda: [])        # no real cable on the bench
     ports = F.list_d2xx_devices()
     assert ports[0][0] == "FTDI:A1B2C3D4" and "FT232R" in ports[0][1]
     assert ports[1][0] == "FTDIIDX:1" and "no serial" in ports[1][1] and "in use" in ports[1][1]
@@ -151,3 +152,66 @@ def test_open_errors(monkeypatch):
         assert False
     except T.KLineError as ex:
         assert "D2XX" in str(ex)
+
+
+def test_pyftdi_read_polls_without_sleeping(monkeypatch):
+    """pyftdi's own Serial.read sleeps 10 ms on an empty poll, which overruns
+    the FT232R's 128-byte FIFO at Medium/High; ours must poll again at once."""
+    import time as _t
+    from ovtsuite.flash import ftdi
+
+    class Udev:
+        def __init__(self):
+            self.chunks = [b"", b"", b"ab", b"cd"]
+        def read_data(self, n):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    class Port:
+        _timeout = 1.0
+        udev = Udev()
+
+    sleeps = []
+    monkeypatch.setattr(_t, "sleep", lambda s: sleeps.append(s))
+    port = Port()
+    assert ftdi._read_polling(port, 4) == b"ab"      # partial data ends the call
+    assert ftdi._read_polling(port, 4) == b"cd"
+    assert sleeps == []
+    Port.udev = Udev()
+    Port.udev.chunks = []
+    Port._timeout = 0.05
+    assert ftdi._read_polling(Port(), 4) == b""
+
+
+def test_pyftdi_reconfigure_keeps_fixed_latency(monkeypatch):
+    """pyftdi's serial layer re-arms its dynamic latency (12 ms, up to 200 ms
+    when the line is quiet) on every port configuration, a baud change
+    included; open_pyftdi must put its fixed 2 ms back after each one."""
+    from ovtsuite.flash import ftdi
+
+    calls = []
+
+    class Udev:
+        def set_dynamic_latency(self, lmin, lmax, threshold):
+            calls.append(("dyn", lmin, lmax, threshold))
+        def set_latency_timer(self, ms):
+            calls.append(("timer", ms))
+
+    class Port:
+        udev = Udev()
+        _timeout = 1.0
+        def _reconfigure_port(self):
+            calls.append(("pyftdi-reconfigure",))
+            self.udev.set_dynamic_latency(12, 200, 50)      # what pyftdi does
+
+    class Ftdi:
+        pass
+
+    monkeypatch.setattr(ftdi, "_pyftdi", lambda: Ftdi)
+    import pyftdi.serialext as se
+    monkeypatch.setattr(se, "serial_for_url", lambda *a, **k: Port())
+    port = ftdi.open_pyftdi("ftdi://0x0403:0x6001:X/1")
+    calls.clear()
+    port._reconfigure_port()
+    assert calls[0] == ("pyftdi-reconfigure",)
+    assert calls[-2:] == [("dyn", ftdi.LATENCY_MS, ftdi.LATENCY_MS, 0),
+                          ("timer", ftdi.LATENCY_MS)]

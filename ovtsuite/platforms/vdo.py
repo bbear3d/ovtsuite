@@ -36,8 +36,26 @@ IMMO_ID_RE = re.compile(rb"[A-Z]{2}Z\dZ0[A-Z]\d{7}")
 _BLANK_IMMO = (b"X" * 14, b"\xFF" * 14, b"\x00" * 14)
 
 #: Vehicle-family nibble -> chassis (KWHack Reference/Distance_Impulse_Number.md;
-#: A4/B5 confirmed on 20 samples by KWHack, Skoda from the same document).
-CHASSIS = {0x0: "A4", 0x1: "B5", 0xA: "B5", 0x5: "Skoda", 0xB: "Skoda"}
+#: confirmed on 20 samples by KWHack, Skoda from the same document). These are
+#: the families the VWK501/503 (Mk4-layout) clusters are configured for:
+#: Golf/Jetta/Bora (the VW "A4" platform, 0x0), Passat B5 (0x1 / 0xA) and
+#: Skoda. "A4" here is the VW Mk4 platform, NOT the Audi A4 (B5-platform Audi,
+#: which carries C5-family cluster hardware: see :data:`C5_IMMO_ADDR` and
+#: :func:`is_c5_cluster`), so nothing in this table is an Audi chassis. The
+#: "B5" key is what the definitions' ``options_by_chassis`` is keyed on.
+CHASSIS = {0x0: "Golf/Jetta (A4 platform)", 0x1: "B5", 0xA: "B5",
+           0x5: "Skoda", 0xB: "Skoda"}
+
+#: Audi C5-family cluster (4B0920/4Z7920/8D0920/8Z0920): an older, structurally
+#: different EEPROM this base app does not have a full layout for (no checksum
+#: formula, no patch header). Identified instead the same way the module-plan
+#: Reference/XDFs/Audi920.xdf anchors it and the way Tester.cs's own redundant
+#: SKC check does: three identical 14-byte copies of the immobilizer-ID
+#: pattern, verified against a real cluster's dump (owner's own bench unit,
+#: 2026-11-15) -- at 0x726, 0x734, 0x742, not the Mk4 layouts' single field.
+C5_IMMO_ADDR = 0x726
+C5_IMMO_STRIDE = 14
+C5_IMMO_COPIES = 3
 
 
 def checksum_ok(data: bytes, layout: str) -> bool:
@@ -52,13 +70,34 @@ def immo_id_ok(data: bytes, layout: str) -> bool:
     return bool(IMMO_ID_RE.fullmatch(first)) or first in _BLANK_IMMO
 
 
+def is_c5_cluster(data: bytes) -> bool:
+    """True when ``data`` carries a C5-family cluster's triple-redundant
+    immobilizer-ID pattern (0x726/0x734/0x742): all three copies equal AND a
+    well-formed immobilizer ID. Unlike the Mk4 layouts' single field, the
+    blanked-pattern sentinels are NOT accepted here -- with no real blank C5
+    sample to confirm one, that would make an all-0xFF/0x00 blob of the right
+    size (no cluster EEPROM at all) match every time (three equal copies of
+    anything blank), exactly what :func:`detect` promises never to do."""
+    if len(data) != EEPROM_SIZE:
+        return False
+    copies = [bytes(data[C5_IMMO_ADDR + i * C5_IMMO_STRIDE:
+                         C5_IMMO_ADDR + i * C5_IMMO_STRIDE + 14])
+              for i in range(C5_IMMO_COPIES)]
+    if len(set(copies)) != 1:
+        return False
+    return bool(IMMO_ID_RE.fullmatch(copies[0]))
+
+
 def layout_of(data: bytes) -> Optional[str]:
     """The physical layout, or None when ``data`` is not a cluster EEPROM.
 
-    A layout needs BOTH of its anchors (checksum valid, immobilizer-ID field
-    well-formed). When an edit has broken the checksum, the immobilizer field
-    alone decides -- but only if exactly one layout has it, so a file that
-    matches neither cleanly is never claimed."""
+    A Mk4 layout needs BOTH of its anchors (checksum valid, immobilizer-ID
+    field well-formed). When an edit has broken the checksum, the
+    immobilizer field alone decides -- but only if exactly one layout has
+    it, so a file that matches neither cleanly is never claimed. A C5-family
+    cluster (:func:`is_c5_cluster`) has no Mk4 anchors at all and is
+    reported as ``"C5"`` -- not a key in :data:`LAYOUTS`, since this base
+    app has no checksum formula or patch-header address for it."""
     if len(data) != EEPROM_SIZE:
         return None
     full = [lay for lay in LAYOUTS
@@ -70,7 +109,11 @@ def layout_of(data: bytes) -> Optional[str]:
     immo = [lay for lay in LAYOUTS if immo_id_ok(data, lay)
             and IMMO_ID_RE.fullmatch(bytes(data[LAYOUTS[lay]["immo_id"]:
                                                 LAYOUTS[lay]["immo_id"] + 14]))]
-    return immo[0] if len(immo) == 1 else None
+    if len(immo) == 1:
+        return immo[0]
+    if is_c5_cluster(data):
+        return "C5"
+    return None
 
 
 # ---------------------------------------------------------------- ROM versions

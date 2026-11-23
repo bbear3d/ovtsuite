@@ -193,7 +193,8 @@ class Project:
         """A set stored as ``unknown`` (imported by an app that had no
         detector for it) that the base app now identifies as ``platform``:
         describe it as an import would today -- the set's platform and kind,
-        its unidentified members', and a ``raw`` main image becomes ``flash``.
+        its unidentified members', and a ``raw`` main image becomes ``flash``
+        (``eeprom`` when the platform is an ECU EEPROM's).
 
         It is a correction, not an edit, so the project is NOT marked
         modified: it is written with the next save, and until then every
@@ -212,7 +213,8 @@ class Project:
                 m.endian = _endian(platform)
         raw = next((m for m in s.members if m.role == "raw"), None)
         if raw is not None and not any(m.role == "flash" for m in s.members):
-            raw.role = "flash"
+            from ..platforms import is_eeprom
+            raw.role = "eeprom" if is_eeprom(platform) else "flash"
         return s
 
     # ============================================================== history
@@ -456,6 +458,57 @@ class Project:
         return self._write_checkpoint(s, b, new, label=label, kind=kind,
                                       source=source, log=log)
 
+    def insert_version(self, sid: str, after: str, images: Images, *,
+                       branch: Optional[str] = None, label: str = "",
+                       kind: str = "import",
+                       source: Optional[dict] = None) -> Checkpoint:
+        """Put ``images`` into the history as a new version straight after
+        checkpoint ``after``, on the line of ``branch`` (default: the active
+        branch) -- anywhere, not only at the end.
+
+        The version that followed ``after`` on that line (if any) is now
+        based on the new one: its delta is re-derived from the new version,
+        so its bytes -- and every version after it, every branch head,
+        comparison and flash record -- stay exactly as they were. A branch
+        whose head is ``after`` (the one named) moves to the new version, as
+        a save would. Members left out of ``images`` keep ``after``'s
+        content. Another branch that forks from ``after`` is not touched.
+        ValueError when the file is the same as ``after`` already."""
+        s = self.set(sid)
+        if s.checkpoint(after) is None:
+            raise KeyError("no checkpoint %r in set %s" % (after, s.name))
+        self._check_images(s, images)
+        b = self._branch(s, branch)
+        base = self.state(s.id, after)
+        new = dict(base)
+        new.update({k: bytes(v) for k, v in images.items()})
+        recs = _d.diff(base, new)
+        if not recs:
+            raise ValueError("The file is the same as \"%s\" already."
+                             % (s.checkpoint(after).label or after))
+        line = {c.id for c in s.lineage(b.head)}
+        kids = [c for c in s.children(after) if c.id in line]
+        # rebuild what follows before changing anything: a history that
+        # cannot be rebuilt refuses here (HistoryError), untouched
+        kid_states = {k.id: self.state(s.id, k.id) for k in kids}
+        c = Checkpoint(id=new_id(), parent=after, kind=kind, ts=now(),
+                       label=label or "Imported", source=dict(source or {}),
+                       sizes={m: len(v) for m, v in new.items()},
+                       n_bytes=_d.changed_bytes(recs))
+        self._blobs[self._delta_path(s.id, c.id)] = _d.encode(recs)
+        s.checkpoints.append(c)
+        self._states[(s.id, c.id)] = new
+        for k in kids:
+            krecs = _d.diff(new, kid_states[k.id])
+            self._blobs[self._delta_path(s.id, k.id)] = _d.encode(krecs)
+            k.parent = c.id
+            k.n_bytes = _d.changed_bytes(krecs)
+            self._states[(s.id, k.id)] = kid_states[k.id]
+        if b.head == after:
+            b.head = c.id
+        self._touch()
+        return c
+
     def remove_member_from_branch(self, sid: str, branch: Optional[str],
                                   mid: str, label: str = "") -> Optional[Checkpoint]:
         """A checkpoint in which member ``mid`` no longer exists."""
@@ -559,14 +612,23 @@ class Project:
         log = []
         for c in chain:
             log.extend(c.log)
-        merged_from = [c.id for c in inner] + list(
-            newest.extra.get("merged_from") or [])
+        # every version that went into this one, those merged earlier into
+        # any of the run included
+        merged_from = []
+        for c in chain:
+            for x in (list(c.extra.get("merged_from") or [])
+                      + ([c.id] if c is not newest else [])):
+                if x not in merged_from:
+                    merged_from.append(x)
         newest.parent = chain[0].parent
         newest.n_bytes = _d.changed_bytes(recs)
         newest.log = log
         newest.kind = "merge"
         newest.extra["merged_from"] = merged_from
-        newest.extra.setdefault("ts_from", chain[0].ts)
+        # the earliest time any of them was saved
+        newest.extra["ts_from"] = min(
+            (c.extra.get("ts_from") or c.ts) for c in chain
+            if (c.extra.get("ts_from") or c.ts))
         if label:
             newest.label = label
             newest.extra.pop("auto_label", None)    # the merge's own name
@@ -575,6 +637,8 @@ class Project:
             if r.get("checkpoint") in gone:
                 r["merged_into"] = newest.id
                 r["checkpoint"] = None
+            elif r.get("merged_into") in gone:      # merged away earlier too
+                r["merged_into"] = newest.id
         for c in inner:
             s.checkpoints.remove(c)
             self._blobs.pop(self._delta_path(s.id, c.id), None)
@@ -1068,6 +1132,13 @@ class Project:
     def add_log(self, filename: str, data: bytes, *, set_id: Optional[str] = None,
                 note: str = "", pinned: bool = False) -> Attachment:
         a = self._add_att("logs", self.logs, filename, data, set_id, note, pinned)
+        try:                                # which layout it is, for the project list
+            from ..datalog import logfile as _lf
+            layout = _lf.sniff(data)
+            if layout:
+                a.extra["layout"] = layout
+        except Exception:                   # noqa: BLE001 -- a label, never a reason to refuse
+            pass
         self.enforce_log_cap()
         return a
 
@@ -1122,6 +1193,41 @@ class Project:
             raise KeyError(aid)
         self._blobs[self._att_path(coll, a)] = bytes(data)
         self._touch()
+
+    def rename_attachment(self, kind: str, aid: str, name: str) -> str:
+        """Give a kept ``"log"``, ``"patch"`` or ``"attachment"`` a new file
+        name (its contents, id, set, pin and note stay). A name typed without
+        an extension keeps the old one, so the file still opens with its
+        program. A kept fault-code read is shown by its date and code count
+        rather than a file name: renaming it sets the title shown instead.
+        Returns the name now held. ValueError for an empty name."""
+        coll, lst = {"log": ("logs", self.logs), "patch": ("patches", self.patches),
+                     "attachment": ("attachments", self.attachments)}[kind]
+        a = next((a for a in lst if a.id == aid), None)
+        if a is None:
+            raise KeyError(aid)
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("A name is needed.")
+        from .. import dtc_report as _dr
+        if _dr.is_read(a):
+            if (a.extra.get("title") or "") != name:
+                a.extra["title"] = name
+                self._touch()
+            return name
+        new = _safe_name(name).strip(" .") or "file"
+        old_ext = os.path.splitext(a.filename)[1]
+        if old_ext and not os.path.splitext(new)[1]:
+            new += old_ext
+        if new == a.filename:
+            return new
+        old_path = self._att_path(coll, a)
+        blob = self._blobs.pop(old_path, None)
+        a.filename = new
+        if blob is not None:
+            self._blobs[self._att_path(coll, a)] = blob
+        self._touch()
+        return new
 
     def remove_attachment(self, aid: str) -> None:
         self._remove_att("attachments", self.attachments, aid)

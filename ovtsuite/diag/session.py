@@ -125,7 +125,7 @@ class ModuleSession(_diag.DiagSession):
         self.identity = info.identity_text = "  ".join(parts)
         info.extra["identification"] = "uds_dids"
         if not info.platform:
-            info.platform = platform_of(info.part, "uds") or ""
+            info.platform = platform_of(info.part, "uds", info.identity_text) or ""
         self._namer = None
         self._resolve_moddef()
 
@@ -225,8 +225,58 @@ class ModuleSession(_diag.DiagSession):
         self.kwp = d
         time.sleep(0.05)
         self._check_stop(is_stop)
-        d.send_receive(0x10, bytes([session & 0xFF]))
-        self.log("Diagnostic session open (10 %02X), header 0x%02X." % (session, header))
+        on_kline = self.link.transport != "can"
+        searched = False
+        if on_kline and not self._header_given():
+            # Nothing says how this module is asked, and a module woken by
+            # 5-baud init is not asked at its own address as a rule: the EDC16
+            # is woken at 0x01 and asked at 0x10, the 09D TCU answers a header
+            # with no addresses. Ask and see.
+            searched = True
+            self._find_header(d, is_stop, tried=header)
+        try:
+            d.send_receive(0x10, bytes([session & 0xFF]))
+        except KLineTimeout:
+            # the form the definitions (or the address) gave drew no answer at
+            # all: try the others before giving up
+            if not on_kline or searched or not self._find_header(d, is_stop, tried=header):
+                raise
+            d.send_receive(0x10, bytes([session & 0xFF]))
+        self.log("Diagnostic session open (10 %02X), header %s." % (session, self._header_text(d)))
+
+    def _header_given(self) -> bool:
+        """Whether the address table or the module document names the request
+        address (``kwp_header`` / ``kwp.header``)."""
+        kwpdef = self.moddef.get("kwp") or {}
+        return (as_int(self.module.get("kwp_header"), None) is not None
+                or as_int(kwpdef.get("header"), None) is not None)
+
+    @staticmethod
+    def _header_text(d) -> str:
+        return "none (no address bytes)" if d.addressless else "0x%02X" % d.controller
+
+    def _find_header(self, d, is_stop, tried=None) -> bool:
+        """Settle ``d`` on the header form the module answers
+        (:meth:`~ovtsuite.flash.kwp.Kwp2000.detect_header`); True if one did."""
+        kline = self.module.get("kline") or {}
+        init = as_int(kline.get("address"), None)
+        mod = int(self.addr, 16)
+        cands = _kwp.header_candidates(init, mod)
+        if tried is not None and not d.addressless:
+            # the form that was just tried (and, if it is here, failed) goes last
+            cands = [c for c in cands if c != tried] + [tried]
+        self._check_stop(is_stop)
+        found = d.detect_header(cands)
+        if found is None:
+            self.log("No header form was answered (%s)."
+                     % ", ".join("none" if c is None else "0x%02X" % c for c in cands))
+            return False
+        cand, msg = found
+        self.log("Module %s answers %s%s." % (
+            self.addr, "a header with no address bytes" if cand is None
+            else "requests addressed to 0x%02X" % cand,
+            "" if msg.src is None else " (replying from 0x%02X)" % msg.src))
+        return True
 
     def _maybe_raise_baud(self):
         """A link-speed raise only when the module's definition lists speed
@@ -281,9 +331,12 @@ class ModuleSession(_diag.DiagSession):
         if info.identity_text:
             self.log("%s %s: %s" % (self.addr, info.name, info.identity_text))
         if not info.platform:
-            info.platform = platform_of(info.part, self.protocol) or ""
+            info.platform = platform_of(info.part, self.protocol, info.identity_text) or ""
             if info.platform:
-                self.log("Platform %s (part number in the factory catalogue)" % info.platform.upper())
+                self.log("Platform %s (%s)" % (info.platform.upper(),
+                                               "gearbox code in the identification"
+                                               if info.platform == "zf6hp19"
+                                               else "part number in the factory catalogue"))
         self._namer = None
         # the identity may change what applies (part-specific documents)
         self._resolve_moddef()
@@ -432,6 +485,14 @@ class ModuleSession(_diag.DiagSession):
                     n = _cat.namer_for(self.info.platform.upper(), self.info.identity_text)
                     if n is not None and n.available:
                         self._namer = n
+                except Exception:
+                    self._namer = False
+            if not self._namer:
+                # a ZF 6HP's blocks are fixed by its software, not a catalogue
+                try:
+                    from ..datalog import msblock6hp as _6hp
+                    self._namer = _6hp.namer_for_part(self.info.part, self.protocol,
+                                                       self.info.identity_text) or False
                 except Exception:
                     self._namer = False
         return self._namer or None
@@ -822,14 +883,21 @@ def decode_fault_word(code: int, protocol: str, encoding: str) -> Tuple[Optional
     return code, _dtc.pcode_of_vag5(code) or ""
 
 
-def platform_of(part: str, protocol: str = "") -> Optional[str]:
+def platform_of(part: str, protocol: str = "", identity: str = "") -> Optional[str]:
     """The suite's platform id for a served part number, when that part is
     in a platform's factory measuring-block catalogue (``edc16``/``edc15``
     ``_msblocks.json.gz``) -- a structural match, nothing inferred from the
-    number's shape. None when no catalogue lists it."""
+    number's shape -- or, for a KWP2000 gearbox whose identification text
+    names a 6HP19A gearbox (``AG6 09L``), ``zf6hp19``. None otherwise."""
     part = (part or "").upper().replace(" ", "")
     if not part:
         return None
+    try:
+        from ..datalog import msblock6hp as _6hp
+        if _6hp.is_6hp19(part, protocol, identity):
+            return "zf6hp19"
+    except Exception:
+        pass
     try:
         from ..datalog import msbcatalogue as _cat
     except Exception:

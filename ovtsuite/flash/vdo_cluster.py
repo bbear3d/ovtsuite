@@ -26,26 +26,46 @@ Session, exactly as KWHack drives it:
 5. EEPROM: ReadEeprom ``19 <count> <hi> <lo>`` / WriteEeprom
    ``1A <count> <hi> <lo> <data>`` in 16-byte blocks; a NAK is a permission
    refusal.
-6. End communication (block 0x06).
+6. After a *write* that read back clean: Reset (custom 0x82), so the cluster
+   starts on the EEPROM it was just given instead of running on what it
+   loaded at power-up. Otherwise (a read) End communication (block 0x06).
 
 :func:`write_cluster` writes the whole file, as KWHack does, then reads every
 block back and compares. Nothing is read from the cluster before the write
 (no backup, no comparison with the cluster's own data); the file itself must
 be a recognised VDO Mk4 EEPROM layout.
+
+Audi C5-family clusters (4B0920 / 4Z7920 / 8D0920 / 8Z0920 in the ident) NAK
+the whole custom-block command set, so steps 3-5 differ for them: see "Audi C5
+path" in :class:`VdoCluster` (kw1281test ``AudiC5Cluster``). The path is
+chosen from the ident at :meth:`VdoCluster.connect`.
+
+Two speeds (the flasher's Speed list). **Low** is the KWHack dialog above to
+the letter: every data block is ACKed and the cluster's own ACK read before the
+next command, the extended-command login reads the software version four ways,
+and a ReadIdent runs before the unlock. **High** is what a genuine tool's
+traffic shows (captured on a VWK503MH, 2026-11-17): the next ``19`` / ``1A``
+command *is* the ACK of the previous ``EF`` / ``F9`` reply, so a block costs one
+round trip instead of two (a 2 KB read drops from about 100 s to about 50 s),
+the version is read once, and there is no ReadIdent. The wire is otherwise the
+same, and so is the cluster's own byte pace (about 16 ms a byte), which is what
+is left.
 """
 from __future__ import annotations
 
 import datetime
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import kwp as _kwp
-from .transport import KLineError, KLineTimeout
+from .transport import KLineError, KLineTimeout, LinkStopped
 
 ADDRESS = 0x17               # KW1281 logical address of the instrument cluster
 BAUD = 10400
 EEPROM_SIZE = 2048
+CONNECT_RETRY_QUIET_S = 1.0    # between failed inits (see connect)
 BLOCK = 16                   # bytes per ReadEeprom / WriteEeprom block (KWHack)
 
 # KW1281 block titles (kw1281test BlockTitle.cs)
@@ -60,7 +80,98 @@ BT_READ_EEPROM_RESP = 0xEF
 BT_ASCII = 0xF6
 BT_WRITE_EEPROM_RESP = 0xF9
 
+#: VDO custom command 0x82 -- reset the cluster (KWHack's ``CustomReset``). It
+#: is above 0x80, so :meth:`VdoCluster.custom` sends the extended-command
+#: unlock first unless the session has already done so (it has, by the time
+#: an EEPROM write is finished).
+CMD_RESET = 0x82
+
 MAX_ACCESS_LEVEL = 7
+
+
+# Audi C5-family cluster dialog (kw1281test AudiC5Cluster)
+C5_FAMILY_PREFIXES = ("4B0920", "4Z7920", "8D0920", "8Z0920")
+C5_START = 0xD1
+C5_ACK, C5_HELLO, C5_LOGIN, C5_READ, C5_WRITE = 0x06, 0x49, 0x53, 0x72, 0x77
+C5_CHUNK = 8
+KEEPALIVE_S = 1.5              # idle ACK period while the user is asked something
+C5_BAUD_SETTLE_S = 2.0         # the cluster's quiet time after the baud switch
+_C5_KW_PASSWORDS = ("loginas9", "n7KB2Qat")
+_C5_LOGIN_PASSWORDS = ("19xDR8xS", "vdokombi", "w10kombi", "w10serie")
+
+
+#: Clusters that need the Low speed's pacing (a 25 ms lead before each block
+#: and the ACK after each reply): kwp.BLOCK_LEAD was put in for 4D0919035AJ, and
+#: High's immediate answers are untested on it. VdoCluster.connect drops a High
+#: session to Low when the ident carries one of these.
+LOW_SPEED_PARTS = ("4D0919035AJ",)
+
+
+def needs_low_speed(ident: str) -> bool:
+    """True when the ident carries a part number in :data:`LOW_SPEED_PARTS`
+    (matched without its first character too: the ident's first byte is often
+    corrupted)."""
+    s = (ident or "").replace(" ", "")
+    return any(p in s or p[1:] in s for p in LOW_SPEED_PARTS)
+
+
+def is_c5_ident(ident: str) -> bool:
+    """True when the ident carries a C5-family part number.
+
+    The ident's first byte is often corrupted, so the prefix is also matched
+    without its first character -- but only at the very start of the ident
+    and only when that first character is not a digit. A VW part number
+    always starts with a digit, so a leading digit is a genuine character of a
+    different part (3B0920... is a Passat B5 cluster, 4D0920... an A8 one),
+    not a damaged "4B0" / "8D0"."""
+    s = (ident or "").replace(" ", "")
+    for p in C5_FAMILY_PREFIXES:
+        if p in s:
+            return True
+        if len(s) > 1 and not s[0].isdigit() and s[1:].startswith(p[1:]):
+            return True
+    return False
+
+
+class KeepAlive:
+    """Sends :meth:`VdoCluster.keep_alive` on a timer from a helper thread.
+    The caller must not touch the link until :meth:`stop` has returned (it
+    joins the thread, so no exchange is half done). ``lost`` is set, with
+    the error in ``error``, when an exchange failed: the session is gone."""
+
+    def __init__(self, cluster: "VdoCluster", interval: float = KEEPALIVE_S):
+        self._c = cluster
+        self._interval = interval
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self.error: Optional[BaseException] = None
+        self.sent = 0
+        self._t = threading.Thread(target=self._run, name="vdo-keepalive",
+                                   daemon=True)
+
+    @property
+    def lost(self) -> bool:
+        with self._lock:
+            return self.error is not None
+
+    def start(self) -> None:
+        self._t.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                self._c.keep_alive()
+                with self._lock:
+                    self.sent += 1
+            except Exception as ex:          # noqa: BLE001 - line gone
+                with self._lock:
+                    self.error = ex
+                return
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._t.is_alive() and self._t is not threading.current_thread():
+            self._t.join()
 
 
 class StopRequested(Exception):
@@ -69,6 +180,17 @@ class StopRequested(Exception):
 
 class ClusterError(KLineError):
     pass
+
+
+class ClusterTypeMismatch(ClusterError):
+    """The file's layout (Mk4 or C5) is not the connected cluster's type, and
+    nothing was given to ask the user whether to write anyway."""
+
+
+class ClusterNoAnswer(ClusterError):
+    """The 5-baud init got no answer at all, on every try: nothing is listening
+    on the line (wiring, ignition, the wrong adapter). Starting the session
+    over would only repeat the same silence, so it is not retried."""
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +213,18 @@ _SECRETS = {
            [0x37, 0x15, 0xd3, 0x23], [0xe1, 0xe1, 0xa9, 0x3b],
            [0x19, 0x74, 0x72, 0x18], [0x08, 0x2b, 0x49, 0x1a],
            [0x82, 0xd1, 0x7d, 0x50], [0x0a, 0x5b, 0x41, 0x4f]],
-    # Only level 7 is confirmed for this one (KWHack: brute-forced from an
-    # Audi C5 cluster, verified on three more pairs); 0-6 are placeholders.
-    0x06: [[0, 0, 0, 0]] * 7 + [[0x2b, 0x3a, 0x58, 0x41]],
+    # Only level 7 is confirmed for this one; 0-6 are placeholders. KWHack's
+    # value here was [0x2b, 0x3a, 0x58, 0x41], claimed "brute-forced from an
+    # Audi C5 cluster, verified on three more pairs" -- but it never actually
+    # raised a real C5 cluster's access level (own_initiative 2026-11-15: see
+    # VdoCluster's C5 path). The last byte below (0x71, was 0x41) is corrected
+    # from 5 real (seed, key) pairs sniffed from a genuine tool unlocking a
+    # real 4B0920981P cluster, each verified end to end by a full matching
+    # EEPROM read. Whether 0x41 was a transcription slip or a different
+    # secret for some other ROM/unit that also emits this seed suffix is open
+    # -- the table is keyed only by the seed suffix, not by ROM version, so
+    # that can't be ruled out. 0x71 is what this project's own hardware needs.
+    0x06: [[0, 0, 0, 0]] * 7 + [[0x2b, 0x3a, 0x58, 0x71]],
     0x0B: [[0x47, 0x36, 0x9a, 0xbb], [0xad, 0x4e, 0x61, 0x44],
            [0xd3, 0xd6, 0x42, 0x59], [0x13, 0x6f, 0x43, 0x74],
            [0xfc, 0xb8, 0x59, 0x2e], [0x09, 0x58, 0x9d, 0x7f],
@@ -326,13 +457,18 @@ class VdoCluster:
     """One KW1281 session with a VDO cluster. Drive from one worker thread."""
 
     def __init__(self, link, log: Optional[Callable[[str], None]] = None,
-                 is_stop: Optional[Callable[[], bool]] = None):
+                 is_stop: Optional[Callable[[], bool]] = None,
+                 fast: bool = False):
         self.k = link
+        #: High speed: one round trip per EEPROM block, a shorter login (see
+        #: the module docstring). Low is the KWHack dialog as it was.
+        self.fast = bool(fast)
         self._log = log or (lambda s: None)
         self._is_stop = is_stop or (lambda: False)
         self.kw: Optional[_kwp.Kw1281] = None
         self.info = ClusterInfo()
         self._custom_unlocked = False
+        self.c5 = False              # Audi C5-family dialog (chosen at connect)
 
     def log(self, msg: str) -> None:
         self._log(msg)
@@ -345,6 +481,13 @@ class VdoCluster:
     def _send(self, payload) -> List[bytes]:
         self.kw.send_block(list(payload))
         return self.kw._receive_blocks()
+
+    def _send_one(self, payload) -> List[bytes]:
+        """Send a command and read its one answer, without ACKing it: the next
+        command sent is the ACK (High speed's EEPROM blocks). A cluster ACK or
+        NAK comes back as the answer, as it does from :meth:`_send`."""
+        self.kw.send_block(list(payload))
+        return [self.kw.receive_block()]
 
     @staticmethod
     def _data_blocks(blocks: List[bytes]) -> List[bytes]:
@@ -361,6 +504,7 @@ class VdoCluster:
     # -- connect -------------------------------------------------------------
     def connect(self, tries: int = 3) -> ClusterInfo:
         last = None
+        woke = False
         for attempt in range(1, tries + 1):
             self._check_stop()
             try:
@@ -368,11 +512,18 @@ class VdoCluster:
                 self.log("Connecting to the cluster (KW1281 slow init, 0x17 @ %d)..."
                          % BAUD)
                 version = self.k.wake_up(ADDRESS, even_parity=False)
+                woke = True
                 if version >= 2000:
                     raise ClusterError("the controller at 0x17 answered with "
                                        "KWP2000 keyword %d, not KW1281 -- not a "
                                        "VDO Mk4-era cluster" % version)
-                self.kw = _kwp.Kw1281(self.k, self.log)
+                # High speed answers each byte at once on a plain serial link
+                # (a genuine tool's pace: 0.37 s a block, against 0.43 s with
+                # R6 at 1 ms); a link that hands bytes over in its own time
+                # (J2534's rx_settle_s) keeps the R6_FAST rule.
+                r6 = 0.0 if self.fast and not getattr(
+                    self.k, "rx_settle_s", 0.0) else None
+                self.kw = _kwp.Kw1281(self.k, self.log, fast=self.fast, r6=r6)
                 blocks = self.kw.connect()
                 self.info.ident_blocks = list(blocks)
                 # the ident is one string cut into fixed-size blocks
@@ -380,6 +531,16 @@ class VdoCluster:
                     b[3:].decode("latin-1") for b in blocks
                     if b[2] == BT_ASCII).split())
                 self.log("Connected: %s" % self.info.ident)
+                self.c5 = is_c5_ident(self.info.ident)
+                if self.fast and needs_low_speed(self.info.ident):
+                    self.fast = False
+                    self.kw.fast = False             # its pacing: lead and R6 back
+                    self.kw._r6_fixed = None
+                    self.log("This cluster needs the Low speed's pacing: "
+                             "switching to Low")
+                if self.c5:
+                    self.log("Audi C5-family cluster: using its own login "
+                             "and EEPROM dialog")
                 return self.info
             except (KLineError, KLineTimeout) as ex:
                 last = ex
@@ -388,8 +549,32 @@ class VdoCluster:
                     self.k.clear_rx()
                 except Exception:
                     pass
-                time.sleep(1.0)
+                # No quiet time is needed: on the bench the cluster answered an init
+                # 0-45 s after an abandoned session, 8 in a row 1 s apart, and right
+                # after EDC16 fast and 5-baud inits (the EDC16 is the unit that needs
+                # a quiet line, see kline_j2534.FAST_TO_SLOW_QUIET_S)
+                if attempt < tries:
+                    time.sleep(CONNECT_RETRY_QUIET_S)
+        if not woke:
+            raise ClusterNoAnswer(
+                "The cluster did not answer the 5-baud init (%s). Check the K-line "
+                "wiring and that the ignition is on." % (last or "no reply"))
         raise last or ClusterError("the cluster did not answer")
+
+    # -- keep-alive ----------------------------------------------------------
+    def keep_alive(self) -> None:
+        """One idle ACK block, answered by the cluster, so it does not drop
+        the session while the user decides something. Raises on a dead line."""
+        if self.c5:
+            self._c5_exchange([C5_ACK])
+            return
+        self.kw.send_block([BT_ACK])
+        self.kw.receive_block()
+
+    def start_keep_alive(self, interval: float = KEEPALIVE_S) -> "KeepAlive":
+        ka = KeepAlive(self, interval)
+        ka.start()
+        return ka
 
     def read_ident(self) -> List[str]:
         """ReadIdent until the cluster stops flagging more data (KWHack does
@@ -406,7 +591,10 @@ class VdoCluster:
     # -- unlock --------------------------------------------------------------
     def read_software_version(self) -> str:
         self.info.version_blocks = {}
-        for variation in range(4):
+        # Only variation 0 is the version string. KWHack also reads 1..3 and
+        # keeps them in the container's metadata; nothing uses them, and a
+        # genuine tool does not ask. High speed asks once.
+        for variation in ((0,) if self.fast else range(4)):
             for b in self._data_blocks(self.custom([0x84, variation])):
                 self.info.version_blocks[variation] = bytes(b[3:])
         body = self.info.version_blocks.get(0)
@@ -459,7 +647,11 @@ class VdoCluster:
 
     def unlock_for_eeprom(self) -> None:
         """Tester.UnlockControllerForEepromReadWrite for the cluster."""
-        self.read_ident()
+        if self.c5:
+            self._c5_unlock()
+            return
+        if not self.fast:                  # a genuine tool goes straight to the unlock
+            self.read_ident()
         ok = self.unlock()
         if not ok:
             self.log("Unknown cluster software version: EEPROM access will "
@@ -475,16 +667,159 @@ class VdoCluster:
         self.info.unlocked = True
         self.log("Cluster unlocked for EEPROM access")
 
+    # -- Audi C5 path ------------------------------------------------------------
+    # KW1281 custom-block login at 10400 baud (the cluster NAKs the Mk4 custom
+    # commands), then 19200 baud even parity and D1-framed blocks:
+    # ``D1 <len> <title> <body> <xor>``, no counter, no complement handshake.
+    def _c5_unlock(self) -> None:
+        self.kw.send_block([BT_CUSTOM, 0x80, 0x01, 0x02, 0x03, 0x04])
+        blk = self.kw.receive_block()
+        if blk[2] != BT_ACK:
+            self.log("Unlock-additional-commands answered 0x%02X (a NAK is "
+                     "normal on this cluster)" % blk[2])
+        ok = False
+        for pw in _C5_KW_PASSWORDS:
+            self._check_stop()
+            self.log("Sending the custom login block")
+            self.kw.send_block([BT_CUSTOM, 0x80] + list(pw.encode()))
+            blk = self.kw.receive_block()
+            if blk[2] == BT_NAK:
+                continue
+            if blk[2] != BT_ACK:
+                if ok:
+                    # one password already logged in: an odd answer to the
+                    # other one must not undo that
+                    self.log("Custom login: block 0x%02X to the other "
+                             "password after one was accepted; ignored"
+                             % blk[2])
+                    continue
+                raise ClusterError("unexpected block 0x%02X to the custom login"
+                                   % blk[2])
+            ok = True
+        if not ok:
+            raise ClusterError("the cluster refused both custom logins")
+        self.log("Switching to 19200 baud, even parity")
+        self.k.set_baud(19200)
+        self._set_parity("E")
+        self.k.clear_rx()
+        self._sleep_stoppable(C5_BAUD_SETTLE_S)
+        blk = self._c5_exchange([C5_HELLO])
+        if blk[2] != C5_HELLO:
+            self.log("Warning: hello answered 0x%02X" % blk[2])
+        for pw in _C5_LOGIN_PASSWORDS:
+            self._check_stop()
+            self.log("Sending the login request")
+            blk = self._c5_exchange([C5_LOGIN, 0x9D] + list(pw.encode()))
+            if blk[2] == C5_ACK:
+                break
+        else:
+            raise ClusterError("the cluster refused every login password")
+        level = self._c5_access_level()
+        if level is not None and level != MAX_ACCESS_LEVEL:
+            blk = self._c5_exchange([C5_LOGIN, 0x96, 0x01])
+            if blk[2] == C5_LOGIN and len(blk) == 14:
+                seed = bytes(blk[3:13])
+                key = find_key(seed, MAX_ACCESS_LEVEL, self.log)
+                self.log("Seed %s -> key %s" % (seed.hex(" "), key.hex(" ")))
+                blk = self._c5_exchange([C5_LOGIN, 0x96, 0x02] + list(key))
+                if blk[2] != C5_ACK:
+                    self.log("Warning: the key was not accepted")
+                self._c5_access_level()
+            else:
+                self.log("Warning: unexpected reply to the seed request")
+        self.info.unlocked = True
+
+    def _sleep_stoppable(self, seconds: float, slice_s: float = 0.1) -> None:
+        """Sleep, but notice a Stop request within ``slice_s``."""
+        end = time.monotonic() + seconds
+        while True:
+            self._check_stop()
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(slice_s, left))
+
+    def _set_parity(self, p: str) -> None:
+        set_parity = getattr(self.k, "set_parity", None)
+        if set_parity is not None:
+            set_parity(p)                    # J2534KLine / J2534RawKLine
+            return
+        port = getattr(self.k, "port", None)
+        if port is None or not hasattr(port, "parity"):
+            raise ClusterError("this K-line interface cannot switch to even "
+                               "parity, which Audi C5 clusters need after "
+                               "their login")
+        port.parity = p
+
+    def _c5_send(self, body) -> None:
+        """Write one D1 block without reading the cluster's answer."""
+        frame = [C5_START, len(body) + 3] + list(body)
+        ck = 0
+        for b in frame:
+            ck ^= b
+        self.k.write_bytes(bytes(frame + [ck]))
+
+    def _c5_exchange(self, body) -> List[int]:
+        self._c5_send(body)
+        hdr = self.k.read_byte()
+        size = self.k.read_byte()
+        blk = [hdr, size] + [self.k.read_byte() for _ in range(max(0, size - 2))]
+        ck = 0
+        for b in blk:
+            ck ^= b
+        if hdr != C5_START or ck:
+            raise ClusterError("bad block from the cluster: %s"
+                               % bytes(blk).hex(" "))
+        return blk
+
+    def _c5_access_level(self) -> Optional[int]:
+        blk = self._c5_exchange([C5_LOGIN, 0x96, 0x04])
+        if blk[2] == C5_LOGIN and len(blk) > 3:
+            self.info.access_level = blk[3]
+            self.log("Access level %d" % blk[3])
+            return blk[3]
+        self.log("Access level unknown")
+        return None
+
+    def _c5_read(self, addr: int, count: int) -> Optional[bytes]:
+        out = bytearray()
+        for a in range(addr, addr + count, C5_CHUNK):
+            n = min(C5_CHUNK, addr + count - a)
+            blk = self._c5_exchange([C5_READ, n, (a >> 8) & 0xFF, a & 0xFF])
+            if blk[2] != C5_READ or len(blk) - 4 != n:
+                return None
+            out += bytes(blk[3:-1])
+        return bytes(out)
+
+    def _c5_write(self, addr: int, values: bytes) -> bool:
+        for o in range(0, len(values), C5_CHUNK):
+            a = addr + o
+            part = values[o:o + C5_CHUNK]
+            blk = self._c5_exchange([C5_WRITE, len(part), (a >> 8) & 0xFF,
+                                     a & 0xFF] + list(part))
+            if blk[2] != C5_ACK:
+                self.log("WriteEeprom @0x%03X refused" % a)
+                return False
+        return True
+
     # -- EEPROM ----------------------------------------------------------------
     def read_eeprom(self, addr: int, count: int) -> Optional[bytes]:
-        blocks = self._send([BT_READ_EEPROM, count & 0xFF, (addr >> 8) & 0xFF,
-                             addr & 0xFF])
+        if self.c5:
+            return self._c5_read(addr, count)
+        send = self._send_one if self.fast else self._send
+        blocks = send([BT_READ_EEPROM, count & 0xFF, (addr >> 8) & 0xFF,
+                       addr & 0xFF])
         if len(blocks) == 1 and blocks[0][2] == BT_NAK:
             return None                         # permission refused
         data = self._data_blocks(blocks)
         if len(data) != 1:
             raise ClusterError("ReadEeprom returned %d blocks instead of 1"
                                % len(data))
+        if data[0][2] != BT_READ_EEPROM_RESP:
+            # a stray block (a repeat of an earlier answer, an ident block)
+            # must never be taken for EEPROM data; _read_block retries it
+            raise ClusterError("ReadEeprom @0x%03X: block 0x%02X is not the "
+                               "read response" % (addr, data[0][2]))
         body = bytes(data[0][3:])
         if len(body) != count:
             raise ClusterError("ReadEeprom @0x%03X: %d bytes back, asked for %d"
@@ -493,9 +828,11 @@ class VdoCluster:
 
     def write_eeprom(self, addr: int, values: bytes) -> bool:
         values = bytes(values)
+        if self.c5:
+            return self._c5_write(addr, values)
         send = [BT_WRITE_EEPROM, len(values), (addr >> 8) & 0xFF,
                 addr & 0xFF] + list(values)
-        blocks = self._send(send)
+        blocks = (self._send_one if self.fast else self._send)(send)
         if len(blocks) == 1 and blocks[0][2] == BT_NAK:
             self.log("WriteEeprom @0x%03X refused" % addr)
             return False
@@ -508,6 +845,93 @@ class VdoCluster:
             return False
         return True
 
+    #: how many times a block is read again, each time after re-opening the session, when
+    #: the K-line garbles it (a stray byte, a repeated block, a timeout)
+    READ_RETRIES = 3
+
+    def _reopen(self) -> None:
+        """Start the session again after a garbled exchange: the cluster is
+        still in its old one until it times out or is ended, so it is ended
+        quietly, the line left alone for a moment, then the whole 5-baud init,
+        login and unlock run again."""
+        try:
+            self.k.clear_rx()
+        except Exception:
+            pass
+        self.end()
+        time.sleep(2.0)
+        self.kw = None
+        self._custom_unlocked = False
+        # connect and unlock, starting over a bounded number of times when the
+        # unlock breaks too (a Stop ends it at once)
+        self.open_for_eeprom()
+
+    def open_for_eeprom(self) -> None:
+        """Connect and unlock for EEPROM access, starting over from a fresh session when
+        the exchange breaks on the way (:data:`READ_RETRIES` times)."""
+        for attempt in range(self.READ_RETRIES + 1):
+            try:
+                self.connect()
+                self.unlock_for_eeprom()
+                return
+            except (LinkStopped, ClusterNoAnswer):
+                raise
+            except (KLineError, KLineTimeout) as ex:
+                if attempt >= self.READ_RETRIES:
+                    raise
+                self._check_stop()
+                self.log("The log-in broke (%s); starting again (%d of %d)"
+                         % (ex, attempt + 1, self.READ_RETRIES))
+                try:
+                    self.k.clear_rx()
+                except Exception:
+                    pass
+                self.end()
+                time.sleep(2.0)
+                self.kw = None
+                self._custom_unlocked = False
+
+    def _read_block(self, addr: int, n: int) -> Optional[bytes]:
+        """One EEPROM read, again from a fresh session when the exchange breaks.
+        Reads only: a write is never repeated on its own. A stop request or a
+        refusal (None) is passed on as it is. The Audi C5 dialog re-logs-in
+        with a parity change and is not re-opened here."""
+        for attempt in range(self.READ_RETRIES + 1):
+            try:
+                return self.read_eeprom(addr, n)
+            except LinkStopped:
+                raise
+            except (KLineError, KLineTimeout) as ex:
+                if self.c5 or attempt >= self.READ_RETRIES:
+                    raise
+                self._check_stop()
+                self.log("EEPROM @0x%03X: the line broke (%s); opening a new session "
+                         "and reading it again (%d of %d)" % (addr, ex, attempt + 1,
+                                                              self.READ_RETRIES))
+                self._reopen()
+        return None
+
+    def _write_block(self, addr: int, values: bytes) -> bool:
+        """One EEPROM block write, again from a fresh session when the exchange
+        breaks. Writing the same 16 bytes to the same address twice leaves the
+        same EEPROM, so this repeat is safe (the KWHack port never repeated a
+        write; a refusal is still reported as it is, not repeated). The C5
+        dialog is not re-opened here."""
+        for attempt in range(self.READ_RETRIES + 1):
+            try:
+                return self.write_eeprom(addr, values)
+            except LinkStopped:
+                raise
+            except (KLineError, KLineTimeout) as ex:
+                if self.c5 or attempt >= self.READ_RETRIES:
+                    raise
+                self._check_stop()
+                self.log("EEPROM @0x%03X: the line broke (%s); opening a new session "
+                         "and writing it again (%d of %d)" % (addr, ex, attempt + 1,
+                                                              self.READ_RETRIES))
+                self._reopen()
+        return False
+
     def dump(self, start: int = 0, length: int = EEPROM_SIZE,
              on_percent: Optional[Callable[[int], None]] = None,
              pct_range: Tuple[int, int] = (0, 100)) -> bytes:
@@ -516,7 +940,7 @@ class VdoCluster:
         for addr in range(start, start + length, BLOCK):
             self._check_stop()
             n = min(BLOCK, start + length - addr)
-            chunk = self.read_eeprom(addr, n)
+            chunk = self._read_block(addr, n)
             if chunk is None:
                 raise ClusterError("the cluster refused to read EEPROM @0x%03X "
                                    "(not unlocked)" % addr)
@@ -525,7 +949,62 @@ class VdoCluster:
                 on_percent(lo + (hi - lo) * (addr + n - start) // length)
         return bytes(out)
 
+    def reset(self) -> bool:
+        """Ask the cluster to reset itself (custom command 0x82). True when
+        the request went out. A cluster that reboots at once may never answer
+        it, so an answer is not required -- only that the block was sent; the
+        dialog is over either way, so the session is not ended afterwards
+        (a restarting cluster would not hear it)."""
+        self._check_stop()
+        if self.c5:
+            # The real tool sends this only after a write, never after a
+            # plain read (confirmed from a genuine tool's traffic): a LOGIN
+            # block whose single data byte is 0x82, same as the Mk4 custom
+            # reset command but inside the D1 framing.
+            sent = False
+            try:
+                self.log("Resetting the cluster...")
+                self._c5_send([C5_LOGIN, CMD_RESET])
+                sent = True                  # on the wire; an answer is optional
+                try:
+                    hdr = self.k.read_byte()
+                    size = self.k.read_byte()
+                    rest = [self.k.read_byte() for _ in range(max(0, size - 2))]
+                    if hdr == C5_START and len(rest) >= 1 and rest[0] != C5_ACK:
+                        self.log("Warning: reset answered 0x%02X" % rest[0])
+                except (KLineError, KLineTimeout):
+                    pass                     # a cluster that reboots says nothing
+            except (KLineError, KLineTimeout, AttributeError) as ex:
+                if not sent:
+                    self.log("The reset request could not be sent: %s" % ex)
+            return sent
+        sent = False
+        try:
+            self.log("Resetting the cluster...")
+            if not self._custom_unlocked:            # (an EEPROM session has)
+                self._send([BT_CUSTOM, 0x80, 0x01, 0x02, 0x03, 0x04])
+                self._custom_unlocked = True
+            self.kw.send_block([BT_CUSTOM, CMD_RESET])
+            sent = True
+            try:
+                self.kw._receive_blocks()               # ACK/NAK, if it still can
+            except (KLineError, KLineTimeout):
+                pass
+        except (KLineError, KLineTimeout, AttributeError) as ex:
+            if not sent:
+                self.log("The reset request could not be sent: %s" % ex)
+        if sent:
+            self.kw = None                      # nothing more to say to it
+        return sent
+
     def end(self) -> None:
+        if self.c5:
+            try:
+                self._set_parity("N")
+                self.k.set_baud(BAUD)
+            except Exception:
+                pass
+            return
         try:
             if self.kw is not None:
                 self.kw.end_communication()
@@ -536,13 +1015,13 @@ class VdoCluster:
 # ---------------------------------------------------------------------------
 # High-level operations used by the Flash dialog
 # ---------------------------------------------------------------------------
-def read_cluster(link, log=None, on_percent=None, is_stop=None):
+def read_cluster(link, log=None, on_percent=None, is_stop=None, fast=False):
     """Connect, unlock, read the whole 2 KB EEPROM. Returns ``(eeprom, meta)``
-    where ``meta`` is what the cluster reported (for the ``.vdo`` container)."""
-    c = VdoCluster(link, log, is_stop)
+    where ``meta`` is what the cluster reported (for the ``.vdo`` container).
+    ``fast`` is High speed (one round trip a block)."""
+    c = VdoCluster(link, log, is_stop, fast=fast)
     try:
-        c.connect()
-        c.unlock_for_eeprom()
+        c.open_for_eeprom()
         if log:
             log("Reading the EEPROM (2048 bytes)...")
         data = c.dump(on_percent=on_percent)
@@ -557,17 +1036,38 @@ class WriteReport:
     blocks_written: List[int]
     verified: bool
     changed_params: List[str] = field(default_factory=list)
+    #: the cluster was sent a reset after the verify (None: not tried)
+    reset: Optional[bool] = None
+    #: the user cancelled at the wrong-cluster-type warning; nothing written
+    cancelled: bool = False
 
     def describe(self) -> str:
+        if self.cancelled:
+            return ("Cancelled: the file and the connected cluster are of "
+                    "different types. Nothing was written.")
+        s = self._written()
+        if self.reset:
+            s += ("\n\nThe cluster was sent a reset and restarts on the new "
+                  "EEPROM.")
+        elif self.reset is False:
+            s += ("\n\nThe reset request could not be sent: switch the "
+                  "cluster's ignition off and on to make it use the new "
+                  "EEPROM.")
+        return s
+
+    def _written(self) -> str:
         if not self.blocks_written:
             return "The cluster already holds this EEPROM: nothing was written."
+        then = (" and verified it by reading back" if self.verified
+                else "; the cluster confirmed each block as it was written, "
+                     "but it was not read back")
         if len(self.blocks_written) == EEPROM_SIZE // BLOCK:
-            s = ("Wrote the whole EEPROM (%d blocks of 16 bytes) and verified it "
-                 "by reading back." % len(self.blocks_written))
+            s = ("Wrote the whole EEPROM (%d blocks of 16 bytes)%s."
+                 % (len(self.blocks_written), then))
         else:
-            s = ("Wrote %d block(s) of 16 bytes (%s) and verified them by reading "
-                 "back." % (len(self.blocks_written),
-                            ", ".join("0x%03X" % a for a in self.blocks_written)))
+            s = ("Wrote %d block(s) of 16 bytes (%s)%s."
+                 % (len(self.blocks_written),
+                    ", ".join("0x%03X" % a for a in self.blocks_written), then))
         if self.changed_params:
             s += "\n\nChanged: " + ", ".join(self.changed_params)
         return s
@@ -605,26 +1105,76 @@ def changed_parameters(current: bytes, image: bytes) -> List[str]:
             if ea.values() != eb.values()]
 
 
+def _type_name(c5: bool) -> str:
+    return "Audi C5 family" if c5 else "VW Mk4 (VWK501/503 layout)"
+
+
+def _confirm_type_mismatch(c: "VdoCluster", file_c5: bool, log,
+                           confirm) -> bool:
+    """The file is the other family's EEPROM. Ask (``confirm``), keeping the
+    session alive meanwhile; True to go on, reopening the session first if
+    it dropped while the user decided."""
+    file_t, cl_t = _type_name(file_c5), _type_name(c.c5)
+    msg = ("The file is a %s EEPROM but the connected cluster is %s (%s)."
+           % (file_t, cl_t, c.info.ident or "ident unknown"))
+    if log:
+        log("Warning: " + msg)
+    if confirm is None:
+        raise ClusterTypeMismatch(msg + " Nothing was written.")
+    ka = c.start_keep_alive()
+    try:
+        go = bool(confirm(file_t, cl_t, c.info.ident))
+    finally:
+        ka.stop()
+    if not go:
+        if log:
+            log("Cancelled at the cluster-type warning; nothing written")
+        return False
+    if ka.lost:
+        if log:
+            log("The session dropped while waiting (%s); opening it again"
+                % ka.error)
+        c._reopen()
+    return True
+
+
 def write_cluster(link, image: bytes, log=None, on_percent=None,
-                  is_stop=None) -> WriteReport:
+                  is_stop=None, fast=False, verify=True,
+                  confirm_mismatch: Optional[Callable[[str, str, str], bool]]
+                  = None) -> WriteReport:
     """Write ``image`` (2048 bytes) to the cluster -- every 16-byte block --
-    and read each block back.
+    and, with ``verify``, read each block back (Advanced in the flasher; it
+    takes as long again as the write). ``fast`` is High speed (one round trip a
+    block). Without ``verify`` the cluster's per-block ``F9`` reply, which
+    echoes the request, is the only confirmation.
 
     Nothing is read from the cluster first (owner's decision, 2026-10-11:
     the read-first, backup and identity comparison were KWHack's behaviour).
     The only check is on the file itself: it must be a recognised VDO Mk4
-    EEPROM layout."""
+    EEPROM layout.
+
+    Once connected, the file's layout is compared with the cluster's type
+    (from its ident). On a mismatch nothing is written unless
+    ``confirm_mismatch(file_type, cluster_type, ident)`` returns True; it is
+    called from this thread while a keep-alive thread holds the session open,
+    and without it the mismatch raises :class:`ClusterTypeMismatch`. A
+    declined mismatch returns a report with ``cancelled`` set."""
     from ..platforms.vdo import layout_of
     image = bytes(image)
     if len(image) != EEPROM_SIZE:
         raise ClusterError("a cluster EEPROM image is exactly 2048 bytes; this "
                            "one is %d" % len(image))
-    if layout_of(image) is None:
+    layout = layout_of(image)
+    if layout is None:
         raise ClusterError("the file is not a recognised VDO Mk4 cluster EEPROM")
-    c = VdoCluster(link, log, is_stop)
+    c = VdoCluster(link, log, is_stop, fast=fast)
     try:
-        c.connect()
-        c.unlock_for_eeprom()
+        c.open_for_eeprom()                  # a broken log-in starts over, as a read's does
+        if (layout == "C5") != c.c5:
+            if not _confirm_type_mismatch(c, layout == "C5", log,
+                                          confirm_mismatch):
+                return WriteReport(c.info.software_version, [], False,
+                                   cancelled=True)
         version = c.info.software_version
         todo = list(range(0, EEPROM_SIZE, BLOCK))
         if log:
@@ -632,20 +1182,20 @@ def write_cluster(link, image: bytes, log=None, on_percent=None,
         failed = []
         for i, a in enumerate(todo):
             c._check_stop()
-            if not c.write_eeprom(a, image[a:a + BLOCK]):
+            if not c._write_block(a, image[a:a + BLOCK]):
                 failed.append(a)
             if on_percent:
-                on_percent(60 * (i + 1) // len(todo))
+                on_percent((60 if verify else 100) * (i + 1) // len(todo))
         if failed:
             raise ClusterError("the cluster refused the write at %s -- the "
                                "EEPROM may be partly written; write again"
                                % ", ".join("0x%03X" % a for a in failed))
-        if log:
-            log("Verifying...")
         bad = []
-        for i, a in enumerate(todo):
+        if verify and log:
+            log("Verifying...")
+        for i, a in enumerate(todo if verify else ()):
             c._check_stop()
-            back = c.read_eeprom(a, BLOCK)
+            back = c._read_block(a, BLOCK)
             if back != image[a:a + BLOCK]:
                 bad.append(a)
             if on_percent:
@@ -653,6 +1203,8 @@ def write_cluster(link, image: bytes, log=None, on_percent=None,
         if bad:
             raise ClusterError("verify failed at %s: the cluster reads back "
                                "different bytes" % ", ".join("0x%03X" % a for a in bad))
-        return WriteReport(version, todo, True)
+        # Written and read back clean: reset it so it runs on the new EEPROM.
+        # Last, and never a reason to call a good write a failure.
+        return WriteReport(version, todo, bool(verify), reset=c.reset())
     finally:
         c.end()

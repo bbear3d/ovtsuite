@@ -411,6 +411,7 @@ def test_uds_read_result_goes_into_a_project(app, monkeypatch):
     d = _dialog()
     monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
     d._done("read", {"_uds_read": True, "cal": b"\x11" * 16, "base": 0x180000})
+    app.processEvents()                 # the flasher closes, then the read opens
     assert d._window.loaded
     blob = d._window.loaded[0][0]
     c = C.Container.from_bytes(blob)
@@ -424,6 +425,7 @@ def test_uds_read_result_goes_into_a_project(app, monkeypatch):
 def test_tp20_read_result_opens_as_a_new_file(app):
     d = _dialog()
     d._done("read", b"\x00" * 16)
+    app.processEvents()                 # the flasher closes, then the read opens
     assert d._window.loaded and d._window.loaded[0][0] == b"\x00" * 16
     assert "TP 2.0" in d.stage.text()
 

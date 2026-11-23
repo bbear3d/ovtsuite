@@ -162,6 +162,7 @@ cell, as one step you can undo:
 | **Subtract −** | The number is taken away. |
 | **Multiply ×** | Each cell is multiplied by the number (the default, 1.05 = +5%). |
 | **Divide ÷** | Each cell is divided by the number (dividing by 0 leaves the cells as they were). |
+| **Average with comparison %** | Each cell moves part of the way to the comparison's value; the number is the comparison's weight in percent (see below). |
 
 1. Select the cells.
 2. Pick the operation and type the number.
@@ -218,6 +219,27 @@ The same **Copy** and **Paste** are on the grid's right-click menu.
 With a comparison open, **Copy selected cells from comparison** (Ctrl+R,
 also on the right-click menu and under **Edit > Cells**) overwrites the
 selected cells with the comparison's values, in one step you can undo.
+
+**Average with comparison** moves the selected cells part of the way to the
+comparison instead. The number is the **comparison's weight in percent**: 0
+keeps your cell, 50 (the number it starts with) is the average of the two,
+100 is the comparison's value. Use it from the **Modify selection** bar
+(choose *Average with comparison %*, type the weight, **Apply**; the box
+remembers a number for each operation), from **Edit > Cells** and the grid's
+right-click menu (*Average with comparison* is 50 %, *Average with
+comparison...* asks for the weight), or on selected comparison cells with
+right-click > **Average cells into primary**. It is one undo step; a cell the
+comparison has no value for, or either value "off", is left alone.
+
+Average is only available while each cell of your table is compared with the
+comparison's value at the same operating point -- the comparison is on your
+table's axes, because they are the same, because it is a different size and
+was resampled onto them, or because it is **Aligned to the primary's axes**
+(see [Comparison size](comparison.md#comparison-size-resampled-aligned-or-original)).
+When the comparison is the same size on other breakpoints and not aligned,
+or shown at its original size, the choice is greyed, with the reason in its
+tooltip. It is also off for tables of text or of a list of choices. A hex output
+table is averaged byte for byte, rounded to a whole byte.
 
 ### Copying a table from another tab
 

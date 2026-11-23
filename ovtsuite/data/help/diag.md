@@ -58,8 +58,9 @@ module with an open session. Modules that did not answer are listed under
 **Not answering**, with the reason in the tooltip.
 
 To reach a module the scan did not find, use **+ Connect by address...**, or
-open **All known addresses** to pick one from the generation's table. Hover a
-row there to see which addresses the table knows for it.
+use **All known addresses** to pick one from the generation's table (it is open
+the first time; after that it stays as you left it). Hover a row there to see
+which addresses the table knows for it.
 
 At the bottom of the rail, **OBD Generic-II** and the **Garage** open the
 [vehicle tools](#vehicle-tools).

@@ -159,3 +159,18 @@ def test_default_project_folder_is_off_until_chosen(tmp_path, monkeypatch):
     assert gui_project.default_project_dir() == str(tmp_path)
     store["projects/default_dir"] = str(tmp_path / "gone")
     assert gui_project.default_project_dir() == ""        # not there: the last folder
+
+
+def test_the_edc17_cvn_option_is_off_by_default_and_reaches_the_checksum_options():
+    """Options > Projects and saving: the EDC17 CVN patch, off unless chosen;
+    the session hands it to the checksum provider with the other options."""
+    import types
+    from ovtsuite import options as O
+    from ovtsuite.session import TunerSession
+    opt = O.BY_KEY[O.FIX_CVN_KEY]
+    assert opt.default is False and opt.module == "edc17"
+    assert opt.page == O.PROJECTS
+    fake = types.SimpleNamespace(correct_program_area=False, fix_cvn=False)
+    assert TunerSession._checksum_opts(fake)["fix_cvn"] is False
+    fake.fix_cvn = True
+    assert TunerSession._checksum_opts(fake)["fix_cvn"] is True

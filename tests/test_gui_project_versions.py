@@ -347,3 +347,31 @@ def test_a_new_original_of_another_size_is_refused(win, tab, monkeypatch, tmp_pa
     assert not go.import_original(win, ref.doc, ref.sid, str(path))
     assert warned and "another size" in warned[0]
     assert [c.id for c in ref.set.roots()] == roots
+
+
+def test_insert_a_file_as_a_version_between_two(win, tab, tmp_path, monkeypatch):
+    """Project panel > Insert a file as a version after this...: the file
+    goes in after the original, the saved edit keeps its bytes and stays the
+    branch's latest; the tab (not dirty) is untouched."""
+    from ovtsuite import gui_original as go
+    ref = tab.project_ref
+    s, proj = ref.set, ref.doc.project
+    head = ref.branch.head
+    root = s.checkpoint(head).parent
+    kept = proj.state(ref.sid, head)
+    f = tmp_path / "older.bin"
+    img = bytearray(READ)
+    img[0x40] ^= 0xFF
+    f.write_bytes(bytes(img))
+    # press the dialog's own Insert button
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", lambda self: (
+        self.__dict__.setdefault("_hit", [b for b in self.buttons()
+                                          if b.text() == "Insert"][0]), 0)[1])
+    monkeypatch.setattr(QtWidgets.QMessageBox, "clickedButton",
+                        lambda self: self.__dict__.get("_hit"))
+    assert go.insert_version(win, ref.doc, ref.sid, ref.bid, root, path=str(f))
+    new = s.checkpoint(head).parent
+    assert new != root and s.checkpoint(new).parent == root
+    assert ref.branch.head == head
+    assert proj.state(ref.sid, head) == kept
+    assert bytes(img) in proj.state(ref.sid, new).values()

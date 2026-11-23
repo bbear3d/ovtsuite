@@ -513,3 +513,88 @@ def test_protocol_text_is_only_what_the_module_answered():
     assert _protocol_text(ModuleInfo(addr="01", protocol="kwp2000", transport="can", reached=True)) == "KWP2000 (TP 2.0)"
     assert _protocol_text(ModuleInfo(addr="01", protocol="uds", transport="uds", reached=True)) == "UDS"
     assert _addr_tags({"kline": {"address": 23}, "tp20": {"dest": 7}}) == ["K-line 0x17", "TP 2.0 0x07"]
+
+
+# ------------------------------- Adaptation / Basic settings keep their cells updating
+class _PollSession(_RotSession):
+    def adaptation_read(self, ch):
+        from ovtsuite.diag.kw1281 import Adaptation
+        from ovtsuite.flash.diag import Cell
+        return Adaptation(channel=ch, value=1234, cells=[Cell(0x01, 20, 203)], raw=b"")
+
+    def basic_setting_read(self, g):
+        return self.read_group_full(g)
+
+
+def test_adaptation_page_rereads_its_channel_while_shown_and_stops_on_a_test(app):
+    w = _window(app)
+    try:
+        live = _RotLive(_PollSession())
+        w._lives["01"] = live
+        w.rail.select("01")
+        w.adapt_ch.setValue(5)
+        w.tabs.setCurrentWidget(w._pages["Adaptation"])
+        assert [op for op, _f in live.queue] == ["adapt_poll"]       # one read in flight
+        w._poll_kick()
+        assert len(live.queue) == 1
+        _take(live, w)
+        assert w.adapt_cells.rowCount() == 1 and "1234" in w.adapt_current.text()
+        w._poll_kick()                                              # the next read, a moment after the result
+        assert [op for op, _f in live.queue] == ["adapt_poll"]
+        live.queue.clear()
+        w._poll_inflight.clear()
+        w._adapt_test_pending = True                                 # an applied test value is not re-read over
+        w._poll_kick()
+        assert not live.queue
+        w.tabs.setCurrentWidget(w.live_view)                         # nor are reads made off the page
+        w._adapt_test_pending = False
+        w._poll_kick()
+        assert not live.queue
+    finally:
+        w._lives.clear()
+        w.close()
+
+
+def test_basic_settings_page_shows_the_group_until_started_and_a_refused_group_stops(app):
+    w = _window(app)
+    try:
+        live = _RotLive(_PollSession())
+        w._lives["01"] = live
+        w.rail.select("01")
+        w.basic_group.setValue(1)
+        w.tabs.setCurrentWidget(w._pages["Basic settings"])
+        assert [op for op, _f in live.queue] == ["basic_view"]
+        _take(live, w)
+        assert w.basic_cells.rowCount() == 2
+        w._poll_kick()
+        assert [op for op, _f in live.queue] == ["basic_view"]
+        w._basic_running = True                                      # basic-setting mode reads instead
+        live.queue.clear()
+        w._poll_inflight.clear()
+        w._poll_kick()
+        assert not live.queue
+        w._basic_running = False
+        w.basic_group.setValue(3)                                    # group 3 is not served
+        assert [op for op, _f in live.queue] == ["basic_view"]
+        w._poll_inflight.clear()
+        _take(live, w)
+        assert w.basic_cells.rowCount() == 0 and not w._poll_on["basic_view"]
+        w._poll_kick()
+        assert len(live.queue) == 0
+    finally:
+        w._lives.clear()
+        w.close()
+
+
+def test_all_known_addresses_is_open_the_first_time_and_remembers_how_it_was_left(app):
+    w = _window(app)
+    try:
+        assert w.rail.known_head.isChecked() and w.rail.card_addrs("known")
+        w.rail.known_head.setChecked(False)
+    finally:
+        w.close()
+    w = _window(app)
+    try:
+        assert not w.rail.known_head.isChecked()
+    finally:
+        w.close()

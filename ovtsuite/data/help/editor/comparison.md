@@ -1,7 +1,7 @@
 ---
 title: Comparing files
 order: 20
-context: DiffListDialog
+context: DifferencesWindow
 ---
 # Comparing files
 
@@ -94,18 +94,34 @@ values were resampled. **Ctrl+C** in the comparison grid copies its selected
 cells. The default, **In the same grid, under the table**, is the layout
 described above.
 
-### Comparison size: resampled or original
+### Comparison size: resampled, aligned or original
 
 By default the comparison is put onto your table's rows and columns, cell for
 cell when the two tables have the same shape and **resampled** onto your
-table's axes when they do not (the banner says which). **Comparison size**
-shows it as it is stored instead: its own rows, columns, axes, labels and
-units, in a read-only grid of its own, so nothing is interpolated.
+table's axes when they do not (the banner says which). A table of the same
+size on other breakpoints is therefore compared cell for cell: each value
+sits in the cell it is stored in, which is a different operating point.
+
+**Aligned to the primary's axes** also puts that same-size table onto your
+axes: along each axis whose breakpoints differ, the comparison is
+interpolated (its end values held beyond its range), so every cell is
+compared with the comparison's value at the same operating point. The banner
+says `· resampled`, and the comparison's band repeats your breakpoints. A
+changed breakpoint is still marked with the orange outline, the banner still
+counts it (`N axis point(s) differ`), and its tooltip gives your value and the
+comparison's. A ZF schedule's gear columns are labels, not a measured
+quantity, so they are matched one for one and never interpolated; its pedal
+axis is. If an axis cannot be interpolated along (not in order, or with
+gaps), that table stays cell for cell.
+
+**Original size** shows it as it is stored instead: its own rows, columns,
+axes, labels and units, in a read-only grid of its own, so nothing is
+interpolated.
 
 Change it for the table in front with the **Comparison** button on the table's
 edit bar (beside *Difference view*), by right-clicking the table or the
-comparison and ticking **Show comparison at original size**, or in **View >
-Comparison size**. Each table remembers its own choice, as the heat map does;
+comparison and ticking **Show comparison at original size** or **Align
+comparison to the primary's axes**, or in **View > Comparison size**. Each table remembers its own choice, as the heat map does;
 where it has none, the default applies: **Tools > Options > Editor >
 Comparison values**. **Use the default for this table** clears a table's own
 choice, and **Make this the default for all tables** sets the default and
@@ -221,6 +237,15 @@ and the [3D surface](3d-surface.md) draws both surfaces side by side.
 **Edit > Show differences...** lists every parameter that differs, in one
 window. It stays open beside the main window while you work.
 
+It is the same window as **Edit > Generate patch...**: **List** at the top
+shows the differences to read and jump from, **Make patch** the same rows
+with a tick box each, to save as a patch (see
+[Patches](patches.md#making-a-patch-from-two-binaries)). The two count changed
+cells the same way, so a table shows the same number in either. **Compare:**
+picks the two sides: this tab and its comparison, or **Two versions of this
+file's history** (a **From version:** and a **To version:**, as **Generate
+patch from history** offers).
+
 ![The differences list](../images/main-diff-list.png)
 
 | Column | Meaning |
@@ -228,16 +253,16 @@ window. It stays open beside the main window while you work.
 | **Parameter** | The parameter's name. |
 | **Group** | Its tree group. |
 | **Cells changed** | How many cells differ, or `structure differs` when the two copies are different sizes. |
-| **First change** | The first differing cell, primary value → comparison value (for a different size: the two sizes). |
+| **First change** | The first differing cell, comparison value → this tab's value (for a different size: the two sizes). **Swap direction** in Make patch turns the pair round. |
 
 Double-click a row to open that parameter in the main window, with its
-differing cells highlighted.
+differing cells highlighted. (This is the **List** view only; in **Make patch** a double-click does nothing.)
 
 **Show:** picks what is listed:
 
 | Box | Lists |
 |---|---|
-| **Calibration** (ticked) | The parameters, as above. |
+| **Calibration** (ticked) | The parameters, as above, and the undefined data that differs inside the calibration (`Undefined data @ 0x...`). |
 | **Program/boot** | Raw byte ranges that differ in the program and boot area. |
 | **MPC / internal flash** | Raw byte ranges in the internal flash, when both sets hold it (a `.dim`, `.sgo`, `.edc16` or a full read). |
 | **EEPROM** | Raw byte ranges in the EEPROM, when both sets hold it. |
@@ -246,7 +271,7 @@ Raw byte rows show the area and address, `raw bytes`, the length and the
 first byte that differs. They compare address by address, so they only mean
 something between files with the same layout.
 
-**Exclude checksum/digest/signature bytes** (ticked) leaves out the bytes
+**Skip checksum bytes** (ticked) leaves out the checksum, digest and signature bytes
 that change by themselves whenever anything in their block changes.
 
 **Copy list** copies the whole list as tab-separated text for a spreadsheet

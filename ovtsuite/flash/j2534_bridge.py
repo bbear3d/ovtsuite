@@ -82,18 +82,54 @@ class _FrameTap:
     format the Bus Sniffer / sniff.capture reads).  Runs inside the bridge so
     the debug log works even on the fast in-bridge TP path."""
 
-    def __init__(self, ch, path):
+    def __init__(self, ch, path, max_bytes=0, keep=3):
+        # The flasher's trace file (Options > Flasher), the bridge's half of it:
+        # added to, and renamed to <path>.1 (older ones up) at ``max_bytes``,
+        # ``keep`` of them kept -- as ovtsuite.flash.flashtrace.TraceFile does
+        # for the other half. (Self-contained: this runs under a 32-bit Python
+        # with only the files beside it.)
         self._ch = ch
         self.protocol = getattr(ch, "protocol", None)
-        self._fh = open(path, "w", encoding="utf-8", newline="\n")
-        self._fh.write("# %s CAN debug trace (bridge)\n" % branding.APP_NAME)
+        self._path = path
+        self._max = max(4096, int(max_bytes)) if max_bytes else 0
+        self._keep = max(0, int(keep))
+        d = os.path.dirname(os.path.abspath(path))
+        if d and not os.path.isdir(d):
+            os.makedirs(d)
+        self._fh = open(path, "a", encoding="utf-8", newline="\n")
+        self._size = os.path.getsize(path)
+        self._fh.write("# %s CAN trace (bridge)\n" % branding.APP_NAME)
+        self._size += len("# %s CAN trace (bridge)\n" % branding.APP_NAME)
         self._n = 0
+
+    def _rotate(self):
+        self._fh.close()
+        try:
+            if self._keep == 0:
+                os.remove(self._path)
+            else:
+                for i in range(self._keep, 0, -1):
+                    src = "%s.%d" % (self._path, i - 1) if i > 1 else self._path
+                    if os.path.exists(src):
+                        os.replace(src, "%s.%d" % (self._path, i))
+            i = self._keep + 1
+            while os.path.exists("%s.%d" % (self._path, i)):
+                os.remove("%s.%d" % (self._path, i))
+                i += 1
+        except OSError:
+            pass                    # it will not move: it is emptied below
+        self._fh = open(self._path, "w", encoding="utf-8", newline="\n")
+        self._size = 0
 
     def _line(self, cid, data, tx, extended):
         import time as _t
         ident = ("%08X" % cid) if extended else ("%03X" % cid)
-        self._fh.write("(%.6f) %s %s#%s\n" % (_t.time(), "can-tx" if tx else "can",
-                                              ident, bytes(data).hex().upper()))
+        text = "(%.6f) %s %s#%s\n" % (_t.time(), "can-tx" if tx else "can",
+                                      ident, bytes(data).hex().upper())
+        if self._max and self._size and self._size + len(text) > self._max:
+            self._rotate()
+        self._fh.write(text)
+        self._size += len(text)
         self._n += 1
         if self._n % 50 == 0:
             self._fh.flush()
@@ -255,7 +291,8 @@ def serve(dll_path: str, inp, out):
                     c.clear_rx()
                     tp["chan"] = c
                     if q.get("log_path"):
-                        tp["tap"] = _FrameTap(c, q["log_path"])
+                        tp["tap"] = _FrameTap(c, q["log_path"], q.get("log_max_bytes", 0),
+                                              q.get("log_keep", 3))
                         c = tp["tap"]
                     p = q.get("params") or {}
                     used = {k: p[k] for k in
@@ -401,7 +438,8 @@ def serve(dll_path: str, inp, out):
                     uds["chan"] = c
                     src = c
                     if q.get("log_path"):
-                        uds["tap"] = _FrameTap(c, q["log_path"])
+                        uds["tap"] = _FrameTap(c, q["log_path"], q.get("log_max_bytes", 0),
+                                               q.get("log_keep", 3))
                         src = uds["tap"]
                     uds["io"] = IT.IsoTp(src, tx_id=q.get("tx_id", 0x7E1),
                                          rx_id=q.get("rx_id", 0x7E9))

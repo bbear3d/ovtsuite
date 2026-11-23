@@ -178,24 +178,161 @@ class WriteNotConfirmed(KLineError):
     is confirmed on a real TCU."""
 
 
+#: K-line (ISO 14230) 5-baud init address of the TCU. Taken from the bench
+#: shim of the original tool (FIVE_BAUD_INIT, address 0x02); not yet confirmed
+#: with this flasher on a real car.
+K_ADDRESS = 0x02
+#: The address the TCU's requests are framed to. It is not the 5-baud address:
+#: an EDC16 woken at 0x01 is asked at 0x10 (``83 10 F1 ...``). A 09D woken at
+#: 0x02 answered a header with NO addresses (``02 1A 9B ck``) on the bench and
+#: replied from 0x1A (``83 F1 1A 7F 1A 12``), and 0x1A is also the target in the
+#: original tool's ``82 1A F1 1A 9B``. Not answered at 0x02, 0x10 or 0x20.
+K_REQUEST_ADDRESS = 0x1A
+#: Header forms tried after the wake-up, in this order, to find the one the TCU
+#: answers: None = no address bytes at all, else addressed to that address.
+HEADER_CANDIDATES = (None, K_REQUEST_ADDRESS, 0x10)
+#: What a fast init's StartCommunication is addressed to (EDC16: 0x10).
+FAST_INIT_TARGET = K_REQUEST_ADDRESS
+#: K-line baud escalation, the same speed bytes the EDC16 path sends
+#: (``10 <session> <byte>``; see ovtsuite.flash.diag.SPEEDS).
+KLINE_SPEEDS = {"Low": (0x00, 10400), "Medium": (0x87, 124800), "High": (0xA7, 244898)}
+#: The early K-line 09D may have a 512 KiB flash (cal 0x10000..0x7FFFF) rather
+#: than the CAN part's 1 MiB -- see :mod:`ovtsuite.flash.trx_kline_sim`. A
+#: K-line read does not assume either: ``read_image(image_size=None)`` reads up
+#: to 1 MiB and returns 512 KiB when the part refuses 0x80000 as out of range
+#: (or wraps); a timeout there is retried and then an error, never a cut.
+SMALL_IMAGE_SIZE = 0x80000
+KLINE_IMAGE_SIZE = None                # automatic (1 MiB or 512 KiB)
+#: asks for the first block past 512 KiB, in automatic size: a timeout is
+#: retried this many times before the read fails (it never cuts the image)
+_EDGE_TRIES = 3
+#: requestOutOfRange: the one answer that says a 512 KiB part has ended
+NRC_OUT_OF_RANGE = 0x31
+
+
+class KLineKwpChannel:
+    """The same ``open/close/send/recv`` face as a TP 2.0 channel, over a K-line
+    link (:class:`ovtsuite.flash.transport.KLine` or the J2534 K-line link).
+
+    The 09D speaks the same KWP2000 requests on both buses; only the carrier
+    differs. ``send`` frames a payload as ISO 14230 and ``recv`` unframes one
+    response, so :class:`Aisin09dFlash` runs unchanged. The 5-baud wake-up is
+    done by :meth:`open`; there is no baud raise (the flash is read at the
+    link's 10400)."""
+
+    def __init__(self, link, address: int = K_ADDRESS, log=None,
+                 request_address: int = K_REQUEST_ADDRESS):
+        from .kwp import Kwp2000                 # lazy: the flat/bridge import has no package
+        self.link = link
+        self.address = address                   # 5-baud init address
+        self.request_address = request_address   # what requests (and fast init) go to
+        self._log = log or (lambda s: None)
+        self.kwp = Kwp2000(link, controller=request_address, log=log)
+        self.kwp.fast = True                     # whole frame per write, echo drained once
+        self._woken = False
+        self.is_stop = None
+
+    @property
+    def is_stop(self):
+        return self.kwp.is_stop
+
+    @is_stop.setter
+    def is_stop(self, fn):
+        self.kwp.is_stop = fn
+
+    def open(self):
+        if not self._woken:
+            if hasattr(self.link, "fast_target"):
+                self.link.fast_target = self.request_address   # StartCommunication target
+            self.link.wake_up(address=self.address)           # 5-baud address, if it comes to that
+            self._woken = True
+            mode = getattr(self.link, "last_init", None)
+            if mode is None:                      # the J2534 link: its mode flag
+                mode = "fast" if getattr(self.link, "_fast", False) else "slow"
+            # Both inits leave the TCU answering requests framed to its
+            # controller address (like the EDC16's 0x10), not to the 5-baud one --
+            # or to a header with no addresses. Find which, by asking.
+            self.kwp.controller = self.request_address
+            self.log("aisin09d: K-line up by %s init" % mode)
+            self._detect_header()
+
+    @property
+    def addressless(self) -> bool:
+        """True once the TCU has answered a header with no address bytes."""
+        return self.kwp.addressless
+
+    def _detect_header(self):
+        """Ask ``1A 9B`` in each header form of :data:`HEADER_CANDIDATES` until
+        the TCU answers (any reply, even a negative one, shows the form is
+        understood) and frame everything that follows that way. If nothing
+        answers the default stays, and the real request fails with its own
+        error."""
+        found = self.kwp.detect_header(HEADER_CANDIDATES, (0x1A, bytes([IDENT_PN])))
+        if found is None:
+            self.kwp.controller = self.request_address
+            self.log("aisin09d: no header form was answered; using 0x%02X"
+                     % self.request_address)
+            return
+        cand, msg = found
+        self.log("aisin09d: the TCU answers %s%s" % (
+            "a header without addresses" if cand is None else "requests addressed to 0x%02X" % cand,
+            "" if msg.src is None else " (replying from 0x%02X)" % msg.src))
+
+    def log(self, msg):
+        self._log(msg)
+
+    #: entering the programming session does not drop a K-line; there is
+    #: nothing to re-open
+    def reopen(self):
+        pass
+
+    def close(self):
+        self._woken = False                      # the link itself belongs to the caller
+
+    def send(self, payload: bytes):
+        payload = bytes(payload)
+        self.kwp.send(payload[0], payload[1:])         # the dialog frames it as detected
+
+    def recv(self, timeout_ms: Optional[int] = None) -> bytes:
+        saved = None
+        if timeout_ms is not None:
+            try:
+                saved = self.link.read_timeout
+                self.link.read_timeout = max(0.1, timeout_ms / 1000.0)
+            except Exception:
+                saved = None
+        try:
+            msg = self.kwp.receive()
+        finally:
+            if saved is not None:
+                self.link.read_timeout = saved
+        return bytes([msg.service]) + msg.body
+
+
 class Aisin09dFlash:
-    """Read (and, once confirmed, write) one Aisin TRx 09D TCU over CAN TP 2.0.
+    """Read (and, once confirmed, write) one Aisin TRx 09D TCU over CAN TP 2.0
+    or K-line.
 
     ``can`` is a raw CAN channel (write_can/read/pass_*), from which a
     :class:`Tp20Channel` is built; or pass ``tp`` -- an already-open TP 2.0
     channel (e.g. the ``.tp`` of a CanKLine the GUI opened for this address) --
-    to reuse it, the same shortcut ZF 6HP offers.
+    to reuse it, the same shortcut ZF 6HP offers. ``kline`` is an open K-line
+    link instead (see :class:`KLineKwpChannel`).
     """
 
-    def __init__(self, can=None, log=None, tp=None):
+    def __init__(self, can=None, log=None, tp=None, kline=None, speed="Low"):
         self._log = log or (lambda s: None)
-        if tp is not None:
+        #: K-line only: "Low" (stay at 10400), "Medium" or "High" (try to raise)
+        self.speed = speed
+        if kline is not None:
+            self.tp = KLineKwpChannel(kline, log=log)
+        elif tp is not None:
             self.tp = tp
         elif can is not None:
             self.tp = Tp20Channel(can, dest=DEST, listen_id=LISTEN_ID,
                                   params=Tp20Params(), log=log)
         else:
-            raise KLineError("aisin09d: needs either a CAN channel or a tp channel")
+            raise KLineError("aisin09d: needs a CAN channel, a tp channel or a K-line link")
 
     def log(self, msg):
         self._log(msg)
@@ -253,14 +390,84 @@ class Aisin09dFlash:
             self.log("aisin09d: readEcuId 0x%02X skipped (%s)" % (ident_id, ex))
         return b""
 
+    def _start_read_session(self):
+        """startDiagnosticSession 0x86, sent ONCE. On a K-line link asked for
+        more than 10400 baud the same request carries the speed byte (the way
+        the EDC16 path does it), our end switches, and the TCU must answer a
+        request at the new rate; a refusal of the speed byte falls back to the
+        plain request (the only case it is sent twice), and a failed check
+        at the new rate tells the TCU to leave the high baud (see
+        :meth:`_leave_high_baud`) or fails the read cleanly."""
+        link = getattr(self.tp, "link", None)
+        speed_byte, baud = KLINE_SPEEDS.get(self.speed, KLINE_SPEEDS["Low"])
+        if link is None or speed_byte == 0:
+            resp = self._request(bytes([SID_START_SESSION, SESSION_EXTENDED]))
+            self._check_positive(resp, SID_START_SESSION, "startDiagnosticSession 0x86")
+            return
+        try:
+            resp = self._request(bytes([SID_START_SESSION, SESSION_EXTENDED, speed_byte]))
+            self._check_positive(resp, SID_START_SESSION, "baud raise")
+        except (KLineError, KLineTimeout) as ex:
+            self.log("aisin09d: TCU refused %d baud (%s); staying at 10400." % (baud, ex))
+            resp = self._request(bytes([SID_START_SESSION, SESSION_EXTENDED]))
+            self._check_positive(resp, SID_START_SESSION, "startDiagnosticSession 0x86")
+            return
+        time.sleep(0.075)
+        link.set_baud(baud)
+        try:
+            link.clear_rx()
+            resp = self._request(bytes([SID_READ_ECU_ID, IDENT_PN]))
+            self._check_positive(resp, SID_READ_ECU_ID, "check at %d baud" % baud)
+            self.log("aisin09d: link speed -> %d baud." % baud)
+        except (KLineError, KLineTimeout):
+            self.log("aisin09d: no answer at %d baud; asking the TCU to leave it." % baud)
+            self._leave_high_baud(link, baud)
+
+    def _leave_high_baud(self, link, baud):
+        """The TCU switched to ``baud`` the moment it accepted the session, so
+        putting only OUR end back to 10400 would leave the two on different
+        rates. While still at ``baud``, ask it to return (the session request
+        with speed byte 0, which the EDC16 path uses for 10400 too); then take
+        our end back and prove the TCU answers at 10400. If it does not, fail
+        the read with a clear message instead of reading on a dead link."""
+        try:
+            self._request(bytes([SID_START_SESSION, SESSION_EXTENDED, 0x00]),
+                          absorb_pending=False, timeout_ms=500)
+        except (KLineError, KLineTimeout):
+            pass                                  # it may not hear us either
+        time.sleep(0.075)
+        link.set_baud(10400)
+        try:
+            link.clear_rx()
+        except Exception:
+            pass
+        try:
+            resp = self._request(bytes([SID_READ_ECU_ID, IDENT_PN]))
+            self._check_positive(resp, SID_READ_ECU_ID, "check back at 10400 baud")
+        except (KLineError, KLineTimeout) as ex:
+            raise KLineError("aisin09d: the TCU did not answer at %d baud and is not "
+                             "answering at 10400 either (%s); it may still be at the high "
+                             "baud -- switch the ignition off and on, then read at Low speed"
+                             % (baud, ex))
+        self.log("aisin09d: the TCU is back at 10400 baud; the read carries on there.")
+
     # ---- read ----
     def read_image(self, on_percent=None, is_stop=None,
-                   image_size: int = IMAGE_SIZE) -> bytes:
+                   image_size: Optional[int] = IMAGE_SIZE) -> bytes:
         """Dump the whole flash (0x000000..image_size) exactly as the tool does:
         startDiagnosticSession 0x86, then flat 24-bit readMemoryByAddress in
         0xFE blocks, the last block trimmed to land on the end. No security
         (the captured read used none). Returns an ``image_size`` byte image;
-        a region the TCU NAKs is left 0xFF and stops the dump there."""
+        a region the TCU NAKs is left 0xFF and stops the dump there.
+
+        ``image_size=None`` is automatic: read up to 1 MiB and give back 512 KiB
+        when that is all the part has -- it refuses 0x80000 as out of range
+        (a definite answer), or its address space wraps so the second half
+        repeats the first. A timeout there is retried and then fails the read:
+        a silent link is not taken as the end of the flash."""
+        auto = image_size is None
+        if auto:
+            image_size = IMAGE_SIZE
         self.connect()
         try:
             pn = self.read_ecu_identification()
@@ -269,8 +476,7 @@ class Aisin09dFlash:
                     self.log("aisin09d: TCU PN %r" % pn[:16].decode("latin1").strip())
                 except Exception:
                     pass
-            resp = self._request(bytes([SID_START_SESSION, SESSION_EXTENDED]))
-            self._check_positive(resp, SID_START_SESSION, "startDiagnosticSession 0x86")
+            self._start_read_session()
 
             buf = bytearray(b"\xFF" * image_size)
             total = (image_size + READ_CHUNK - 1) // READ_CHUNK
@@ -280,10 +486,34 @@ class Aisin09dFlash:
                 if is_stop and is_stop():
                     raise KLineError("aisin09d: read cancelled")
                 length = min(READ_CHUNK, image_size - addr)
+                if auto and addr < SMALL_IMAGE_SIZE < addr + length:
+                    length = SMALL_IMAGE_SIZE - addr     # a block never straddles 512 KiB
                 req = bytes([SID_READ_MEM, (addr >> 16) & 0xFF,
                              (addr >> 8) & 0xFF, addr & 0xFF, length])
-                resp = self._request(req)
+                at_edge = auto and addr == SMALL_IMAGE_SIZE
+                tries = _EDGE_TRIES if at_edge else 1
+                for attempt in range(tries):
+                    try:
+                        resp = self._request(req)
+                        break
+                    except KLineError as ex:
+                        # a timeout at the 512 KiB edge is NOT the end of the
+                        # part: a stray lost frame looks the same. Ask again;
+                        # only a definite refusal (below) ends the image there.
+                        if not at_edge:
+                            raise
+                        if attempt + 1 >= tries:
+                            raise KLineError(
+                                "aisin09d: no answer at 0x%06X after %d tries (%s); a "
+                                "silent link is not taken as the end of a 512 KiB part. "
+                                "Read again, or choose the 512 KiB size." % (addr, tries, ex))
+                        self.log("aisin09d: no answer at 0x%06X (try %d of %d); asking again"
+                                 % (addr, attempt + 1, tries))
                 if len(resp) >= 3 and resp[0] == 0x7F:
+                    if at_edge and resp[2] != NRC_OUT_OF_RANGE:
+                        raise KLineError("aisin09d: addr 0x%06X refused (%s): not the "
+                                         "out-of-range answer of a 512 KiB part's end"
+                                         % (addr, resp.hex(" ")))
                     self.log("aisin09d: addr 0x%06X NAK'd (%s); stopping read"
                              % (addr, resp.hex(" ")))
                     break
@@ -297,6 +527,15 @@ class Aisin09dFlash:
                     on_percent(min(99, int(100 * done / total)))
             if on_percent:
                 on_percent(100)
+            if auto:
+                half = SMALL_IMAGE_SIZE
+                if addr == half:                       # the part ended at 512 KiB
+                    buf = buf[:half]
+                elif addr >= image_size and buf[half:] == buf[:half] and any(
+                        b != 0xFF for b in buf[:half]):
+                    self.log("aisin09d: second half repeats the first; a 512 KiB "
+                             "part whose address space wraps")
+                    buf = buf[:half]
             return bytes(buf)
         finally:
             self._stop_communication()
@@ -451,7 +690,8 @@ class Aisin09dFlash:
             self._stop_communication()
 
 
-__all__ = ["Aisin09dFlash", "WriteNotConfirmed", "trx_key",
+__all__ = ["Aisin09dFlash", "KLineKwpChannel", "K_ADDRESS", "KLINE_IMAGE_SIZE",
+           "WriteNotConfirmed", "trx_key",
            "compute_checksum", "apply_checksum", "verify_checksum",
            "CKSUM_K", "CKSUM_OFFSET", "CKSUM_START", "CKSUM_END",
            "WRITE_REGION", "WRITE_CHUNK", "SESSION_PROGRAMMING",

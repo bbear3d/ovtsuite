@@ -316,8 +316,10 @@ def _filter_text(e, label: str) -> str:
     on every table the catalogue does not name, the gear ratios included."""
     # A copy two codings share reads "coding 150031/158031"; each one on its
     # own must find it too, so "coding 158031" works as typed.
-    each = " ".join("coding %s" % c for c in
-                    _re0.findall(r"\d+", getattr(e, "coding", "") or ""))
+    # (only the numbers before the parenthesis: "(variant 3/19, ...)" and
+    # "(5-speed manual)" are descriptions, not codings)
+    each = " ".join("coding %s" % c for c in _re0.findall(
+        r"\d+", (getattr(e, "coding", "") or "").split(" (")[0]))
     return "\0".join((e.name.lower(), (e.description or "").lower(),
                       (e.label or "").lower(), label.lower(), each))
 
@@ -839,6 +841,11 @@ if HAVE_QT:
             #: no comparison of its own to tell
             self.outline_all = False
             self.outline_cells = None
+            #: ``() -> bool``: put a comparison of the same size on other
+            #: breakpoints onto this table's axes (gui_cmpsize "aligned");
+            #: None: cell for cell, as it always was
+            self.align_fn = None
+            self._ax_vals = {}              # ("x"|"y", i) -> (mine, theirs)
 
         def _outline_at(self, k, a, b):
             """The outline of a cell of a table that is not compared with
@@ -923,14 +930,21 @@ if HAVE_QT:
             e, cp = self.entity, self.compare
             # A TCC comparison matches columns by gear group rather than
             # interpolating across them; see view6hp.compare_columns.
+            cols = _view6.compare_columns(e, cp) if (e and cp) else None
+            align = bool(e and cp and self.align_fn is not None
+                         and self.align_fn())
+            if align and cols is None:
+                # a same-size map whose X axis is labels: never interpolated
+                cols = _view6.label_columns(e, cp)
             self.overlay = build_overlay(
-                e, cp, _view6.compare_columns(e, cp)) if (e and cp) else None
+                e, cp, cols, align=align) if (e and cp) else None
             self._cmp = self.overlay.values if self.overlay else []
             self._ndiff = None
             self._cx, self._cy = self._cmp_axes()
-            self._ax_diff = frozenset(
-                (ax, i) for ax, i, _a, _b in _axis_changes(e, cp)
-            ) if (e and cp and self._cmp) else frozenset()
+            changes = (_axis_changes(e, cp)
+                       if (e and cp and self._cmp) else [])
+            self._ax_diff = frozenset((ax, i) for ax, i, _a, _b in changes)
+            self._ax_vals = {(ax, i): (a, b) for ax, i, a, b in changes}
             # A pedal map labels its rows from its Y axis. The comparison
             # block used the primary's labels, so a saved version or another
             # file whose pedal axis differed showed the current file's axis.
@@ -1478,6 +1492,15 @@ if HAVE_QT:
                 if role in _R_TEXT:
                     return _fmt(vals[a], 3)
                 differs = (k[-1], a) in self._ax_diff
+                if role == _R_TIP:
+                    # a changed breakpoint says what it was on each side --
+                    # when the comparison is resampled onto these axes its
+                    # own are not in the grid
+                    ab = self._ax_vals.get((k[-1], a)) if differs else None
+                    if ab is None:
+                        return None
+                    return "primary: %s\n%s: %s" % (
+                        _fmt(ab[0], 3), self.other_label, _fmt(ab[1], 3))
                 # explicit bg AND fg so the band reads the same in light/dark;
                 # a breakpoint the other side does not share is marked like a
                 # differing cell
@@ -1563,12 +1586,15 @@ if HAVE_QT:
             f |= QtCore.Qt.ItemIsEditable             # provenance is advisory, not a lock
             return f
 
-        def _edit_cells(self, cells):
+        def _edit_cells(self, cells) -> bool:
+            """Write ``cells``; False (nothing written, ``edit_blocked``
+            emitted) while the primary shows differences."""
             if self.primary_delta() != "abs":
                 self.edit_blocked.emit()        # the cells show differences
-                return
+                return False
             self.session.edit_cells(self.entity, cells)
             self.edited.emit()
+            return True
 
         def _edit_axis(self, axis, i, value):
             self.session.edit_axis(axis, i, value)
@@ -1611,7 +1637,8 @@ if HAVE_QT:
                 cells = [(a, b, val / f if f else val)]
             if not cells:
                 return False
-            self._edit_cells(cells)
+            if not self._edit_cells(cells):
+                return False
             if len(cells) == 1:
                 self._vals[a][b] = self.entity.cell(a, b)
                 self._ndiff = None
@@ -1709,12 +1736,19 @@ if HAVE_QT:
                     nv = old * value
                 elif op == "div":
                     nv = old / value if value else old
+                elif op == "avg":
+                    # value: percent of the comparison (gui_average)
+                    other = self._at(self._cmp, r, c) if self._cmp else None
+                    if other is None or self._off(other):
+                        continue
+                    nv = old + value / 100.0 * (other - old)
                 else:
                     nv = old
                 cells.append((r, c, nv))
             if not cells:
                 return 0
-            self._edit_cells(cells)
+            if not self._edit_cells(cells):
+                return 0                    # blocked: the message says so
             for r, c, _ in cells:
                 self._vals[r][c] = self.entity.cell(r, c)
             self.refresh()
@@ -1802,8 +1836,8 @@ if HAVE_QT:
                     elif k == "y":
                         self._edit_axis(self.entity.y, a, val)
                         naxis += 1
-            if zcells:
-                self._edit_cells(zcells)
+            if zcells and not self._edit_cells(zcells):
+                zcells = []                 # blocked: nothing was written
             self._x = self.entity.x_values()
             self._y = self.entity.y_values()
             if self.entity:
@@ -1866,7 +1900,8 @@ if HAVE_QT:
                             cells.append((r, c, nv))
             if not cells:
                 return 0
-            self._edit_cells(cells)
+            if not self._edit_cells(cells):
+                return 0                    # blocked: the message says so
             for r, c, _ in cells:
                 self._vals[r][c] = self.entity.cell(r, c)
             self.refresh()
@@ -1897,7 +1932,8 @@ if HAVE_QT:
                     cells.append((r, c, nv))
             if not cells:
                 return 0
-            self._edit_cells(cells)
+            if not self._edit_cells(cells):
+                return 0                    # blocked: the message says so
             for r, c, _ in cells:
                 self._vals[r][c] = self.entity.cell(r, c)
             self.refresh()
@@ -2485,12 +2521,15 @@ if HAVE_QT:
                     for cc in self.cmp_copies:
                         if tx(cc) == t:
                             return cc
-                    if any(tx(cc) for cc in self.cmp_copies):
-                        return None    # nothing there for this transmission
                 codes = set(getattr(mine, "codings", None) or ())
                 for cc in self.cmp_copies:
                     if codes & set(getattr(cc, "codings", None) or ()):
+                        # the same coding selects it in both files, though
+                        # the transmission differs (a file converted from the
+                        # automatic to a manual): that is the one to compare
                         return cc
+                if t is not None and any(tx(cc) for cc in self.cmp_copies):
+                    return None        # nothing there for this transmission
             return (self.cmp_copies[self.cur]
                     if self.cur < len(self.cmp_copies) else self.cmp_copies[0])
 
@@ -3540,8 +3579,17 @@ if HAVE_QT:
             cav.addStretch(1)
             v.addLayout(cav)
 
-            box = QtWidgets.QGroupBox("Read-vs-actual corrector (primary)")
+            box = QtWidgets.QGroupBox("Read-vs-actual corrector")
             gv = QtWidgets.QVBoxLayout(box)
+            tr = QtWidgets.QHBoxLayout()
+            tr.addWidget(QtWidgets.QLabel("Correct:"))
+            self.target = QtWidgets.QComboBox()
+            self.target.setToolTip(
+                "The row the measurement applies to: the primary, a coding "
+                "variant, or every row (each scaled from its own pulses/km).")
+            self.target.currentIndexChanged.connect(self._recalc)
+            tr.addWidget(self.target, 1)
+            gv.addLayout(tr)
             er = QtWidgets.QHBoxLayout()
             er.addWidget(QtWidgets.QLabel("Speedo reads:"))
             self.read = QtWidgets.QDoubleSpinBox()
@@ -3558,7 +3606,7 @@ if HAVE_QT:
             self.actual.valueChanged.connect(self._recalc)
             er.addWidget(self.actual)
             er.addStretch(1)
-            self.apply_btn = QtWidgets.QPushButton("Apply to primary")
+            self.apply_btn = QtWidgets.QPushButton("Apply")
             self.apply_btn.clicked.connect(self._apply)
             er.addWidget(self.apply_btn)
             gv.addLayout(er)
@@ -3694,6 +3742,19 @@ if HAVE_QT:
                     self.tbl.setItem(i, 5, kmit)
                     self.tbl.setItem(i, 6, srcit)
             self.copy_all_btn.setEnabled(len(rows) > 1)
+            # the corrector's target: each row by its role, then all of them
+            keep = self.target.currentData()
+            self.target.blockSignals(True)
+            self.target.clear()
+            for i, r in enumerate(rows):
+                self.target.addItem("%s (%d pulses/km)" % (roles[i], r["imp_km"]), i)
+            if len(rows) > 1:
+                self.target.addItem("All rows", "all")
+            ix = self.target.findData(keep) if keep is not None else -1
+            if ix < 0:
+                ix = next((i for i, r in enumerate(rows) if r["primary"]), 0)
+            self.target.setCurrentIndex(ix)
+            self.target.blockSignals(False)
             p = self._primary()
             if p is not None and self.actual.value() < 2:
                 self.read.setValue(100.0)
@@ -3704,9 +3765,12 @@ if HAVE_QT:
         @staticmethod
         def _pulses_raw16(km):
             """The 4 stored bytes of ``km`` pulses/km, or None when outside
-            what the constant can hold."""
-            raw = round(3.6e9 / (km / 1000.0)) if km else 0
-            if not (0 <= raw <= 0xFFFFFFFF):
+            what the constant can hold (zero or negative pulses/km included:
+            a stored 0 would be a vehicle that never moves)."""
+            if not km or km <= 0:
+                return None
+            raw = round(3.6e9 / (km / 1000.0))
+            if not (0 < raw <= 0xFFFFFFFF):
                 return None
             return raw.to_bytes(4, "big")
 
@@ -3715,7 +3779,8 @@ if HAVE_QT:
             if raw is None:
                 QtWidgets.QMessageBox.warning(
                     self, "VSS",
-                    "That pulses/km value is outside the storable range.")
+                    "That pulses/km value is not valid: it must be above zero "
+                    "and within the storable range.")
                 self._reload()
                 return
             self.session.edit_bytes(self._rows16[row]["addr"], raw)
@@ -3866,39 +3931,52 @@ if HAVE_QT:
                 "Copy comparison \u2192 primary (%d row(s))" % len(rows))
             act.triggered.connect(lambda: self._copy_from_cmp16(rows))
 
+        def _corrections16(self):
+            """``[(row, pulses/km, raw bytes)]`` the corrector would write: the
+            chosen row (or every row), each scaled by speedo-reads / actual
+            from its own pulses/km. Rows whose value would not change or
+            cannot be stored are left out."""
+            rows = getattr(self, "_rows16", None) or []
+            actual = self.actual.value()
+            sel = self.target.currentData()
+            if not rows or actual <= 0 or sel is None:
+                return []
+            picked = rows if sel == "all" else [rows[sel]] if sel < len(rows) else []
+            out = []
+            for r in picked:
+                km = r["imp_km"] * (self.read.value() / actual)
+                raw = self._pulses_raw16(round(km))
+                if raw is not None and round(km) > 0 and round(km) != r["imp_km"]:
+                    out.append((r, round(km), raw))
+            return out
+
         def _recalc(self, *a):
             if getattr(self, "_loading", False):
                 return
-            p = self._primary()
-            if p is None:
+            rows = getattr(self, "_rows16", None) or []
+            if not rows or self.target.currentData() is None:
                 self.result.setText("")
                 self.apply_btn.setEnabled(False)
                 return
-            actual = self.actual.value()
-            km = p["imp_km"] * (self.read.value() / actual) if actual else None
-            if km is None:
-                self.apply_btn.setEnabled(False)
+            todo = self._corrections16()
+            self.apply_btn.setEnabled(bool(todo))
+            roles = self._role_labels16(rows)
+            names = {id(r): roles[i] for i, r in enumerate(rows)}
+            if not todo:
+                self.result.setText("Nothing to change.")
                 return
-            imp_m = km / 1000.0
-            raw = round(3.6e9 / imp_m) if imp_m else 0
-            ok = 0 < raw <= 0xFFFFFFFF
-            self.apply_btn.setEnabled(ok and round(km) != p["imp_km"])
-            msg = ("Would set primary to <b>%d</b> pulses/km (%.3f Imp/m) "
-                   "&mdash; was %d" % (round(km), imp_m, p["imp_km"]))
-            self.result.setText(msg)
+            self.result.setText("<br>".join(
+                "Would set %s to <b>%d</b> pulses/km (%.3f Imp/m) &mdash; was %d"
+                % (names[id(r)], km, km / 1000.0, r["imp_km"])
+                for r, km, _raw in todo))
 
         def _apply(self):
-            p = self._primary()
-            if p is None:
+            todo = self._corrections16()
+            if not todo:
                 return
-            actual = self.actual.value()
-            if actual <= 0:
-                return
-            km = p["imp_km"] * (self.read.value() / actual)
-            raw = round(3.6e9 / (km / 1000.0))
-            if not (0 < raw <= 0xFFFFFFFF):
-                return
-            self.session.edit_bytes(p["addr"], raw.to_bytes(4, "big"))
+            with self.session.transaction("VSS: read-vs-actual correction"):
+                for r, _km, raw in todo:
+                    self.session.edit_bytes(r["addr"], raw)
             self._reload()
             self._after_write()
 
@@ -4315,6 +4393,14 @@ if HAVE_QT:
             blocks = st.blocks
             self._blocks15 = list(blocks)
             self._loading15 = True
+            try:
+                self._fill15(st, blocks, mark_differs, _FGG_SRC)
+            finally:
+                self._loading15 = False
+            self._ds_changed15()
+            self._recalc15()
+
+        def _fill15(self, st, blocks, mark_differs, _FGG_SRC):
             self.tbl.setRowCount(len(blocks))
             for i, b in enumerate(blocks):
                 src = st.source.get(b.ds.label)
@@ -4353,9 +4439,6 @@ if HAVE_QT:
                             mark_differs(self.tbl.item(i, 4 + j))
                         it.setFlags(it.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
                         self.tbl.setItem(i, 7 + j, it)
-            self._loading15 = False
-            self._ds_changed15()
-            self._recalc15()
 
         def _ds_changed15(self, *a):
             lbl = self.ds_box.currentData()
@@ -4777,380 +4860,11 @@ if HAVE_QT:
             self.refresh_from_session()
             QtWidgets.QMessageBox.information(self, "Apply sweep patch", done)
 
-    class DiffListDialog(QtWidgets.QDialog):
-        """Lists every parameter that differs between the primary and the
-        comparison, with how many cells changed and the first change, and jumps
-        to a parameter in the editor on double-click (like 6HP's difference
-        report). Values are compared in physical units through the KB identity,
-        so it works across calibrations with different internal layouts."""
-
-        def __init__(self, primary, comparison, rows, parent=None):
-            super().__init__(parent)
-            self.primary = primary
-            self.comparison = comparison
-            self._rows = rows
-            self.setWindowTitle("Differences — %s vs %s"
-                                % (primary.binfile.name,
-                                   comparison.binfile.name))
-            self.setWindowIcon(app_icon())
-            self.resize(760, 560)
-            v = QtWidgets.QVBoxLayout(self)
-            self.summary_lbl = QtWidgets.QLabel()
-            v.addWidget(self.summary_lbl)
-
-            blk_row = QtWidgets.QHBoxLayout()
-            blk_row.addWidget(QtWidgets.QLabel("Show:"))
-            self.blk_prog = QtWidgets.QCheckBox("Program/boot")
-            self.blk_cal = QtWidgets.QCheckBox("Calibration")
-            self.blk_cal.setChecked(True)
-            self.blk_mpc = QtWidgets.QCheckBox("MPC / internal flash")
-            self.blk_eeprom = QtWidgets.QCheckBox("EEPROM")
-            for chk in (self.blk_prog, self.blk_cal, self.blk_mpc, self.blk_eeprom):
-                chk.stateChanged.connect(self._rebuild)
-                blk_row.addWidget(chk)
-            blk_row.addStretch(1)
-            v.addLayout(blk_row)
-
-            self.excl_checksum_chk = QtWidgets.QCheckBox(
-                "Exclude checksum/digest/signature bytes -- they recompute "
-                "on their own whenever anything else in their block "
-                "changes, so a difference there alone isn't meaningful")
-            self.excl_checksum_chk.setChecked(True)
-            self.excl_checksum_chk.stateChanged.connect(self._rebuild)
-            v.addWidget(self.excl_checksum_chk)
-
-            note = QtWidgets.QLabel(
-                "Program/boot, MPC and EEPROM rows are raw byte ranges, "
-                "address-literal, only meaningful between binaries with "
-                "the same layout; MPC/EEPROM need a container that "
-                "carries them (.dim / .sgo / .edc16).")
-            note.setWordWrap(True)
-            f = note.font()
-            f.setItalic(True)
-            note.setFont(f)
-            v.addWidget(note)
-
-            self.tbl = QtWidgets.QTableWidget(0, 4)
-            self.tbl.setHorizontalHeaderLabels(
-                ["Parameter", "Group", "Cells changed", "First change"])
-            self.tbl.verticalHeader().setVisible(False)
-            self.tbl.setEditTriggers(
-                QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-            self.tbl.setSelectionBehavior(
-                QtWidgets.QAbstractItemView.SelectRows)
-            self.tbl.horizontalHeader().setSectionResizeMode(
-                0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-            self.tbl.cellDoubleClicked.connect(self._open)
-            v.addWidget(self.tbl)
-
-            btns = QtWidgets.QHBoxLayout()
-            exp = QtWidgets.QPushButton("Copy list")
-            exp.clicked.connect(self._copy)
-            btns.addWidget(exp)
-            btns.addStretch(1)
-            close = QtWidgets.QPushButton("Close")
-            close.clicked.connect(self.accept)
-            btns.addWidget(close)
-            v.addLayout(btns)
-
-            self._rebuild()
-
-        def _rebuild(self):
-            from . import patch as _patch
-            rows = self._rows if self.blk_cal.isChecked() else []
-            wanted = []
-            if self.blk_prog.isChecked():
-                wanted.append(_patch.PROGRAM_BLOCK)
-            if self.blk_mpc.isChecked():
-                wanted.append(_patch.MPC_BLOCK)
-            if self.blk_eeprom.isChecked():
-                wanted.append(_patch.EEPROM_BLOCK)
-            raw_rows = (_patch.diff_outside_calibration(
-                            self.primary, self.comparison, blocks=wanted,
-                            exclude_checksums=self.excl_checksum_chk.isChecked())
-                       if wanted else [])
-            self.summary_lbl.setText(
-                "<b>%d parameter(s) differ%s.</b> Double-click a parameter "
-                "row to open it in the editor behind this window "
-                "(differing cells are highlighted there)."
-                % (len(rows),
-                   ", %d raw byte range(s) in the selected block(s)"
-                   % len(raw_rows) if raw_rows else ""))
-
-            self._ents = []
-            self.tbl.setRowCount(len(rows) + len(raw_rows))
-            for i, (e, cp) in enumerate(rows):
-                self._ents.append(e)
-                nchg, first = self._summarize(e, cp)
-                cells = [_english(e), tier_name(e.tier),
-                         "structure differs" if nchg is None else str(nchg),
-                         first]
-                for j, txt in enumerate(cells):
-                    it = QtWidgets.QTableWidgetItem(txt)
-                    if j == 2:
-                        it.setTextAlignment(int(QtCore.Qt.AlignRight
-                                                | QtCore.Qt.AlignVCenter))
-                    self.tbl.setItem(i, j, it)
-            a = bytes(self.primary.binfile.data)
-            b = bytes(self.comparison.binfile.data)
-            for k, (label, addr, length) in enumerate(raw_rows):
-                i = len(rows) + k
-                self._ents.append(None)
-                first = "@0x%X: %s → %s" % (
-                    addr, a[addr:addr + 1].hex() if addr < len(a) else "??",
-                    b[addr:addr + 1].hex() if addr < len(b) else "??")
-                cells = ["%s @ 0x%X" % (label, addr), "raw bytes",
-                         str(length), first]
-                for j, txt in enumerate(cells):
-                    it = QtWidgets.QTableWidgetItem(txt)
-                    if j == 2:
-                        it.setTextAlignment(int(QtCore.Qt.AlignRight
-                                                | QtCore.Qt.AlignVCenter))
-                    self.tbl.setItem(i, j, it)
-            self.tbl.resizeColumnsToContents()
-            self.tbl.horizontalHeader().setSectionResizeMode(
-                0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-
-        def _summarize(self, e, cp):
-            """(#changed cells, 'first change' text) or (None, ...) when the
-            two sides have different dimensions."""
-            if e.kind == "constant":
-                a, b = e.cell(0, 0), cp.cell(0, 0)
-                return (1 if a != b else 0), "%s → %s" % (_fmt(a), _fmt(b))
-            pairs = _cell_pairs(e, cp)
-            if pairs is None:
-                return None, "%s vs %s" % (_shape_text(e), _shape_text(cp))
-            run = _is_run(e)            # a 1-D table: its place along the run
-            n = 0
-            first = ""
-            for (r, c), (r2, c2) in pairs:
-                a, b = e.cell(r, c), cp.cell(r2, c2)
-                if a != b:
-                    n += 1
-                    if not first:
-                        where = ("[%d]" % (r * e.cols + c) if run
-                                 else "[%d,%d]" % (r, c))
-                        first = "%s %s → %s" % (where, _fmt(a), _fmt(b))
-            axes = _axis_changes(e, cp)
-            if axes:
-                ax, i, a, b = axes[0]
-                note = "%s axis[%d] %s → %s" % (ax.upper(), i, _fmt(a), _fmt(b))
-                if len(axes) > 1:
-                    note += " (+%d more axis point(s))" % (len(axes) - 1)
-                first = "%s; %s" % (first, note) if first else note
-            return n, first
-
-        def _open(self, row, _col):
-            if (0 <= row < len(self._ents) and self._ents[row] is not None
-                   and self.parent() is not None):
-                self.parent().show_entity(self._ents[row])
-                self.parent().raise_()
-                self.parent().activateWindow()
-
-        def _copy(self):
-            lines = ["Parameter\tGroup\tCells changed\tFirst change"]
-            for i in range(self.tbl.rowCount()):
-                lines.append("\t".join(
-                    self.tbl.item(i, j).text() for j in range(4)))
-            QtWidgets.QApplication.clipboard().setText("\n".join(lines))
-
-
-    class PatchBuilderDialog(QtWidgets.QDialog):
-        """Pick which changed parameters -- and which undefined-data byte
-        ranges -- go into a saved patch file, from the primary/comparison
-        pair already loaded for live comparison.
-
-        Diffed by KB identity (``ovtsuite.patch.diff_entities``), so this
-        works across two binaries with different internal layouts, exactly
-        like ``DiffListDialog`` above; unlike that dialog, selections here
-        become a portable file rather than just a report.
-        """
-
-        def __init__(self, primary, comparison, parent=None, on_swap=None):
-            """The patch turns ``primary`` into ``comparison`` (it carries
-            the comparison's values). ``on_swap``: show **Swap direction**,
-            which closes this and calls it."""
-            super().__init__(parent)
-            import html
-            from . import patch as _patch
-            self._patch = _patch
-            self.primary = primary
-            self.comparison = comparison
-            self.setWindowTitle("Generate Patch — %s to %s"
-                                % (primary.binfile.name, comparison.binfile.name))
-            self.setWindowIcon(app_icon())
-            self.resize(860, 640)
-
-            self._entries = _patch.diff_entities(primary, comparison)
-            self._gaps = _patch.diff_gaps(primary, comparison)
-
-            v = QtWidgets.QVBoxLayout(self)
-            way = QtWidgets.QHBoxLayout()
-            self.direction = QtWidgets.QLabel(
-                "From <b>%s</b> to <b>%s</b>: applying the patch makes a "
-                "binary like the first one into the second."
-                % (html.escape(primary.binfile.name),
-                   html.escape(comparison.binfile.name)))
-            self.direction.setWordWrap(True)
-            way.addWidget(self.direction, 1)
-            if on_swap is not None:
-                swap = QtWidgets.QPushButton("Swap direction")
-                swap.setToolTip("Make the patch the other way round")
-
-                def _swap():
-                    self.reject()
-                    QtCore.QTimer.singleShot(0, on_swap)
-                swap.clicked.connect(_swap)
-                way.addWidget(swap)
-            v.addLayout(way)
-            v.addWidget(QtWidgets.QLabel(
-                "<b>%d parameter(s) differ.</b> A patch is applied to a "
-                "target by parameter identity, not by address, so it can "
-                "target a binary with a different internal layout -- check "
-                "the ones to carry." % len(self._entries)))
-
-            top = QtWidgets.QHBoxLayout()
-            all_btn = QtWidgets.QPushButton("Check all")
-            all_btn.clicked.connect(lambda: self._set_all(self.tbl, True))
-            none_btn = QtWidgets.QPushButton("Check none")
-            none_btn.clicked.connect(lambda: self._set_all(self.tbl, False))
-            top.addWidget(all_btn)
-            top.addWidget(none_btn)
-            top.addStretch(1)
-            v.addLayout(top)
-
-            self.tbl = QtWidgets.QTableWidget(0, 5)
-            self.tbl.setHorizontalHeaderLabels(
-                ["", "Parameter", "Cells changed", "First change", "Grade"])
-            self.tbl.verticalHeader().setVisible(False)
-            self.tbl.setEditTriggers(
-                QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-            self.tbl.setRowCount(len(self._entries))
-            for i, e in enumerate(self._entries):
-                self._check_item(self.tbl, i, 0, e.selected)
-                ch = ("structure differs" if e.changed_cells is None
-                     else "%d/%d" % (e.changed_cells, e.total_cells))
-                if getattr(e, "changed_axes", 0):
-                    ch += " + %d axis" % e.changed_axes
-                for j, txt in enumerate(
-                       (e.title(), ch, e.first_change, e.source_grade), start=1):
-                    self.tbl.setItem(i, j, QtWidgets.QTableWidgetItem(txt))
-            self.tbl.resizeColumnsToContents()
-            self.tbl.horizontalHeader().setSectionResizeMode(
-                1, QtWidgets.QHeaderView.ResizeMode.Stretch)
-            v.addWidget(self.tbl, 2)
-
-            v.addWidget(QtWidgets.QLabel(
-                "<b>%d undefined-data range(s) also differ</b> (no "
-                "identified parameter covers them). Unchecked by default -- "
-                "these are address-literal and only meaningful for a target "
-                "of the same family/sub-family." % len(self._gaps)))
-            gtop = QtWidgets.QHBoxLayout()
-            gall = QtWidgets.QPushButton("Check all")
-            gall.clicked.connect(lambda: self._set_all(self.gtbl, True))
-            gnone = QtWidgets.QPushButton("Check none")
-            gnone.clicked.connect(lambda: self._set_all(self.gtbl, False))
-            gtop.addWidget(gall)
-            gtop.addWidget(gnone)
-            gtop.addStretch(1)
-            v.addLayout(gtop)
-
-            self.gtbl = QtWidgets.QTableWidget(0, 3)
-            self.gtbl.setHorizontalHeaderLabels(["", "Address", "Length"])
-            self.gtbl.verticalHeader().setVisible(False)
-            self.gtbl.setEditTriggers(
-                QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-            self.gtbl.setRowCount(len(self._gaps))
-            for i, (s, e) in enumerate(self._gaps):
-                self._check_item(self.gtbl, i, 0, False)
-                self.gtbl.setItem(i, 1, QtWidgets.QTableWidgetItem("0x%X" % s))
-                self.gtbl.setItem(i, 2, QtWidgets.QTableWidgetItem(
-                    "%d bytes" % (e - s)))
-            self.gtbl.resizeColumnsToContents()
-            v.addWidget(self.gtbl, 1)
-
-            btns = QtWidgets.QHBoxLayout()
-            btns.addStretch(1)
-            save = QtWidgets.QPushButton("Save patch...")
-            save.clicked.connect(self._save)
-            btns.addWidget(save)
-            cancel = QtWidgets.QPushButton("Cancel")
-            cancel.clicked.connect(self.reject)
-            btns.addWidget(cancel)
-            v.addLayout(btns)
-
-        @staticmethod
-        def _check_item(tbl, row, col, checked):
-            it = QtWidgets.QTableWidgetItem()
-            it.setFlags(QtCore.Qt.ItemFlag.ItemIsUserCheckable
-                       | QtCore.Qt.ItemFlag.ItemIsEnabled)
-            it.setCheckState(QtCore.Qt.CheckState.Checked if checked
-                             else QtCore.Qt.CheckState.Unchecked)
-            tbl.setItem(row, col, it)
-
-        @staticmethod
-        def _set_all(tbl, checked):
-            state = (QtCore.Qt.CheckState.Checked if checked
-                    else QtCore.Qt.CheckState.Unchecked)
-            for r in range(tbl.rowCount()):
-                tbl.item(r, 0).setCheckState(state)
-
-        def _save(self):
-            import os as _os
-            for i, e in enumerate(self._entries):
-                e.selected = (self.tbl.item(i, 0).checkState()
-                             == QtCore.Qt.CheckState.Checked)
-            blocks = []
-            for i, (s, e) in enumerate(self._gaps):
-                if self.gtbl.item(i, 0).checkState() == QtCore.Qt.CheckState.Checked:
-                    blocks.append(self._patch.build_block_entry(
-                        self.primary, self.comparison, s, e))
-            selected = [e for e in self._entries if e.selected]
-            if not selected and not blocks:
-                QtWidgets.QMessageBox.information(
-                    self, "Generate Patch", "Nothing is checked.")
-                return
-            default = "%s_to_%s.patch" % (
-                _os.path.splitext(self.primary.binfile.name)[0],
-                _os.path.splitext(self.comparison.binfile.name)[0])
-            pt = self._patch.new_patch(self.primary, self.comparison,
-                                       selected, blocks)
-            ws = self.parent()
-            ref = getattr(ws, "project_ref", None)
-            if ref is not None:
-                # kept in the project by default; Project panel > Export
-                # writes it to a file whenever wanted
-                SB = QtWidgets.QMessageBox.StandardButton
-                box = QtWidgets.QMessageBox(
-                    QtWidgets.QMessageBox.Icon.Question, "Generate Patch",
-                    "Keep the patch (%d parameter(s), %d block(s)) in the "
-                    "project %s?" % (len(selected), len(blocks), ref.doc.title),
-                    SB.Cancel, self)
-                keep = box.addButton("Keep in the project",
-                                     QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-                tofile = box.addButton("Save as a file...",
-                                       QtWidgets.QMessageBox.ButtonRole.ActionRole)
-                box.setDefaultButton(keep)
-                box.exec()
-                if box.clickedButton() is keep:
-                    _gp.keep_patch(ws, pt, default)
-                    self.accept()
-                    return
-                if box.clickedButton() is not tofile:
-                    return
-            from .recent import get_last_dir, set_last_dir
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, "Save patch", _os.path.join(get_last_dir("patch"), default),
-                "Patch files (*.patch)")
-            if not path:
-                return
-            set_last_dir(path, "patch")
-            pt.save(path)
-            QtWidgets.QMessageBox.information(
-                self, "Generate Patch",
-                "Saved %d parameter(s) and %d block(s) to %s"
-                % (len(selected), len(blocks), _os.path.basename(path)))
-            self.accept()
+    # Differences and Generate Patch are one window (gui_differences): the
+    # same difference shown as a list or as a patch checklist. The old names
+    # stay for callers and tests.
+    from .gui_differences import DifferencesWindow  # noqa: E402
+    PatchBuilderDialog = DifferencesWindow
 
 
     class PatchApplyDialog(QtWidgets.QDialog):
@@ -5184,10 +4898,12 @@ if HAVE_QT:
                 % (pt.source_name, pt.comparison_name, pt.source_family,
                    pt.comparison_family)))
 
-            self.tbl = QtWidgets.QTableWidget(0, 5)
+            from . import gui_relpatch as _rel
+            self._rel = _rel
+            self.tbl = QtWidgets.QTableWidget(0, 7)
             self.tbl.setHorizontalHeaderLabels(
                 ["", "Parameter", "Target status", "Captured grade",
-                 "If unestablished"])
+                 "If unestablished", "Change", "Copies here"])
             self.tbl.verticalHeader().setVisible(False)
             self.tbl.setEditTriggers(
                 QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -5211,6 +4927,9 @@ if HAVE_QT:
                     combo.addItems(["Discard", "Apply anyway"])
                 self.tbl.setItem(row, 2, QtWidgets.QTableWidgetItem(status))
                 self.tbl.setItem(row, 3, QtWidgets.QTableWidgetItem(e.source_grade))
+                self.tbl.setItem(row, 5, QtWidgets.QTableWidgetItem(_rel.change_text(e)))
+                self.tbl.setItem(row, 6, QtWidgets.QTableWidgetItem(
+                    _rel.copies_text(e, target)))
                 if combo is not None:
                     self.tbl.setCellWidget(row, 4, combo)
                     self._combos[("entry", e.name)] = combo
@@ -5237,6 +4956,15 @@ if HAVE_QT:
             self.tbl.horizontalHeader().setSectionResizeMode(
                 1, QtWidgets.QHeaderView.ResizeMode.Stretch)
             v.addWidget(self.tbl, 1)
+            # what the selected row would change in THIS file (gui_relpatch)
+            self.preview = QtWidgets.QPlainTextEdit()
+            self.preview.setReadOnly(True)
+            self.preview.setMaximumHeight(140)
+            self.preview.setPlaceholderText(
+                "Select a row to see what it would change in this file.")
+            v.addWidget(self.preview)
+            self.tbl.currentCellChanged.connect(
+                lambda r, _c, _pr, _pc: self._show_preview(r))
 
             trust_all = QtWidgets.QCheckBox(
                 "Apply every unestablished/cross-family entry anyway")
@@ -5265,6 +4993,13 @@ if HAVE_QT:
             for combo in self._combos.values():
                 combo.setCurrentIndex(1 if checked else 0)
 
+        def _show_preview(self, row):
+            if 0 <= row < len(self.pt.entries):
+                self.preview.setPlainText(
+                    self._rel.preview(self.pt.entries[row], self.target))
+            else:
+                self.preview.clear()
+
         def _apply(self):
             row = 0
             for e in self.pt.entries:
@@ -5279,6 +5014,11 @@ if HAVE_QT:
             for (_kind, key), combo in self._combos.items():
                 if combo.currentIndex() == 1:
                     dispositions[key] = self._patch.APPLY
+            again = self._rel.reapply_warning(self.pt, self.target, self._title)
+            if again and QtWidgets.QMessageBox.question(
+                    self, "Apply Patch", again) != \
+                    QtWidgets.QMessageBox.StandardButton.Yes:
+                return
             res = self._patch.apply_patch(
                 self.pt, self.target, dispositions=dispositions,
                 default_disposition=self._patch.DISCARD,
@@ -5639,102 +5379,10 @@ if HAVE_QT:
             self.accept()
 
 
-    class HistoryPatchDialog(QtWidgets.QDialog):
-        """Pick two points in the currently loaded binary's OWN automatic
-        version history and open the same checklist used for a two-file
-        comparison (``PatchBuilderDialog``) between them.
-
-        This is the version-history counterpart to "Generate patch..." --
-        same output, same checklist, but the two sides come from
-        ``ovtsuite.patch.sessions_from_history`` (reconstructed purely from
-        the change log) instead of a separately loaded comparison binary.
-        """
-
-        def __init__(self, target, parent=None):
-            super().__init__(parent)
-            from . import history as _history
-            from . import patch as _patch
-            self._history = _history
-            self._patch = _patch
-            self.target = target
-            self.setWindowTitle("Generate Patch from History — %s"
-                                % target.binfile.name)
-            self.setWindowIcon(app_icon())
-
-            self._versions = _history.list_versions(target)  # newest first
-
-            v = QtWidgets.QVBoxLayout(self)
-            v.addWidget(QtWidgets.QLabel(
-                "Build a patch between two versions of this branch, instead "
-                "of a separate comparison binary."))
-
-            form = QtWidgets.QFormLayout()
-            self.from_box = QtWidgets.QComboBox()
-            self.to_box = QtWidgets.QComboBox()
-            # the state before the oldest checkpoint: in a project tab the
-            # original as read (unless the history the tab sees starts later)
-            self.from_box.addItem(self._original_label(parent),
-                                  _history.ORIGINAL)
-            # self._versions is newest-first; show oldest-first in the pickers
-            # so "From" naturally reads earlier than "To".
-            for ver in reversed(self._versions):
-                label = "%s -- %s%s" % (
-                    ver.get("ts", "?"), _history.display_label(ver),
-                    "  (pending, unsaved)" if ver.get("pending") else "")
-                self.from_box.addItem(label, ver["id"])
-                self.to_box.addItem(label, ver["id"])
-            self.to_box.addItem("Current (live, unsaved edits included)", None)
-            self.from_box.setCurrentIndex(0)
-            self.to_box.setCurrentIndex(self.to_box.count() - 1)
-            form.addRow("From version:", self.from_box)
-            form.addRow("To version:", self.to_box)
-            v.addLayout(form)
-
-            btns = QtWidgets.QHBoxLayout()
-            btns.addStretch(1)
-            nxt = QtWidgets.QPushButton("Next...")
-            nxt.clicked.connect(self._next)
-            btns.addWidget(nxt)
-            cancel = QtWidgets.QPushButton("Cancel")
-            cancel.clicked.connect(self.reject)
-            btns.addWidget(cancel)
-            v.addLayout(btns)
-
-        def _original_label(self, ws):
-            ref = getattr(ws, "project_ref", None)
-            if ref is not None:
-                try:
-                    s = ref.set
-                    head = s.branch(ref.bid).head
-                    if len(list(s.lineage(head))) - 1 == len(
-                            [v for v in self._versions if not v.get("pending")]):
-                        return "The original as read"
-                except Exception:
-                    pass
-                return "Before the oldest version listed"
-            return "As first opened (before the oldest version)"
-
-        def _next(self):
-            older_id = self.from_box.currentData()
-            newer_id = self.to_box.currentData()
-            if older_id == newer_id:
-                QtWidgets.QMessageBox.information(
-                    self, "Generate Patch from History",
-                    "Pick two different versions.")
-                return
-            # currentData() gives None for "Current" already; if the same
-            # version id was picked for both by an id match (not the
-            # sentinel), the check above already caught it.
-            try:
-                older, newer = self._patch.sessions_from_history(
-                    self.target, older_id, newer_id)
-            except ValueError as exc:
-                QtWidgets.QMessageBox.warning(
-                    self, "Generate Patch from History", str(exc))
-                return
-            self.accept()
-            dlg = PatchBuilderDialog(older, newer, self.parent())
-            dlg.exec()
+    def HistoryPatchDialog(target, parent=None):
+        """Generate patch from history: the Differences window on two
+        versions of ``target``'s own history (gui_differences)."""
+        return DifferencesWindow.from_history(target, parent)
 
 
     #: Short badge and tint for each platform's tab. ECU blue, TCU amber;
@@ -5749,6 +5397,8 @@ if HAVE_QT:
         "hvac": ("HVAC", "Climatronic", QtGui.QColor(90, 160, 110)),
         "vdo": ("CLU", "VDO cluster", QtGui.QColor(150, 110, 190)),
         "aisin": ("TCU", "Aisin", QtGui.QColor(200, 90, 70)),
+        "edc15eeprom": ("ECU", "EDC15 EEPROM", QtGui.QColor(61, 124, 201)),
+        "edc16eeprom": ("ECU", "EDC16 EEPROM", QtGui.QColor(61, 124, 201)),
         "unknown": ("BIN", "Unrecognised binary", QtGui.QColor(128, 128, 128)),
     }
 
@@ -5832,6 +5482,10 @@ if HAVE_QT:
                                        "Description"])
             self.tree.setColumnWidth(0, 320)
             self.tree.setColumnWidth(1, 200)
+            # Ctrl/Shift-click picks several parameters (Create patch from the
+            # selected tables); one click still opens its table
+            self.tree.setSelectionMode(
+                QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
             self.tree.itemSelectionChanged.connect(self._on_select)
             self.tree.itemDoubleClicked.connect(self._on_tree_double)
             self._tree_middle = _TreeMiddleClick(self.tree, self._on_tree_middle)
@@ -5844,7 +5498,8 @@ if HAVE_QT:
             self.filter.setToolTip(
                 "Keep the parameters whose name, symbol, description or "
                 "coding contains this text.\n* matches any run of characters, "
-                "? any one character (accped*map).")
+                "? any one character (accped*map). A coding as your scan tool "
+                "shows it works too (coding 786437).")
             self.filter.textChanged.connect(self._populate)
 
             # Task-group filter. Filled from the groups the open file
@@ -5903,6 +5558,8 @@ if HAVE_QT:
             self._heat_default = False  # what a newly opened table starts with
 
             self.model = TableModel(primary)
+            from . import gui_cmpsize as _gcs0      # "aligned": the comparison
+            self.model.align_fn = lambda: _gcs0.aligned(self)   # on the primary's axes
             self.table = QtWidgets.QTableView()
             self.table.setModel(self.model)
             from . import gui_address as _gaddr  # the status bar's address
@@ -5947,10 +5604,17 @@ if HAVE_QT:
             self.op_box = QtWidgets.QComboBox()
             for lbl, key in (("Set =", "set"), ("Add +", "add"),
                              ("Subtract −", "sub"), ("Multiply ×", "mul"),
-                             ("Divide ÷", "div")):
+                             ("Divide ÷", "div"),
+                             ("Average with comparison %", "avg")):
                 self.op_box.addItem(lbl, key)
             self.op_box.setCurrentIndex(3)          # Multiply by default
             eb.addWidget(self.op_box)
+            self._op_texts = {}                     # the box's text, per operation
+            self._op_prev = "mul"
+            self.op_box.currentIndexChanged.connect(self._op_changed)
+            # Average is offered only while the comparison is on this table's axes
+            self.model.modelReset.connect(self._sync_average)
+            self.model.dataChanged.connect(self._sync_average)
             self.op_val = QtWidgets.QLineEdit("1.05")
             self.op_val.setMaximumWidth(110)
             self.op_val.returnPressed.connect(self._apply_op)
@@ -6473,6 +6137,12 @@ if HAVE_QT:
             if _gck.comparison_cells(self, self.table):    # comparison rows
                 menu.addAction("Copy cells to primary",
                                lambda: _gck.to_primary(self, self.table))
+                from . import gui_average as _ga
+                av = menu.addAction("Average cells into primary",
+                                    lambda: _ga.to_primary(self, self.table))
+                ok, why = _ga.state(self)
+                av.setEnabled(ok)
+                av.setToolTip(why or _ga.WEIGHT_TIP)
                 skip = ("Copy selected cells from comparison",)
             _gck.add_to_menu(self.win, menu, skip)  # revert actions
             from . import gui_cmpsize as _gcs2
@@ -6821,6 +6491,11 @@ if HAVE_QT:
             want_tier = self.tier_box.currentData()
             adv = self.advanced.isChecked()
             needle = self.filter.text().lower().strip()
+            try:        # a coding as a scan tool shows it (P447: variant + function bits)
+                from .variant import coding_query as _coding_query
+                needle = _coding_query(self.primary, needle)
+            except Exception:
+                pass
             # * and ? are wildcards, within one field of the row's text
             from .search import wildcard_regex as _wildcard
             wild = _wildcard(needle, sep="\0")
@@ -6886,6 +6561,8 @@ if HAVE_QT:
             """A click in the tree: open that table (in the preview tab)."""
             if self._tt_quiet:
                 return                  # the tree being moved to match a tab
+            if len(self.tree.selectedItems()) > 1:
+                return                  # a selection being built: opens nothing
             e = self._current_entity()
             if e is None:
                 return
@@ -7442,6 +7119,7 @@ if HAVE_QT:
             self.model.readonly = bool(self.view_only)
             try:
                 loaded.correct_program_area = program_area_pref()
+                loaded.fix_cvn = fix_cvn_pref()
             except Exception:
                 pass
             self._untitled = False
@@ -7492,6 +7170,14 @@ if HAVE_QT:
             in the hex editor -- the universal tools all still work."""
             if getattr(self, "_quiet", False):
                 return                      # reopening tabs: no popup each
+            if self.is_eeprom_image():
+                # an ECU's EEPROM: the EEPROM editor is its view, not the hex
+                # editor (which stays on Tools > Hex editor)
+                self.open_own_eeprom_editor()
+                return
+            if getattr(loaded, "platform", "") == "edc16mpc":
+                self.open_hex()             # an internal flash: bytes (and its checksum)
+                return
             reason = (getattr(loaded, "unsupported_reason", None)
                       or "This binary has no parameter definition.")
             box = QtWidgets.QMessageBox(self)
@@ -7695,7 +7381,9 @@ if HAVE_QT:
             old = getattr(self, "_diff_dlg", None)
             if old is not None:
                 old.close()
-            self._diff_dlg = DiffListDialog(self.primary, self.comparison, rows, self)
+            # the same window as Generate patch, as a list (gui_differences)
+            self._diff_dlg = DifferencesWindow(self.comparison, self.primary, self,
+                                               mode="list", ws=self)
             self._diff_dlg.setWindowModality(QtCore.Qt.WindowModality.NonModal)
             self._diff_dlg.show()
 
@@ -7869,15 +7557,52 @@ if HAVE_QT:
             sm = self.table.selectionModel()
             return sm.selectedIndexes() if sm else []
 
+        def _op_changed(self, *_a):
+            """A different operation: the box keeps a number per operation (1.05
+            for Multiply, a weight in percent for Average, 50 to begin with)."""
+            from . import gui_average as _ga
+            self._op_texts[self._op_prev] = self.op_val.text()
+            op = self.op_box.currentData()
+            self._op_prev = op
+            self.op_val.setText(self._op_texts.get(
+                op, "%g" % _ga.DEFAULT_WEIGHT if op == "avg" else "1.05"))
+            self.op_val.setToolTip(_ga.WEIGHT_TIP if op == "avg" else "")
+            self._sync_average()
+
+        def _sync_average(self, *_a):
+            """Grey *Average with comparison* while the comparison is not on this
+            table's axes (gui_average.state), and say why."""
+            from . import gui_average as _ga
+            i = self.op_box.findData("avg")
+            ok, why = _ga.state(self)
+            item = self.op_box.model().item(i)
+            if item is not None:
+                item.setEnabled(ok)
+            self.op_box.setItemData(i, why or _ga.WEIGHT_TIP,
+                                    QtCore.Qt.ItemDataRole.ToolTipRole)
+            if self.op_box.currentData() == "avg":
+                self.op_box.setToolTip(why)
+
         def _apply_op(self):
             if self.model.entity is None:
                 return
             try:
-                value = float(self.op_val.text().strip())
+                value = float(self.op_val.text().strip().replace(",", "."))
             except ValueError:
                 self.statusBar().showMessage("Enter a number to apply.", 4000)
                 return
             op = self.op_box.currentData()
+            if op == "avg":
+                from . import gui_average as _ga
+                ok, why = _ga.state(self)
+                if not ok:
+                    self.statusBar().showMessage(why, 6000)
+                    return
+                if not _ga.valid_weight(value):
+                    self.statusBar().showMessage(
+                        "Average takes a percentage of the comparison: 0 to 100.",
+                        6000)
+                    return
             idxs = self._selected_indexes()
             if not idxs:              # nothing selected -> whole table
                 idxs = [self.model.index(r, c)
@@ -7889,7 +7614,7 @@ if HAVE_QT:
                     "%s applied to %d cell(s)." % (
                         self.op_box.currentText(), n), 4000)
                 self._status()
-            else:
+            elif self.model.primary_delta() == "abs":   # (else: blocked message)
                 self.statusBar().showMessage(
                     "No editable cells in selection.", 4000)
 
@@ -7963,8 +7688,9 @@ if HAVE_QT:
                         for c in range(self.model.columnCount())]
             n = self.model.apply_op(idxs, "mul", factor)
             if not n:
-                self.statusBar().showMessage(
-                    "No editable cells in selection.", 4000)
+                if self.model.primary_delta() == "abs":  # (else: blocked message)
+                    self.statusBar().showMessage(
+                        "No editable cells in selection.", 4000)
                 return
             self.statusBar().showMessage("Scaled %d cell(s) ×%g." % (n, factor),
                                          4000)
@@ -7989,22 +7715,36 @@ if HAVE_QT:
                 self.open_tool("dtc", lambda: _DtcDialog(
                     self.primary, self, compare=self.comparison))
 
-        def open_patch_builder(self, swap=None):
+        def open_patch_builder(self, swap=None, preselect=()):
             """Edit > Generate patch... A patch carries what changes from
-            one binary to the other: when the comparison is one of this
-            tab's own versions (a project tab starts out compared with the
-            original as read) that is from the comparison to this tab --
-            the tab's changes -- else from this tab to the comparison.
-            **Swap direction** turns it round."""
+            one binary to the other, and by default it is this tab's: this
+            tab's values laid over the comparison's -- applying it makes a
+            binary like the comparison into this one (for a project tab
+            compared with its own original, its changes). **Swap
+            direction** turns it round. ``preselect``: parameters of this
+            tab to put in whole."""
             if self.comparison is None:
                 return
             if swap is None:
-                swap = getattr(self.comparison, "version_of", None) is not None
+                swap = True
             a, b = ((self.comparison, self.primary) if swap
                     else (self.primary, self.comparison))
-            dlg = PatchBuilderDialog(
-                a, b, self, on_swap=lambda: self.open_patch_builder(not swap))
+            dlg = PatchBuilderDialog(a, b, self,
+                                     preselect=preselect if swap else ())
             dlg.exec()
+
+        def open_patch_from_tables(self, ents):
+            """Create a patch from tables of this tab, taken whole (the tree's
+            right-click menu). With a comparison it is the Generate Patch
+            window with those tables already in; without one, a patch of
+            just those tables."""
+            if self.primary is None or not ents:
+                return
+            cmp_ = self.comparison
+            if cmp_ is not None and cmp_ is not self.primary:
+                return self.open_patch_builder(preselect=ents)
+            PatchBuilderDialog(self.primary, self.primary, self, solo=True,
+                               preselect=ents).exec()
 
         def open_patch_apply(self):
             if self.primary is None:
@@ -8542,13 +8282,109 @@ if HAVE_QT:
             set_last_dir(path, "export")
             self.statusBar().showMessage("Exported EEPROM to %s" % path, 6000)
 
+        def _stored_cached(self, name, make):
+            """``make()``'s result, kept per session edit (``revision``) so the
+            menus' repeated presence checks (every tab switch) do not copy a
+            whole flash each time."""
+            p = self.primary
+            rev = getattr(p, "revision", None)
+            if p is None or not isinstance(rev, int):
+                return make()
+            key = (id(p), rev, id(getattr(self, "_eeprom", None)))
+            cache = self.__dict__.setdefault("_stored_cache", {})
+            hit = cache.get(name)
+            if hit is not None and hit[0] == key:
+                return hit[1]
+            val = make()
+            cache[name] = (key, val)
+            return val
+
+        def stored_eeprom(self):
+            return self._stored_cached("eeprom", self._stored_eeprom_now)
+
+        def _stored_eeprom_now(self):
+            """The EEPROM stored with this tab, or None: the tab itself when
+            it is an EEPROM image, a held backup EEPROM, the EEPROM a native
+            container carries (paired EEPROM included) or a .dim's EEPROM chunk."""
+            p = self.primary
+            if p is None:
+                return None
+            if self.is_eeprom_image():
+                return bytes(p.binfile.data)
+            held = getattr(self, "_eeprom", None)
+            if held is not None:
+                return bytes(held)
+            inner = self._container_eeprom()
+            if inner is not None:
+                return bytes(inner)
+            chunks = getattr(p, "_dim_chunks", None)
+            if chunks is not None:
+                from . import dim as dim_mod
+                try:
+                    return bytes(dim_mod.eeprom(chunks))
+                except Exception:
+                    return None
+            return None
+
+        def stored_mpc(self):
+            return self._stored_cached("mpc", self._stored_mpc_now)
+
+        def _stored_mpc_now(self):
+            """The internal flash (MPC) stored with this tab (a .dim's, a
+            linked companion's, the tab itself when it is one), or None."""
+            p = self.primary
+            if p is None:
+                return None
+            if p.platform == "edc16mpc":
+                return bytes(p.binfile.data)
+            try:
+                buf = dict(p.region_buffers()).get(p.MPC_REGION)
+            except Exception:
+                buf = None
+            return bytes(buf) if buf else None
+
+        def export_stored_mpc(self):
+            """File > Export > MPC: the tab's stored internal flash as a .bin."""
+            from .recent import get_last_dir, set_last_dir
+            data = self.stored_mpc()
+            if data is None:
+                return
+            base = _os.path.splitext(self.primary.binfile.name)[0].replace(
+                " (unsaved)", "")
+            from . import gui_mpcformat as _mf
+            ref = getattr(self, "project_ref", None)
+            stored = getattr(self.primary, "mpc_stored", None) or (
+                ref.set.extra.get("mpc_format") if ref is not None else None)
+            path = _mf.save_mpc(self, data, base + "_MPC", stored)
+            if path:
+                self.statusBar().showMessage("Exported MPC to %s" % path, 6000)
+
+        def export_stored_eeprom(self):
+            """File > Export > EEPROM: the tab's stored EEPROM as a .bin."""
+            from .recent import get_last_dir, set_last_dir
+            data = self.stored_eeprom()
+            if data is None:
+                return
+            base = _os.path.splitext(self.primary.binfile.name)[0].replace(
+                " (unsaved)", "").replace(" [EEPROM]", "")
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Export EEPROM",
+                _os.path.join(get_last_dir("export"), base + "_EEPROM.bin"),
+                "EEPROM image (*.bin);;All files (*)")
+            path = _ensure_ext(path, ".bin")
+            if not path:
+                return
+            with open(path, "wb") as fh:
+                fh.write(data)
+            set_last_dir(path, "export")
+            self.statusBar().showMessage("Exported EEPROM to %s" % path, 6000)
+
         def _container_eeprom(self):
             """The EEPROM a loaded native container (.edc15 / .edc16) carries,
-            with any in-place edits (the hex editor's Region: EEPROM), or None.
-            A .dim's EEPROM has its own export (EEPROM (.dim)...)."""
+            or a .dim carries, with any in-place edits (the hex editor's
+            Region: EEPROM), or None."""
             p = self.primary
-            if (p is None or getattr(p, "_dim_chunks", None) is not None
-                    or not p.has_eeprom()):
+            if p is None or not p.has_eeprom():
                 return None
             return dict(p.region_buffers()).get(p.EEPROM_REGION)
 
@@ -8595,10 +8431,12 @@ if HAVE_QT:
 
         def open_eeprom_editor(self):
             """Tools > EEPROM editor: the EEPROM this tab holds (a backup's,
-            or the project set's EEPROM part) -- edits go back into it as one
-            undoable edit -- else an EEPROM image picked from disk."""
+            the project set's EEPROM part, one in a .edc15 / .edc16 / .dim, or
+            the tab itself) -- edits go back into it as one undoable edit."""
             from . import gui_eeprom
             from .recent import get_last_dir, set_last_dir
+            if self.is_eeprom_image():
+                return self.open_own_eeprom_editor()
             name = "%s [EEPROM]" % (self.primary.binfile.name
                                     if self.primary else "backup")
             held = getattr(self, "_eeprom", None)
@@ -8626,17 +8464,49 @@ if HAVE_QT:
                 if dlg.data != self._container_eeprom():
                     self._container_eeprom_adopt(dlg.data)
                 return
-            path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, "Open an EEPROM image", get_last_dir("eeprom"),
-                gui_eeprom.FILTER)
-            if not path:
-                return
-            with open(path, "rb") as fh:
-                data = fh.read()
-            set_last_dir(_os.path.dirname(path), "eeprom")
-            dlg = gui_eeprom.open_editor(self, data, path=path)
-            if dlg is not None:
-                dlg.exec()
+            # (the menu item is only there when the tab stores an EEPROM)
+            QtWidgets.QMessageBox.information(
+                self, "EEPROM editor", "This tab stores no EEPROM.")
+
+        def is_eeprom_image(self) -> bool:
+            """This tab holds an ECU's EEPROM image itself (not a flash with
+            an EEPROM beside it): identified as one by its bytes, or kept as
+            one by its project (an EEPROM read, whose checksums may be
+            wrong, is an EEPROM all the same)."""
+            p = self.primary
+            if p is None:
+                return False
+            if _platforms.is_eeprom(p.platform):
+                return True
+            ref = getattr(self, "project_ref", None)
+            return ref is not None and _platforms.is_eeprom(ref.set.platform)
+
+        def open_own_eeprom_editor(self):
+            """This tab IS an ECU's EEPROM (a stand-alone EEPROM image): the
+            EEPROM editor on it, in front of the tab -- how such a file opens.
+            Apply (and closing it) put the edits into the tab as one undoable
+            edit; File > Save keeps them in the project."""
+            from . import gui_eeprom
+            p = self.primary
+            if not self.is_eeprom_image():
+                return None
+            if not gui_eeprom.available():
+                # no module knows the layout any more: the hex editor then
+                return self.open_hex()
+            cur = bytes(p.binfile.data)
+
+            def _adopt(edited, _self=self, _p=p):
+                edited = bytes(edited)
+                if _self.primary is _p and edited != bytes(_p.binfile.data):
+                    _p.edit_bytes(0, edited)
+                    _self.win._workspace_changed(_self)
+            dlg = gui_eeprom.open_editor(
+                self, cur, name="%s [EEPROM]" % p.binfile.name, on_save=_adopt)
+            if dlg is None:
+                return None
+            dlg.exec()
+            _adopt(dlg.data)
+            return dlg
 
         def show_file_info(self, session=None, loaded=False):
             """Identification strings + what the parser found, for the primary
@@ -8672,6 +8542,7 @@ if HAVE_QT:
             self._leave_project()
             try:
                 loaded.correct_program_area = program_area_pref()
+                loaded.fix_cvn = fix_cvn_pref()
             except Exception:
                 pass
             self.primary.binfile.name = "%s (unsaved)" % name
@@ -8831,6 +8702,14 @@ if HAVE_QT:
         from . import options as _opt
         _opt.set(PROGRAM_AREA_KEY, bool(on))   # every window follows (_apply)
 
+    def fix_cvn_pref() -> bool:
+        """Options > Projects and saving > the EDC17 CVN patch -- off by
+        default. When on, correcting an EDC17 file's checksums first patches
+        its CVN back to the stock value (done at checksum time, never while
+        flashing)."""
+        from . import options as _opt
+        return bool(_opt.get(_opt.FIX_CVN_KEY))
+
     class _TableTab:
         """One open table in a file tab, and what it remembers."""
         __slots__ = ("entity", "pinned", "heat", "zmode", "view", "cmpsize")
@@ -8841,7 +8720,7 @@ if HAVE_QT:
             self.pinned = pinned        # False: the preview tab
             self.heat = heat            # heatmap shading on
             self.zmode = zmode          # ZF "Show Z as" (None: not chosen)
-            #: the comparison's size here ("resampled" / "original"), or
+            #: the comparison's size here ("resampled" / "aligned" / "original"), or
             #: None: the default (Options > Editor; gui_cmpsize)
             self.cmpsize = cmpsize
             self.view = None            # scroll and selection, once left
@@ -9758,6 +9637,7 @@ if HAVE_QT:
         def _make_actions(self):
             self._needs_file = []          # actions disabled with no file open
             self._conditional = []         # (action, predicate) -- disabled unless predicate() too
+            self._hide_when_na = set()     # ...of these, hidden (not just greyed) when it fails
             cw = lambda: self.current      # noqa: E731
             has_cmp = lambda: cw().comparison is not None   # noqa: E731
             bar = self.menuBar()
@@ -9857,8 +9737,8 @@ if HAVE_QT:
                       lambda: _gp.close_project(self, cw().project_ref.doc),
                       needs_file=True, enabled_when=in_project)
             # every export in one place, all made from the project (its last
-            # saved version -- offered to save first); items that do not
-            # apply stay listed but disabled, so the menu keeps its shape
+            # saved version -- offered to save first); an item that does not
+            # apply to the tab in front is hidden (_hide_when_na)
             x = self.export_menu = m.addMenu("&Export")
             self._needs_file.append(x.menuAction())
             in_proj = lambda: cw().project_ref is not None   # noqa: E731
@@ -9866,6 +9746,17 @@ if HAVE_QT:
                       needs_file=True).setToolTip(
                 "A plain image of one part of the set -- flash, MPC or EEPROM "
                 "-- as last saved")
+            self._act(x, "EEPROM (.bin)...", self._on_ws("export_stored_eeprom"),
+                      needs_file=True,
+                      enabled_when=lambda: cw().stored_eeprom() is not None
+                      ).setToolTip("The EEPROM stored with this tab (a paired "
+                                   "EEPROM, one in a .edc15 / .edc16 / .dim, "
+                                   "or the tab itself) as a plain image")
+            self._act(x, "MPC / internal flash (.bin)...",
+                      self._on_ws("export_stored_mpc"), needs_file=True,
+                      enabled_when=lambda: cw().stored_mpc() is not None
+                      ).setToolTip("The internal flash stored with this tab "
+                                   "(a linked MPC, a .dim's, or the tab itself)")
             self._act(x, "Original file (.sgo / .dim / .frf)...",
                       lambda: _gp.export_original(cw()), needs_file=True,
                       enabled_when=lambda: (in_proj()
@@ -9873,7 +9764,7 @@ if HAVE_QT:
                       ).setToolTip("The file the set was imported from, with "
                                    "the saved version in it (an edited .frf "
                                    "cannot be rebuilt yet)")
-            self._act(x, "PCMFlash file (flash + MPC)...",
+            self._act(x, "PCMFlash EDC16 File...",
                       lambda: _gp.export_pcmflash(cw()), needs_file=True,
                       enabled_when=lambda: (in_proj() and _gp.has_flash_and_mpc(cw()))
                       ).setToolTip("The external flash and the internal flash "
@@ -9899,6 +9790,9 @@ if HAVE_QT:
                           needs_file=True,
                           enabled_when=lambda k=kind: (
                               in_proj() and bool(_gp.kept(cw().project_ref.doc, k))))
+            for act in x.actions():
+                if act.text() != "Binary (.bin)..." and not act.isSeparator():
+                    self._hide_when_na.add(act)
             m.addSeparator()
             self._act(m, "New window", self.new_window).setToolTip(
                 "Start another %s in a window of its own (a project open in "
@@ -10182,10 +10076,7 @@ if HAVE_QT:
                       lambda: self.open_about(0)).setMenuRole(
                 QtGui.QAction.MenuRole.AboutRole)
             self._act(helpm, "Credits && licences...", lambda: self.open_about(1))
-            helpm.addSeparator()
-            self._act(helpm, "About Qt...",
-                      lambda: QtWidgets.QMessageBox.aboutQt(self)).setMenuRole(
-                QtGui.QAction.MenuRole.AboutQtRole)
+            # About Qt is a button in the About dialog (gui_about), not a menu item
             self._rebuild_recent()
             self._rebuild_recent_comparisons()
 
@@ -10224,15 +10115,23 @@ if HAVE_QT:
             self._sync_eeprom_act()
 
         def _sync_eeprom_act(self):
-            """Tools > EEPROM editor: an ECU EEPROM layout comes from a
-            module (EDC15, EDC16); without one the item says which."""
+            """Tools > EEPROM editor: only there when the tab in front is an
+            EEPROM image or stores one (a paired EEPROM, a .edc15 / .edc16 /
+            .dim's), and a module knows its layout (EDC15, EDC16)."""
             from . import gui_eeprom
-            ok = gui_eeprom.available()
-            self._ee_act.setEnabled(ok)
-            self._ee_act.setToolTip(
-                "The EEPROM of the tab's control unit (EDC15, EDC16), or an "
-                "EEPROM image from a file" if ok else
-                "Needs the Bosch EDC15 or EDC16 module (Tools > Modules...)")
+            act = getattr(self, "_ee_act", None)
+            if act is None:
+                return
+            ws = self.current
+            try:
+                stored = ws is not None and ws.primary is not None \
+                    and ws.stored_eeprom() is not None
+            except Exception:
+                stored = False
+            ok = stored and gui_eeprom.layouts_for(ws.stored_eeprom()) != []  # cached
+            act.setVisible(bool(ok))
+            act.setEnabled(bool(ok))
+            act.setToolTip("The EEPROM stored with this tab")
 
         def _toggle_program_area(self, checked):
             set_program_area_pref(bool(checked))
@@ -10242,10 +10141,12 @@ if HAVE_QT:
             # a global preference (Options): every open tab follows it, as a
             # file opened later does (it reads the preference at load)
             on = program_area_pref()
+            cvn = fix_cvn_pref()
             for ws in self.workspaces():
                 if getattr(ws, "primary", None) is not None:
                     try:
                         ws.primary.correct_program_area = on
+                        ws.primary.fix_cvn = cvn
                     except Exception:
                         pass
 
@@ -10259,9 +10160,29 @@ if HAVE_QT:
                     ok = has and bool(check())
                 except Exception:
                     ok = False
+                # (a hidden QAction reports itself disabled: decide from ok)
+                if a in getattr(self, "_hide_when_na", ()):
+                    a.setVisible(ok)
                 a.setEnabled(ok)
+            # (a menu with a separator at an end or two in a row shows
+            # no stray lines when items between them are hidden)
+            x = getattr(self, "export_menu", None)
+            if x is not None:
+                prev_sep = True
+                last = None
+                for a in x.actions():
+                    if a.isSeparator():
+                        a.setVisible(not prev_sep)
+                        if not prev_sep:
+                            last = a
+                        prev_sep = True
+                    elif a.isVisible():
+                        prev_sep = False
+                if prev_sep and last is not None:
+                    last.setVisible(False)
             from . import gui_viewonly as _vo
             _vo.restrict_actions(self, ws)
+            self._sync_eeprom_act()
             from . import gui_undomenu as _gum
             _gum.sync(self)
 
@@ -10760,6 +10681,8 @@ def run(primary_path: Optional[str] = None,
     app.setApplicationName(branding.APP_NAME)
     app.setOrganizationName(branding.ORG)
     app.setWindowIcon(app_icon())
+    from . import gui_toolpicker as _tp
+    _tp.install_dock_menu(app)   # macOS: the Dock menu starts every tool
     from . import gui_style
     gui_style.install(app)      # Windows' "Always show scrollbars", honoured
     from . import appsettings
@@ -10770,6 +10693,8 @@ def run(primary_path: Optional[str] = None,
     confirm_licences()          # a module installed without its licence asked
     from .gui_help import install_f1
     install_f1(app)             # F1 anywhere: help for the window in front
+    from . import gui_textcopy
+    gui_textcopy.install(app)   # Ctrl+C copies selected text in a text view
     # Everything start-up asks comes first, on the screen the window will
     # use, so the splash then runs once, start to finish, on that screen too.
     from . import gui_options, gui_splash
@@ -10845,6 +10770,8 @@ def _run_tool(tool: str, app_id: str, make_dialog):
     app.setOrganizationName(branding.ORG)
     use_tool_icon(tool)
     app.setWindowIcon(app_icon())
+    from . import gui_toolpicker as _tp
+    _tp.install_dock_menu(app)   # macOS: the Dock menu starts every tool
     from . import gui_style
     gui_style.install(app)
     from . import appsettings
@@ -10862,6 +10789,8 @@ def _run_tool(tool: str, app_id: str, make_dialog):
         gui_splash.end()
     from .gui_help import install_f1
     install_f1(app)
+    from . import gui_textcopy
+    gui_textcopy.install(app)
     if tool in branding.TOOL_NAMES:
         # no main window, so no Help menu: help, the version, credits and
         # licences are a button away instead

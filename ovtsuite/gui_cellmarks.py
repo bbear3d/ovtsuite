@@ -280,7 +280,14 @@ class NoTextDelegate(CellDelegate):
 class OutlineDelegate(QtWidgets.QStyledItemDelegate):
     """The stock drawing plus the outline of a cell that differs from the
     comparison (:func:`draw_outline`): what a table that needs nothing
-    else of its delegate uses."""
+    else of its delegate uses. A selected cell's text is made legible on the
+    selection drawn (:func:`selection_text`), as in :class:`CellDelegate`:
+    the dark text of a heat-map cell must not land on a dark accent, nor the
+    white selected-text colour on a light inactive highlight."""
+
+    def initStyleOption(self, opt, index):
+        super().initStyleOption(opt, index)
+        selection_text(opt)
 
     def paint(self, painter, option, index):
         super().paint(painter, option, index)

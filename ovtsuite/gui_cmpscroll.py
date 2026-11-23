@@ -154,13 +154,14 @@ class ViewLink(QtCore.QObject):
         first = hs.logicalIndexAt(0)
         if first < 0:
             return
-        target = None
+        target, found = None, -1
         for vis in range(hs.visualIndex(first), hs.count()):
             li = hs.logicalIndex(vis)
             if hs.isSectionHidden(li):
                 continue
             target = self._map(src, orient, li)
             if target is not None:
+                found = li
                 break
         if target is None or hd.isSectionHidden(target):
             return
@@ -171,7 +172,7 @@ class ViewLink(QtCore.QObject):
                         if not hd.isSectionHidden(hd.logicalIndex(v)))
         else:
             off = 0
-            if li == first:     # keep a part-scrolled section part-scrolled
+            if found == first:  # keep a part-scrolled section part-scrolled
                 off = -hs.sectionViewportPosition(first)
                 size = max(1, hs.sectionSize(first))
                 off = off * hd.sectionSize(target) // size
@@ -608,6 +609,12 @@ class CompareGrid(QtCore.QObject):
         to = menu.addAction("Copy cells to primary",
                             lambda: _gck.to_primary(self.ws, self.view))
         to.setEnabled(bool(_gck.comparison_cells(self.ws, self.view)))
+        from . import gui_average as _ga
+        av = menu.addAction("Average cells into primary",
+                            lambda: _ga.to_primary(self.ws, self.view))
+        ok, why = _ga.state(self.ws)
+        av.setEnabled(ok and bool(_gck.comparison_cells(self.ws, self.view)))
+        av.setToolTip(why or _ga.WEIGHT_TIP)
         from . import gui_cmpsize as _gcs
         _gcs.add_to_menu(self.ws, menu)
         menu.exec(self.view.viewport().mapToGlobal(pos))

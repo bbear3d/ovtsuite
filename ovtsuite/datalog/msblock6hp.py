@@ -30,6 +30,7 @@ A2L measurement names in :mod:`ovtsuite.logtune.roles` -- these are OVT-Suite
 identifiers for controller-fixed slots, not symbols out of a definition, and
 the prefix keeps that distinction visible wherever a log column is resolved.
 """
+import re
 from typing import Dict, List, Optional, Tuple
 
 #: A field is (label, signal key, unit). An empty key marks a slot whose
@@ -112,6 +113,45 @@ GROUPS: Dict[int, Tuple[Field, Field, Field, Field]] = {
 
 #: Group 18 answered "not available" on the controller read, so 17 is the end.
 LAST_GROUP = 17
+
+
+#: The gearbox codes of the 6HP19A, the box the layout above was read from.
+#: The TCU says which gearbox it is in the text of its ``1A 9B`` identification
+#: ("AG6 09L 3,0TFSI RdW"), the same code the part number of the gearbox
+#: carries (09L927156C), which is a better key than the TCU's own part number:
+#: 4F9910156A and 4E0910156A look alike, but 4E0910156A is a 09E (6HP26A).
+#: Same table as ``ovtsuite.zf6hp.identification6hp.GEARBOX_BY_PART`` (09L and
+#: 0AT are 6HP19A; 09E is the 6HP26A, whose structure differs and whose groups
+#: nobody has read, so it is left out); kept here because the logger works
+#: without the ZF module.
+GEARBOX_CODES_6HP19 = ("09L", "0AT")
+_DESIGNATION = re.compile(r"\bAG\d\s+([0-9A-Z]{3})\b")
+
+
+def gearbox_code(part: str = "", identity: str = "") -> str:
+    """The gearbox code a served identification names: the ``AG6 xxx``
+    system designation in the identity text, else the part number's own
+    prefix (a gearbox-level number such as 09L927156C). "" when neither."""
+    m = _DESIGNATION.search((identity or "").upper())
+    if m:
+        return m.group(1)
+    p = (part or "").upper().replace(" ", "")
+    return p[:3] if re.match(r"[0-9A-Z]{3}927\d{3}", p) else ""
+
+
+def is_6hp19(part: str = "", protocol: str = "", identity: str = "") -> bool:
+    """Whether a served module is a ZF 6HP19A whose measuring blocks are the
+    fixed layout above: KWP2000 (never UDS or KW1281: a 6HP28 over UDS has
+    its own DIDs, :class:`Blocks6hpUds`) and a gearbox code of 09L or 0AT.
+    A part number alone (4F9910156A) does not say which 6HP it is."""
+    if (protocol or "").lower() != "kwp2000":
+        return False
+    return gearbox_code(part, identity) in GEARBOX_CODES_6HP19
+
+
+def namer_for_part(part: str = "", protocol: str = "", identity: str = "") -> Optional["Blocks6hp"]:
+    """The GS19 namer for a recognised 6HP19A, else None."""
+    return Blocks6hp() if is_6hp19(part, protocol, identity) else None
 
 
 class Blocks6hp:

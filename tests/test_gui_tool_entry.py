@@ -140,7 +140,9 @@ def test_standalone_logger_opens_binaries_in_the_dialog(app, fake_sessions):
     dlg = DataLogDialog(host)
     try:
         assert "none" in dlg.bin_lbl.text()
-        assert "Open project or binary" in dlg.pane.src_hint.text()
+        # no file open: the hint says to open the car's file (worded by
+        # whether the block catalogue names the cells meanwhile)
+        assert "open the car's file" in dlg.pane.src_hint.text().lower()
         assert dlg.open_binary("zf6hp_tcu.bin")
         assert dlg.bin_lbl.text() == "zf6hp_tcu.bin"
         assert dlg.pane.conn.ecu() == "ZF6HP"      # the front pane follows the file
@@ -161,7 +163,8 @@ def test_the_main_app_logger_has_no_binaries_row(app):
     dlg = DataLogDialog(w)
     try:
         assert not hasattr(dlg, "bin_lbl")
-        assert "in a tab" in dlg.pane.src_hint.text()
+        # the hint never points at the standalone tool's button
+        assert "Open project or binary" not in dlg.pane.src_hint.text()
     finally:
         dlg.close()
 

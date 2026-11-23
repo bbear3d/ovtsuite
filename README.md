@@ -232,7 +232,7 @@ parameter tree), checksum correction and that unit's tools.
 | ZF 6HP28 | UDS over ISO-TP | Calibration | Calibration, or program + calibration |
 | Audi 4F/4L Climatronic | CAN | Not possible over OBD | From a factory `.sgo`; changed sectors only |
 | VDO cluster | K-line (KW1281) | 2 KB EEPROM | Whole EEPROM, read back and verified |
-| Aisin 09D | CAN (TP 2.0) | 1 MB flash | Disabled in this version |
+| Aisin 09D | CAN (TP 2.0), K-line | 1 MB flash (CAN), 512 KB (K-line) | Disabled in this version |
 | C6 ESP8 ABS / C6 CAN cluster | CAN | Flash dump (cluster: experimental) | No |
 
 The ZF 8HP and the Aisin TR-80SD have no flasher entry yet.

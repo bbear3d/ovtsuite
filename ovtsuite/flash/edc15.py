@@ -105,6 +105,9 @@ LAYOUT_1M = FlashLayout("1 MB (Am29F800BT)", 0x100000, tuple(SECTORS_1M),
                         0xFC000, 0xFFFFF, 0x100000, split=0x80000,
                         split_base=SECTOR_READ_BASE)
 
+#: Shown when a write of a 1 MB image (or to a 1 MB part) is asked for.
+WRITE_1M_UNSUPPORTED = "Writing a 1 MB EDC15 image is not currently supported."
+
 #: Span the A19-decode size probe compares (small; decisive and quick).
 PROBE_LEN = 0x1000
 
@@ -169,6 +172,9 @@ VARIANTS = {
 AUTO_ORDER = ("V", "P", "VM")
 #: Wait between loader TransferData frames, on top of the KWP2000 P3.
 TRANSFER_GAP = 0.005
+RETRY_WAIT = 8.0                   # s the ECU needs to forget a broken KW1281 dialog
+PACKET_REPLY_WAIT = 1.5            # s of silence that ends a flash-read packet
+TRANSFER_REPLY_WAIT = 2.0          # s to wait for a loader chunk's reply before resending it
 
 _debug = logging.getLogger(__name__).debug
 
@@ -231,6 +237,9 @@ class Edc15Flash:
         #: shorter session timing the link asks for (the J2534 byte-stream
         #: link's ``edc15_timing``, switched by kline_j2534_raw's
         #: EDC15_J2534_FAST_TIMING); empty: the timing used on a serial cable
+        port = getattr(link, "port", None)
+        if port is not None and hasattr(port, "prompt_rx"):
+            port.prompt_rx = True       # direct CH34x: no 23 ms echo delay per byte
         get = getattr(link, "edc15_timing", None)
         self._timing = (get() if get is not None else None) or {}
         if get is not None:
@@ -239,6 +248,12 @@ class Edc15Flash:
 
     def log(self, msg):
         self._log(msg)
+
+    def _wait(self, seconds, is_stop=None):
+        """Sleep ``seconds`` in slices, ending at once with StopRequested if asked."""
+        for _ in range(max(1, int(round(seconds / 0.1)))):
+            self._stop(is_stop)
+            time.sleep(0.1)
 
     @staticmethod
     def _stop(is_stop):
@@ -288,8 +303,19 @@ class Edc15Flash:
                 if attempt < attempts and not self._loader_started:
                     self.log("Connect attempt %d/%d failed before the loader started (%s); "
                              "retrying with a fresh wakeup..." % (attempt, attempts, ex))
-                    time.sleep(0.5)
+                    # A broken KW1281 dialog leaves the ECU deaf to a new
+                    # wakeup until its own session times out (answered again
+                    # between 4 and 12 s later on the bench); a retry sooner
+                    # only fails again, and its wakeup pulse can extend the wait.
+                    self._wait(RETRY_WAIT, is_stop)
                     continue
+                if isinstance(ex, KLineError) and not self._loader_started:
+                    # An interrupted session (a loader chunk lost mid-upload, a
+                    # read that was stopped) can leave the ECU answering nothing
+                    # at all; on the bench it stayed silent for over nine
+                    # minutes, and only cutting its power brought it back.
+                    self.log("The ECU is not answering. If an earlier read or write was "
+                             "interrupted, switch the ECU's power off and on, then try again.")
                 raise
 
     def _connect_once(self, variant, speed, loader, is_stop,
@@ -298,6 +324,10 @@ class Edc15Flash:
         self._fast = False
         self._loader = None
         info = VARIANTS[variant]
+        self._prompt_rx(True)
+        w4 = getattr(self.k, "set_five_baud_w4", None)
+        if w4 is not None:
+            w4(30)          # inverted KB2 in time for the boot stub (OpenPort default: 50 ms)
 
         if require_kw1281:
             self.k.set_baud(9600)
@@ -346,6 +376,7 @@ class Edc15Flash:
     def _continue_kwp(self, info, speed, skip_0x89, loader, is_stop):
         self.k.clear_rx()
         kwp = self.kwp = _kwp.Kwp2000(self.k, 0x01, self.log)
+        kwp.stall_retry = True
         if self._timing.get("kwp_batched"):
             kwp.fast = True             # whole frame in one write; P3 kept
         if skip_0x89:
@@ -369,6 +400,15 @@ class Edc15Flash:
         else:
             raise ValueError("unknown loader %r" % loader)
         self.log("Loader running.")
+        self._prompt_rx(False)          # bulk transfer from here on
+
+    def _prompt_rx(self, on):
+        """A direct CH34x delivers a byte at once (``True``, for the byte-by-byte
+        handshakes) or in batches (``False``, which loses fewer bytes in a bulk
+        read); other links have no such switch."""
+        f = getattr(getattr(self.k, "port", None), "set_prompt_rx", None)
+        if f is not None:
+            f(on)
 
     @staticmethod
     def _seed_auth(kwp, key):
@@ -393,7 +433,39 @@ class Edc15Flash:
             self._fast = True
             self.log("ECU agreed to %d baud." % baud)
         except (KLineError, KLineTimeout) as ex:
-            self.log("ECU declined %d baud (%s); staying at 10400." % (baud, ex))
+            # No usable answer (not a refusal): the ECU may nonetheless have
+            # switched (its reply lost or garbled); finding it at the wrong
+            # rate would strand the whole upload, so look at both rates.
+            if not isinstance(ex, _kwp.NegativeResponse) and self._speed_probe(kwp, baud):
+                self._fast = True
+                self.log("ECU is at %d baud (its answer was lost: %s)." % (baud, ex))
+            else:
+                self.log("ECU declined %d baud (%s); staying at 10400." % (baud, ex))
+
+    def _speed_probe(self, kwp, baud):
+        """After a speed request with no answer: is the ECU listening at
+        ``baud``?  Leaves the link at the rate where it answered (10400 if it
+        answers at neither, which the caller then meets as an ordinary error)."""
+        link = self.k
+        try:
+            saved = link.read_timeout
+            link.read_timeout = 1.5
+        except Exception:                               # noqa: BLE001
+            saved = None
+        try:
+            for rate, fast in ((baud, True), (10400, False)):
+                try:
+                    link.set_baud(rate)
+                    link.clear_rx()
+                    time.sleep(0.3)
+                    kwp.send_receive(_kwp.SVC_START_DIAG, b"\x85")
+                    return fast
+                except (KLineError, KLineTimeout):
+                    continue
+            return False
+        finally:
+            if saved is not None:
+                link.read_timeout = saved
 
     # ---- loader upload ----
     def _upload_loader(self, kwp, data):
@@ -413,18 +485,62 @@ class Edc15Flash:
                  _then_read=self._reply_with_write())
         kwp.receive()                                   # NAK 31/22 expected; ignored
 
-    @staticmethod
-    def _transfer_with_retry(kwp, data, attempts=3):
-        for attempt in range(1, attempts + 1):
-            try:
-                kwp.send_receive(_kwp.SVC_TRANSFER, data, exclude_addresses=True)
-                return
-            except KLineTimeout:
-                if attempt >= attempts:
-                    raise
-                time.sleep(0.2)
+    def _transfer_with_retry(self, kwp, data, attempts=3):
+        """One TransferData chunk of a loader upload. The ECU now and then
+        misses a byte of a chunk sent a byte at a time and then says nothing at
+        all, which used to end the whole connect with the ECU stranded
+        mid-download; the reply to a good chunk takes well under a second, so
+        wait a short while for it and send the chunk again."""
+        link = self.k
+        try:
+            saved = link.read_timeout
+            link.read_timeout = min(saved, TRANSFER_REPLY_WAIT)
+        except Exception:                               # noqa: BLE001
+            saved = None
+        try:
+            for attempt in range(1, attempts + 1):
+                try:
+                    # The chunk goes out in ONE write (the 258 bytes back to
+                    # back).  Byte by byte, with each echo read in between, one
+                    # USB stall of 40+ ms in the host -- about one call in a
+                    # thousand on the bench -- left the ECU's download handler
+                    # with half a frame, and the ECU then answered nothing until
+                    # it was power-cycled (about one upload in three).  The
+                    # handler takes the chunk back to back (12 of 12 uploads on
+                    # the bench); the short KWP requests still need their gaps.
+                    keep = kwp.fast
+                    # (kwp.fast sends the chunk in one write and never resends
+                    # on a host stall: the ECU takes a chunk with a gap in it
+                    # and answers it, and a resend overran it -- an SM2 upload
+                    # died so)
+                    kwp.fast = True
+                    try:
+                        # (a short echo that ends in the ECU's answer: the
+                        # cable dropped echoed bytes and the drain read the
+                        # answer as echo; the ECU only answers a complete
+                        # chunk, so it took it -- do not wait for or resend)
+                        kwp.send_receive(_kwp.SVC_TRANSFER, data,
+                                         exclude_addresses=True,
+                                         accept_echo_reply=True)
+                    finally:
+                        kwp.fast = keep
+                    return
+                except KLineTimeout:
+                    if attempt >= attempts:
+                        raise
+                    self.log("Loader chunk got no reply; sending it again (%d/%d)..."
+                             % (attempt + 1, attempts))
+                    link.clear_rx()
+                    time.sleep(0.2)
+        finally:
+            if saved is not None:
+                link.read_timeout = saved
 
     def _send_flash_loader(self, kwp, info):
+        self._send_flash_loader_image(kwp)
+        self._flash_loader_handshake(kwp, info)
+
+    def _send_flash_loader_image(self, kwp):
         time.sleep(0.025)
         resp = kwp.send_receive(_kwp.SVC_REQ_DOWNLOAD,
                                 LOADER_ADDR + bytes([0x00, 0x00, 0x04, 0x20]),
@@ -436,9 +552,12 @@ class Edc15Flash:
         max_block = resp.body[0] if resp.body else 0xFF
         chunk = max(1, max_block - 1)
         for off in range(0, len(loader), chunk):
-            kwp.send_receive(_kwp.SVC_TRANSFER, loader[off:off + chunk], exclude_addresses=True)
+            self._transfer_with_retry(kwp, loader[off:off + chunk])
             if gap:
                 time.sleep(gap)
+
+    def _flash_loader_handshake(self, kwp, info):
+        gap = self._transfer_gap()
         kwp.send_receive(_kwp.SVC_TRANSFER,
                          bytes([0xC3, 0xC3, 0x89, 0xC5, 0x45, 0xDA, 0x63, 0x0B]),
                          exclude_addresses=True)
@@ -528,14 +647,27 @@ class Edc15Flash:
             return data
 
     def _read_packet_with_retry(self, req, attempts=10):
-        for attempt in range(1, attempts + 1):
-            self._write_for_reply(req)
-            try:
-                return self._read_flash_packet()
-            except (KLineError, KLineTimeout):
-                if attempt >= attempts:
-                    raise
-                self.k.clear_rx()
+        # A good packet is on the wire within a fraction of a second even at
+        # 10400 baud; a byte lost on the way used to be waited out for the
+        # whole 8 s read timeout (twice: the header, then the rest).
+        link = self.k
+        try:
+            saved = link.read_timeout
+            link.read_timeout = min(saved, PACKET_REPLY_WAIT)
+        except Exception:                               # noqa: BLE001
+            saved = None
+        try:
+            for attempt in range(1, attempts + 1):
+                self._write_for_reply(req)
+                try:
+                    return self._read_flash_packet()
+                except (KLineError, KLineTimeout):
+                    if attempt >= attempts:
+                        raise
+                    self.k.clear_rx()
+        finally:
+            if saved is not None:
+                link.read_timeout = saved
 
     def _flash_read_cpu(self, cpu, n) -> bytes:
         """One whole-chip-loader read of ``n`` (<=0xFE) bytes at CPU ``cpu``."""
@@ -858,6 +990,8 @@ class Edc15Flash:
         if self._loader != "sector":
             raise KLineError("write_flash_sectors needs the sector loader")
         lay = self.layout
+        if lay is LAYOUT_1M or len(image) == LAYOUT_1M.size:
+            raise KLineError(WRITE_1M_UNSUPPORTED)
         if len(image) < lay.size:
             raise ValueError("EDC15 image must be 0x%X bytes; got %d" % (lay.size, len(image)))
         stage = on_stage or (lambda s: None)

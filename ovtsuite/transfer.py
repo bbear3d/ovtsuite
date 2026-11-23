@@ -72,10 +72,59 @@ def _axes_equal(a: List[float], b: List[float]) -> bool:
                                     for x, y in zip(a, b))
 
 
+def _monotonic(xs: List[float]) -> bool:
+    """Strictly usable as an interpolation axis: no NaN, and running one way."""
+    if any(x != x for x in xs):
+        return False
+    return (all(a <= b for a, b in zip(xs, xs[1:]))
+            or all(a >= b for a, b in zip(xs, xs[1:])))
+
+
+def _align_same_shape(primary: Entity, ov, px, py, ox, oy, rows: int, cols: int,
+                      label_x: bool) -> Optional[List[List[float]]]:
+    """The comparison's values of a table the same size as the primary but on
+    other breakpoints, put onto the primary's: each axis whose breakpoints
+    differ is interpolated along (edge values held beyond the comparison's
+    range), an axis that matches is left alone. ``label_x``: the X axis is a
+    set of labels (a ZF TCC or shift schedule's columns), not a measured
+    quantity, so it is never interpolated. None when nothing needs aligning,
+    or the axes cannot be interpolated along (NaN, not monotonic) -- the
+    caller then keeps the cell-for-cell view."""
+    def needs(p, o, n):
+        return bool(p and o and len(p) == n and len(o) == n
+                    and not _axes_equal(p, o))
+    need_x = needs(px, ox, cols) and not label_x
+    need_y = needs(py, oy, rows)
+    if not (need_x or need_y):
+        return None
+    for need, p, o in ((need_x, px, ox), (need_y, py, oy)):
+        if need and not (_monotonic(o) and not any(v != v for v in p)):
+            return None
+    vals = [list(r) for r in ov]
+    if need_y:
+        new = [[None] * cols for _ in range(rows)]
+        for c in range(cols):
+            col = [vals[r][c] for r in range(rows)]
+            for r in range(rows):
+                new[r][c] = _interp1(oy, col, py[r])
+        vals = new
+    if need_x:
+        vals = [[_interp1(ox, vals[r], px[c]) for c in range(cols)]
+                for r in range(rows)]
+    return vals
+
+
 def build_overlay(primary: Entity, other: Entity,
-                  columns: Optional[List[Optional[int]]] = None
-                  ) -> Optional[Overlay]:
+                  columns: Optional[List[Optional[int]]] = None,
+                  align: bool = False) -> Optional[Overlay]:
     """Comparison values aligned to the primary, or None if incomparable.
+
+    ``align``: a table the same size as the primary but on other breakpoints is
+    resampled onto the primary's axes (``"resampled"``), so each primary cell
+    is compared with the comparison's value at the same operating point.
+    Without it such a table stays ``"axis-mismatch"``: cell for cell, each
+    value in the cell it is stored in. With ``align``, ``columns`` of a table
+    that is the same size says the X axis is labels: it is left as it is.
 
     ``columns`` overrides the X interpolation with an explicit destination
     column -> source column mapping (``None`` for a destination column the
@@ -119,6 +168,14 @@ def build_overlay(primary: Entity, other: Entity,
                (_axes_equal(py, oy) or not py or not oy)
         if same:
             return Overlay("direct", ov)
+        if align:
+            out = _align_same_shape(primary, ov, px, py, ox, oy, primary.rows,
+                                    primary.cols, columns is not None)
+            if out is not None:
+                return Overlay(
+                    "resampled", out,
+                    "the axes differ -- the comparison is resampled onto this "
+                    "table's axes")
         return Overlay("axis-mismatch", ov,
                        "axes differ between calibrations")
 

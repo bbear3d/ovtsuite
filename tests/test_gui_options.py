@@ -285,3 +285,37 @@ def test_the_program_area_switch_reaches_open_tabs(win):
         assert ws.primary.correct_program_area is False
     finally:
         del win.workspaces
+
+
+def test_flasher_page_traces_with_its_own_file_and_limits(win, tmp_path):
+    """Options > Flasher: the trace switch, its file (a Browse / Default box
+    showing the default in Documents) and its size limit; the three are
+    greyed until the switch is on, and what is set is what the flasher reads."""
+    from ovtsuite.flash import flashtrace
+    from ovtsuite.gui_options import OptionsDialog, _FileBox
+    assert opt.FLASHER in opt.PAGES
+    dlg = OptionsDialog(win, opt.FLASHER)
+    on = dlg.widgets["flash/trace_on"]
+    box = dlg.widgets["flash/trace_file"]
+    mb = dlg.widgets["flash/trace_max_mb"]
+    keep = dlg.widgets["flash/trace_keep"]
+    assert isinstance(on, QtWidgets.QCheckBox) and not on.isChecked()
+    assert isinstance(box, _FileBox)
+    assert box.edit.placeholderText() == flashtrace.default_path()
+    assert box.text() == "" and mb.value() == 25 and keep.value() == 3
+    assert not (box.isEnabled() or mb.isEnabled() or keep.isEnabled())
+    on.setChecked(True)
+    assert box.isEnabled() and mb.isEnabled() and keep.isEnabled()
+    path = str(tmp_path / "my-trace.log")
+    box.setText(path)
+    mb.setValue(5)
+    keep.setValue(1)
+    assert dlg.apply()
+    s = flashtrace.settings()
+    assert s == {"on": True, "file": path, "max_mb": 5, "keep": 1}
+    box.edit.clear()                                  # "Default": back to Documents
+    assert dlg.apply()
+    assert flashtrace.settings()["file"] == flashtrace.default_path()
+    dlg.restore_page_defaults()
+    assert not on.isChecked() and mb.value() == 25
+    dlg.reject()

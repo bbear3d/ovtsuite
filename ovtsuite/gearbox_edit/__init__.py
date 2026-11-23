@@ -44,7 +44,7 @@ from .logfit import Event, Fit, evaluate, fit_weights, lookup_from
 from .fullload import (FullLoadPlan, FullLoadTarget, ShiftTarget, StepCheck, TorqueCurve,
                        VehicleModel, plan_upshifts)
 from .partload import PartLoadTarget, RemapPedalAxis, Strategy
-from .compare import Pairing, copy_op, pair_sets
+from .compare import Pairing, align_values, average_op, copy_op, pair_sets
 
 __all__ = [
     "Line", "Schedule", "ScheduleSet", "Scope", "parse_range",
@@ -56,5 +56,5 @@ __all__ = [
     "Event", "Fit", "evaluate", "fit_weights", "lookup_from",
     "FullLoadPlan", "FullLoadTarget", "ShiftTarget", "StepCheck", "TorqueCurve",
     "VehicleModel", "plan_upshifts", "PartLoadTarget", "RemapPedalAxis", "Strategy",
-    "Pairing", "copy_op", "pair_sets",
+    "Pairing", "align_values", "average_op", "copy_op", "pair_sets",
 ]

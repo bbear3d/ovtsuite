@@ -1,0 +1,30 @@
+# Block 000 at full throttle for the distributor-pump (VP37, EDC15VM+)
+# engines: the workshop manual's road test (3rd gear, full throttle, values
+# taken at 3000 rpm), with its limits per engine code (diag/raw0.py).
+# Read-only.
+kind: procedure
+id: procedure.engine.ve-group0-full
+name: "Block 000 full-throttle check (VE pump)"
+description: "The workshop manual's full-throttle road test: block 000 read through a pull in 3rd gear, start of injection drawn against engine speed, and the reading at 2900-3100 rpm checked against the manual's limits for the engine code (AGR, AHF, ALH, ASV, AGP, AQM)."
+applies: { addr: "01", platform: [edc15], protocol: kw1281 }
+safety: read-only
+category: Diagnosis
+source: vendor-doc          # the workshop manual's group 000; scalings from the binary
+steps:
+  - choose:
+      id: engine
+      label: "Engine code"
+      default: ahf
+      options:
+        ahf: "AGR, AHF, ALH, ASV"
+        agp: "AGP, AQM"
+  - check: [engine_running]
+  - show: "Coolant 80 C or more. On a safe road, in 3rd gear: when you continue, accelerate at full throttle through 3000 rpm. A second person should watch the screen. Block 000 is read and drawn live until you press Finish; the reading taken between 2900 and 3100 rpm is the one checked."
+  - live:
+      group: 0
+      layout: edc15vm
+      seconds: until done
+      title: "Full throttle (block 000)"
+      plot: { x: 1, y: 2, band: { engines: "@engine", condition: full } }
+      check: { engines: "@engine", condition: full }
+  - log: { journal: true, note: "block 000 full-throttle check" }

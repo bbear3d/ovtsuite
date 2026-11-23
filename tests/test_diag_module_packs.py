@@ -168,6 +168,25 @@ def test_generated_yaml_is_lf_and_check_compares_bytes(build_diag_defs, tmp_path
     assert not build_diag_defs._write_if_changed(os.path.join(out, "pack.yaml"), build_diag_defs.edc16_pack_manifest())
 
 
+def test_zf6hp19_fault_pack_validates_and_resolves():
+    """The 6HP19A pack (tools/build_zf6hp19_fault_defs.py, output committed):
+    a VAG number whose P-code is not what the 0x4000 rule gives gets the right
+    text, and only for a module the diag called a zf6hp19."""
+    pack_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "ovtsuite", "zf6hp", "definitions", "zf6hp19-faults")
+    if not os.path.isdir(pack_dir):
+        pytest.skip("no zf6hp module in this checkout")
+    packs = D.load_packs([os.path.dirname(pack_dir)], "module")
+    assert [p.id for p in packs] == ["zf6hp19-faults"]
+    rep = D.validate_pack(packs[0])
+    assert rep.ok and not rep.warnings, rep.text()
+    res = D.Resolver(packs)
+    ident = D.Identity(addr="02", protocol="kwp2000", platform="zf6hp19", part="4F9910156A")
+    assert "P0891" in res.fault_text(ident, vag=18153)      # the 0x4000 rule would say P0889
+    other = D.Identity(addr="02", protocol="kwp2000", part="09D927750HN")   # an Aisin 09D
+    assert res.fault_text(other, vag=18153) == ""
+
+
 def test_vag_number_of(build_diag_defs):
     f = build_diag_defs.vag_number_of
     assert f("P0299") == 16683 and f("P1604") == 18012 and f("P3000") == 19456       # 0x4000 + d*1024 + xyz

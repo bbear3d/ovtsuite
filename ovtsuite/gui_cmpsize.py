@@ -57,7 +57,8 @@ from . import options as _opt
 from .gui_cellmarks import OutlineDelegate
 
 KEY = "ui/compare_size"
-SIZES = (("resampled", "Resampled onto the primary's axes"),
+SIZES = (("resampled", "Resampled onto the primary's rows and columns"),
+         ("aligned", "Aligned to the primary's axes"),
          ("original", "Original size"))
 LABELS = dict(SIZES)
 _SEL = QtCore.QItemSelectionModel.SelectionFlag
@@ -78,6 +79,13 @@ def size_of(ws) -> str:
     t = _tab(ws)
     s = getattr(t, "cmpsize", None) if t is not None else None
     return s if s in LABELS else default()
+
+
+def aligned(ws) -> bool:
+    """The comparison is put onto the primary's axes even when it is the same
+    size (``transfer.build_overlay(align=True)``): each cell is compared with
+    the comparison's value at the same operating point."""
+    return size_of(ws) == "aligned"
 
 
 def overridden(ws) -> bool:
@@ -154,12 +162,25 @@ def apply_all(win) -> None:
 
 
 # --------------------------------------------------------------- the menus
+def _on_primary_axes(ws) -> str:
+    """Where leaving the original size goes: the default if it is on the
+    primary's rows and columns, else resampled."""
+    d = default()
+    return d if d in ("resampled", "aligned") else "resampled"
+
+
 def _note(ws) -> str:
     if not available(ws):
         return "No comparison is loaded for this table."
     if size_of(ws) == "resampled":
         return ("Resampled: the comparison is put onto the primary's rows "
-                "and columns.")
+                "and columns. A table of the same size is compared cell for "
+                "cell, whatever its breakpoints.")
+    if size_of(ws) == "aligned":
+        return ("Aligned: the comparison is put onto the primary's axes, "
+                "also when the size matches, so each cell is compared with "
+                "the comparison's value at the same operating point. A "
+                "changed breakpoint is still marked.")
     g = getattr(ws, "cmp_grid", None)
     if g is not None and g.native.on and g.native.linked():
         return "Original size: the sizes match, so the two tables are linked."
@@ -234,7 +255,15 @@ def add_to_menu(ws, menu: QtWidgets.QMenu) -> None:
     orig.setChecked(size_of(ws) == "original")
     orig.setToolTip(_note(ws))
     orig.triggered.connect(
-        lambda on: set_size(ws, "original" if on else "resampled"))
+        lambda on: set_size(ws, "original" if on else _on_primary_axes(ws)))
+    al = menu.addAction("Align comparison to the primary's axes")
+    al.setCheckable(True)
+    al.setChecked(aligned(ws))
+    al.setToolTip("Put a comparison of the same size on other breakpoints "
+                  "onto this table's axes, so each cell is compared at the "
+                  "same operating point. Changed breakpoints stay marked.")
+    al.triggered.connect(
+        lambda on: set_size(ws, "aligned" if on else "resampled"))
     if overridden(ws):
         menu.addAction("Use the default for this table  (%s)"
                        % LABELS[default()].split(" ")[0],
@@ -263,8 +292,9 @@ def refresh_button(ws) -> None:
         btn.setEnabled(ok)
         if ok:
             size = size_of(ws)
-            btn.setText("Comparison: %s" % ("original size" if size == "original"
-                                            else "resampled"))
+            btn.setText("Comparison: %s" % {"original": "original size",
+                                            "aligned": "aligned"}.get(size,
+                                                                      "resampled"))
             f = btn.font()
             f.setBold(size == "original")
             btn.setFont(f)
@@ -354,6 +384,12 @@ class NativeView(QtCore.QObject):
                     t.verticalHeader().sectionResized):
             sig.connect(self._retarget)
         self.ws.model.dataChanged.connect(self._primary_changed)
+        # a paste / multiply emits dataChanged per cell or range: the outline
+        # is recomputed once, after the edit
+        self._outline_timer = QtCore.QTimer(self)
+        self._outline_timer.setSingleShot(True)
+        self._outline_timer.setInterval(0)
+        self._outline_timer.timeout.connect(self._outline_now)
 
     # -- state ---------------------------------------------------------
     def wanted(self) -> bool:
@@ -400,6 +436,7 @@ class NativeView(QtCore.QObject):
         m.outline_all = not linked
         n.outline_all = not linked
         n.outline_cells = None
+        self._outline_timer.stop()          # recomputed here
         if linked:
             self._outline_differences()
         if m.outline_all != was_all:
@@ -464,8 +501,19 @@ class NativeView(QtCore.QObject):
         """The primary was edited: which cells differ moves with it."""
         if not self.on or not self.linked():
             return
+        self._outline_timer.start()
+
+    def _outline_now(self) -> None:
+        if not self.on or not self.linked():
+            return
         self._outline_differences()
         self._repaint(self.model)
+
+    def flush_outline(self) -> None:
+        """Do a pending outline recomputation now."""
+        if self._outline_timer.isActive():
+            self._outline_timer.stop()
+            self._outline_now()
 
     # -- showing -------------------------------------------------------
     def fit(self) -> None:
@@ -597,9 +645,11 @@ class NativeView(QtCore.QObject):
         if not idxs:
             return 0
         text = self.model.copy_tsv(idxs)
-        sel = ws.table.selectionModel().selectedIndexes()
-        anchor = (min(sel, key=lambda i: (i.row(), i.column())) if sel
-                  else ws.table.currentIndex())
+        anchor = ws.table.currentIndex()        # the current cell, as named
+        if not anchor.isValid():
+            sel = ws.table.selectionModel().selectedIndexes()
+            anchor = (min(sel, key=lambda i: (i.row(), i.column()))
+                      if sel else None)
         if anchor is None or not anchor.isValid():
             anchor = ws.model.index(0, 0)
         n = ws.model.paste_tsv(anchor, text)

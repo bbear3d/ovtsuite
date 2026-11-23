@@ -76,17 +76,23 @@ class GuiPrompter(QtCore.QObject, Prompter):
         self._take()
         return not self.stopped
 
-    def live(self, title, read, seconds, text=""):
+    def live(self, title, read, seconds, text="", plot=None):
         if self.stopped:
             return False
-        self.ask.emit("live_start", {"title": title, "text": text, "seconds": seconds})
-        end = time.time() + seconds
-        while time.time() < end and not self.stopped:
+        open_ended = seconds <= 0           # until the user presses Finish
+        self.ask.emit("live_start", {"title": title, "text": text, "seconds": seconds, "plot": plot,
+                                     "open": open_ended})
+        start = time.time()
+        end = None if open_ended else start + seconds
+        n = 0
+        while (end is None or time.time() < end) and not self.stopped:
             try:
                 rows = read()
             except Exception as ex:
                 rows = [["", "", "error: %s" % ex, ""]]
-            self.ask.emit("live_rows", {"rows": rows, "left": max(0.0, end - time.time())})
+            n += 1
+            self.ask.emit("live_rows", {"rows": rows, "n": n, "elapsed": time.time() - start,
+                                        "left": None if end is None else max(0.0, end - time.time())})
             try:
                 v = self._q.get(timeout=0.15)
                 if v is _STOP:
@@ -207,9 +213,18 @@ class PromptView(QtWidgets.QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setItemDelegate(CellDelegate(self.table))
         v.addWidget(self.table, 1)
+        # a live step's plot (gui_xyplot): two of its values against each
+        # other, with the specification's window
+        from .gui_xyplot import XYPlot
+        self.plot = XYPlot()
+        self.plot.setVisible(False)
+        self._plot_xy = None
+        v.addWidget(self.plot, 1)
         self.countdown = QtWidgets.QLabel("")
         v.addWidget(self.countdown)
         self.mode: Optional[str] = None
+        #: the live step reads until the user finishes it (its button: Finish)
+        self.open_ended = False
         self.choices.setVisible(False)
         if compact:
             self.table.setVisible(False)
@@ -225,6 +240,8 @@ class PromptView(QtWidgets.QWidget):
         self.choices.setVisible(False)
         self.set_rows(None)
         self.countdown.setText("")
+        self.plot.setVisible(False)
+        self._plot_xy = None
         self._sync()
 
     def _sync(self):
@@ -309,10 +326,27 @@ class PromptView(QtWidgets.QWidget):
             self._set_choices(None, None)
             self.choices.setVisible(False)
             self.set_rows(None)
+            pl = p.get("plot")
+            self._plot_xy = (int(pl["x"]), int(pl["y"])) if pl else None
+            if pl:
+                self.plot.set_spec(pl.get("xlabel", ""), pl.get("ylabel", ""), pl.get("band"))
+            self.plot.setVisible(bool(pl))
+            self.open_ended = bool(p.get("open"))
             self.mode = "live"
         elif kind == "live_rows":
-            self.set_rows(p.get("rows"))
-            self.countdown.setText("%.0f s left" % float(p.get("left", 0)))
+            rows = p.get("rows") or []
+            if p.get("left") is None:       # until done
+                self.countdown.setText("%d readings, %.0f s -- Finish when you have seen enough"
+                                       % (int(p.get("n") or 0), float(p.get("elapsed") or 0)))
+            if self._plot_xy is not None:
+                xi, yi = self._plot_xy
+                try:
+                    self.plot.add(float(rows[xi - 1][4]), float(rows[yi - 1][4]))
+                except (IndexError, TypeError, ValueError):
+                    pass            # this read had no number there
+            self.set_rows(rows)
+            if p.get("left") is not None:
+                self.countdown.setText("%.0f s left" % float(p.get("left") or 0))
             self._sync()
             return ""
         elif kind == "live_end":
@@ -408,6 +442,8 @@ class ProcedureDialog(QtWidgets.QDialog):
         self.no_btn.setVisible(mode == "confirm")
         self.next_btn.setVisible(mode in ("show", "choose"))
         self.skip_btn.setVisible(mode in ("live", "wait"))
+        self.skip_btn.setText("Finish" if mode == "live" and self.view.open_ended
+                              else "Skip the rest of this step")
         self.stop_btn.setEnabled(self._result is None)
         self.choices.setVisible(mode == "choose")
 

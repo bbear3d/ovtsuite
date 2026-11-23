@@ -214,6 +214,23 @@ def test_the_surface_follows_the_grid_and_edits_through_it(dlg, app):
     assert s.view.rows == 3                             # (kept; redrawn when shown)
 
 
+def test_the_surface_ctrl_drag_in_microseconds_moves_by_microseconds(dlg, app):
+    dlg.surf_btn.setChecked(True)
+    app.processEvents()
+    for b in dlg.unit_group.buttons():
+        if b.property("unit") == "us":
+            b.click()
+    assert dlg.unit() == "us" and dlg._in_us()
+    ed = dlg.surf.view.editor
+    ed.select_one(1, 2)
+    before = dlg._prim_vals[(1, 2)]
+    new = ed._new_values(100.0)                       # +100 us, not +100 deg
+    assert new[(1, 2)] == pytest.approx(before + 100.0, abs=1.0)
+    assert ed._new_values(3.0) == {}                  # under half a step
+    ed.drag_commit(100.0)
+    assert dlg._prim_vals[(1, 2)] == pytest.approx(before + 100.0, abs=1.0)
+
+
 def test_the_surface_cannot_edit_a_read_only_view(dlg, monkeypatch):
     dlg.mode_group.button(3).click()                    # Table no.
     assert not dlg.surf.view.editor.can_edit()
@@ -274,3 +291,35 @@ def test_the_window_is_tall_enough_to_read_the_grid_with_or_without_a_comparison
         finally:
             d.close()
             ws.deleteLater()
+
+
+# ------------------------------------------------------ Average with comparison
+def test_average_with_the_comparison_takes_the_weight_in_percent(dlg):
+    """The comparison is calculated at the primary's own points, so every cell is
+    compared at the same operating point: the bar's weight (percent of the comparison),
+    the 50 % action and the one that asks."""
+    _select(dlg, 0, 0, 1, 1)
+    cur = dict(dlg._prim_vals)
+    cmp_ = dict(dlg._cmp_vals)
+    rcs = ((0, 0), (0, 1), (1, 0), (1, 1))
+    steps = dlg.session.undo_steps
+    dlg.edit.op_box.setCurrentIndex(dlg.edit.op_box.findData("avg"))
+    assert dlg.edit.op_val.text() == "50"
+    dlg.edit.op_val.setText("25")
+    dlg.edit.apply_btn.click()
+    assert dlg.session.undo_steps == steps + 1
+    for rc in rcs:
+        want = cur[rc] + 0.25 * (cmp_[rc] - cur[rc])
+        assert dlg._prim_vals[rc] == pytest.approx(want, abs=2e-3)
+    assert dlg._prim_vals[(2, 2)] == pytest.approx(cur[(2, 2)], abs=2e-3)
+    # a weight outside 0..100 changes nothing and says so
+    n = dlg.session.undo_steps
+    dlg.edit.op_val.setText("150")
+    dlg.edit.apply_btn.click()
+    assert dlg.session.undo_steps == n and "0 to 100" in dlg.status.text()
+    # the Edit > Cells action is halfway
+    before = dict(dlg._prim_vals)
+    assert dlg.edit.cell_action("Average with comparison")
+    for rc in rcs:
+        assert dlg._prim_vals[rc] == pytest.approx(
+            before[rc] + 0.5 * (cmp_[rc] - before[rc]), abs=2e-3)

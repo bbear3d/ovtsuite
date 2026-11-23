@@ -13,13 +13,16 @@
 ``kline`` (a framed K-line message) / ``kraw`` (unframed K-line bytes from a
 passive serial tap; the burst lines of KWHack's ``kline_sniffer.py`` logs load
 as these too); the id is hex (29-bit ids have 8 digits), the data
-hex without separators.  Plain candump logs (``(t) can0 200#...``) load too.
+hex without separators.  When several sources are captured at once each line
+ends with ``@<source>`` (``(t) can 200#01C0 @A``); lines without it are
+untagged, so single-source logs and older files are unchanged.  Plain candump
+logs (``(t) can0 200#...``) load too.
 """
 import re
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
-_LINE = re.compile(r"^\((\d+(?:\.\d+)?)\)\s+(\S+)\s+([0-9A-Fa-f]+)#([0-9A-Fa-f]*)\s*$")
+_LINE = re.compile(r"^\((\d+(?:\.\d+)?)\)\s+(\S+)\s+([0-9A-Fa-f]+)#([0-9A-Fa-f]*)(?:\s+@(\S+))?\s*$")
 # KWHack Tools/kline_sniffer.py burst lines: "[t=31428.695716]    5 bytes: 82 10 F1 10 89"
 _KLINE_SNIFFER = re.compile(r"^\[t=(\d+(?:\.\d+)?)\]\s+\d+\s+bytes:\s*([0-9A-Fa-f ]+)\s*$")
 
@@ -34,6 +37,7 @@ class Record:
     extended: bool = False
     kind: str = ""                 # framing result for derived K-line rows (not stored)
     note: str = ""
+    src: str = ""                  # capture source ("A", "B"...) when several run at once
 
     @property
     def line(self) -> str:
@@ -42,10 +46,20 @@ class Record:
             ident = ("%08X" % self.can_id) if self.extended else ("%03X" % self.can_id)
         else:
             ident = "0"
-        return "(%.6f) %s %s#%s" % (self.t, bus, ident, self.data.hex().upper())
+        out = "(%.6f) %s %s#%s" % (self.t, bus, ident, self.data.hex().upper())
+        return (out + " @" + self.src) if self.src else out
 
 
 def parse_line(line: str) -> Optional[Record]:
+    r = _parse(line)
+    if r is not None:
+        m = _LINE.match(line.strip())
+        if m and m.group(5):
+            r.src = m.group(5)
+    return r
+
+
+def _parse(line: str) -> Optional[Record]:
     m = _KLINE_SNIFFER.match(line.strip())
     if m:                                   # raw K-line bytes, unframed
         return Record(float(m.group(1)), "kraw", 0, bytes.fromhex(m.group(2).replace(" ", "")))
@@ -97,8 +111,15 @@ class Writer:
             for ln in header.splitlines():
                 self.fh.write("# " + ln + "\n")
         self.count = 0
+        self.header = header
+        self.unsorted = False        # a record went in earlier than one already written
+        self._last_t = None
 
     def add(self, r: Record):
+        if self._last_t is not None and r.t < self._last_t:
+            self.unsorted = True
+        else:
+            self._last_t = r.t
         self.fh.write(r.line + "\n")
         self.count += 1
         if self.count % 50 == 0:

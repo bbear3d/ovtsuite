@@ -29,7 +29,12 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..flash import diag as _diag
 from ..flash import j2534 as _j2534
 from ..flash import keepawake as _keepawake
-from ..flash.transport import KLine, KLineError
+try:
+    from ..realtime import realtime_session as _realtime_session
+except ImportError:             # the realtime module is not there yet
+    def _realtime_session(why="", *, keep_awake=True, time_critical=True):
+        return _keepawake.prevent_sleep(why)
+from ..flash.transport import KLine, KLineError, KLineTimeout
 from ..flash.gui_flash import (list_ports, kline_devices, is_j2534, open_j2534,
                                no_device_hint,
                                cable_allows_high)
@@ -174,7 +179,10 @@ def _identity_note(session, ecu: str, identity: str, namer) -> str:
         return ""
     return ""
 CAN_ECUS = ("EDC16", "ZF6HP", "ZF6HP-UDS", "Aisin TRx")
-KLINE_ECUS = ("EDC16", "EDC15")
+KLINE_ECUS = ("EDC16", "EDC15", "Aisin TRx")
+#: Controllers woken by 5-baud init only, never by ISO 14230 fast init (an
+#: EDC15 must not be sent one; the 09D answers none).
+SLOW_INIT_ECUS = ("EDC15", "EDC15-fast", "Aisin TRx")
 PALETTE = [QtGui.QColor(c) for c in ("#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
                                       "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f")]
 
@@ -190,6 +198,11 @@ def kline_over_j2534(dev, ecu, fast_init, log):
     if ecu == "EDC15":
         from ..flash.kline_j2534_raw import J2534RawKLine
         return J2534RawKLine(dev, baud=_diag.EDC15_BAUD, log=log)
+    if ecu == "Aisin TRx":
+        # The 09D (KWP2000) takes only a 5-baud init, and its replies reach the
+        # byte-stream link (loopback off, K-line only) but not the message link.
+        from ..flash.kline_j2534_raw import J2534RawKLine
+        return J2534RawKLine(dev, baud=10400, log=log)
     from ..flash.kline_j2534 import J2534KLine
     return J2534KLine(dev, log=log, fast_init=fast_init)
 
@@ -274,6 +287,11 @@ class LogWorker(QtCore.QThread):
     #: [(channel key, text)] -- the readings of the ticked cells while not
     #: logging (see set_watch), so each shows its value as soon as it is ticked
     watched = QtCore.Signal(list)
+    #: monitor generation, texts, values -- one monitor pass of the ticked
+    #: cells (parallel to the list given to set_watch), for the strip chart as
+    #: well as the value column. The generation (set_watch's return) lets the
+    #: pane drop a pass read for a cell set it has since changed.
+    monitored = QtCore.Signal(int, list, list)
     #: generation, stamp, texts, values -- the generation is the recording the
     #: row belongs to (start_logging's return), so a row that was already on
     #: its way when Stop was pressed is recognised and dropped
@@ -297,7 +315,10 @@ class LogWorker(QtCore.QThread):
         self._can = None
         self._lock = threading.Lock()
         self._browse_group = 1
-        self._watch: List[_lf.Channel] = []
+        self._watch: List[_lf.Channel] = []     # the monitor set (guarded by _lock)
+        self._watch_gen = 0                     # bumped when the monitor set changes
+        self._mem_probed_once = False           # the 0x23 probe has been run
+        self.mem_bytes = 0
         self._fast_cells = {}           # EDC15-fast: {block: [fastlog15.FastCell]}
         self._fast_build = None         # EDC15-fast: the fasthook.HookBuild the binary carries
         self._fast_part = ""            # EDC15-fast: part number the open binary is for
@@ -318,12 +339,16 @@ class LogWorker(QtCore.QThread):
             self._browse_group = int(g)
 
     def set_watch(self, channels):
-        """The ticked cells to read while browsing (not logging): their groups
-        are read with the browsed one, and their readings come back as
-        ``watched``. Cells read from memory are not (they need the probe
-        logging does)."""
+        """The monitor set: every ticked cell, of however many groups, read
+        while not recording. Their groups are read in one pass together with
+        the browsed one, and the readings come back as ``watched`` (texts, for
+        the value column) and ``monitored`` (texts and values, for the strip
+        chart). Cells read from memory join once the 0x23 probe has run (it is
+        run on demand). Returns the monitor generation the readings carry."""
         with self._lock:
-            self._watch = [c for c in channels if not c.is_memory]
+            self._watch = list(channels)
+            self._watch_gen += 1
+            return self._watch_gen
 
     def set_fast_expect_part(self, part):
         """EDC15-fast: the open binary's part number; the connect refuses an ECU
@@ -412,11 +437,13 @@ class LogWorker(QtCore.QThread):
 
     # -- thread body --
     def _browse_read(self, sess, group):
-        """One read while not logging: the browsed group, and with it the
-        groups of the ticked cells (``watched``)."""
+        """One read while not recording: the browsed group, and with it the
+        groups of every ticked cell (the monitor set), in a single pass."""
         with self._lock:
             watch = list(self._watch)
-        want = {c.group for c in watch if not c.is_derived}
+            mgen = self._watch_gen
+        want = {c.group for c in watch
+                if not c.is_derived and not c.is_memory}
         if want:
             # the browsed group and the ticked cells' groups,
             # in one read, as logging does
@@ -424,8 +451,8 @@ class LogWorker(QtCore.QThread):
                                    is_stop=lambda: self._stop)
             cells = res.get(group)
         else:
-            res = None
             cells = sess.read_group(group)
+            res = {group: cells} if watch else None
         out = []
         if cells:
             for f, cell in enumerate(cells):
@@ -434,16 +461,43 @@ class LogWorker(QtCore.QThread):
         if res is not None:
             texts, values = [], []
             for c in watch:
-                got = None if c.is_derived else res.get(c.group)
-                if got and c.field < len(got):
-                    texts.append(got[c.field].text)
-                    values.append(got[c.field].value)
+                if c.is_derived:
+                    t, v = "N/A", None          # worked out below
+                elif c.is_memory:
+                    t, v = self._read_mem(sess, c)
                 else:
-                    texts.append("N/A")
-                    values.append(None)
+                    got = res.get(c.group)
+                    if got and c.field < len(got):
+                        t, v = got[c.field].text, got[c.field].value
+                    else:
+                        t, v = "N/A", None
+                texts.append(t)
+                values.append(v)
             _derived.fill(watch, texts, values)
-            self.watched.emit([(c.key, t) for c, t
-                               in zip(watch, texts)])
+            self._emit_monitor(mgen, watch, texts, values)
+
+    def _emit_monitor(self, mgen, watch, texts, values):
+        if not watch:
+            return
+        self.watched.emit([(c.key, t) for c, t in zip(watch, texts)])
+        with self._lock:
+            current = mgen == self._watch_gen and not self._logging
+        if current:
+            self.monitored.emit(mgen, list(texts), list(values))
+
+    def _maybe_probe_memory(self, sess):
+        """Run the readMemoryByAddress probe once, the first time an
+        address-read cell is ticked (for logging or just to watch)."""
+        if self._mem_probed_once:
+            return
+        with self._lock:
+            need = any(getattr(c, "is_memory", False)
+                       for c in list(self._channels) + list(self._watch))
+        if need:
+            # Only a probe that reached an answer counts as done; one cut
+            # short by a link error is asked again on the next pass.
+            if self._probe_memory(sess):
+                self._mem_probed_once = True
 
     def run(self):
         # A drive log is many minutes with nobody touching the laptop -- what
@@ -454,8 +508,9 @@ class LogWorker(QtCore.QThread):
         # be; released the moment it ends. Entered HERE, on the worker thread:
         # the Windows hold belongs to the thread that asks for it.
         try:
-            with _keepawake.prevent_sleep(
-                    "%s is logging from a control unit" % branding.APP_NAME):
+            with _realtime_session(
+                    "%s is logging from a control unit" % branding.APP_NAME,
+                    keep_awake=True, time_critical=True):
                 self._run_session()
         finally:
             # last thing the thread does: everything is closed and released
@@ -540,13 +595,7 @@ class LogWorker(QtCore.QThread):
                             # as the slow logger does.
                             groups = sorted({c.group for c in chans
                                              if not c.is_memory and not c.is_derived})
-                            res = {}
-                            # every group's addresses go out as ONE read (chunked
-                            # at MAX_BURST) -- a request costs ~180 ms whatever it
-                            # carries, so two groups must not be two requests.
-                            gaddrs = {g: _fl.read_addrs(self._fast_cells[g])
-                                      for g in groups if self._fast_cells.get(g)}
-                            union = sorted({a for v in gaddrs.values() for a in v})
+                            gaddrs, union = self._fast_union(groups)
                             gone = tuple(g for g in groups
                                          if not gaddrs.get(g))
                             if gone != warned_gone:
@@ -564,18 +613,8 @@ class LogWorker(QtCore.QThread):
                                 edc15fast.fast_read(link, kwp, [edc15fast.flag_addr(link)], fast_baud)
                                 time.sleep(0.5)
                                 continue
-                            allw = edc15fast.fast_read_group(
-                                link, kwp, union, fast_baud) if union else {}
-                            for g in groups:
-                                gcells = self._fast_cells.get(g)
-                                if not gcells:
-                                    continue
-                                wmap = {a: allw[a] for a in gaddrs.get(g, ())
-                                        if a in allw}
-                                if not wmap:
-                                    continue        # no reads -> N/A, not fake 0s
-                                res[g] = _d.parse_cells(
-                                    _fl.block_body(gcells, wmap), drop_echo=False)
+                            res = self._fast_read(link, kwp, fast_baud, groups,
+                                                  gaddrs, union)
                             texts, values = [], []
                             for c in chans:
                                 if c.is_derived or c.is_memory:
@@ -601,8 +640,14 @@ class LogWorker(QtCore.QThread):
                                 self.logged.emit(gen, stamp, texts, values)
                             win_rows += 1
                         else:
-                            cells = self._fast_cells.get(group)
-                            if not cells or not _fl.read_addrs(cells):
+                            with self._lock:
+                                watch = list(self._watch)
+                                mgen = self._watch_gen
+                            wgroups = sorted({c.group for c in watch
+                                              if not c.is_memory
+                                              and not c.is_derived} | {group})
+                            gaddrs, union = self._fast_union(wgroups)
+                            if not union:
                                 # a block the ECU does not provide (undefined, or
                                 # all four cells empty): nothing to read. Report it
                                 # once, and keep the KWP session alive meanwhile --
@@ -616,15 +661,29 @@ class LogWorker(QtCore.QThread):
                                 time.sleep(0.3)
                                 continue
                             last_empty = None
-                            wmap = edc15fast.fast_read_group(
-                                link, kwp, _fl.read_addrs(cells), fast_baud)
-                            if not wmap:
+                            # the browsed group and every monitored one, as
+                            # ONE read (the same union logging makes)
+                            res = self._fast_read(link, kwp, fast_baud, wgroups,
+                                                  gaddrs, union)
+                            cells = res.get(group)
+                            if not cells:
                                 self.browsed.emit(group, [])   # no reads -> blank, not fake 0s
                             else:
-                                decoded = _d.parse_cells(
-                                    _fl.block_body(cells, wmap), drop_echo=False)
                                 self.browsed.emit(group, [(fi, c.text, c.value)
-                                                          for fi, c in enumerate(decoded)])
+                                                          for fi, c in enumerate(cells)])
+                            if watch:
+                                texts, values = [], []
+                                for c in watch:
+                                    got = (None if c.is_derived or c.is_memory
+                                           else res.get(c.group))
+                                    if got and c.field < len(got):
+                                        texts.append(got[c.field].text)
+                                        values.append(got[c.field].value)
+                                    else:
+                                        texts.append("N/A")
+                                        values.append(None)
+                                _derived.fill(watch, texts, values)
+                                self._emit_monitor(mgen, watch, texts, values)
                             win_rows += 1
                         now = time.monotonic()
                         if now - win_t >= 0.5:
@@ -668,7 +727,7 @@ class LogWorker(QtCore.QThread):
                 link = kline_over_j2534(self._can, self._ecu, self._fast_init, self.status.emit)
             else:
                 link = KLine(self._port, baud=10400,
-                             prefer_fast_init=self._fast_init and self._ecu != "EDC15")
+                             prefer_fast_init=self._fast_init and self._ecu not in SLOW_INIT_ECUS)
             self._link = link
             if self._ecu == "ZF6HP-UDS":
                 from .zf6hp_uds_live import Zf6hpUdsLiveSession
@@ -689,8 +748,7 @@ class LogWorker(QtCore.QThread):
             # chain preset that ticked them was removed (2026-10-10, Bear: it
             # never returned anything), and probing on every connect cost a
             # round of requests for nothing.
-            if any(getattr(c, "is_memory", False) for c in self._channels):
-                self._probe_memory(sess)
+            self._maybe_probe_memory(sess)
             inflight = None                 # a request_probe being read
             while not self._stop:
                 try:
@@ -706,6 +764,9 @@ class LogWorker(QtCore.QThread):
                         continue
                     with self._lock:
                         req, self._probe_req = self._probe_req, None
+                    # Also while logging: Start pressed before the first idle
+                    # pass would otherwise leave the AST cells N/A all drive.
+                    self._maybe_probe_memory(sess)
                     if req is not None and not logging_:
                         inflight = req
                         got = sess.read_groups(req[1], is_stop=lambda: self._stop)
@@ -773,6 +834,34 @@ class LogWorker(QtCore.QThread):
         finally:
             self._teardown(sess, link)
 
+    def _fast_union(self, groups):
+        """EDC15-fast: ({group: its RAM addresses}, the sorted union of them)
+        of ``groups`` -- every group's addresses go out as ONE read (chunked
+        at MAX_BURST): a request costs ~180 ms whatever it carries, so two
+        groups must not be two requests."""
+        from ..edc15 import fastlog15 as _fl
+        gaddrs = {g: _fl.read_addrs(self._fast_cells[g])
+                  for g in groups if self._fast_cells.get(g)}
+        return gaddrs, sorted({a for v in gaddrs.values() for a in v})
+
+    def _fast_read(self, link, kwp, fast_baud, groups, gaddrs, union):
+        """EDC15-fast: read ``union`` once and decode each of ``groups``;
+        {group: cells} (a group with no reads is left out: N/A, not fake 0s)."""
+        from ..flash import diag as _d
+        from ..flash import edc15fast
+        from ..edc15 import fastlog15 as _fl
+        allw = edc15fast.fast_read_group(link, kwp, union, fast_baud) if union else {}
+        res = {}
+        for g in groups:
+            gcells = self._fast_cells.get(g)
+            if not gcells:
+                continue
+            wmap = {a: allw[a] for a in gaddrs.get(g, ()) if a in allw}
+            if not wmap:
+                continue
+            res[g] = _d.parse_cells(_fl.block_body(gcells, wmap), drop_echo=False)
+        return res
+
     def _write_bringup_log(self, res):
         """Write the EDC15-fast bring-up result text to a timestamped .log file.
 
@@ -827,7 +916,31 @@ class LogWorker(QtCore.QThread):
             except Exception:
                 pass
 
+    _MEM_PROBE_TRIES = 3
+
     def _probe_memory(self, sess):
+        """Run the probe; True when it reached an answer (works or not),
+        False when it failed for a reason that may pass (a link error), in
+        which case the caller asks again. Any exception is caught, the
+        J2534 driver's included, and reported rather than ending the thread;
+        after a few failed tries it gives up and says so."""
+        try:
+            self._probe_memory_once(sess)
+            return True
+        except _diag.StopRequested:
+            raise
+        except Exception as ex:        # noqa: BLE001 -- J2534Error is a plain Exception
+            self._mem_probe_fails = getattr(self, "_mem_probe_fails", 0) + 1
+            self.mem_bytes = 0
+            if self._mem_probe_fails >= self._MEM_PROBE_TRIES:
+                self.mem_status = ("The readMemoryByAddress probe failed (%s), so the "
+                                   "AST channels cannot be read." % ex)
+                self.mem_probed.emit(False, self.mem_status)
+                return True
+            self.status.emit("Memory probe failed (%s) - trying again." % ex)
+            return False
+
+    def _probe_memory_once(self, sess):
         """Settle whether this ECU serves readMemoryByAddress, and at which
         address width, before anything depends on it.
 
@@ -932,7 +1045,22 @@ class StripChart(QtWidgets.QWidget):
         if self.window and len(self.times) > 20000:
             self.times = self.times[-10000:]
             self.series = [s[-10000:] for s in self.series]
-        self.update()
+        self._repaint_soon()
+
+    #: the strip is repainted at most this often while rows arrive: a repaint walks
+    #: the whole visible log in Python, and doing it for every row (5 per second, a
+    #: log of thousands of rows) held the GIL against the logging thread -- the
+    #: reported rate fell as the graph grew and only recovered when it scrolled.
+    REPAINT_MS = 150
+
+    def _repaint_soon(self):
+        t = getattr(self, "_repaint_timer", None)
+        if t is None:
+            t = self._repaint_timer = QtCore.QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self.update)
+        if not t.isActive():
+            t.start(self.REPAINT_MS)
 
     def mousePressEvent(self, ev):
         if not self.times:
@@ -987,18 +1115,40 @@ class StripChart(QtWidgets.QWidget):
                 hi = lo + 1.0
             path = QtGui.QPainterPath()
             started = False
-            for k in range(start, len(self.times)):
-                v = s[k] if k < len(s) else None
-                if v is None:
-                    started = False
-                    continue
-                x = left + (self.times[k] - x0) / (x1 - x0) * gw
-                y = bottom - (v - lo) / (hi - lo) * gh
-                if not started:
-                    path.moveTo(x, y)
-                    started = True
-                else:
-                    path.lineTo(x, y)
+            n_vis = len(self.times) - start
+            if n_vis > 2 * max(1, int(gw)):
+                # more samples than pixels: one column per pixel (first, lowest,
+                # highest, last of its samples), not a segment per sample
+                cols = max(1, int(gw))
+                step = n_vis / cols
+                for b in range(cols):
+                    a = start + int(b * step)
+                    e = min(len(self.times), start + int((b + 1) * step))
+                    seg = [v for v in s[a:e] if v is not None]
+                    if not seg:
+                        started = False
+                        continue
+                    x = left + (self.times[a] - x0) / (x1 - x0) * gw
+                    for v in (seg[0], min(seg), max(seg), seg[-1]):
+                        y = bottom - (v - lo) / (hi - lo) * gh
+                        if not started:
+                            path.moveTo(x, y)
+                            started = True
+                        else:
+                            path.lineTo(x, y)
+            else:
+                for k in range(start, len(self.times)):
+                    v = s[k] if k < len(s) else None
+                    if v is None:
+                        started = False
+                        continue
+                    x = left + (self.times[k] - x0) / (x1 - x0) * gw
+                    y = bottom - (v - lo) / (hi - lo) * gh
+                    if not started:
+                        path.moveTo(x, y)
+                        started = True
+                    else:
+                        path.lineTo(x, y)
             p.setPen(QtGui.QPen(col, 1.5))
             p.drawPath(path)
             name = self.names[i] if i < len(self.names) else "ch%d" % i
@@ -1155,7 +1305,7 @@ class ConnectionBar(QtWidgets.QWidget):
         self.ecu_box.setCurrentText(want if want in allowed else allowed[0])
         self.ecu_box.blockSignals(False)
         self.ecu_box.setEnabled(True)
-        self.fast_disable_chk.setVisible(not can and self.ecu() not in ("EDC15", "EDC15-fast"))  # K-line, not EDC15(-fast)
+        self.fast_disable_chk.setVisible(not can and self.ecu() not in SLOW_INIT_ECUS)  # K-line, fast-init units only
         self.refresh_ports()                         # rebuilds ports -> _port_changed
         if hasattr(self, "speed_box"):
             self._ecu_changed()                      # signals were blocked above
@@ -1179,8 +1329,8 @@ class ConnectionBar(QtWidgets.QWidget):
             return
         # EDC15 is always 5-baud slow init (KW1281 has no fast init, and an
         # EDC15 must not be sent one) -- no option shown, as in the flasher.
-        self.fast_disable_chk.setVisible(self.ecu() not in ("EDC15", "EDC15-fast"))
-        if self.ecu() in ("EDC15", "EDC15-fast"):
+        self.fast_disable_chk.setVisible(self.ecu() not in SLOW_INIT_ECUS)
+        if self.ecu() in SLOW_INIT_ECUS:
             self.fast_disable_chk.setChecked(True)
             self.fast_disable_chk.setEnabled(False)
         elif is_j2534(self.port_box.currentData()):
@@ -1523,7 +1673,14 @@ class ConnPane(QtWidgets.QWidget):
         # does not hand the same log on a second time.
         self._log_path = ""
         self._rec_gen = 0               # LogWorker generation of that recording
+        self._rec_base = None           # (monitor time, row stamp) of the recording's first row
         self._t0 = None
+        # The live monitor (before and between recordings): its own clock,
+        # started with the first monitored pass of a connection and never
+        # reset by Start / Stop, so the strip chart runs on across both.
+        self._mon_t0 = None             # time.monotonic() of that first pass
+        self._mon_gen = 0               # LogWorker monitor generation in force
+        self._chart_sig = None          # what the chart's series are (see _sync_monitor_chart)
         self._live = _lf.DataLog()
         self._hz = RateMeter()          # readings per second, while connected
         self._fast_notes = _fn.SessionNotes()   # EDC15-fast messages, kept as an attachment
@@ -2348,6 +2505,7 @@ class ConnPane(QtWidgets.QWidget):
         self._worker.connected.connect(self._on_connected)
         self._worker.browsed.connect(self._on_browsed)
         self._worker.watched.connect(self._on_watched)
+        self._worker.monitored.connect(self._on_monitored)
         self._worker.logged.connect(self._on_logged)
         self._worker.status.connect(self._say)
         self._worker.status.connect(self._fast_note)
@@ -2480,6 +2638,8 @@ class ConnPane(QtWidgets.QWidget):
         self.ident.setText("%s   (%d baud)" % (identity or "connected", baud))
         self._hz.reset()
         self.rate.setText("")
+        self._mon_t0 = None
+        self._sync_monitor_chart(force=True)      # a fresh connection, a fresh chart
         if identity:
             self._ecu_ident[self.conn.ecu()] = identity
             self._sync_namer()           # names from the catalogue when no binary can
@@ -2574,6 +2734,16 @@ class ConnPane(QtWidgets.QWidget):
         self.ident.setText("Not connected.")
         self._hz.reset()
         self.rate.setText("")
+        self.rate.setToolTip("")
+        self._mon_groups_note = 0
+        self._mon_t0 = None             # the next connection starts a new timeline
+        # The old samples belong to the old timeline: a reconnect with the
+        # same cells would otherwise draw new ones from t~0 over them.
+        self._chart_sig = None
+        if getattr(self, "chart", None) is not None:
+            self.chart.set_data([], [[] for _ in self._channels],
+                                [c.title for c in self._channels],
+                                [c.unit for c in self._channels])
         self._clear_sel_values()
         # the next ECU may have other software: ask it again
         self._probe_state.clear()
@@ -2664,6 +2834,7 @@ class ConnPane(QtWidgets.QWidget):
         self._fill_browse(g, None)
         if self._worker is not None:
             self._worker.set_browse_group(g)
+            self._show_monitor_info()
 
     def _group_spun(self, g):
         i = self.group_box.findData(g)
@@ -2673,6 +2844,7 @@ class ConnPane(QtWidgets.QWidget):
         self._fill_browse(g, None)
         if self._worker is not None:
             self._worker.set_browse_group(g)
+            self._show_monitor_info()
 
     def _cell_fields(self, group):
         """The cells of ``group`` the binary says carry a signal (0-based):
@@ -3098,12 +3270,74 @@ class ConnPane(QtWidgets.QWidget):
         self._sync_preset_buttons()          # Save as... needs a cell to keep
         self._push_watch()                   # a ticked cell reads at once
 
-    def _push_watch(self):
+    def _push_watch(self, sync_chart=True):
         """Tell the connection which cells are ticked, so each shows its
         live value now rather than when logging starts."""
         w = getattr(self, "_worker", None)
-        if w is not None:
-            w.set_watch(list(self._channels))
+        if w is not None and hasattr(w, "set_watch"):
+            gen = w.set_watch(list(self._channels))
+            if isinstance(gen, int):
+                self._mon_gen = gen
+        if sync_chart:
+            self._sync_monitor_chart()
+
+    def _monitor_time(self):
+        """Seconds on the monitor clock (monotonic, started by the first
+        monitored pass of the connection)."""
+        now = time.monotonic()
+        if self._mon_t0 is None:
+            self._mon_t0 = now
+        return now - self._mon_t0
+
+    def _sync_monitor_chart(self, force=False):
+        """The strip chart shows the ticked cells: when that set changes the
+        series are reset (the old ones no longer mean anything). Not while
+        recording -- the recording's own cells are on it."""
+        if self._logging or getattr(self, "chart", None) is None:
+            return
+        sig = tuple((c.key, c.title, c.unit) for c in self._channels)
+        if not force and sig == self._chart_sig:
+            return
+        self._chart_sig = sig
+        self.chart.set_data([], [[] for _ in self._channels],
+                            [c.title for c in self._channels],
+                            [c.unit for c in self._channels])
+        self._show_monitor_info()
+
+    def _monitor_groups(self):
+        # The browsed group is read on every pass too (the worker adds it).
+        groups = {c.group for c in self._channels
+                  if not c.is_derived and not c.is_memory}
+        if getattr(self, "_worker", None) is not None:
+            groups.add(self._current_group())
+        return len(groups)
+
+    def _show_monitor_info(self):
+        """Many groups monitored at once is many requests per pass: say how
+        many, and that a slow link (KW1281, the K-line) will show it."""
+        n = self._monitor_groups()
+        self._mon_groups_note = n
+        if getattr(self, "rate", None) is None:
+            return
+        tip = ""
+        if n > 1:
+            tip = ("%d measuring blocks are read for every update, so each "
+                   "refreshes at 1/%d of the single-block rate." % (n, n))
+            if getattr(self, "conn", None) is not None and \
+                    self.conn.ecu() == "EDC15" or n > 4:
+                tip += (" The K-line (especially KW1281, EDC15) is slow: "
+                        "tick fewer groups for a faster display.")
+        self.rate.setToolTip(tip)
+
+    def _on_monitored(self, gen, texts, values):
+        """One monitor pass of the ticked cells while not recording: the chart
+        and the value column run before Start, and between recordings."""
+        if self._logging or gen != self._mon_gen:
+            return                      # recording fills these; or a stale pass
+        if len(texts) != len(self._channels):
+            return
+        self._sync_monitor_chart()
+        self.chart.append(self._monitor_time(), values)
 
     def _on_watched(self, pairs):
         """Live readings of the ticked cells while not logging."""
@@ -3280,11 +3514,13 @@ class ConnPane(QtWidgets.QWidget):
         self._log_path = path
         self._last_log_file = "" if self._keep_ref is not None else path
         self._t0 = None
+        self._rec_base = None
         self._live = _lf.DataLog(channels=[_lf.Channel(c.group, c.field, c.label, c.unit, c.signal,
                                                        derived=c.derived)
                                            for c in self._channels])
-        self.chart.set_data([], [[] for _ in self._channels],
-                            [c.title for c in self._channels], [c.unit for c in self._channels])
+        # The chart keeps running from the monitor (it already shows these
+        # cells); only the recording's own clock and rows start here.
+        self._sync_monitor_chart()
         self._logging = True
         self._set_logging_ui(True)
         self._say("Logging to %s" % path)
@@ -3333,6 +3569,9 @@ class ConnPane(QtWidgets.QWidget):
         self._logging = False
         if self._worker is not None:
             self._worker.stop_logging()
+            # back to monitoring; the chart is kept unless the ticked cells
+            # changed meanwhile
+            self._push_watch(sync_chart=self._chart_sig is not None)
         self._set_logging_ui(False)
         path, self._log_path = self._log_path, ""
         rows = self._live.rows
@@ -3369,9 +3608,12 @@ class ConnPane(QtWidgets.QWidget):
             return                      # a row from before Stop, still in flight
         if self._t0 is None:
             self._t0 = stamp
-        t = (stamp - self._t0).total_seconds()
         self._live.append(stamp, texts)
-        self.chart.append(t, values)
+        # the row's own stamp, not when the GUI got to it
+        if self._rec_base is None:
+            self._rec_base = (self._monitor_time(), stamp)
+        mt, st = self._rec_base
+        self.chart.append(mt + (stamp - st).total_seconds(), values)
         for r, txt in enumerate(texts):
             it = self.sel.item(r, 2)
             if it is not None:
@@ -3384,8 +3626,14 @@ class ConnPane(QtWidgets.QWidget):
         recorded so far while logging."""
         if hz is None:
             return
-        self.rate.setText("%.1f Hz" % hz if rows is None
-                          else "%d rows, %.1f Hz" % (rows, hz))
+        n = getattr(self, "_mon_groups_note", 0)
+        if rows is None:
+            # a pass over several monitored groups: say so, so a slow
+            # refresh is understood
+            self.rate.setText("%.1f Hz" % hz if n <= 1
+                              else "%.1f Hz, %d groups" % (hz, n))
+        else:
+            self.rate.setText("%d rows, %.1f Hz" % (rows, hz))
 
 class RateMeter:
     """Readings per second over the last :attr:`WINDOW` seconds: steady
@@ -3828,12 +4076,11 @@ class DataLogDialog(QtWidgets.QDialog):
         ob.setToolTip("A log kept in a project, or a CSV file")
         ob.clicked.connect(self._open_log)
         top.addWidget(ob)
-        self.exp_vcds = QtWidgets.QPushButton("Export as VCDS CSV...")
-        self.exp_vcds.clicked.connect(lambda: self._export("vcds"))
-        top.addWidget(self.exp_vcds)
-        self.exp_kw = QtWidgets.QPushButton("Export as KWHack CSV...")
-        self.exp_kw.clicked.connect(lambda: self._export("kwhack"))
-        top.addWidget(self.exp_kw)
+        self.export_btn = QtWidgets.QPushButton("Export As...")
+        self.export_btn.setToolTip("Write this log in another layout: OVT-Suite, VCDS "
+                                   "(advanced measuring blocks or classic)")
+        self.export_btn.clicked.connect(self._export_as)
+        top.addWidget(self.export_btn)
         top.addStretch(1)
         self.view_info = QtWidgets.QLabel("No log loaded.")
         self.view_info.setStyleSheet("color: gray")
@@ -3893,7 +4140,7 @@ class DataLogDialog(QtWidgets.QDialog):
         from .. import recent as _recent
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open data log", _recent.get_last_dir("log"),
-            "CSV data logs (*.csv);;All files (*)")
+            "Data logs, OVT-Suite and VCDS (*.csv *.txt *.log);;All files (*)")
         if path:
             _recent.set_last_dir(os.path.dirname(path), "log")
             self.view_file(path)
@@ -3973,8 +4220,7 @@ class DataLogDialog(QtWidgets.QDialog):
                                  [c.title for c in log.channels], [c.unit for c in log.channels])
         self.view_model.set_log(log, secs)
         self._size_view_columns(log)
-        self.exp_vcds.setEnabled(True)
-        self.exp_kw.setEnabled(True)
+        self.export_btn.setEnabled(True)
 
     def _namer_for_log(self, log):
         """Whichever open pane's map actually covers this log's groups. Naming
@@ -4023,29 +4269,24 @@ class DataLogDialog(QtWidgets.QDialog):
             self.view_chart.cursor = min(rows)
             self.view_chart.update()
 
-    def _export(self, layout):
-        if self._viewed is None:
+    def _export_as(self):
+        """Export As...: the list of formats, their options, then the file."""
+        log = self._viewed
+        if log is None:
             return
-        from .. import recent as _recent
-        base = os.path.splitext(os.path.basename(self._viewed.path or "log"))[0]
-        suffix = "_vcds.csv" if layout == "vcds" else "_kwhack.csv"
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export data log", os.path.join(_recent.get_last_dir("log"), base + suffix),
-            "CSV data log (*.csv);;All files (*)")
-        if not path:
-            return
-        if not os.path.splitext(path)[1]:
-            path += ".csv"
-        try:
-            if layout == "vcds":
-                _lf.write_vcds(path, self._viewed)
-            else:
-                _lf.write_kwhack(path, self._viewed)
-        except OSError as ex:
-            QtWidgets.QMessageBox.critical(self, "Export", str(ex))
-            return
-        _recent.set_last_dir(os.path.dirname(path), "log")
-        self.status.setText("Exported %s layout to %s" % (layout, path))
+        from . import gui_export as _ge
+        base = os.path.splitext(os.path.basename(log.path or "log"))[0]
+        raw = None
+        if log.layout == "kwhack" and log.path and os.path.isfile(log.path):
+            try:
+                with open(log.path, "rb") as fh:
+                    raw = fh.read()             # the OVT-Suite layout is then a plain copy
+            except OSError:
+                raw = None
+        written = _ge.export_log_as(self, log, base, raw)
+        if written:
+            self.status.setText("Exported to %s" % written[0] if len(written) == 1 else
+                                "Exported %d files, from %s" % (len(written), written[0]))
 
 
 # ------------------------------------------------------- one-shot ECU tasks
@@ -4090,7 +4331,7 @@ class EcuTask(QtCore.QThread):
                 link = kline_over_j2534(self._can, ecu, self._fast_init, self.status.emit)
             else:
                 link = KLine(port, baud=10400,
-                             prefer_fast_init=self._fast_init and ecu != "EDC15")
+                             prefer_fast_init=self._fast_init and ecu not in SLOW_INIT_ECUS)
             sess = _diag.DiagSession(link, ecu, self.status.emit)
             sess.connect("Low" if ecu == "EDC15" else speed, cap)
             try:

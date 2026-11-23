@@ -100,6 +100,7 @@ class Device:
     vendor: str
     dll: str
     bits: int                  # 32 / 64, from the registry hive the entry sits in
+    present: Optional[bool] = None     # cable on USB now: True / False / None (unknown)
 
     @property
     def loadable(self) -> bool:
@@ -343,8 +344,30 @@ def kline_xfer(ch, data: Optional[bytes], write_timeout_ms: int, timeout_ms: int
     return before, after
 
 
-def list_devices() -> List[Device]:
-    """Registered PassThru devices (Windows only; empty elsewhere)."""
+#: Vendor string of the J2534 DLL OVT-Suite itself registers (tools/j2534drv/config.c) for
+#: *other* programs. This app drives the same cable directly (openport / SM2 over libusb),
+#: so its own pickers never offer that DLL.
+OWN_VENDOR = "OVT-Suite"
+
+
+def _presence(vendor: str, name: str) -> Optional[bool]:
+    try:
+        from .usbpresent import device_present
+        return device_present(vendor, name)
+    except Exception:
+        return None
+
+
+def plugged_in(devs: Sequence[Device]) -> List[Device]:
+    """For a device picker: drop drivers whose cable is known to be unplugged, list
+    plugged-in ones first, then those whose presence can't be told (``present`` None)."""
+    shown = [d for d in devs if d.present is not False]
+    return sorted(shown, key=lambda d: 0 if d.present else 1)
+
+
+def list_devices(include_own: bool = False) -> List[Device]:
+    """Registered PassThru devices (Windows only; empty elsewhere). OVT-Suite's own
+    J2534 driver (for third-party programs) is left out unless ``include_own``."""
     if os.name != "nt":
         return []
     import winreg
@@ -373,7 +396,10 @@ def list_devices() -> List[Device]:
                     vendor = winreg.QueryValueEx(k, "Vendor")[0]
                 except OSError:
                     vendor = ""
-                out.append(Device(str(name), str(vendor), str(dll), bits))
+                if str(vendor) == OWN_VENDOR and not include_own:
+                    continue
+                out.append(Device(str(name), str(vendor), str(dll), bits,
+                                  _presence(str(vendor), str(name))))
             except OSError:
                 continue
     # 64-bit Windows registers one product in both hives with the same DLL
@@ -918,10 +944,13 @@ class BridgePassThru:
         self.channels.append(ch)
         return ch
 
-    def open_tp20(self, dest, baud, listen_id=0x300, params=None, log_path=None) -> "BridgeTp20":
+    def open_tp20(self, dest, baud, listen_id=0x300, params=None, log_path=None,
+                  log_limits=None) -> "BridgeTp20":
         """Run a whole VW TP 2.0 channel inside the bridge (one IPC per KWP
-        message, tight ACK loop in-process with the DLL)."""
-        return BridgeTp20(self, dest, baud, listen_id, params, log_path)
+        message, tight ACK loop in-process with the DLL). ``log_path`` makes
+        the bridge write the CAN frames to that file, ``log_limits`` (``{"log_max_bytes",
+        "log_keep"}``, see :mod:`ovtsuite.flash.flashtrace`) keeps it small."""
+        return BridgeTp20(self, dest, baud, listen_id, params, log_path, log_limits)
 
     def open_tp20_ecu(self, baud, ecu_rx=0x740, dest=None, a1_params=None,
                       protocol=CAN, timing=None, drain_write=True) -> "BridgeTp20Ecu":
@@ -946,7 +975,7 @@ class BridgePassThru:
 
     def open_iso_tp(self, baud, tx_id=0x7E1, rx_id=0x7E9, func_id=0x7DF,
                     protocol=CAN, log_path=None, log=None,
-                    is_stop=None) -> "BridgeIsoTp":
+                    is_stop=None, log_limits=None) -> "BridgeIsoTp":
         """Run the tester-side ISO-TP engine IN-BRIDGE over a RAW CAN channel:
         reassembly, flow control and responsePending all happen next to the DLL,
         so each UDS request is ONE IPC instead of ~35 per-frame read round-trips.
@@ -955,7 +984,8 @@ class BridgePassThru:
         Zf6hpUdsReader needs. Raises J2534Error if this bridge build has no
         isotp_transport."""
         r = self._call("iso_open", protocol=protocol, baud=baud, tx_id=tx_id,
-                       rx_id=rx_id, func_id=func_id, log_path=log_path)
+                       rx_id=rx_id, func_id=func_id, log_path=log_path,
+                       **dict(log_limits or {}))
         return BridgeIsoTp(self, tx_id=r.get("tx_id", tx_id),
                            rx_id=r.get("rx_id", rx_id), func_id=func_id,
                            log=log, is_stop=is_stop)
@@ -1105,7 +1135,8 @@ class BridgeTp20:
     receive/ACK loop runs inside the 32-bit bridge, so it is one IPC per KWP
     message instead of one per CAN frame (avoids the ACK-latency retransmits)."""
 
-    def __init__(self, bridge: BridgePassThru, dest, baud, listen_id=0x300, params=None, log_path=None):
+    def __init__(self, bridge: BridgePassThru, dest, baud, listen_id=0x300, params=None,
+                 log_path=None, log_limits=None):
         self.b = bridge
         self.dest = dest
         self.baud = baud
@@ -1117,6 +1148,7 @@ class BridgeTp20:
         self.opened = False
         self._params = params or {}
         self._log_path = log_path
+        self._log_limits = dict(log_limits or {})
         self.log = None                 # set by CanKLine: receives the bridge loop's notes
         self.backed_off = False         # the in-bridge loop backed its pacing off (9x etc.)
         self._dropped_noted = False     # the old-bridge note was logged
@@ -1129,7 +1161,8 @@ class BridgeTp20:
     def open(self):
         try:
             r = self.b._call("tp_open", protocol=CAN, baud=self.baud, dest=self.dest,
-                             listen=self.listen_id, params=self._params, log_path=self._log_path)
+                             listen=self.listen_id, params=self._params,
+                             log_path=self._log_path, **self._log_limits)
         except J2534Error as ex:
             raise self._err(ex)
         self.tx_id = r.get("tx_id")

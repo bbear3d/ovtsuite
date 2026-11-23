@@ -152,6 +152,32 @@ def _cache_key(pkg: str, rel: str, data: bytes) -> str:
     return h.hexdigest()
 
 
+def _signed_for_mac(compiled: Dict[str, bytes]) -> Dict[str, bytes]:
+    """macOS: give every compiled file its ad-hoc signature HERE, before the package
+    manifest hashes it. Apple-silicon macOS will not load an unsigned extension, and
+    signing it later (``codesign --deep`` on the app) changes its bytes, which the
+    manifest then reports as "has been modified". The name is fixed, so the signature
+    (its identifier) is the same on every build, and the one ``codesign --deep`` of the
+    app gives it, so the app's own signing pass leaves the bytes as they are."""
+    if sys.platform != "darwin":
+        return compiled
+    out = {}
+    with tempfile.TemporaryDirectory(prefix="ovtsign-") as tmp:
+        for rel, data in compiled.items():
+            d = os.path.join(tmp, str(len(out)))      # the file's own name: it is its
+            os.makedirs(d)                             # signature identifier
+            p = os.path.join(d, os.path.basename(rel))
+            with open(p, "wb") as fh:
+                fh.write(data)
+            r = subprocess.run(["codesign", "--force", "--timestamp=none", "--sign", "-", p],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError("codesign %s: %s" % (rel, (r.stderr or r.stdout).strip()))
+            with open(p, "rb") as fh:
+                out[rel] = fh.read()
+    return out
+
+
 def compile_sources(sources: Dict[str, bytes], pkg: str, jobs: int = 0,
                     timeout: int = 3600, cache_dir: Optional[str] = None
                     ) -> Tuple[Dict[str, bytes], Dict[str, str]]:
@@ -190,7 +216,7 @@ def compile_sources(sources: Dict[str, bytes], pkg: str, jobs: int = 0,
                     compiled[rel[:-3] + suffix] = fh.read()
                 want.remove(rel)
     if not want:
-        return compiled, fallback
+        return _signed_for_mac(compiled), fallback
     with tempfile.TemporaryDirectory(prefix="ovtnative-") as tmp:
         top = os.path.join(tmp, pkg)
         os.makedirs(top)
@@ -210,6 +236,12 @@ def compile_sources(sources: Dict[str, bytes], pkg: str, jobs: int = 0,
         with open(listing, "w") as fh:
             json.dump(want, fh)
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        # A shell started from a VS *x86* developer prompt leaves
+        # VSCMD_ARG_TGT_ARCH=x86 behind; sysconfig.get_platform() then reports
+        # win32 for a 64-bit interpreter and setuptools picks the 32-bit
+        # compiler. The extension must match this interpreter, so drop it.
+        for k in ("VSCMD_ARG_TGT_ARCH", "VSCMD_ARG_HOST_ARCH"):
+            env.pop(k, None)
         r = subprocess.run(
             [sys.executable, "-c", _DRIVER, tmp, pkg, str(jobs or os.cpu_count() or 1),
              listing, result],
@@ -235,6 +267,8 @@ def compile_sources(sources: Dict[str, bytes], pkg: str, jobs: int = 0,
                 fallback[rel] = "no extension module produced"
         if not compiled:
             raise RuntimeError("no file could be compiled -- is a C compiler "
-                               "installed?\n%s" % "\n".join(
-                                   "  %s: %s" % kv for kv in sorted(fallback.items())))
-    return compiled, fallback
+                               "installed?\n%s\n--- compiler output (tail) ---\n%s" % (
+                                   "\n".join("  %s: %s" % (k, v[:200]) for k, v
+                                             in sorted(fallback.items())),
+                                   (r.stdout + r.stderr)[-3000:]))
+    return _signed_for_mac(compiled), fallback

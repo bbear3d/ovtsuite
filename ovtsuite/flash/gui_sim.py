@@ -21,6 +21,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import branding
 from .. import appsettings as _appsettings
+from .. import realtime as _realtime
 from . import ecu_sim as _sim
 from . import trx_sim as _trx
 from . import trx_kline_sim as _kline
@@ -105,6 +106,10 @@ class SimWorker(QtCore.QThread):
         return fh
 
     def run(self):
+        with _realtime.realtime_session():
+            self._run_sim()
+
+    def _run_sim(self):
         ch = None
         logf = None
         try:

@@ -46,7 +46,7 @@
 #
 # Result (dist/mac/)
 #   OVT-Suite.app            the app, ad-hoc signed; modules in Contents/MacOS/modules
-#   OVT-Suite-<ver>-<arch>.dmg   the app, an Applications link and Tools/*.command launchers
+#   OVT-Suite-<ver>-<arch>.dmg   the app and an Applications link
 #   module-installers/       the .ovtmod packages, for installing a module into another app
 #
 # A Mac that downloads the .dmg or .app (not one that built it) puts a quarantine flag on
@@ -206,11 +206,11 @@ step "build venv $VENV"
 if [ ! -x "$VPY" ]; then "$PY" -m venv "$VENV" || die "could not create the venv"; fi
 stamp="$VENV/.requirements"
 want="$(cat "${REQ[@]:1:1}" "${REQ[@]:3:1}" | shasum -a 256 | cut -c1-16)${EXTRA_DEPS[*]:-}"
-if [ "$UPDATE" = 1 ] || [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
-    upgrade=(); [ "$UPDATE" = 1 ] && upgrade=(--upgrade)
+if [ "${UPDATE:-0}" = 1 ] || [ "$(cat "$stamp" 2>/dev/null || true)" != "$want" ]; then
+    upgrade=()
+    [ "${UPDATE:-0}" = 1 ] && upgrade=(--upgrade)
     "$VPY" -m pip install --quiet --upgrade pip
-    # a universal2 app needs the universal2 wheel of every library; say so if one is missing
-    "$VPY" -m pip install "${upgrade[@]}" "${REQ[@]}" ${EXTRA_DEPS[@]+"${EXTRA_DEPS[@]}"}
+    "$VPY" -m pip install ${upgrade[@]+"${upgrade[@]}"} "${REQ[@]}" ${EXTRA_DEPS[@]+"${EXTRA_DEPS[@]}"}
     echo "$want" > "$stamp"
 else
     echo "   requirements unchanged - skipped (--update to refresh)"
@@ -277,7 +277,13 @@ if [ "$BASE_ONLY" = 0 ]; then
     "$VPY" tools/build_modules.py install-into "$MACOS/modules" --packages dist/modules \
         --modules "$MODULES" --variant full
     # no Python source of a module may be in the bundle: compiled code only
-    srcs="$(find "$MACOS/modules" -name '*.py' | head -20)"
+    # (open-source modules -- MPL-2.0, e.g. vdo and zf5hp -- ship their own LICENSE.txt
+    # and are source by design; only the closed ones must be compiled)
+    srcs=""
+    for m in "$MACOS/modules"/*/; do
+        ls "$m"*/LICENSE.txt >/dev/null 2>&1 && continue
+        srcs="$srcs$(find "$m" -name '*.py' | head -20)"
+    done
     [ -z "$srcs" ] || die "module source files in the bundle:
 $srcs"
     echo "   modules: $(ls "$MACOS/modules" | tr '\n' ' ') -- no .py source"
@@ -290,6 +296,20 @@ if [ -f "$APP_PARENT/$B_EXE/THIRD-PARTY-NOTICES.txt" ]; then
     cp "$APP_PARENT/$B_EXE/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/"
 fi
 rm -rf "$APP_PARENT/$B_EXE"                        # the one-folder build: only the .app is wanted
+
+# ------------------------------------------------------------------ the launcher
+# OVT-Suite.app is ONE app that launches every program of the suite: its bundle executable
+# is this script, which opens the tool picker (ovtsuite --launcher); the editor and each tool
+# are the real executable, started from there. Files opened with the app go to the editor.
+step "launcher"
+cat > "$MACOS/launch" <<EOF
+#!/bin/bash
+exec "\$(dirname "\$0")/$B_EXE" --launcher "\$@"
+EOF
+chmod 755 "$MACOS/launch"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable launch" "$APP/Contents/Info.plist" \
+    || die "could not point the bundle at the launcher"
+echo "   $B_APP_NAME.app opens the tool picker"
 
 # ------------------------------------------------------------------ architecture check
 step "architecture check ($ARCH)"
@@ -311,12 +331,25 @@ echo "   every binary is $ARCH"
 # ------------------------------------------------------------------ sign
 # Signed AFTER the modules went in: any file added later breaks the seal.
 step "codesign (${SIGN:-ad hoc})"
+# Sign (and package) a clean copy on the local disk: a checkout in Google Drive / iCloud
+# gets Finder and file-provider attributes put back on its folders, which a strict signature
+# check calls "detritus" ("resource fork, Finder information, or similar detritus not allowed").
+SIGNDIR="$(mktemp -d)"; trap 'rm -rf "$SIGNDIR" "${STAGE:-}"' EXIT
+ditto --noextattr --norsrc "$APP" "$SIGNDIR/$B_APP_NAME.app"
+APP="$SIGNDIR/$B_APP_NAME.app"; MACOS="$APP/Contents/MacOS"
+# The modules' compiled files were signed ad hoc when their packages were built (their hashes
+# are in a signed manifest, and signing changes a file); signing them again here, by the same
+# name and with the same options, gives the same bytes, so the manifests still match.
 if [ -n "$SIGN" ]; then
-    codesign --force --deep --options runtime --timestamp --sign "$SIGN" "$APP"
+    # disable-library-validation (packaging/entitlements.plist): lets the hardened app load a
+    # libusb installed by MacPorts/Homebrew (not signed by us) when none is bundled.
+    codesign --force --deep --options runtime --timestamp \
+        --entitlements "$ROOT/packaging/entitlements.plist" --sign "$SIGN" "$APP"
 else
     codesign --force --deep --timestamp=none --sign - "$APP"
 fi
-codesign --verify --deep --strict "$APP" && echo "   signature verifies"
+codesign --verify --deep --strict "$APP" 2>/dev/null && echo "   signature verifies" \
+    || warn "the app's signature does not verify strictly (codesign --verify --deep --strict -vv)"
 
 # ------------------------------------------------------------------ smoke test
 step "smoke test"
@@ -340,35 +373,54 @@ fi
 OUTPUTS=("$OUT/$B_APP_NAME.app")
 
 if [ "$DMG" = 1 ]; then
-    STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
+    STAGE="$(mktemp -d)"
+    # One app goes into /Applications: OVT-Suite.app is the launcher for the whole suite
+    # (it opens the tool picker; ovtsuite/gui_toolpicker.py).
     ditto "$APP" "$STAGE/$B_APP_NAME.app"
     ln -s /Applications "$STAGE/Applications"
-    # the tools beside the main window, each a double-click launcher
-    mkdir -p "$STAGE/Tools"
-    while read -r flag title; do
-        f="$STAGE/Tools/$title.command"
-        cat > "$f" <<EOF
-#!/bin/bash
-# Starts $title from $B_APP_NAME.app (installed in /Applications, or beside this folder).
-for app in "/Applications/$B_APP_NAME.app" "\$(dirname "\$0")/../$B_APP_NAME.app"; do
-    [ -x "\$app/Contents/MacOS/$B_EXE" ] && exec "\$app/Contents/MacOS/$B_EXE" $flag "\$@"
-done
-echo "$B_APP_NAME.app not found: copy it to /Applications first." >&2
-read -r _
-EOF
-        chmod 755 "$f"
-    done <<'EOF'
---diag OVT-Diag
---flasher OVT-Flasher
---logger OVT-Logger
---simulator OVT-Simulator
---sniffer OVT-Sniffer
---converter OVT-Converter
-EOF
     DMG_OUT="$OUT/$B_APP_NAME-$B_VERSION-$ARCH.dmg"
     rm -f "$DMG_OUT"
-    hdiutil create -quiet -volname "$B_APP_NAME $B_VERSION" -srcfolder "$STAGE" \
-        -ov -format UDZO "$DMG_OUT"
+    VOLNAME="$B_APP_NAME $B_VERSION"
+    # a window that shows what to do: the app, an arrow, Applications. Best effort -- the
+    # layout is set through Finder (AppleScript), so it needs a logged-in desktop session;
+    # without one the .dmg is plain but still holds the app and the Applications link.
+    mkdir -p "$STAGE/.background"
+    "$VPY" tools/mac_package/dmg_background.py "$STAGE/.background/background.png" "$B_APP_NAME" \
+        2>/dev/null || rm -rf "$STAGE/.background"
+    RW="$(mktemp -d)/rw.dmg"
+    hdiutil create -quiet -volname "$VOLNAME" -srcfolder "$STAGE" -fs HFS+ \
+        -format UDRW -ov "$RW"
+    MNT="/Volumes/$VOLNAME"
+    hdiutil detach -quiet "$MNT" 2>/dev/null || true
+    hdiutil attach -quiet -readwrite -noverify -noautoopen "$RW" >/dev/null
+    if [ -d "$STAGE/.background" ]; then bg='set background picture of opts to file ".background:background.png"'; else bg=""; fi
+    osascript >/dev/null 2>&1 <<OSA || warn "could not lay out the .dmg window (no Finder session?); it is still usable"
+tell application "Finder"
+  tell disk "$VOLNAME"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, 800, 520}
+    set opts to the icon view options of container window
+    set arrangement of opts to not arranged
+    set icon size of opts to 96
+    set text size of opts to 13
+    $bg
+    set position of item "$B_APP_NAME.app" of container window to {150, 185}
+    set position of item "Applications" of container window to {450, 185}
+    close
+    open
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+OSA
+    sync
+    hdiutil detach -quiet "$MNT" || { sleep 3; hdiutil detach -force -quiet "$MNT"; }
+    hdiutil convert -quiet "$RW" -format UDZO -imagekey zlib-level=9 -o "$DMG_OUT"
+    rm -f "$RW"
     OUTPUTS+=("$DMG_OUT")
 fi
 

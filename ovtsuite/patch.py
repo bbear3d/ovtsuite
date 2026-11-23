@@ -123,6 +123,24 @@ class PatchEntry:
     #: a coding-variant copy: the codings that select it ("coding 150034
     #: (automatic (TC))"). Empty for a parameter every coding reads.
     coding: str = ""
+    #: picked as a whole table rather than found changed: carried with its
+    #: breakpoints, which are written on apply whether or not they differ
+    #: from the source's (see :func:`whole_entry`)
+    whole: bool = False
+    #: "" for values (the default), "relative" for a change carried as
+    #: operations on the target's own values -- see ovtsuite.patch_relative
+    mode: str = ""
+    #: the operations of a relative entry (patch_relative documents them)
+    ops: List[dict] = field(default_factory=list)
+    #: a relative entry also changes every coding-variant copy of its table
+    variants: bool = True
+    #: a relative entry changes only the copies whose coding description
+    #: contains this ("automatic (TC)", "DSG", "manual"); "" for every copy
+    only_coding: str = ""
+
+    @property
+    def relative(self) -> bool:
+        return self.mode == "relative"
 
     def title(self) -> str:
         if self.coding:
@@ -256,6 +274,52 @@ def diff_entities(primary, comparison, entities=None) -> List[PatchEntry]:
                 entry.coding = getattr(e, "coding", "") or ""
             out.append(entry)
     return out
+
+
+def whole_entry(e: Entity, patched: Optional[Entity] = None) -> PatchEntry:
+    """A table taken whole -- every cell and breakpoint of ``e`` -- whether or not it
+    differs from anything: what a patch of chosen tables carries (the parameters
+    :func:`diff_entities` finds are whole too, but only the changed ones are offered).
+
+    ``patched``: the counterpart in the binary the patch is meant for, when there is one;
+    it only fills in how much would change (``changed_cells``, ``changed_axes``,
+    ``first_change``). ``e`` supplies the values, so a patch "from A to B" is
+    ``whole_entry(b_entity, a_entity)``."""
+    variant = _is_variant(e)
+    if e.kind == "constant":
+        v = e.cell(0, 0)
+        n = 0 if patched is None or values_equal(patched.cell(0, 0), v, 1e-9) else 1
+        first = ("%s -> %s" % (_fmt(patched.cell(0, 0)), _fmt(v))) if n else "whole value"
+        return PatchEntry(name=e.name, kind="constant", rows=1, cols=1, values=[[v]],
+                          units=e.units, label=e.label, description=e.description,
+                          categories=list(e.categories), tier=e.tier,
+                          source_grade=e.source, changed_cells=None if patched is None else n,
+                          total_cells=1, first_change=first, whole=True,
+                          coding=(getattr(e, "coding", "") or "") if variant else "")
+    changed, axes, first = None, 0, "whole table"
+    if patched is not None and (patched.rows, patched.cols) == (e.rows, e.cols):
+        from .diff import axis_changes
+        pv, ev = patched.values(), e.values()
+        changed = 0
+        for r in range(e.rows):
+            for c in range(e.cols):
+                if not values_equal(pv[r][c], ev[r][c], 1e-9):
+                    changed += 1
+                    if first == "whole table":
+                        first = "[%d,%d] %s -> %s" % (r, c, _fmt(pv[r][c]), _fmt(ev[r][c]))
+        axes = len(axis_changes(patched, e))
+        if not changed and not axes:
+            first = "unchanged -- written as it is"
+    elif patched is not None:
+        first = "%dx%d -> %dx%d (structure differs)" % (
+            patched.rows, patched.cols, e.rows, e.cols)
+    return PatchEntry(name=e.name, kind=e.kind, rows=e.rows, cols=e.cols, values=e.values(),
+                      x_axis=e.x_values(), y_axis=e.y_values(), units=e.units,
+                      label=e.label, description=e.description,
+                      categories=list(e.categories), tier=e.tier, source_grade=e.source,
+                      changed_cells=changed, changed_axes=axes,
+                      total_cells=e.rows * e.cols, first_change=first, whole=True,
+                      coding=(getattr(e, "coding", "") or "") if variant else "")
 
 
 def _is_variant(e) -> bool:
@@ -773,6 +837,10 @@ class ApplyResult:
     #: ``TunerSession.save()`` like every other change-log line).
     record_id: Optional[str] = None
     conflicts: int = 0
+    #: start addresses of the tables this apply has already written -- a
+    #: second entry on the same table (a relative cap after a value entry)
+    #: is the patch's own doing, not an earlier edit it overwrites
+    touched: set = field(default_factory=set, repr=False)
 
 
 def apply_patch(patch: Patch, target, *,
@@ -827,6 +895,14 @@ def apply_patch(patch: Patch, target, *,
         for pe in patch.entries:
             if not pe.selected:
                 continue
+            if pe.relative:
+                from . import patch_relative as _rel
+                _rel.apply_entry(
+                    target, pe, res, find_entity=find_entity,
+                    variants_of=_variants, trusted=trusted,
+                    disposition=dispositions.get(pe.name, default_disposition),
+                    apply_word=APPLY)
+                continue
             te = find_entity(target, pe.name, pe.coding)
             if te is None:
                 res.skipped.append((pe.name, "not identified in this target"))
@@ -837,7 +913,8 @@ def apply_patch(patch: Patch, target, *,
                     (pe.name, "target address is %r (not established) and "
                               "was not confirmed" % te.source))
                 continue
-            conflict = bytes(target.binfile.data[te.addr:te.end]) != \
+            conflict = te.addr not in res.touched and \
+                bytes(target.binfile.data[te.addr:te.end]) != \
                 bytes(target.original[te.addr:te.end])
             if (te.rows, te.cols) != (pe.rows, pe.cols):
                 note = _resize_to(target, te, pe)
@@ -854,7 +931,8 @@ def apply_patch(patch: Patch, target, *,
                 continue
             res.conflicts += conflict
             target.edit_cells(te, cells)
-            if pe.changed_axes:
+            res.touched.add(te.addr)
+            if pe.changed_axes or pe.whole:
                 note = _apply_axes(te, pe, target)
                 if note:
                     res.warnings.append(note)

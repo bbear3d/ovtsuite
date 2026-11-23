@@ -1323,10 +1323,18 @@ class FeatureSwitchDialog(QtWidgets.QDialog):
             multi = len(self._view_copies(b)) > 1
             lines = ["%s%s" % ("%s: " % self._short(c) if multi else "", w)
                      for c, w in why.items()]
+            instead = chk.get("why_instead")
+            if instead is None and chk.get("key") == "scales":
+                instead = ("only the curve changes there",
+                           "so only the curve changes")
+            if instead is None:
+                instead = ("their top breakpoints are raised instead",
+                           "so the top breakpoints are raised instead")
             tip += "<p>%s: %s.</p>" % (
-                "Not possible for some copies (their top breakpoints are "
-                "raised instead)" if ok else "Not possible here, so the top "
-                "breakpoints are raised instead", "; ".join(lines))
+                ("Not possible for some copies (%s)" % instead[0]) if ok
+                else ("Not possible here" + (", %s" % instead[1]
+                                             if instead[1] else "")),
+                "; ".join(lines))
         self.chk.setToolTip(tip)
 
     #: widest each column but Meaning grows to its contents (pixels)

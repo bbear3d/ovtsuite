@@ -505,6 +505,29 @@ def cmd_patch_diff(args):
         entries = [e for e in entries if args.name.lower() in e.name.lower()]
     if args.tier is not None:
         entries = [e for e in entries if e.tier == args.tier]
+    for want in (getattr(args, "table", None) or []):
+        # a table taken whole, changed or not (COMPARISON's values, as the rest)
+        w = want.lower()
+        hits = [e for e in list(comparison.entities) + P._variants(comparison)
+                if (e.name or "").lower() == w] or                [e for e in list(comparison.entities) + P._variants(comparison)
+                if w in (e.name or "").lower() or w in (e.label or "").lower()]
+        if not hits:
+            print("no parameter matches --table %r" % want)
+        have = {e.name for e in entries}
+        for e in hits:
+            if e.name in have:
+                continue
+            try:
+                patched = comparison.counterpart(primary, e)
+            except Exception:                   # noqa: BLE001
+                patched = None
+            entries.append(P.whole_entry(e, patched))
+            have.add(e.name)
+    if getattr(args, "relative", None):
+        entries = _relative_entries(primary, comparison, entries, args.relative)
+    if getattr(args, "relative_pct", None):
+        entries = _relative_entries(primary, comparison, entries,
+                                    args.relative_pct, percent=True)
     blocks = []
     if args.gaps:
         for s, e in P.diff_gaps(primary, comparison):
@@ -520,6 +543,88 @@ def cmd_patch_diff(args):
     return 0
 
 
+def _relative_entries(primary, comparison, entries, patterns, percent=False):
+    """Swap each entry whose name contains one of ``patterns`` for a relative
+    entry adding the comparison's differences, folding a table's
+    coding-variant copies into one entry that reaches all of them."""
+    from . import patch as P
+    from . import patch_relative as R
+    pats = [p.lower() for p in patterns]
+    out, done = [], set()
+    for pe in entries:
+        base = pe.name.split(" (variant @", 1)[0]
+        if pe.relative or not any(p in base.lower() for p in pats):
+            out.append(pe)
+            continue
+        if base in done:
+            continue
+        ce = P.find_entity(comparison, base)
+        pe0 = P.find_entity(primary, base)
+        rel = (R.delta_entry(pe0, ce, percent=percent)
+               if (ce is not None and pe0 is not None) else None)
+        if rel is None:                 # differs only in a copy, or in shape
+            out.append(pe)
+            continue
+        rel.tier, rel.categories = pe.tier, list(pe.categories)
+        rel.source_grade = pe.source_grade
+        out.append(rel)
+        done.add(base)
+    return out
+
+
+def cmd_patch_add_op(args):
+    """Add one operation to a relative entry in a patch file, making the
+    entry (and the file) when it does not exist yet."""
+    import time
+    from . import patch as P
+    from . import patch_relative as R
+
+    def rng(text):
+        if text is None:
+            return None
+        lo, _, hi = text.partition(":")
+        return [float(lo) if lo.strip() else None,
+                float(hi) if hi.strip() else None]
+
+    op = {"op": args.op}
+    if args.curve:
+        op["curve"] = [[float(a), float(b)] for a, b in
+                       (pt.split(":") for pt in args.curve.split(","))]
+        op["along"] = args.along
+    elif args.value is not None:
+        op["value"] = args.value
+    if args.x:
+        op["x"] = rng(args.x)
+    if args.y:
+        op["y"] = rng(args.y)
+    try:
+        R.relative_entry(args.name, [op])            # validates the op
+    except R.OpError as exc:
+        print(exc)
+        return 2
+    if os.path.exists(args.patch):
+        pt = P.Patch.load(args.patch)
+    else:
+        pt = P.Patch(created=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                     source_name="(relative)", comparison_name=os.path.basename(args.patch))
+    only = args.only_coding or ""
+    for pe in pt.entries:
+        if pe.name == args.name and pe.relative and pe.only_coding == only:
+            pe.ops.append(op)
+            pe.variants = not args.no_variants
+            pe.first_change = "relative: " + R.describe(pe.ops) + (
+                " [only %s]" % only if only else "")
+            break
+    else:
+        pt.entries.append(R.relative_entry(args.name, [op],
+                                           variants=not args.no_variants,
+                                           only_coding=only))
+    pt.save(args.patch)
+    print("%s: %s%s" % (args.name, R.describe([op]),
+                        " [only %s]" % only if only else ""))
+    return 0
+
+
 def cmd_patch_inspect(args):
     from . import patch as P
     pt = P.Patch.load(args.patch)
@@ -529,6 +634,12 @@ def cmd_patch_inspect(args):
     print("%d parameter(s), %d undefined block(s)"
           % (len(pt.entries), len(pt.blocks)))
     for e in pt.entries:
+        if getattr(e, "relative", False):
+            print("  [%s] %-34s %-8s %-16s  %s"
+                  % ("x" if e.selected else " ", e.name, e.kind,
+                     "relative" + (" +variants" if e.variants else ""),
+                     e.first_change.replace("relative: ", "", 1)))
+            continue
         ch = ("structure differs" if e.changed_cells is None
               else "%d/%d cells" % (e.changed_cells, e.total_cells))
         if getattr(e, "changed_axes", 0):
@@ -927,6 +1038,8 @@ def cmd_checksum(args):
                         and cs.find_descriptors(data))
     if program_area:
         opts["program_area"] = True
+    if getattr(args, "fix_cvn", False):
+        opts["fix_cvn"] = True      # EDC17: patch the CVN to stock first
     if not cs.is_supported(data) and not program_area:
         print("checksum: %s" % registry.checksum_unsupported_text(
             ident.platform, cs, data))
@@ -1243,11 +1356,9 @@ def cmd_variants(args):
         return 0
     methods = {v.method for v in vt}
     if methods == {"array"}:
-        method = "exact pointer-array diff (full read)"
-    elif "anchor" in methods:
-        method = "active-array anchor alignment (exact) + axis fingerprint"
+        method = "exact pointer arrays"
     else:
-        method = "axis fingerprint (approximate)"
+        method = "axis fingerprint (approximate: no pointer arrays)"
     differ = [v for v in vt if v.differs]
     domains = coding_domains(vt)
     print("Secondary/variant block found.")
@@ -1256,10 +1367,6 @@ def cmd_variants(args):
     print("Coding domains present (by differing parameters):")
     for dom, n in domains.most_common():
         print("   - %s: %d" % (dom, n))
-    if method.startswith("active-array"):
-        print("   (calibration-only read: the default array is absent, so an "
-              "'other / uncategorised'\n    group on a non-P350 family may include "
-              "false pairings -- a full read confirms.)")
     print("\nDiffering variant parameters, grouped by coding domain:")
     by_dom = defaultdict(lambda: OrderedDict())
     for v in sorted(differ, key=lambda x: (param_domain(x.name), x.name)):
@@ -1352,20 +1459,33 @@ def cmd_coding(args):
     if not states:
         print("no coding constant (USAp_dCodeTbl) found in this binary.")
         return 0
-    print("Stored coding values (decoded by digit scheme:"
-          " last=transmission, 2nd-last=A/C):\n")
-    print("  %-8s %-18s %-13s %s"
-          % ("coding", "transmission", "A/C", "gears rTrans1..6"))
+    fcoded = any(c["variant"] is not None for c in states)
+    if fcoded:
+        print("Stored coding values (function-coded dataset: the coding is "
+              "variant << function bits;\ntransmission from the dataset's own "
+              "gearbox type):\n")
+    else:
+        print("Stored coding values (decoded by digit scheme:"
+              " last=transmission, 2nd-last=A/C):\n")
+    print("  %-8s %-8s %-18s %-22s %s"
+          % ("coding", "variant", "transmission", "A/C", "gears rTrans1..6"))
     for c in states:
         g = ", ".join("%.2f" % x for x in c["gears"]) if c["gears"] else "-"
-        print("  %-8d %-18s %-13s %s"
-              % (c["coding"], c["transmission"], c["ac"], g))
+        print("  %-8d %-8s %-18s %-22s %s"
+              % (c["coding"], "-" if c["variant"] is None else c["variant"],
+                 c["transmission"], c["ac"], g))
         if args.verbose:
             print("        0x%08X  value @0x%06X%s"
                   % (c["coding"], c["tbl_addr"],
                      "" if c["inv_ok"] else "  (inverse MISMATCH)"))
-    print("\n  %d coding(s) stored. Last digit: 1=5MT 2=6MT 4=auto(TC) 6=CVT"
-          " 8=DSG; 2nd-last: 3=manual A/C 7=Climatronic." % len(states))
+    if fcoded:
+        print("\n  %d coding(s) stored. The low function-code bits (A/C, "
+              "alternator, ESP, fan, vehicle speed, WIV) are\n  set by the car, "
+              "not held in the file." % len(states))
+    else:
+        print("\n  %d coding(s) stored. Last digit: 1=5MT 2=6MT 4=auto(TC) "
+              "6=CVT 8=DSG; 2nd-last: 3=manual A/C 7=Climatronic."
+              % len(states))
     return 0
 
 
@@ -1669,6 +1789,14 @@ def main(argv=None):
         if argv[0] == "--simulator":
             return gui.run_simulator()
         return gui.run_logger(argv[1:])
+    if argv and argv[0] == "--launcher":
+        # the tool picker (macOS: "OVT-Suite Tools.app"): ovtsuite/gui_toolpicker.py
+        from . import gui
+        if not gui.HAVE_QT:
+            print("PySide6 is not installed; run: pip install PySide6")
+            return 1
+        from .gui_toolpicker import run_picker
+        return run_picker()
     if argv and argv[0] == "--diag":
         # OVT Diag on its own: `ovtsuite --diag` (docs/OVT_DIAG.md)
         from . import gui
@@ -1832,6 +1960,11 @@ def main(argv=None):
     s.add_argument("--program-area", action="store_true",
                    help="ZF 6HP only: also verify/correct the program/boot-area "
                         "descriptor self-CRCs (zlib CRC-32), not just calibration")
+    s.add_argument("--fix-cvn", action="store_true",
+                   help="EDC17 only: with --fix, first patch the calibration "
+                        "verification number back to its stock value (off by "
+                        "default; refused when the file has no safe place for "
+                        "the patch)")
     s.set_defaults(fn=cmd_checksum)
 
     s = sub.add_parser("frf-info", help="identify a .frf flash-delivery container and list its blocks",
@@ -1984,12 +2117,54 @@ def main(argv=None):
     s.add_argument("--name", help="only parameters whose name contains this (case-insensitive)")
     s.add_argument("--tier", type=int, help="only parameters of this task group "
                    "(group id; `tiers` lists them)")
+    s.add_argument("--table", action="append", metavar="NAME",
+                   help="also carry this table whole -- every cell and breakpoint, "
+                        "changed or not -- with the comparison's values (the name, "
+                        "else any parameter whose name or label contains it); "
+                        "repeat for several")
     s.add_argument("--gaps", action="store_true",
                    help="also capture undefined-data byte ranges that differ "
                         "(same family/sub-family only -- address-literal)")
     s.add_argument("--min-gap", type=int, default=1,
                    help="skip a captured gap shorter than this many bytes (default 1)")
+    s.add_argument("--relative", action="append", metavar="NAME",
+                   help="carry parameters whose name contains this as the "
+                        "DIFFERENCE (added to the target's own values, only "
+                        "where it is not zero, every coding-variant copy "
+                        "included) instead of the comparison's values; "
+                        "repeat for several")
+    s.add_argument("--relative-pct", action="append", metavar="NAME",
+                   help="as --relative, but carry the change as a percentage "
+                        "of each cell's value, so it scales with a target's "
+                        "own values")
     s.set_defaults(fn=cmd_patch_diff)
+
+    s = sub.add_parser("patch-add-op",
+                       help="add an operation (add/scale/floor/cap/set) to a "
+                            "relative entry in a patch file, creating either "
+                            "as needed", parents=[_common])
+    s.add_argument("patch", help="patch file (created if missing)")
+    s.add_argument("name", help="parameter name, as `patch-inspect` lists them")
+    s.add_argument("--op", required=True,
+                   choices=["add", "scale", "floor", "cap", "set"])
+    s.add_argument("--value", type=float, help="the operand")
+    s.add_argument("--curve", metavar="A:V,A:V,...",
+                   help="an operand varying along an axis instead of --value: "
+                        "axis value:operand pairs, interpolated and held flat "
+                        "beyond the ends")
+    s.add_argument("--along", choices=["x", "y"], default="x",
+                   help="the axis --curve runs along (default x)")
+    s.add_argument("--x", metavar="LO:HI",
+                   help="only cells whose X breakpoint is in this range "
+                        "(inclusive, axis units; leave a side empty for open)")
+    s.add_argument("--y", metavar="LO:HI", help="the same for the Y axis")
+    s.add_argument("--no-variants", action="store_true",
+                   help="leave the table's coding-variant copies alone")
+    s.add_argument("--only-coding", metavar="TEXT",
+                   help="change only the copies whose coding contains this "
+                        "(e.g. 'automatic (TC)', 'DSG', 'manual'; `coding` "
+                        "lists a file's codings)")
+    s.set_defaults(fn=cmd_patch_add_op)
 
     s = sub.add_parser("patch-inspect", help="list the entries in a patch file",
                        parents=[_common])

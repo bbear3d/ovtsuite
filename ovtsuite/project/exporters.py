@@ -37,17 +37,72 @@ def _cid(project: Project, sid: str, branch: Optional[str],
 def export_raw(project: Project, sid: str, mid: str, *,
                branch: Optional[str] = None,
                checkpoint: Optional[str] = None) -> bytes:
-    data = project.member_bytes(sid, mid, branch=branch,
-                                checkpoint=_cid(project, sid, branch, checkpoint))
+    data = None
+    # an EEPROM / MPC a flash links is that companion's CURRENT head (the flash
+    # follows it); a copy of its own, kept in the flash's branches from before
+    # the split, is only history
+    m = project.set(sid).member(mid)
+    role = m.role if m is not None else mid
+    if role in ("eeprom", "mpc"):
+        from . import companions as _co
+        c = _co.links(project, sid).get(role)
+        if c is not None:
+            data = _co.head_bytes(project, c)
+    if data is None:
+        data = project.member_bytes(
+            sid, mid, branch=branch,
+            checkpoint=_cid(project, sid, branch, checkpoint))
     if data is None:
         raise ExportRefused("member %r does not exist at that point" % mid)
-    # a project that still holds an EDC16 calibration-only file (512 KB, from
-    # before imports made it the full image) exports the full 2 MB image
+    return full_flash(project, sid, mid, data)
+
+
+def full_flash(project: Project, sid: str, mid: str, data: bytes) -> bytes:
+    """``data`` of member ``mid`` as it is exported: an EDC16 calibration-only
+    flash (512 KB, from before imports made it the full image) is the full
+    2 MB image; anything else as it is."""
     if project.set(sid).platform == "edc16" and mid == "flash":
         from ..platforms import edc16 as _e16
         if _e16.is_cal_only(data):
             return _e16.pad_cal_only(data)
     return data
+
+
+def has_part(project: Project, sid: str, mid: str, *,
+             branch: Optional[str] = None) -> bool:
+    """Whether member ``mid`` of set ``sid`` can be exported (a linked
+    companion's part is held by the companion set)."""
+    try:
+        export_raw(project, sid, mid, branch=branch)
+    except (ExportRefused, KeyError):
+        return False
+    return True
+
+
+def parts(project: Project, sid: str, *, branch: Optional[str] = None):
+    """The members of set ``sid`` that can be exported raw, a linked EEPROM /
+    MPC included (its bytes are the companion's current head) even when the
+    set holds no member of that role itself."""
+    from . import companions as _co
+    from .model import Member
+    s = project.set(sid)
+    out = [m for m in s.members if has_part(project, sid, m.id, branch=branch)]
+    for role, c in _co.links(project, sid).items():
+        if not any(m.role == role for m in out) \
+                and _co.head_bytes(project, c) is not None:
+            cm = _co.main_member(c)
+            out.append(Member(id=role, role=role, name=cm.name if cm else "",
+                              platform=c.platform))
+    return out
+
+
+def _want(project: Project, sid: str, cid: str):
+    """The set's images at ``cid`` with its linked companions' current heads
+    in the EEPROM / MPC parts (a flash follows its companions)."""
+    from . import companions as _co
+    want = dict(project.state(sid, cid))
+    want.update(_co.injected(project, sid))
+    return want
 
 
 def export_pcmflash(project: Project, sid: str, *, branch: Optional[str] = None,
@@ -59,7 +114,7 @@ def export_pcmflash(project: Project, sid: str, *, branch: Optional[str] = None,
     EDC16 set that holds both flash parts, whatever it was imported from."""
     from .. import pcmflash_edc16 as _pcm
     cid = _cid(project, sid, branch, checkpoint)
-    want = project.state(sid, cid)
+    want = _want(project, sid, cid)
     flash, mpc = want.get("flash"), want.get("mpc")
     if flash is None or mpc is None:
         raise ExportRefused("a PCMFlash file needs both the external flash and "
@@ -93,7 +148,7 @@ def export_original(project: Project, sid: str, oid: str, *,
         raise KeyError(oid)
     raw = project.original_bytes(sid, oid)
     cid = _cid(project, sid, branch, checkpoint)
-    want = project.state(sid, cid)
+    want = _want(project, sid, cid)
     if o.checkpoint:
         then = project.state(sid, o.checkpoint)
         if all(then.get(m) == want.get(m) for m in o.members):
@@ -117,7 +172,14 @@ def export_original(project: Project, sid: str, oid: str, *,
             raise ExportRefused("the original PCMFlash file can no longer be "
                                 "put together -- export the parts as raw "
                                 "binaries instead")
-        return _pcm.join(lay, want["flash"], want["mpc"], want.get("eeprom"))
+        try:
+            return _pcm.join(lay, full_flash(project, sid, "flash", want["flash"]),
+                             want["mpc"], want.get("eeprom"))
+        except ValueError as ex:
+            raise ExportRefused(
+                "the original PCMFlash file can no longer be put together (%s) "
+                "-- export the parts instead (Export > Raw binary, every part, "
+                "or Export > PCMFlash file)" % ex)
     if o.format == "sgo" and s.platform == "hvac":
         # Climatronic: re-packed through hvac_image -- the flat image is based
         # at the firmware's base, and the flash loader section (declared at

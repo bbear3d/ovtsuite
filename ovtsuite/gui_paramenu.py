@@ -457,6 +457,7 @@ def build_menu(ws, item, parent=None) -> Optional[QtWidgets.QMenu]:
     ro = _view_only(ws)
     if e is not None:
         _entity_actions(ws, m, e, ro)
+        _patch_action(ws, m, e)
     elif item is not None:
         m.addAction("Expand all", lambda: _set_expanded(item, True))
         m.addAction("Collapse all", lambda: _set_expanded(item, False))
@@ -483,6 +484,32 @@ def build_menu(ws, item, parent=None) -> Optional[QtWidgets.QMenu]:
         pass
     m.setToolTipsVisible(True)
     return m
+
+
+def selected_entities(ws, e=None):
+    """The parameters selected in the tree (Ctrl/Shift-click), or ``e`` alone when the
+    row clicked is not among them."""
+    out = []
+    for it in ws.tree.selectedItems():
+        x = entity_of(it)
+        if x is not None:
+            out.append(x)
+    if e is not None and not any(x is e for x in out):
+        return [e]
+    return out
+
+
+def _patch_action(ws, m, e):
+    """Create patch from the selected tables...: they go in whole."""
+    sel = selected_entities(ws, e)
+    if not sel:
+        return
+    what = "this table" if len(sel) == 1 else "%d selected tables" % len(sel)
+    a = m.addAction("Create patch from %s..." % what,
+                    lambda: ws.open_patch_from_tables(sel))
+    a.setToolTip("A patch carrying %s whole -- every cell and breakpoint, "
+                 "changed or not -- with this file's values. Ctrl- or "
+                 "Shift-click parameters to select several." % what)
 
 
 def _entity_actions(ws, m, e, ro):

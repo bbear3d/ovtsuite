@@ -452,6 +452,23 @@ def test_chart_paints_a_long_log(app):
     c.render(img)                           # the bisect path; must not raise
 
 
+def test_chart_decimates_and_repaints_at_most_every_150_ms(app):
+    from PySide6 import QtGui
+    c = GL.StripChart()
+    c.resize(300, 200)
+    n = 20000                               # far more samples than pixels, window = all
+    c.set_data([i * 0.2 for i in range(n)], [[float(i % 50) for i in range(n)],
+                                              [None if i % 7 == 0 else 1.0 for i in range(n)]],
+               ["a", "b"])
+    img = QtGui.QImage(300, 200, QtGui.QImage.Format_ARGB32)
+    c.render(img)                           # the decimated path; must not raise
+    # rows arriving faster than the repaint interval arm one timer, not one repaint each
+    for i in range(50):
+        c.append(n * 0.2 + i, [1.0, 2.0])
+    assert c._repaint_timer.isActive()
+    assert len(c.times) == n + 50
+
+
 # ----------------------------------------------- OVT Logger: keep off-thread
 def test_the_standalone_keep_runs_off_the_gui_thread_one_at_a_time(app, tmp_path, monkeypatch):
     from ovtsuite import gui_ovt_file as OF

@@ -4,3 +4,6 @@
 packaging/linux/Dockerfile text eol=lf
 # Definition packs are generated and byte-compared (tools/build_diag_defs.py --check): LF everywhere.
 *.yaml text eol=lf
+
+# Normalise line endings: a CRLF checkout (Windows, Drive sync) is not a change.
+* text=auto

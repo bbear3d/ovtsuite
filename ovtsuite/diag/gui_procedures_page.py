@@ -1555,7 +1555,9 @@ class ProceduresPage(QtWidgets.QWidget):
                     self.alt_btn.setText("No")
                 enabled, alt = True, True
             elif m in ("live", "wait"):
-                act, text, enabled = "skip", "Skip the rest of this step", True
+                act, enabled = "skip", True
+                text = ("Finish" if m == "live" and getattr(self._prompt, "open_ended", False)
+                        else "Skip the rest of this step")
         else:
             act = "again" if self._state == "done" else "run"
             text = "Run again" if self._state == "done" else "Run"

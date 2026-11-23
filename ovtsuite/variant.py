@@ -13,35 +13,41 @@ two versions -- including the gear ratios (``Gearbx_rTrans1..6_C``) and the
 speed/rpm detection bands (``Gearbx_rVn*_C``), whose stock values differ
 between the copies.
 
-Three ways to find them, tried in order:
+Two ways to find them:
 
-1. **Pointer-array diff (exact, full reads).** A ``0xCAFEAFFE`` descriptor at
-   ~0x180040 references a *default* pointer array (all-primary) and an *active*
-   array (@0x180084). Where ``active[i]`` is a secondary address and its
-   default the primary, that is an exact (primary, secondary) pair -- including
-   single-value constants. Needs the program area, so it only fires on full
-   reads that contain the default array.
+1. **Pointer arrays (exact).** A ``0xCAFEAFFE`` descriptor at ~0x180040
+   references a *default* pointer array (all-primary: the start of each of
+   ~370-400 calibration blocks, "slots") and an *active* array (@0x180084),
+   which holds one run of slots per coding state. Where a state's
+   ``active[i]`` is a secondary address and its default the primary, slot
+   ``i`` is switched under that coding: its primary block runs to the next
+   slot's start and its relocated copy is exactly as long, so every catalog
+   parameter inside is paired -- including single-value constants like the gear
+   ratios. The default array lives in the program area, so a full read has it.
+   A calibration-only (OBD) read has the program area blank, but the active
+   array is the default one with each state's switched slots redirected, so the
+   default array is *rebuilt* from it: the slots a state leaves in the main
+   block name their starts, and a slot every state switches is placed by the
+   packing of the relocated copies (back to back, in slot order, each at its
+   primary's offset modulo 4; the last block of a run ends where the next
+   unswitched slot starts). Nothing is matched by byte values, so a block whose
+   values were retuned is found as surely as an untouched one, and the rebuilt
+   array is the real one on every full read in the corpus. Both reads then go
+   through the same code.
 
-2. **Active-array anchor alignment (exact, calibration-only reads).** On an
-   OBD/calibration read the program area (and thus the default array) is blank,
-   but the *active* array @0x180084 is present: a table of primary addresses in
-   sorted order, with the switched entries redirected into the secondary block.
-   Each redirected entry's secondary target is a verbatim relocated copy of a
-   contiguous main-block range; aligning that copy back onto the main block by
-   byte match recovers the exact primary base, and every catalog parameter in
-   the aligned span -- **including value constants like the gear ratios** -- is
-   paired to its secondary copy.
-
-3. **Axis fingerprint (fallback).** Maps and curves are additionally paired to a
-   main-block twin by identical axis bytes; this catches structured tables even
-   where the active array is unavailable, but cannot see value constants.
+2. **Axis fingerprint (fallback).** Only where there are no pointer arrays at
+   all: maps and curves are paired to a main-block twin by identical axis
+   bytes. Approximate, and it cannot see value constants.
 
 ``coding_domain`` inspects the paired names and reports the coding condition
-(e.g. "gearbox coding (automatic vs manual)").
+(e.g. "gearbox coding (automatic vs manual)"). How a coding value itself reads
+-- a decimal number on P350, a variant above function-code bits on P447 -- is
+:func:`describe_codings`.
 """
 
 import bisect
 import dataclasses
+import operator
 import os
 import re
 from collections import defaultdict
@@ -52,9 +58,12 @@ from .structure import scan
 
 _SEARCH_LO = 0x182000
 _CAFEAFFE = b"\xCA\xFE\xAF\xFE"
-# Minimum number of parameters that must differ for an array-paired region to
-# count as a real coding block (fewer is incidental relocation noise).
-_MIN_CODING_DIFFERS = 3
+# Window for the last relocated block of a calibration-only read: nothing
+# follows it to measure its length by.
+_LAST_BLOCK_MAX = 0x400
+# How far past the previous unswitched slot's start the byte-match fallback
+# looks for a block's primary base.
+_ANCHOR_SPAN = 0x4000
 
 # Family -> reference A2L (header-address -> name), for naming primaries.
 _A2L = {
@@ -105,7 +114,7 @@ class VariantTable:
     sec_z: int           # secondary data address (what you edit)
     main_z: int          # primary data address
     differs: bool
-    method: str          # 'array' (exact) | 'anchor' (exact) | 'axis' (fallback)
+    method: str          # 'array' (exact, from the pointer arrays) | 'axis' (fallback)
     ambiguous: bool = False
 
     @property
@@ -174,42 +183,21 @@ def find_variant_tables(session, min_structs: int = 20) -> List[VariantTable]:
 
     default, active = _locate_arrays(data)
 
-    # ---- method 1: exact pointer-array diff (needs the default array) --------
-    # The default/active pointer arrays give the *exact* set of switched
-    # (primary -> secondary) blocks. Each switched block is a verbatim
+    # ---- pointer arrays: the exact (primary -> relocated) blocks ------------
+    # The arrays give the *exact* set of switched blocks, on a full read from
+    # its default array and on a calibration read from the default array
+    # rebuilt out of the active one (_switched_blocks). Each is a verbatim
     # relocation of a contiguous main-block span, so every catalog parameter
     # inside that span -- including value constants like the gear ratios -- has
     # a secondary copy at the same offset. We therefore *project* each catalog
-    # entity within a paired span to its secondary twin, instead of emitting one
+    # entity within a block to its secondary twin, instead of emitting one
     # coarse table per pointer (which would hide the individual constants inside
-    # a switched structure). Only the exact array pairs drive this, so no
+    # a switched structure). Nothing is matched by bytes, so a block whose
+    # values were retuned is found as surely as an untouched one, and no
     # spurious variant tables appear on binaries that have no real coding block.
-    if default is not None and active is not None:
-        pairs = []
-        n = 0
-        while (default + n * 4 + 4 <= len(data)
-               and active + n * 4 + 4 <= len(data)):
-            base = _u32(data, default + n * 4)
-            if not (0x1000 <= base < 0x200000):
-                break
-            act = _u32(data, active + n * 4)
-            n += 1
-            if act == base:
-                continue
-            if not (_SEARCH_LO <= act < main_lo and main_lo <= base < main_hi):
-                continue
-            pairs.append((base, act))
-
-        # block length of a switched span = gap to the next secondary target
-        acts = sorted(a for _, a in pairs)
-
-        def _blk_len(act):
-            i = bisect.bisect_right(acts, act)
-            nxt = acts[i] if i < len(acts) else None
-            if nxt is not None and 0 < nxt - act <= 0x400:
-                return nxt - act
-            return 0x40
-
+    blocks = (_switched_blocks(data, main_lo, main_hi, default, active)
+              if active is not None else None)
+    if blocks is not None:
         sec_structs = []
         for a, b in find_secondary_regions(data, main_lo):
             sec_structs += scan(data, a, b)
@@ -219,8 +207,7 @@ def find_variant_tables(session, min_structs: int = 20) -> List[VariantTable]:
 
         out = []
         seen = set()
-        for base, act in pairs:
-            blk = _blk_len(act)
+        for base, act, blk in blocks:
             lo_i = bisect.bisect_left(kb_addrs, base)
             hi_i = bisect.bisect_left(kb_addrs, base + blk)
             projected = False
@@ -262,30 +249,17 @@ def find_variant_tables(session, min_structs: int = 20) -> List[VariantTable]:
                 sec_z=sec_z, main_z=main_z, differs=differs, method="array"))
         out = _drop_cross_block(session, data, main_lo, main_hi, active, out)
         out.sort(key=lambda v: v.sec_z)
-        # A real coding block switches many parameters at once; a lone differing
-        # table (seen on binaries with no coding variant, where the descriptor
-        # points at incidental relocated data) is noise, so require several.
-        if sum(1 for v in out if v.differs) < _MIN_CODING_DIFFERS:
-            return []
-        return out
+        # A real coding block carries at least one parameter that actually takes
+        # a different value between codings (a byte-identical set is just the
+        # same data relocated, not a coding alternative). Small real blocks --
+        # e.g. the 3-parameter A/C-type coding on some datasets -- are kept.
+        return out if any(v.differs for v in out) else []
 
-    # ---- calibration-only read: anchor alignment (exact) + axis (fallback) ---
-    anchor = _anchor_value_variants(session, data, main_lo, main_hi, active)
+    # ---- no usable pointer arrays: axis fingerprint (approximate) -----------
     axis = _axis_variants(data, main_lo, main_structs, name_by_z, a2l,
                           min_structs)
-    # One entry per COPY: a table relocated by three coding states has three
-    # copies, so de-duplicating on the main table dropped the other states'.
-    seen = {v.sec_z for v in anchor}
-    merged = list(anchor) + [v for v in axis if v.sec_z not in seen]
-    merged = _check_against_blocks(session, data, main_lo, main_hi, active,
-                                   merged, main_structs, name_by_z, a2l)
-    merged = _drop_cross_block(session, data, main_lo, main_hi, active, merged)
-    merged.sort(key=lambda v: v.sec_z)
-    # A real coding block carries at least one parameter that actually takes a
-    # different value between codings (a byte-identical set is just the same
-    # data relocated, not a coding alternative). Small real blocks -- e.g. the
-    # 3-parameter A/C-type coding on some datasets -- are kept.
-    return merged if any(v.differs for v in merged) else []
+    axis.sort(key=lambda v: v.sec_z)
+    return axis if any(v.differs for v in axis) else []
 
 
 def _drop_cross_block(session, data, main_lo, main_hi, active, found):
@@ -312,130 +286,27 @@ def _drop_cross_block(session, data, main_lo, main_hi, active, found):
     return out
 
 
-def _check_against_blocks(session, data, main_lo, main_hi, active, found,
-                          main_structs, name_by_z, a2l):
-    """Hold every found copy to the coding pointer array.
-
-    Each secondary pointer in the active array starts a relocated block, and
-    the block is a verbatim copy of the main span its slot points at in a
-    state that keeps the main block. So a copy at ``sec`` in the block at
-    ``P`` IS the main table at ``M + (sec - P)``. On 038906016Q that held for
-    all 635 copies where a state keeps the slot in main.
-
-    Where every state relocates the slot there is no ``M``; the block's
-    offset is then the one most of its copies agree on (a verbatim copy has
-    one offset for all of them).
-
-    A copy found at the wrong main table is renamed to the right one when a
-    main table starts there, and dropped when none does: an anchor overrun
-    on 038906016Q put an "AirCtl_facMaxDevCor_MAP" copy inside the next
-    state's AirCtl block, overlapping its ATCor maps.
-    """
-    if active is None or not found:
-        return found
-    states = _active_states(data, active, main_lo, main_hi)
-
-    def in_main(v):
-        return main_lo <= v < main_hi
-
-    base = {}
-    for st in states:
-        for k, x in enumerate(st):
-            if not in_main(x) and x not in base:
-                kept = [t[k] for t in states if k < len(t) and in_main(t[k])]
-                base[x] = kept[0] if kept else None
-    starts = sorted(base)
-    if not starts:
-        return found
-
-    def block_of(v):
-        j = bisect.bisect_right(starts, v.sec_z) - 1
-        return starts[j] if j >= 0 else None
-
-    # the agreed offset of blocks no state keeps in main
-    from collections import Counter
-    offs = {}
-    for p in starts:
-        if base[p] is None:
-            c = Counter(v.sec_z - v.main_z for v in found
-                        if block_of(v) == p and not v.ambiguous)
-            if c:
-                (d, n), = c.most_common(1)
-                if n >= 2 or len(c) == 1:
-                    offs[p] = d
-
-    by_z = {e.addr: e for e in session.entities}
-    struct_z = {f.z_addr: f for f in main_structs}
-    # A "table" that starts inside a known table's data is a scan artefact
-    # (038906016Q: an axis match at 0x1D25FA, inside
-    # Gearbx_dtrqRmpSlpDwnINC_C), not a copy of anything.
-    spans = sorted((e.addr, e.addr + e.n_cells * e.step) for e in by_z.values())
-    starts_e = [a for a, _b in spans]
-
-    def inside_other(z):
-        if z in by_z:
-            return False
-        j = bisect.bisect_right(starts_e, z) - 1
-        return j >= 0 and z < spans[j][1]
-
-    out = []
-    for v in found:
-        if inside_other(v.main_z):
-            continue
-        p = block_of(v)
-        if p is None:
-            out.append(v)
-            continue
-        if base[p] is not None:
-            want = base[p] + (v.sec_z - p)
-        elif p in offs:
-            want = v.sec_z - offs[p]
-        else:
-            out.append(v)
-            continue
-        if want == v.main_z:
-            if v.ambiguous:
-                v = dataclasses.replace(v, ambiguous=False)
-            out.append(v)
-            continue
-        e = by_z.get(want)
-        f = struct_z.get(want)
-        if e is None and f is None:
-            continue                    # nothing starts there: not a copy
-        if e is not None:
-            name, kind, rows, cols = e.name, e.kind, e.rows, e.cols
-            span = e.n_cells * e.step
-            kind = "value" if kind in ("constant", "indexed") else kind
-        else:
-            name = name_by_z.get(want) or a2l.get(f.addr) or "@0x%X" % want
-            kind, rows, cols = f.kind, f.rows, f.cols
-            span = f.n_cells * 2
-        differs = data[want:want + span] != data[v.sec_z:v.sec_z + span]
-        out.append(VariantTable(
-            name=name, kind=kind, rows=rows, cols=cols, sec_z=v.sec_z,
-            main_z=want, differs=differs, method=v.method))
-    return out
-
-
-# ---- method 2: active-array anchor alignment -----------------------------
+# ---- placing the relocated blocks from the arrays alone --------------------
 
 def _anchor(data, sec, lo, hi, win=0x40, thresh=0.6):
     """Best main-block base for the secondary copy at ``sec``, found by byte
     match over the sorted-neighbour window [lo, hi]. The switched copy is a
     verbatim relocation of a contiguous main range, so most bytes (all the
     untuned ones plus the structural header) match at the true base. Returns
-    (base, score) or (None, 0) if nothing clears the threshold."""
+    (base, score) or (None, 0) if nothing clears the threshold.
+
+    A copy sits at the same offset modulo 4 as the block it copies (the
+    relocation keeps the alignment; true of every redirected block on every
+    dataset checked), so only such bases are candidates. Without that, a block
+    of repeated 16-bit values also matches itself two bytes off."""
     n = len(data)
     lo2 = max(0, lo - 16)
-    hi2 = min(hi, lo + 0x400) + 16
+    hi2 = min(hi, lo + _ANCHOR_SPAN) + 16
     hi2 = min(hi2, n - win)
+    ref = data[sec:sec + win]
     scores = []
-    for p in range(lo2, hi2):
-        s = 0
-        for k in range(win):
-            if data[sec + k] == data[p + k]:
-                s += 1
-        scores.append((s, p))
+    for p in range(lo2 + (sec - lo2) % 4, hi2, 4):
+        scores.append((sum(map(operator.eq, ref, data[p:p + win])), p))
     if not scores:
         return None, 0
     best, best_p = max(scores)
@@ -451,85 +322,209 @@ def _anchor(data, sec, lo, hi, win=0x40, thresh=0.6):
     return None, 0
 
 
-def _anchor_value_variants(session, data, main_lo, main_hi, active):
-    """Pair switched parameters -- including value constants -- via the active
-    redirect array, on calibration-only reads where the default array is blank.
-    Empty unless a real ``0xCAFEAFFE`` active array with secondary redirects is
-    present."""
-    if active is None:
-        return []
-    sec_lo, sec_hi = _SEARCH_LO, main_lo
+def _populated_len(data, v, limit):
+    """Bytes of data at ``v`` before the blank (0xFF) fill that follows the
+    last packed copy: that copy's length, which no later copy measures."""
+    q = data.find(b"\xff" * 0x100, v, limit)
+    q = limit if q < 0 else q
+    while q > v and data[q - 1] == 0xFF:
+        q -= 1
+    return q - v
 
+
+def _structural_blocks(states, sec_starts, in_main, in_sec, tail=0):
+    """``{secondary start: (primary base, length)}`` for the relocated blocks
+    whose primary base follows from the pointer arrays alone -- no byte match,
+    so a block whose values were all retuned is placed as surely as an
+    untouched one.
+
+    In a state, the slots between two unswitched ones tile the main block
+    exactly, so a run of switched slots ends where the next unswitched slot
+    starts. The copies are packed in slot order, so a run's blocks lie back to
+    back (each is as long as the step to the next) and only the run's last
+    block needs measuring: by the gap to the next packed copy, which is the
+    block's length or two bytes more (padding that keeps a copy at its
+    primary's offset modulo 4 -- the one of the two lengths that keeps it is
+    the length). The last packed copy of all has no next copy: it is as long
+    as the data that follows it is populated (``tail``; a copy that ends in
+    blank bytes may be up to three longer, which the same alignment decides).
+    Checked against the default array on every full read in the corpus: every
+    block derived this way is exact, length included."""
+    def lengths(v):
+        """The lengths the block at ``v`` can have, most likely first."""
+        j = bisect.bisect_right(sec_starts, v)
+        if j < len(sec_starts):
+            g = sec_starts[j] - v
+            return (g, g - 2)
+        if tail > 0 and v == sec_starts[-1]:
+            return tuple(tail + d for d in range(4))
+        return ()
+
+    out = {}
+    for st in states:
+        n = len(st)
+        i = 0
+        while i < n:
+            if not in_sec(st[i]):
+                i += 1
+                continue
+            j = i
+            while j + 1 < n and in_sec(st[j + 1]):
+                j += 1
+            lo = st[i - 1] if i > 0 and in_main(st[i - 1]) else None
+            hi = st[j + 1] if j + 1 < n and in_main(st[j + 1]) else None
+            if hi is not None:
+                end = hi
+                run = []
+                for k in range(j, i - 1, -1):
+                    ln = next((x for x in lengths(st[k])
+                               if x > 0 and (end - x - st[k]) % 4 == 0), None)
+                    if ln is None:
+                        run = [] if k == j else run
+                        break
+                    end -= ln
+                    run.append((st[k], end, ln))
+                else:
+                    if lo is not None and end <= lo:
+                        run = []            # does not fit between its neighbours
+                for v, b, x in run:
+                    out.setdefault(v, (b, x))
+            i = j + 1
+    return out
+
+
+def _rebuild_slots(data, states, main_lo, main_hi):
+    """The default array a calibration read lacks, rebuilt from the active one.
+
+    The active array is the default array with each coding state's switched
+    slots pointed into the relocated region, so a slot a state leaves in the
+    main block names its start there. A slot every state switches is placed by
+    the packing (:func:`_structural_blocks`), or failing that by byte match
+    between its known neighbours. Returns ``(slots, lens)``: the slot starts
+    (None where one could not be placed) and each relocated block's length."""
     def in_main(v):
         return main_lo <= v < main_hi
 
     def in_sec(v):
-        return sec_lo <= v < sec_hi
+        return _SEARCH_LO <= v < main_lo
 
-    # read the (possibly concatenated) sorted address arrays that follow
-    entries = []
-    o = active
-    while o + 4 <= len(data):
-        v = _u32(data, o)
-        if in_main(v) or in_sec(v):
-            entries.append(v)
-            o += 4
-        else:
-            break
-    n = len(entries)
-    if n < 50:
-        return []
+    n = len(states[0])
+    slots = [None] * n
+    for st in states:
+        for i, v in enumerate(st[:n]):
+            if in_main(v) and slots[i] is None:
+                slots[i] = v
+    sec_starts = sorted({x for st in states for x in st if in_sec(x)})
+    tail = (_populated_len(data, sec_starts[-1], main_lo)
+            if sec_starts else 0)
+    placed = _structural_blocks(states, sec_starts, in_main, in_sec, tail)
+    lens = {}
+    for st in states:
+        for i, v in enumerate(st[:n]):
+            if in_sec(v) and v in placed:
+                base, ln = placed[v]
+                if slots[i] is None:
+                    slots[i] = base
+                if slots[i] == base:            # a state that keeps the slot
+                    lens[v] = ln                # in main must agree
+    # what the packing cannot place: byte match between the known neighbours
+    for st in states:
+        for i, v in enumerate(st[:n]):
+            if not in_sec(v) or slots[i] is not None:
+                continue
+            lo = next((slots[k] for k in range(i - 1, -1, -1)
+                       if slots[k] is not None), None)
+            hi = next((slots[k] for k in range(i + 1, n)
+                       if slots[k] is not None), None)
+            if lo is None or hi is None or not lo < hi:
+                continue
+            base, _score = _anchor(data, v, lo, hi)
+            if base is None:
+                continue
+            slots[i] = base
+            j = bisect.bisect_right(sec_starts, v)
+            lens[v] = (min(sec_starts[j] - v, hi - base)
+                       if j < len(sec_starts)
+                       else min(hi - base, _LAST_BLOCK_MAX))
+    return slots, lens
 
-    by_z = {e.addr: e for e in session.entities}
-    kb_addrs = sorted(by_z)
 
+def _switched_blocks(data, main_lo, main_hi, default, active):
+    """Every block some coding state relocates, as ``(primary start, relocated
+    start, length)`` -- or None when the arrays give no layout.
+
+    One layout for every read. A full read has the default array, whose
+    consecutive entries are the slot starts. A calibration read lacks it (the
+    program area is blank), so it is rebuilt from the active array
+    (:func:`_rebuild_slots`) and the same blocks come out of it: checked
+    against the default array on every full read in the corpus, every block's
+    start and length are exact."""
+    def in_main(v):
+        return main_lo <= v < main_hi
+
+    def in_sec(v):
+        return _SEARCH_LO <= v < main_lo
+
+    states = _active_states(data, active, main_lo, main_hi)
+    lens = {}
+    if default is not None:
+        slots = []                      # the default (all-primary) slot starts
+        while (default + len(slots) * 4 + 4 <= len(data)
+               and active + len(slots) * 4 + 4 <= len(data)):
+            base = _u32(data, default + len(slots) * 4)
+            if not (0x1000 <= base < 0x200000):
+                break
+            slots.append(base)
+        n = len(slots)
+        # Every coding state of the active array redirects its own slots, so
+        # all of them are read (not only the first). A state's slot count must
+        # match the default array's; if the parse does not agree, only the
+        # first state -- read straight from the array -- is used.
+        if not states or len(states[0]) != n:
+            states = [[_u32(data, active + k * 4) for k in range(n)]]
+    else:
+        if sum(len(st) for st in states) < 50:
+            return None
+        slots, lens = _rebuild_slots(data, states, main_lo, main_hi)
+        n = len(slots)
+
+    pairs = []                          # (slot index, primary start, secondary)
+    seen_pair = set()
+    for st in states:
+        for i, act in enumerate(st[:n]):
+            base = slots[i]
+            if base is None or act == base or (base, act) in seen_pair:
+                continue
+            if not (in_sec(act) and in_main(base)):
+                continue
+            seen_pair.add((base, act))
+            pairs.append((i, base, act))
+
+    # The primary block a slot redirects runs to the next slot's start, and
+    # its relocated copy is exactly as long. The packed copies of different
+    # blocks cannot overlap, so the gap to the next copy bounds it too. A slot
+    # with no next start (the array's last) takes its length from the packing;
+    # failing that only the table at its own start is taken, never a guessed
+    # window of the neighbouring data.
+    acts = sorted({a for _i, _b, a in pairs})
     out = []
-    seen = set()
-    for idx in range(n):
-        v = entries[idx]
-        if not in_sec(v):
-            continue
-        # sorted-neighbour primaries bracket the switched slot's primary
-        lo = next((entries[j] for j in range(idx - 1, -1, -1)
-                   if in_main(entries[j])), None)
-        hi = next((entries[j] for j in range(idx + 1, n)
-                   if in_main(entries[j])), None)
-        if lo is None or hi is None or not (lo < hi):
-            continue
-        base, score = _anchor(data, v, lo, hi)
-        if base is None:
-            continue
-        # block length: contiguous copies keep layout, so the gap to the next
-        # redirected target is the block's byte length
-        nxt = next((entries[j] for j in range(idx + 1, n)
-                    if in_sec(entries[j])), None)
-        if nxt is not None and 0 < nxt - v <= 0x400:
-            blk_len = nxt - v
-        else:
-            blk_len = min(hi - base, 0x400)
-        blk_len = max(blk_len, 2)
-        # project every catalog parameter that lands in the aligned span
-        l = bisect.bisect_left(kb_addrs, base)
-        r = bisect.bisect_left(kb_addrs, base + blk_len)
-        for a in kb_addrs[l:r]:
-            e = by_z[a]
-            sec_z = v + (a - base)
-            span = e.n_cells * e.step
-            if sec_z + span > len(data) or not in_sec(sec_z):
-                continue
-            key = (a, sec_z)
-            if key in seen:
-                continue
-            seen.add(key)
-            differs = (data[a:a + span] != data[sec_z:sec_z + span])
-            kind = "value" if e.kind in ("constant", "indexed") else e.kind
-            out.append(VariantTable(
-                name=e.name, kind=kind, rows=e.rows, cols=e.cols,
-                sec_z=sec_z, main_z=a, differs=differs, method="anchor"))
+    for i, base, act in pairs:
+        ln = None
+        if i + 1 < n and slots[i + 1] is not None and slots[i + 1] > base:
+            ln = slots[i + 1] - base
+        elif act in lens:
+            ln = lens[act]
+        j = bisect.bisect_right(acts, act)
+        gap = acts[j] - act if j < len(acts) else None
+        if ln is None or ln <= 0:
+            ln = 1
+        elif gap:
+            ln = min(ln, gap)
+        out.append((base, act, ln))
     return out
 
 
-# ---- method 3: axis fingerprint (fallback) -------------------------------
+# ---- axis fingerprint (fallback when there are no pointer arrays) -------
 
 def _axis_variants(data, main_lo, main_structs, name_by_z, a2l, min_structs):
     sec_structs = []
@@ -641,12 +636,32 @@ def has_secondary_block(session, min_structs: int = 20) -> bool:
 
 # ---- stored coding values (coding-acceptance table + inverses) -----------
 
-# Coding digit scheme (VAG EDC16, confirmed against VCDS on these datasets):
-# the last decimal digit is the transmission, the second-to-last is the A/C
-# system. Higher digits encode further options (market/engine/etc.).
+# How a coding value reads depends on the dataset. The A2L names the table
+# ``USAp_dCodeTbl_C`` "Identifier dieser Datensatzvariante" -- the identifier
+# of the dataset variant -- and gives ``USAp_numFuncCodeBits_C``, the number of
+# low bits that carry the *function code* (A/C, alternator, ESP, fan, vehicle
+# speed, WIV; their positions are ``UAcc_*CodePos_C``).
+#
+# * P350 and the other datasets with no function bits (``numFuncCodeBits`` 0)
+#   hold the coding as a plain decimal number, and VAG's digit scheme applies
+#   (confirmed against VCDS): the last digit is the transmission, the
+#   second-to-last the A/C system. Higher digits encode further options.
+# * P447 (``numFuncCodeBits`` 18) holds ``variant << 18`` -- the function
+#   bits, which a car's EEPROM supplies, are zero in the dataset -- so the
+#   variant number is the value shifted down, and no decimal digit means
+#   anything. Reading its digits as the P350 scheme gets the transmission
+#   backwards (variant 3, 786432, is the automatic; 524288 the manual).
+#
+# Either way the dataset states the transmission itself: ``Gearbx_swtTypeVal_C``
+# ("Getriebetyp"), switched with the coding like every other variant
+# parameter. That is what a transmission is read from; the P350 digit scheme
+# only adds the detail it carries (5- or 6-speed, torque converter or DSG).
 _TX = {"1": "5-speed manual", "2": "6-speed manual", "4": "automatic (TC)",
        "6": "CVT", "8": "DSG"}
 _AC = {"3": "manual A/C", "7": "Climatronic"}
+# Gearbx_swtTypeVal_C, from the A2L
+_TYPE_NAMES = {0: "manual", 1: "automatic", 2: "automatic (shift)",
+               3: "CVT", 4: "automatic manual"}
 
 
 def _u16(d, o):
@@ -654,12 +669,19 @@ def _u16(d, o):
 
 
 def decode_coding(value):
-    """(transmission, a/c) implied by a coding value's last two decimal digits,
-    or (None, None) for the unknown parts."""
+    """(transmission, a/c) implied by a coding value's last two decimal digits
+    -- the P350-style scheme, meaningful only where the dataset has no function
+    code bits (see :func:`describe_codings`, which knows which applies) -- or
+    (None, None) for the unknown parts."""
     s = "%d" % value
     d0 = s[-1]
     d1 = s[-2] if len(s) >= 2 else "0"
     return _TX.get(d0), _AC.get(d1)
+
+
+def _is_automatic(label):
+    return bool(label) and (label.startswith("automatic")
+                            or label in ("DSG", "CVT"))
 
 
 def _coding_pairs(data):
@@ -667,7 +689,11 @@ def _coding_pairs(data):
     Codings are held as a 32-bit value immediately preceded by its bitwise
     complement (integrity twin); such adjacency is astronomically unlikely by
     chance, so the pair itself is the signature. Returns [(tbl_addr, value)],
-    de-duplicated by value, lowest address kept."""
+    de-duplicated by value, lowest address kept.
+
+    A scan, and so limited to values below 0x100000 (a wider window lets
+    chance pairs in): :func:`stored_codings` is what finds every coding,
+    including the larger ones function-coded datasets hold."""
     out = {}
     o = 0x180000
     n = len(data)
@@ -679,99 +705,6 @@ def _coding_pairs(data):
             out.setdefault(tbl, o + 4)
         o += 2
     return sorted(((a, v) for v, a in out.items()), key=lambda r: r[1])
-
-
-def _gearset_by_coding(session):
-    """{coding_value: (rTrans1..6, primary_gears)} for codings that a gearbox
-    pointer-array state selects -- lets a coding be tied to the gears it picks."""
-    data = bytes(session.binfile.data)
-    main_lo, main_hi = session.region
-    by = {e.name: e for e in session.entities}
-    tbl_e = by.get("USAp_dCodeTbl_C")
-    gear_e = by.get("Gearbx_rTrans1_C")
-    _, active = _locate_arrays(data)
-    if tbl_e is None or gear_e is None or active is None:
-        return {}
-    tbl_p, gear_p = tbl_e.addr, gear_e.addr
-
-    def in_main(v):
-        return main_lo <= v < main_hi
-
-    def in_sec(v):
-        return _SEARCH_LO <= v < main_lo
-
-    entries = []
-    o = active
-    while o + 4 <= len(data):
-        v = _u32(data, o)
-        if in_main(v) or in_sec(v):
-            entries.append(v)
-            o += 4
-        else:
-            break
-    resets = [0]
-    last = 0
-    for i, v in enumerate(entries):
-        if in_main(v):
-            if v < last - 0x1000:
-                resets.append(i)
-            last = v
-    if len(resets) < 2:
-        return {}
-    stride = resets[1]
-    nstates = len(entries) // stride
-
-    def slot_for(primary):
-        for i in range(stride):
-            v = entries[i]
-            if v == primary:
-                return i
-            if in_sec(v):
-                lo = next((entries[j] for j in range(i - 1, -1, -1)
-                           if in_main(entries[j])), 0)
-                hi = next((entries[j] for j in range(i + 1, stride)
-                           if in_main(entries[j])), 0)
-                if lo <= primary < hi:
-                    return i
-        return None
-
-    ic = slot_for(tbl_p)
-    ig = slot_for(gear_p)
-    if ic is None or ig is None:
-        return {}
-    gbase = next((_u32(data, active + kk * stride * 4 + 4 * ig)
-                  for kk in range(nstates)
-                  if in_main(_u32(data, active + kk * stride * 4 + 4 * ig))), None)
-
-    def read_code(ptr):
-        v = _u32(data, ptr)
-        nxt = _u32(data, ptr + 4)
-        prv = _u32(data, ptr - 4)
-        if ((v ^ nxt) & 0xFFFFFFFF) == 0xFFFFFFFF:
-            return min((v, nxt))
-        if ((v ^ prv) & 0xFFFFFFFF) == 0xFFFFFFFF:
-            return min((v, prv))
-        return v
-
-    out = {}
-    # base coding (main-block value) selects the primary gearset
-    base_code = read_code(tbl_p)
-    out[base_code] = ([round(_u16(data, gear_p + 2 * j) / 100.0, 2)
-                       for j in range(6)], True)
-    for k in range(nstates):
-        ab = active + k * stride * 4
-        code = read_code(_u32(data, ab + 4 * ic))
-        gp = _u32(data, ab + 4 * ig)
-        if in_main(gp):
-            gz, prim = gear_p, True
-        elif in_sec(gp) and gbase is not None:
-            gz, prim = gp + (gear_p - gbase), False
-        else:
-            gz, prim = None, True
-        gears = [round(_u16(data, gz + 2 * j) / 100.0, 2)
-                 for j in range(6)] if gz else None
-        out.setdefault(code, (gears, prim))
-    return out
 
 
 def _read_code_at(data, ptr):
@@ -787,77 +720,158 @@ def _read_code_at(data, ptr):
     return v
 
 
-def _gear_addr_by_coding_multistate(session, data, gear_e, tbl_e, active,
-                                    main_lo, main_hi):
-    """{coding_value: rTrans1_data_addr} from a *multi-state* active array
-    (several concatenated coding states), or {} when only one state is present.
-    Purely structural: it follows each state's pointer to the gear block."""
+def stored_codings(session, tables=None):
+    """``[(address, value)]`` of every coding the dataset stores, by value.
+
+    The coding table ``USAp_dCodeTbl_C`` in the main block, and the copy of it
+    in every relocated block (one per other coding state): each is a value
+    followed by its bitwise complement. Found where the variant tables put
+    them rather than by scanning for pairs, so a function-coded dataset's
+    larger values (P447's ``variant << 18``) are not lost."""
+    data = bytes(session.binfile.data)
+    tbl_e = next((e for e in session.entities
+                  if e.name == "USAp_dCodeTbl_C"), None)
     if tbl_e is None:
-        return {}
-    tbl_p, gear_p = tbl_e.addr, gear_e.addr
-
-    def in_main(v):
-        return main_lo <= v < main_hi
-
-    def in_sec(v):
-        return _SEARCH_LO <= v < main_lo
-
-    entries = []
-    o = active
-    while o + 4 <= len(data):
-        v = _u32(data, o)
-        if in_main(v) or in_sec(v):
-            entries.append(v)
-            o += 4
-        else:
-            break
-    resets = [0]
-    last = 0
-    for i, v in enumerate(entries):
-        if in_main(v):
-            if v < last - 0x1000:
-                resets.append(i)
-            last = v
-    if len(resets) < 2:
-        return {}                       # single state -> caller uses fallback
-    stride = resets[1]
-    nstates = len(entries) // stride
-
-    def slot_for(primary):
-        for i in range(stride):
-            v = entries[i]
-            if v == primary:
-                return i
-            if in_sec(v):
-                lo = next((entries[j] for j in range(i - 1, -1, -1)
-                           if in_main(entries[j])), 0)
-                hi = next((entries[j] for j in range(i + 1, stride)
-                           if in_main(entries[j])), 0)
-                if lo <= primary < hi:
-                    return i
-        return None
-
-    ic = slot_for(tbl_p)
-    ig = slot_for(gear_p)
-    if ic is None or ig is None:
-        return {}
-    gbase = next((_u32(data, active + kk * stride * 4 + 4 * ig)
-                  for kk in range(nstates)
-                  if in_main(_u32(data, active + kk * stride * 4 + 4 * ig))),
-                 None)
+        return _coding_pairs(data)
+    if tables is None:
+        tables = find_variant_tables(session)
     out = {}
-    out[_read_code_at(data, tbl_p)] = gear_p        # base coding -> primary
-    for k in range(nstates):
-        ab = active + k * stride * 4
-        code = _read_code_at(data, _u32(data, ab + 4 * ic))
-        gp = _u32(data, ab + 4 * ig)
-        if in_main(gp):
-            gz = gear_p
-        elif in_sec(gp) and gbase is not None:
-            gz = gp + (gear_p - gbase)
-        else:
+    for a in [tbl_e.addr] + [vt.sec_z for vt in tables
+                             if vt.main_z == tbl_e.addr]:
+        if a < 4 or a + 4 > len(data):
             continue
-        out.setdefault(code, gz)
+        v = _u32(data, a)
+        if v and (v ^ _u32(data, a - 4)) == 0xFFFFFFFF:
+            out.setdefault(v, a)
+    return sorted(((a, v) for v, a in out.items()), key=lambda r: r[1])
+
+
+def _func_code_bits(session, data):
+    """How many low bits of a coding are function code (0: none)."""
+    e = next((e for e in session.entities
+              if e.name == "USAp_numFuncCodeBits_C"), None)
+    n = data[e.addr] if e is not None and e.addr < len(data) else 0
+    return n if 0 < n < 32 else 0
+
+
+def _declared_types(session, data, tables):
+    """``{coding: Gearbx_swtTypeVal_C}``: the gearbox type the dataset itself
+    declares for each stored coding, read in the copy that coding selects."""
+    ent = next((e for e in session.entities
+                if e.name == "Gearbx_swtTypeVal_C"), None)
+    if ent is None:
+        return {}
+    stored = [v for _a, v in stored_codings(session, tables)]
+    copies = [vt.sec_z for vt in tables if vt.main_z == ent.addr]
+    if not copies:                      # not switched: every coding reads it
+        return {v: data[ent.addr] for v in stored}
+    cc = copy_codings(session, tables)
+    seen, clash = {}, set()
+    for a in [ent.addr] + copies:
+        for c in cc.get(a, ()):
+            if seen.setdefault(c, data[a]) != data[a]:
+                clash.add(c)
+    return {c: t for c, t in seen.items() if c not in clash}
+
+
+def describe_codings(session, tables=None):
+    """``{coding: {transmission, ac, variant, function}}`` for every stored
+    coding. ``variant`` and ``function`` (the value's variant number and its
+    function-code bits) are None on datasets without function bits, where
+    ``transmission`` and ``ac`` come from the decimal digit scheme -- checked
+    against the dataset's own gearbox type, which wins a disagreement. On a
+    function-coded dataset the transmission is the dataset's declared type and
+    the A/C system is None: it lives in the function bits, which the car
+    supplies, not in the file."""
+    data = bytes(session.binfile.data)
+    if tables is None:
+        tables = find_variant_tables(session)
+    bits = _func_code_bits(session, data)
+    declared = _declared_types(session, data, tables)
+    out = {}
+    for _a, v in stored_codings(session, tables):
+        decl = _TYPE_NAMES.get(declared.get(v))
+        d = {"variant": None, "function": None}
+        if bits:
+            d["variant"] = v >> bits
+            d["function"] = v & ((1 << bits) - 1)
+            tx, ac = decl, None
+        else:
+            tx, ac = decode_coding(v)
+            if decl is not None and (tx is None
+                                     or _is_automatic(tx) != _is_automatic(decl)):
+                tx = decl
+        d["transmission"], d["ac"] = tx, ac
+        out[v] = d
+    return out
+
+
+def coding_labels(text):
+    """The transmission labels in a "coding ... (variant 3, automatic)" text,
+    as :func:`coding_text` writes it."""
+    import re
+    m = re.search(r"\((.*)\)\s*$", text or "")
+    if not m:
+        return set()
+    return {p.strip() for p in m.group(1).split(", ")
+            if p.strip() and not p.startswith("variant ")}
+
+
+def function_code_bits(session) -> int:
+    """How many low bits of a coding are function code on this dataset (0:
+    none -- a P350-style plain number). Cheap enough for a filter box: it is
+    kept until the session's parameter list is replaced."""
+    hit = getattr(session, "_func_bits", None)
+    ents = getattr(session, "entities", None)
+    if hit is not None and hit[0] is ents:
+        return hit[1]
+    try:
+        bits = _func_code_bits(session, session.binfile.data)
+    except Exception:                       # not an EDC16 session
+        bits = 0
+    try:
+        session._func_bits = (ents, bits)
+    except Exception:
+        pass
+    return bits
+
+
+def coding_query(session, text: str) -> str:
+    """A typed filter ``text`` with every coding number in it read the way the
+    dataset reads a coding.
+
+    A scan tool shows the car's *whole* coding. On a function-coded dataset
+    (P447) that is the variant in the upper bits plus the function bits the
+    car sets -- 786437, say, for variant 3 with function bits 5 -- while the
+    file holds only the variant, 786432. So a typed ``coding 786437`` (or
+    ``coding 0786437``, as a tool pads it) is rounded down to the value the
+    file stores, and finds the copies variant 3 selects. A number that rounds
+    to nothing is left alone, so a half-typed ``coding 7864`` still matches by
+    its digits, and so is every number on a dataset without function bits,
+    where the coding is stored exactly as shown. A bare number of five digits
+    or more is taken as a coding when it names a stored one."""
+    import re
+    bits = function_code_bits(session)
+    if not bits or not text:
+        return text
+    mask = (1 << bits) - 1
+
+    def base(n):
+        return n & ~mask or n               # below the lowest variant: as typed
+
+    def fix_list(m):
+        # a label's own "786432+" (the car's function bits come on top) reads
+        # as the number it carries
+        nums = [str(base(int(x))) if x else x
+                for x in m.group(2).replace("+", "").split("/")]
+        return m.group(1) + "/".join(nums)
+
+    out = re.sub(r"(coding\s+)([\d/+]+)", fix_list, text)
+    m = re.fullmatch(r"\s*(\d{5,})\s*", out)
+    if m and base(int(m.group(1))) != int(m.group(1)):
+        stored = {v for _a, v in stored_codings(session)}
+        if base(int(m.group(1))) in stored:
+            return "coding %d" % base(int(m.group(1)))
     return out
 
 
@@ -867,56 +881,34 @@ def gear_copy_codings(session):
     values** (auto and manual gearing is not a fixed numeric relationship).
 
     Returns ``{rTrans1_data_addr: (coding_value, transmission)}`` mapping each
-    gear copy (identified by its ``Gearbx_rTrans1_C`` data address) to a coding.
+    gear copy (identified by its ``Gearbx_rTrans1_C`` data address) to a coding:
+    the main block's own for the primary copy, the lowest of those that select
+    it for a variant copy (:func:`copy_codings` has them all).
     """
     data = bytes(session.binfile.data)
-    main_lo, main_hi = session.region
     by = {e.name: e for e in session.entities}
     gear_e = by.get("Gearbx_rTrans1_C")
     tbl_e = by.get("USAp_dCodeTbl_C")
-    default, active = _locate_arrays(data)
-    if gear_e is None or active is None:
+    if gear_e is None:
         return {}
-    gear_p = gear_e.addr
+    tables = find_variant_tables(session)
+    cc = copy_codings(session, tables)
+    desc = describe_codings(session, tables)
+    base = _read_code_at(data, tbl_e.addr) if tbl_e is not None else None
 
-    def in_sec(v):
-        return _SEARCH_LO <= v < main_lo
+    def tx(code):
+        return (desc.get(code) or {}).get("transmission") or "coding %d" % code
 
-    tx_by_code = {}
-    for _addr, v in _coding_pairs(data):
-        tx, _ac = decode_coding(v)
-        tx_by_code[v] = tx or ("coding %d" % v)
-
-    # (1) multi-state active array (e.g. P350 038xxx): resolve every state
-    ms = _gear_addr_by_coding_multistate(session, data, gear_e, tbl_e, active,
-                                         main_lo, main_hi)
-    if ms:
-        return {addr: (code, tx_by_code.get(code, "coding %d" % code))
-                for code, addr in ms.items()}
-
-    # (2) single active state (e.g. M58): the active array holds only one
-    # coding state, so the per-state resolution above can't run. Fall back to
-    # the invariant the multi-state resolver also uses -- the coding stored in
-    # USAp_dCodeTbl is the one the *main block* (primary) holds -- and give the
-    # secondary copy the remaining transmission. This is decided from the
-    # coding table, never from the ratio values.
-    if tbl_e is None:
-        return {}
-    sec_addr = None
-    for vt in find_variant_tables(session):
-        if vt.name == "Gearbx_rTrans1_C":
-            sec_addr = vt.sec_z
-            break
-    cur_code = _read_code_at(data, tbl_e.addr)
-    cur_tx = tx_by_code.get(cur_code)
-    if cur_code not in tx_by_code:
-        return {}
-    out = {gear_p: (cur_code, cur_tx)}          # primary = USAp_dCodeTbl coding
-    if sec_addr is not None:
-        # the secondary copy takes the other transmission present in the codings
-        others = [(v, tx) for v, tx in tx_by_code.items() if tx != cur_tx]
-        if len({tx for _v, tx in others}) == 1:
-            out[sec_addr] = others[0]
+    out = {}
+    for a in [gear_e.addr] + [vt.sec_z for vt in tables
+                              if vt.main_z == gear_e.addr]:
+        codes = sorted(cc.get(a, ()))
+        if codes:
+            code = base if (a == gear_e.addr and base in codes) else codes[0]
+            out[a] = (code, tx(code))
+    # no variant copies (a single-coding file): the main block's coding names it
+    if gear_e.addr not in out and base is not None and base in desc:
+        out[gear_e.addr] = (base, tx(base))
     return out
 
 
@@ -1011,8 +1003,30 @@ def copy_codings(session, tables=None):
         ic = slot_for(tbl_e.addr)
         if ic is None:
             return {}
-        codes = [_read_code_at(data, st[ic]) for st in states]
         base = _read_code_at(data, tbl_e.addr)
+        sec_sorted = sorted({v for st in states for v in st
+                             if not in_main(v)})
+        # where the code table sits in its block: a state that keeps the slot
+        # in the main block names the block's start there
+        kept = next((st[ic] for st in states
+                     if in_main(st[ic]) and st[ic] <= tbl_e.addr), None)
+        table_copies = [vt.sec_z for vt in tables if vt.main_z == tbl_e.addr]
+
+        def state_code(p):
+            """The coding a state holds: the code table's copy in the block
+            its slot points at. Reading at the block's first word instead
+            gave whatever else starts it (03G906016LQ: every state came out
+            as the main block's coding)."""
+            if in_main(p):
+                return base
+            if kept is not None:
+                return _read_code_at(data, p + (tbl_e.addr - kept))
+            j = bisect.bisect_right(sec_sorted, p)
+            end = sec_sorted[j] if j < len(sec_sorted) else p + 0x1000
+            at = next((a for a in table_copies if p <= a < end), p)
+            return _read_code_at(data, at)
+
+        codes = [state_code(st[ic]) for st in states]
         # A secondary copy belongs to the relocated block it sits in: the
         # nearest secondary pointer at or below it. The states that point at
         # that block are the codings that select the copy.
@@ -1042,9 +1056,16 @@ def copy_codings(session, tables=None):
                     add(vt.main_z, codes[k2])
         return out
 
-    # single state: the main block's code table owns the primary copies
-    tx_by_code = {v: (decode_coding(v)[0] or "coding %d" % v)
-                  for _a, v in _coding_pairs(data)}
+    # single state: the main block's code table owns the primary copies. The
+    # transmission of a stored coding comes from the digit scheme, which holds
+    # only where there are no function code bits; with them, the codings are
+    # not told apart by transmission here and no copy is given to the others.
+    if _func_code_bits(session, data):
+        tx_by_code = {v: "coding %d" % v
+                      for _a, v in stored_codings(session, tables)}
+    else:
+        tx_by_code = {v: (decode_coding(v)[0] or "coding %d" % v)
+                      for _a, v in stored_codings(session, tables)}
     cur = _read_code_at(data, tbl_e.addr)
     if cur not in tx_by_code:
         return {}
@@ -1061,47 +1082,82 @@ def copy_codings(session, tables=None):
     return out
 
 
-def coding_text(codes) -> str:
+def coding_text(codes, desc=None) -> str:
     """"coding 150031/158031 (5-speed manual)" -- the coding values that
-    select a copy, then the transmission their last digit names (VAG scheme,
-    see ``decode_coding``); the A/C digit only where no transmission is
-    named. Kept short: it rides on the end of a tree label."""
+    select a copy, then what they say (``desc`` is :func:`describe_codings`):
+    the variant number where the dataset has function bits, and the
+    transmission; the A/C system only where no transmission is named. Without
+    ``desc`` the P350 digit scheme (:func:`decode_coding`) reads them. Kept
+    short: it rides on the end of a tree label."""
     if not codes:
         return ""
     codes = sorted(codes)
-    desc = []
+
+    def read(c):
+        if desc is None:
+            tx, ac = decode_coding(c)
+            return {"transmission": tx, "ac": ac, "variant": None}
+        return desc.get(c) or {}
+
+    parts = []
+    variants = sorted({read(c)["variant"] for c in codes
+                       if read(c).get("variant") is not None})
+    if variants:
+        parts.append("variant " + "/".join("%d" % x for x in variants))
     for c in codes:
-        tx, ac = decode_coding(c)
-        d = tx or ac
-        if d and d not in desc:
-            desc.append(d)
-    return "coding %s%s" % ("/".join("%d" % c for c in codes),
-                            (" (%s)" % ", ".join(desc)) if desc else "")
+        d = read(c)
+        x = d.get("transmission") or d.get("ac")
+        if x and x not in parts:
+            parts.append(x)
+    # a function-coded dataset stores only the variant: the car adds its
+    # function bits, so a scan tool shows a larger number -- the "+" says so
+    plus = "+" if variants else ""
+    return "coding %s%s" % ("/".join("%d%s" % (c, plus) for c in codes),
+                            (" (%s)" % ", ".join(parts)) if parts else "")
 
 
 def coding_states(session):
     """All coding values stored in the flash, decoded. One dict per value:
-    ``{coding, coding_hex, inv_ok, transmission, ac, gearbox, gears, tbl_addr}``.
+    ``{coding, coding_hex, inv_ok, transmission, ac, gearbox, gears, tbl_addr,
+    variant, function}`` (see :func:`describe_codings` for how a value reads;
+    ``variant`` / ``function`` are None without function code bits).
     ``gearbox`` is a compact label kept for back-compat (automatic / manual ...).
     """
     data = bytes(session.binfile.data)
-    pairs = _coding_pairs(data)
-    gset = _gearset_by_coding(session)
+    tables = find_variant_tables(session)
+    desc = describe_codings(session, tables)
+    # the gear ratios each coding selects: the copy of Gearbx_rTrans1_C its
+    # state reads (the main one for the codings that keep the slot)
+    by = {e.name: e for e in session.entities}
+    gear_e = by.get("Gearbx_rTrans1_C")
+    gears_by = {}
+    if gear_e is not None:
+        cc = copy_codings(session, tables)
+        for a in [gear_e.addr] + [vt.sec_z for vt in tables
+                                  if vt.main_z == gear_e.addr]:
+            g = [round(_u16(data, a + 2 * j) / 100.0, 2) for j in range(6)]
+            for c in cc.get(a, ()):
+                gears_by.setdefault(c, g)
     out = []
-    for addr, v in pairs:
-        tx, ac = decode_coding(v)
-        gears = gset.get(v, (None, None))[0]
-        if tx and tx.startswith(("5-speed", "6-speed")):
+    for addr, v in stored_codings(session, tables):
+        d = desc.get(v) or {}
+        tx, ac = d.get("transmission"), d.get("ac")
+        if tx and (tx.startswith(("5-speed", "6-speed")) or tx == "manual"):
             gearbox = "manual"
-        elif tx == "automatic (TC)":
-            gearbox = "automatic"
         elif tx in ("CVT", "DSG"):
             gearbox = tx
+        elif tx and tx.startswith("automatic"):
+            gearbox = "automatic"
         else:
             gearbox = "unknown"
         out.append(dict(coding=v, coding_hex="0x%08X" % v, inv_ok=True,
-                        transmission=tx or "unknown", ac=ac or "unknown",
-                        gearbox=gearbox, gears=gears, tbl_addr=addr))
+                        transmission=tx or "unknown",
+                        ac=ac or ("in the function code"
+                                  if d.get("variant") is not None
+                                  else "unknown"),
+                        gearbox=gearbox, gears=gears_by.get(v), tbl_addr=addr,
+                        variant=d.get("variant"),
+                        function=d.get("function")))
     out.sort(key=lambda c: c["coding"])
     return out
 
@@ -1197,8 +1253,11 @@ def row_transmissions(session, rows):
         prim_codes = mine if prim_codes is None else prim_codes & mine
     codes[prim] = sorted(prim_codes or ())
 
+    desc = describe_codings(session)
+
     def tx(cs):
-        names = {decode_coding(c)[0] or "coding %d" % c for c in cs}
+        names = {(desc.get(c) or {}).get("transmission") or "coding %d" % c
+                 for c in cs}
         return next(iter(names)) if len(names) == 1 else None
     out = [tx(codes.get(r["addr"], ())) for r in rows]
     if None in out or len(set(out)) != len(out):

@@ -22,6 +22,7 @@ from PySide6 import QtCore, QtWidgets
 
 from . import image as _image
 from . import edc16 as _edc16
+from . import gui_edc16 as _gui16
 from . import edc15 as _edc15
 from . import edc15boot as _boot
 from . import climatronic as _clim
@@ -31,6 +32,7 @@ from . import zf6hp as _zf6hp
 from . import aisin09d as _aisin09d
 from . import vdo_cluster as _vdo
 from . import keepawake as _keepawake
+from . import gui_dialogbase as _dlgbase
 from .transport import KLine, KLineError
 from .. import branding
 from .. import checksum_memo as _memo
@@ -89,8 +91,14 @@ VDO_ECU = "Cluster (VDO K-line)"
 #: ones that only talk over K-line. Choosing one switches Transport to match,
 #: and switching Transport away from it switches the ECU to EDC16 (which has
 #: both), so the dialog never shows a combination that cannot work.
-CAN_ONLY_ECUS = ("Climatronic", "Cluster", "ABS", "ZF6HP", "Aisin TRx")
+CAN_ONLY_ECUS = ("Climatronic", "Cluster", "ABS", "ZF6HP")
 KLINE_ONLY_ECUS = ("EDC15", VDO_ECU)
+#: Units that run on either bus (read-only-style window shape, like the CAN-only
+#: ones, but the transport is the user's choice).
+EITHER_BUS_TCU = ("Aisin TRx",)
+#: Units whose window uses the shared "clim" shape (no EEPROM / backup / boot /
+#: staged), whichever bus they are on.
+CLIM_SHAPE_ECUS = CAN_ONLY_ECUS + EITHER_BUS_TCU
 
 #: ECU entries that no longer exist, and the entry that replaced each one. A
 #: saved setting naming the old entry restores as the new one.
@@ -107,7 +115,15 @@ ZF6HP_TRANSPORTS = (("auto", "Automatic"),
 EDC16_SPEEDS = ["Very Low (10400)", "Low (38400)", "Medium (124800)", "High (244898)"]
 EDC15_SPEEDS = ["Low (10400)", "Medium (38400)", "High (124800)"]
 SPEED_KEYS = ["Low", "Medium", "High"]
+#: the Aisin TRx on K-line: Low is 10400 with NO speed-up (the original tool's
+#: way); Medium / High ask the TCU for 124800 / 244898 and fall back to 10400
+AISIN_SPEEDS = ["Low (10400, no speed-up)", "Medium (124800)", "High (244898)"]
 EDC16_SPEED_KEYS = ["Very Low"] + SPEED_KEYS
+#: the VDO cluster (KW1281, 10400 baud either way): Low is the KWHack dialog
+#: (every block ACKed, longer login), High sends the next command as the ACK --
+#: see ovtsuite.flash.vdo_cluster
+VDO_SPEEDS = ["Low", "High"]
+VDO_SPEED_KEYS = ["Low", "High"]
 
 
 def _as_bool(v, default=True):
@@ -140,22 +156,6 @@ def _debug_log(msg):
         pass
 
 
-def _make_can_log_emit(fh, flush_every=64):
-    """Build an emit(line) callback for CanTap that flushes only periodically
-    (every flush_every frames), not on every single frame -- a per-frame
-    flush() sits directly in the live CAN I/O hot path and a single slow
-    flush can blow through the ECU's TP2.0 ack timeout on a long transfer."""
-    state = {"n": 0}
-
-    def _emit(line, _fh=fh, _state=state):
-        _fh.write(line + "\n")
-        _state["n"] += 1
-        if _state["n"] % flush_every == 0:
-            _fh.flush()
-
-    return _emit
-
-
 def _port_key(data):
     """A stable, comparable key for a port-combo entry, so a rebuilt list can
     reselect the same device even though J2534 Device objects are recreated
@@ -164,6 +164,8 @@ def _port_key(data):
         return None
     if data == "openport-usb":
         return ("openport",)
+    if data == "sm2-usb":
+        return ("sm2",)
     host = getattr(data, "host", None)
     if host is not None:                            # a paired head unit
         return ("remote", host, getattr(data, "port", 0))
@@ -173,15 +175,22 @@ def _port_key(data):
     return ("serial", str(data))
 
 
+def _device_label(d):
+    """Picker text for a J2534 Device: a driver whose cable can't be confirmed on USB
+    (no known VID/PID, or a shim/wireless one) stays listed, marked, after the rest."""
+    return (d.label + ("" if d.loadable else "  (via 32-bit bridge)")
+            + ("  [not detected]" if d.present is None else ""))
+
+
 def _can_devices():
     """(data, label) CAN interfaces for TP 2.0: J2534 devices (via the 32-bit
     bridge when needed) and a USB OpenPort."""
     out = []
     try:
         from . import j2534 as _j
-        for d in _j.list_devices():
+        for d in _j.plugged_in(_j.list_devices()):
             if _j.usable(d):
-                out.append((d, d.label + ("" if d.loadable else "  (via 32-bit bridge)")))
+                out.append((d, _device_label(d)))
     except Exception:
         pass
     out += openport_devices()
@@ -199,9 +208,9 @@ def _j2534_devices():
     out = []
     try:
         from . import j2534 as _j
-        for d in _j.list_devices():
+        for d in _j.plugged_in(_j.list_devices()):
             if _j.usable(d):
-                out.append((d, d.label + ("" if d.loadable else "  (via 32-bit bridge)")))
+                out.append((d, _device_label(d)))
     except Exception:
         pass
     return out
@@ -229,40 +238,58 @@ def list_ports():
 #: Port-combo data for a Tactrix OpenPort 2.0 driven over USB without the vendor
 #: DLL (openport.py) -- the only J2534 route on Linux and macOS.
 OPENPORT_USB = "openport-usb"
+#: ... and a Scanmatik SM2 over libusb (sm2_device.py), listed with the OpenPorts.
+SM2_USB = "sm2-usb"
 
 
 def is_j2534(data):
     """True if a port-combo entry is a J2534 device (vs a serial-port string):
     a vendor-DLL device, or the USB OpenPort, which presents the same faces."""
-    return data == OPENPORT_USB or getattr(data, "dll", None) is not None
+    return data in (OPENPORT_USB, SM2_USB) or getattr(data, "dll", None) is not None
 
 
 def open_j2534(data):
-    """Open a J2534 port-combo entry: the USB OpenPort directly, a DLL device
-    in-process or through the 32-bit bridge."""
+    """Open a J2534 port-combo entry: the USB OpenPort or SM2 directly, a DLL
+    device in-process or through the 32-bit bridge."""
     if data == OPENPORT_USB:
         from .openport import OpenPort
         return OpenPort()
+    if data == SM2_USB:
+        from .sm2_device import Sm2Device
+        return Sm2Device()
     from . import j2534 as _j
     return _j.open_device(data)
 
 
 def openport_devices():
-    """(data, label) for each OpenPort 2.0 on USB."""
+    """(data, label) for each OpenPort 2.0 and each SM2 libusb can open on USB."""
+    out = []
     try:
         from . import openport
-        return [(OPENPORT_USB, label + " (USB direct)") for label in openport.find_devices()]
+        out += [(OPENPORT_USB, label + " (Direct-USB)") for label in openport.find_devices()]
     except Exception:
-        return []
+        pass
+    try:
+        from . import sm2_device
+        out += [(SM2_USB, label + " (Direct-USB)") for label in sm2_device.find_devices()]
+    except Exception:
+        pass
+    return out
 
 
 def no_device_hint() -> str:
     """Why no OpenPort is listed, for an empty or OpenPort-less picker."""
     try:
         from . import openport
-        return openport.explain_absence()
+        why = openport.explain_absence()
     except Exception:
-        return ""
+        why = ""
+    try:
+        from . import sm2_device
+        sm2 = sm2_device.explain_absence()
+    except Exception:
+        sm2 = ""
+    return "; ".join(x for x in (why, sm2) if x)
 
 
 def is_remote(data):
@@ -298,8 +325,7 @@ def kline_devices():
     out = list(list_ports())
     for d, label in _j2534_devices():
         out.append((d, label + "  (J2534)"))
-    for d, label in openport_devices():
-        out.append((d, label + "  (J2534)"))
+    out += openport_devices()      # already marked (Direct-USB): no J2534 DLL is involved
     out += remote_devices()
     return out
 
@@ -308,7 +334,9 @@ def cable_allows_high(data):
     """Whether a K-line cable can hold the ~245 kbaud High rate.  Only FTDI-driven
     serial cables can; CH340/CH341 serial cables and J2534 devices are capped at
     Medium (124800), so High is disabled for them (matches diag.cap_high / the
-    J2534 baud-grid limit)."""
+    J2534 baud-grid limit).  That includes an SM2 driven directly over USB: at
+    ~245 kbaud its K-line reads come back with random bit errors at every
+    requested rate (bench, 2026-11-18), so it stays at Medium too."""
     if data is None or is_j2534(data):
         return False
     if is_remote(data):
@@ -333,19 +361,30 @@ def cable_allows_high(data):
     return True                                     # generic serial: allow, user can pick lower
 
 
+def _session_guard(why):
+    """Keep the machine awake (and the process time-critical) for a worker run:
+    ``realtime.realtime_session`` when the app has it, else just the sleep guard."""
+    try:
+        from .. import realtime as _rt
+        return _rt.realtime_session(why)
+    except Exception:                          # noqa: BLE001 - never block a flash
+        return _keepawake.prevent_sleep()
+
+
 class _Worker(QtCore.QThread):
     stage = QtCore.Signal(str)
     percent = QtCore.Signal(int)
     finished_ok = QtCore.Signal(object)     # image bytes (reads) or None (writes)
     failed = QtCore.Signal(str)
+    #: VDO write: the file is the other cluster family's (file type, cluster
+    #: type, ident); the dialog asks and answers with answer_vdo_mismatch()
+    vdo_mismatch = QtCore.Signal(str, str, str)
 
     def __init__(self, op, ecu, port, speed, image=None, force_full=False, boot_mode=False,
                  transport="kline", can_dev=None, can_rate=500000,
-                 fast_init=True, staged=False, can_log=None, probe=False,
-                 hvac_selective=False, mpc_image=None,
-                 include_mpc=False, include_program=True, include_boot=False,
-                 include_cal=False, ram_addr=0x7FE9E4, ram_size=0x40,
-                 program_end=None, uds_cal_only=False, zf_transport="auto"):
+                 fast_init=True, staged=False, probe=False,
+                 hvac_selective=False, edc16=None, uds_cal_only=False,
+                 zf_transport="auto", vdo_verify=False):
         super().__init__()
         self._op = op                       # read | write | ee_read | ee_write | backup
         self._ecu = ecu                     # "EDC16" | "EDC15"
@@ -359,6 +398,7 @@ class _Worker(QtCore.QThread):
         # dialog picks it from the file or the Advanced override); "auto" only
         # means anything for a read: TP 2.0 first, UDS if nothing answers.
         self._zf_transport = zf_transport
+        self._vdo_verify = vdo_verify       # VDO cluster write: read it all back (Advanced)
         self._hvac_selective = hvac_selective   # Climatronic: opt-in selective skip
         self._transport = transport         # "kline" | "can"
         self._fast_init = fast_init         # K-line fast init (break on serial, hw on J2534)
@@ -368,23 +408,77 @@ class _Worker(QtCore.QThread):
         self._can = None                    # opened PassThru/OpenPort to close
         self._client = None                 # pass-through connection to close
         self._staged = staged               # the head unit runs the job, we watch
-        self._can_log = can_log             # Cluster/ABS: path to log CAN traffic to (debug), or None
-        self._mpc_image = mpc_image         # EDC16 program write/probe: internal-flash (MPC) image, or None
-        self._include_mpc = include_mpc     # EDC16 program write/probe: also address the MPC range
-        self._include_program = include_program  # EDC16 armed write: False = MPC only (skip program)
-        self._include_boot = include_boot    # EDC16 armed write: also write boot FIRST (full ODIS order)
-        self._include_cal = include_cal      # EDC16 armed write: also write cal (ODIS blocks 4 & 5)
-        self._ram_addr = ram_addr            # EDC16 RAM-read probe: 24-bit address
-        self._ram_size = ram_size            # EDC16 RAM-read probe: byte count
-        self._program_end = program_end      # EDC16 program write: source-declared end (or None)
+        #: the flash trace of this job (flashtrace.FlashTrace), None while tracing
+        #: is off: opened in run(), from Tools > Options > Flasher
+        self._trace = None
+        self._edc16 = edc16 or {}           # EDC16 block / probe options (gui_edc16.prepare)
         self._probe = probe                 # Cluster/ABS: bus probe instead of a read
         self._stop = threading.Event()
+        self._vdo_ask = threading.Event()   # set when the mismatch prompt is answered
+        self._vdo_go = False
 
     def request_stop(self):
         self._stop.set()
 
+    def _vdo_confirm(self, file_type, cluster_type, ident):
+        """Worker thread: have the dialog ask, and wait (a Stop answers No)."""
+        self._vdo_go = False
+        self._vdo_ask.clear()
+        self.vdo_mismatch.emit(file_type, cluster_type, ident)
+        while not self._vdo_ask.wait(0.2):
+            if self._stop.is_set():
+                return False
+        return self._vdo_go
+
+    def answer_vdo_mismatch(self, go):
+        self._vdo_go = bool(go)
+        self._vdo_ask.set()
+
+    def _begin_trace(self) -> None:
+        """Open this job's flash trace if Tools > Options > Flasher has it on:
+        the wire is traced by the links (see _open_link), and the status lines,
+        the result and any error are written to it here. Never fails the job."""
+        self._trace = None
+        try:
+            from . import flashtrace
+            tr = flashtrace.begin(
+                "%s %s (%s)" % (self._ecu, self._op, self._transport),
+                log=self.stage.emit)
+        except Exception:                   # noqa: BLE001 - tracing is best effort
+            return
+        if tr is None:
+            return
+        self._trace = tr
+        # Direct: the lines are written (and timed) here, in the job's thread,
+        # not queued to the window's
+        direct = QtCore.Qt.ConnectionType.DirectConnection
+        self._trace_slots = (
+            (self.stage, tr.note),
+            (self.failed, lambda msg: tr.note("FAILED: %s" % msg)),
+            (self.finished_ok, lambda _r: tr.note("finished OK")))
+        for sig, slot in self._trace_slots:
+            sig.connect(slot, direct)
+
+    def _end_trace(self) -> None:
+        tr, self._trace = self._trace, None
+        if tr is None:
+            return
+        for sig, slot in getattr(self, "_trace_slots", ()):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        tr.close()
+
+    def _bridge_trace(self) -> dict:
+        """``open_tp20`` / ``open_iso_tp`` arguments that make the 32-bit
+        bridge write the CAN frames it carries to the trace (none: no trace)."""
+        return self._trace.bridge_trace() if self._trace is not None else {}
+
     def _open_link(self):
         log = lambda s: self.stage.emit(s)          # noqa: E731
+        # the K-line links' byte hook: every byte either way goes to the flash trace
+        wire = self._trace.kline_cb() if self._trace is not None else None
         # A head unit is one link either way: the cable is in the car and the
         # timing-critical halves -- both inits, the echo drain, the whole TP 2.0
         # ACK loop -- run at ITS end, which is the only place they can.
@@ -465,17 +559,20 @@ class _Worker(QtCore.QThread):
             # (one IPC per KWP message, tight ACK loop in-process) instead of
             # proxying every CAN frame -- avoids the ACK-latency retransmits.
             if isinstance(self._can, _j.BridgePassThru):
-                # can_log (Climatronic debug): the bridge's own _FrameTap writes
-                # every CAN frame to this path, from inside the 32-bit process, so
-                # logging works on the in-bridge TP path too.
+                # Flash trace: the bridge's own _FrameTap writes every CAN frame
+                # to a file of its own from inside the 32-bit process, so tracing
+                # works on the in-bridge TP path too; the trace adds that file to
+                # itself when the job ends (flashtrace.FlashTrace.close).
                 tp = self._can.open_tp20(dest=self._can_dest, baud=self._can_rate,
                                          params={"block_size": 0x0F, **zf6hp_params,
                                                  **clim_params, **edc16_params},
-                                         log_path=self._can_log)
+                                         **self._bridge_trace())
                 return CanKLine(tp=tp, dest=self._can_dest, log=log)
             ch = self._can.connect(_j.CAN, self._can_rate)
             ch.pass_all()
             ch.clear_rx()
+            if self._trace is not None:
+                ch = self._trace.tap(ch)            # every frame, to the trace
             _tp_params = {**zf6hp_params, **clim_params, **edc16_params}
             if _tp_params:
                 from .tp20_transport import Tp20Params
@@ -494,11 +591,34 @@ class _Worker(QtCore.QThread):
                 from .kline_j2534_raw import J2534RawKLine
                 self.stage.emit("K-line via %s (5-baud init)..."
                                 % getattr(self._port, "name", "J2534"))
-                return J2534RawKLine(self._can, baud=9600, log=log)
+                return J2534RawKLine(self._can, baud=9600, log=log, on_trace=wire)
+            if self._ecu == "Aisin TRx":
+                # The 09D answers a 5-baud init at 0x02 (it takes no fast init) and
+                # then talks with gaps between its bytes that the message link's
+                # framing loses: on the bench the message link saw only the echo,
+                # the byte-stream link (loopback off, K-line only) saw the reply.
+                from .kline_j2534_raw import J2534RawKLine
+                self.stage.emit("K-line via %s (5-baud init)..."
+                                % getattr(self._port, "name", "J2534"))
+                return J2534RawKLine(self._can, baud=10400, log=log, on_trace=wire)
+            if self._ecu == VDO_ECU:
+                # KW1281 end to end (Mk4's custom-block dialog and the Audi C5
+                # path alike): the same byte-by-byte complement handshake EDC15's
+                # identification stage needs, so the message link's framing is
+                # just as useless here. Confirmed on the bench (SM2 and a
+                # direct-libusb OpenPort): J2534KLine never got past the
+                # cluster's first ident-block byte -- this link read a real
+                # cluster's whole EEPROM cleanly on both.
+                from .kline_j2534_raw import J2534RawKLine
+                self.stage.emit("K-line via %s (5-baud init)..."
+                                % getattr(self._port, "name", "J2534"))
+                return J2534RawKLine(self._can, baud=10400, log=log, on_trace=wire)
             self.stage.emit("K-line via %s (%s init)..." % (
                 getattr(self._port, "name", "J2534"), "fast" if self._fast_init else "5-baud"))
-            return J2534KLine(self._can, log=log, fast_init=self._fast_init)
-        return KLine(self._port, baud=10400, prefer_fast_init=self._fast_init)
+            return J2534KLine(self._can, log=log, fast_init=self._fast_init,
+                              on_trace=wire)
+        return KLine(self._port, baud=10400, prefer_fast_init=self._fast_init,
+                     on_trace=wire)
 
     def run(self):
         # Sleep/screen-shutoff bug (2026-09-21): a flash read or write can run
@@ -508,9 +628,10 @@ class _Worker(QtCore.QThread):
         # display) awake for the whole worker run, released the moment it ends
         # (success, failure, or a user cancel) -- see keepawake.py for why this
         # is a no-op on non-Windows platforms.
-        with _keepawake.prevent_sleep():
+        with _session_guard("ECU flash %s" % self._op):
             link = None
             try:
+                self._begin_trace()
                 if is_remote(self._can_dev if self._transport == "can" else self._port):
                     self.stage.emit("Connecting to the head unit...")
                 elif self._transport == "can":
@@ -595,16 +716,19 @@ class _Worker(QtCore.QThread):
                         self._can.close()
                     except Exception:
                         pass
-                if self._client is not None:
-                    try:
-                        # Give the cable back so the dashboard starts polling again.
-                        # The socket dropping would do it too, but only once the head
-                        # unit noticed, and a driver watching dead gauges should not
-                        # have to wait for a TCP timeout.
-                        self._client.release()
-                    finally:
-                        self._client.close()
-                        self._client = None
+                try:
+                    if self._client is not None:
+                        try:
+                            # Give the cable back so the dashboard starts polling again.
+                            # The socket dropping would do it too, but only once the head
+                            # unit noticed, and a driver watching dead gauges should not
+                            # have to wait for a TCP timeout.
+                            self._client.release()
+                        finally:
+                            self._client.close()
+                            self._client = None
+                finally:
+                    self._end_trace()
 
     @staticmethod
     def _close_quietly(obj):
@@ -832,84 +956,8 @@ class _Worker(QtCore.QThread):
                 speed=self._speed, allow_fast=allow_fast,
                 fast_init_prime=fast_init_prime)
             self.finished_ok.emit(None)
-        elif self._op == "write_program":
-            from . import edc16_program as _edc16p
-            _edc16p.write_program(
-                flash, self._image, mpc_image=self._mpc_image, arm=True,
-                include_mpc=self._include_mpc,
-                include_program=self._include_program,
-                include_boot=self._include_boot,
-                include_cal=self._include_cal,
-                force_full=self._force_full, verify_sectors=True, pre_verify=True,
-                program_end=self._program_end,
-                speed=self._speed, allow_fast=allow_fast, fast_init_prime=fast_init_prime,
-                on_stage=stage, on_percent=self.percent.emit,
-                is_stop=self._stop.is_set)
-            self.finished_ok.emit(None)
-        elif self._op == "boot_read_probe":
-            from . import edc16_program as _edc16p
-            results = _edc16p.boot_read_probe(
-                flash, speed=self._speed, allow_fast=allow_fast,
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "checksum_range_probe":
-            from . import edc16_program as _edc16p
-            results = _edc16p.checksum_range_probe(
-                flash, self._image, speed=self._speed, allow_fast=allow_fast,
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "security_seed_probe":
-            from . import edc16_program as _edc16p
-            results = _edc16p.security_seed_probe(
-                flash, speed=self._speed, allow_fast=allow_fast,
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "ram_read_probe":
-            from . import edc16_program as _edc16p
-            results = _edc16p.ram_read_probe(
-                flash, addr=self._ram_addr, size=self._ram_size,
-                speed=self._speed, allow_fast=allow_fast,
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "immo_coding_read":
-            from . import edc16_program as _edc16p
-            results = _edc16p.read_immo_coding(
-                flash, speed=self._speed, allow_fast=allow_fast,
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "find_eeprom":
-            from . import edc16_program as _edc16p
-            results = _edc16p.find_eeprom(
-                flash, speed=self._speed, allow_fast=allow_fast,
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "gpt_verify":
-            from . import edc16_program as _edc16p
-            results = _edc16p.gpt_verify_running(
-                flash, rpm=getattr(self, "_gpt_rpm", 850),
-                stop_after=not getattr(self, "_gpt_keep", False),
-                use_gap_pattern=getattr(self, "_gpt_gap_pattern", False),
-                crank_only=getattr(self, "_gpt_crank_only", True),
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "gpt_verify_and_find":
-            from . import edc16_program as _edc16p
-            results = _edc16p.gpt_verify_and_find(
-                flash, rpm=getattr(self, "_gpt_rpm", 850),
-                use_gap_pattern=getattr(self, "_gpt_gap_pattern", False),
-                force_eeprom=getattr(self, "_gpt_force_eeprom", False),
-                crank_only=getattr(self, "_gpt_crank_only", True),
-                on_stage=stage, is_stop=self._stop.is_set)
-            self.finished_ok.emit(results)
-        elif self._op == "read_program_full":
-            from . import edc16_program as _edc16p
-            result = _edc16p.read_full(
-                flash, include_program=True, include_mpc=True, full=True,
-                virtual_boot=True,
-                speed=self._speed, allow_fast=allow_fast,
-                on_stage=stage, on_percent=self.percent.emit,
-                is_stop=self._stop.is_set)
-            self.finished_ok.emit(result)
+        elif self._op in _gui16.BLOCK_OPS or self._op in _gui16.RESEARCH_OPS:
+            self.finished_ok.emit(_gui16.run(self, flash, allow_fast, fast_init_prime))
         else:
             raise KLineError("EEPROM access is only available for EDC15.")
 
@@ -924,32 +972,16 @@ class _Worker(QtCore.QThread):
             raise KLineError(
                 "Bus probe needs the in-process CAN path (OpenPort / J2534 direct), "
                 "not the 32-bit bridge.")
-        log_fh = None
-        frame_log = None
-        if self._can_log:
-            try:
-                log_fh = open(self._can_log, "w", encoding="ascii")
-                log_fh.write("# %s %s bus probe  dest 0x%02X  @%d bps\n"
-                             % (branding.APP_NAME, ecu, self._can_dest, self._can_rate))
-                log_fh.flush()
-                frame_log = _make_can_log_emit(log_fh)
-                self.stage.emit("Probe frames -> %s" % self._can_log)
-            except Exception as ex:
-                self.stage.emit("(probe log disabled: %s)" % ex)
-                log_fh = None
-        try:
-            summary = _clim.probe_channel(
-                chan, dest=self._can_dest, seconds=2.0,
-                emit=lambda s: self.stage.emit(s), frame_log=frame_log)
-            summary["ecu"] = ecu
-            summary["baud"] = self._can_rate
-            self.finished_ok.emit(summary)
-        finally:
-            if log_fh is not None:
-                try:
-                    log_fh.close()
-                except Exception:
-                    pass
+        # (every frame it sends or hears goes to the flash trace when that is on:
+        # the channel is the tapped one -- see _open_link)
+        self.stage.emit("Bus probe: dest 0x%02X at %d bps" % (self._can_dest,
+                                                               self._can_rate))
+        summary = _clim.probe_channel(
+            chan, dest=self._can_dest, seconds=2.0,
+            emit=lambda s: self.stage.emit(s))
+        summary["ecu"] = ecu
+        summary["baud"] = self._can_rate
+        self.finished_ok.emit(summary)
 
     def _run_climatronic(self, link):
         """Climatronic (4F/4L 910 043x) over TP 2.0 -- reuses the already-open
@@ -1029,8 +1061,8 @@ class _Worker(QtCore.QThread):
         The cluster's security seed/key is not yet known, so the unlock is
         attempted but a failure is NON-fatal: the read is tried anyway (some
         clusters allow ReadMemoryByAddress without 0x27, and any 27-exchange is
-        captured when CAN logging is on -- which is how we would learn the
-        algorithm)."""
+        captured when the flash trace is on (Tools > Options > Flasher) -- which
+        is how we would learn the algorithm)."""
         if self._probe:
             return self._probe_bus(link, "Cluster")
         tp = getattr(link, "tp", None)
@@ -1040,57 +1072,28 @@ class _Worker(QtCore.QThread):
             tp.is_stop = self._stop.is_set              # let Cancel abort a stuck wait
         except Exception:
             pass
-        # CAN-traffic log (debug): same two transports as the Climatronic path --
-        # the 32-bit bridge logs from inside (via _open_link -> open_tp20(log_path)),
-        # the in-process channel is tapped here with CanTap.
-        can_log_fh = None
-        if self._can_log:
-            chan = getattr(tp, "can", None)
-            if chan is not None:                        # in-process path -> tap here
-                try:
-                    can_log_fh = open(self._can_log, "w", encoding="ascii")
-                    can_log_fh.write("# %s Cluster CAN debug trace\n" % branding.APP_NAME)
-                    can_log_fh.flush()
-                    _emit = _make_can_log_emit(can_log_fh)
-                    tp.can = _clus.CanTap(chan, _emit)
-                    self.stage.emit("CAN logging -> %s" % self._can_log)
-                except Exception as ex:                 # logging must never break the read
-                    self.stage.emit("(CAN log disabled: %s)" % ex)
-                    can_log_fh = None
-            else:                                       # bridge path -> logged inside the bridge
-                self.stage.emit("CAN logging (bridge) -> %s" % self._can_log)
+        clu = _clus.Cluster(tp=tp, log=lambda s: self.stage.emit(s))
+        clu.open()
         try:
-            clu = _clus.Cluster(tp=tp, log=lambda s: self.stage.emit(s))
-            clu.open()
-            try:
-                clu.start_session(0x89)
-            except (_clus.ClusterError, KLineError) as ex:
-                self.stage.emit("(session 0x89: %s -- continuing)" % ex)
-            try:
-                rec = clu.read_ecu_identification()
-                self.stage.emit("ECU ID: %s" % rec.hex())
-            except (_clus.ClusterError, KLineError) as ex:
-                self.stage.emit("(ECU ID read: %s -- continuing)" % ex)
-            try:
-                clu.unlock()                            # seed/key unknown -> non-fatal
-            except (_clus.ClusterError, KLineError) as ex:
-                self.stage.emit("(security access: %s -- trying read without unlock)" % ex)
-            if self._op == "read":
-                img = clu.dump(on_percent=self.percent.emit, is_stop=self._stop.is_set)
-                self.finished_ok.emit(img)
-            elif self._op == "write":
-                raise KLineError("Cluster write is not implemented yet (read-only).")
-            else:
-                raise KLineError("Only flash read is available for the cluster.")
-        finally:
-            if can_log_fh is not None:
-                try:
-                    frames = getattr(getattr(tp, "can", None), "frames", None)
-                    if frames is not None:
-                        self.stage.emit("CAN log: %d frames -> %s" % (frames, self._can_log))
-                    can_log_fh.close()
-                except Exception:
-                    pass
+            clu.start_session(0x89)
+        except (_clus.ClusterError, KLineError) as ex:
+            self.stage.emit("(session 0x89: %s -- continuing)" % ex)
+        try:
+            rec = clu.read_ecu_identification()
+            self.stage.emit("ECU ID: %s" % rec.hex())
+        except (_clus.ClusterError, KLineError) as ex:
+            self.stage.emit("(ECU ID read: %s -- continuing)" % ex)
+        try:
+            clu.unlock()                                # seed/key unknown -> non-fatal
+        except (_clus.ClusterError, KLineError) as ex:
+            self.stage.emit("(security access: %s -- trying read without unlock)" % ex)
+        if self._op == "read":
+            img = clu.dump(on_percent=self.percent.emit, is_stop=self._stop.is_set)
+            self.finished_ok.emit(img)
+        elif self._op == "write":
+            raise KLineError("Cluster write is not implemented yet (read-only).")
+        else:
+            raise KLineError("Only flash read is available for the cluster.")
 
     def _run_abs(self, link):
         """C6 Bosch ESP8 ABS (4F0910517xx) over TP 2.0 -- reuses the open TP
@@ -1109,51 +1112,25 @@ class _Worker(QtCore.QThread):
             tp.is_stop = self._stop.is_set
         except Exception:
             pass
-        can_log_fh = None
-        if self._can_log:
-            chan = getattr(tp, "can", None)
-            if chan is not None:
-                try:
-                    can_log_fh = open(self._can_log, "w", encoding="ascii")
-                    can_log_fh.write("# %s ABS CAN debug trace\n" % branding.APP_NAME)
-                    can_log_fh.flush()
-                    _emit = _make_can_log_emit(can_log_fh)
-                    tp.can = _abs.CanTap(chan, _emit)
-                    self.stage.emit("CAN logging -> %s" % self._can_log)
-                except Exception as ex:
-                    self.stage.emit("(CAN log disabled: %s)" % ex)
-                    can_log_fh = None
-            else:
-                self.stage.emit("CAN logging (bridge) -> %s" % self._can_log)
+        ecu = _abs.AbsEsp8(tp=tp, log=lambda s: self.stage.emit(s))
+        ecu.open()
         try:
-            ecu = _abs.AbsEsp8(tp=tp, log=lambda s: self.stage.emit(s))
-            ecu.open()
-            try:
-                ecu.start_session(0x89)
-            except (_abs.AbsError, KLineError) as ex:
-                self.stage.emit("(session 0x89: %s -- continuing)" % ex)
-            try:
-                rec = ecu.read_ecu_identification()
-                self.stage.emit("ECU ID: %s" % rec.hex())
-            except (_abs.AbsError, KLineError) as ex:
-                self.stage.emit("(ECU ID read: %s -- continuing)" % ex)
-            if self._op == "read":
-                img = ecu.dump(on_percent=self.percent.emit, is_stop=self._stop.is_set)
-                self.finished_ok.emit(img)
-            elif self._op == "write":
-                raise KLineError("ABS write is not implemented yet (read-only): the OBD "
-                                 "flash-write framing is not yet confirmed for this module.")
-            else:
-                raise KLineError("Only flash read is available for the ABS.")
-        finally:
-            if can_log_fh is not None:
-                try:
-                    frames = getattr(getattr(tp, "can", None), "frames", None)
-                    if frames is not None:
-                        self.stage.emit("CAN log: %d frames -> %s" % (frames, self._can_log))
-                    can_log_fh.close()
-                except Exception:
-                    pass
+            ecu.start_session(0x89)
+        except (_abs.AbsError, KLineError) as ex:
+            self.stage.emit("(session 0x89: %s -- continuing)" % ex)
+        try:
+            rec = ecu.read_ecu_identification()
+            self.stage.emit("ECU ID: %s" % rec.hex())
+        except (_abs.AbsError, KLineError) as ex:
+            self.stage.emit("(ECU ID read: %s -- continuing)" % ex)
+        if self._op == "read":
+            img = ecu.dump(on_percent=self.percent.emit, is_stop=self._stop.is_set)
+            self.finished_ok.emit(img)
+        elif self._op == "write":
+            raise KLineError("ABS write is not implemented yet (read-only): the OBD "
+                             "flash-write framing is not yet confirmed for this module.")
+        else:
+            raise KLineError("Only flash read is available for the ABS.")
 
     def _run_zf6hp(self, link):
         """ZF 6HP TCU (4F9910156A-family) over TP 2.0 -- reuses the already-open
@@ -1174,65 +1151,36 @@ class _Worker(QtCore.QThread):
             tp.is_stop = self._stop.is_set              # let Cancel abort a stuck wait
         except Exception:
             pass
-        # CAN-traffic log (debug): same two transports as Climatronic/Cluster --
-        # the 32-bit bridge logs from inside (via _open_link -> open_tp20(log_path)),
-        # the in-process channel is tapped here with CanTap.
-        can_log_fh = None
-        if self._can_log:
-            chan = getattr(tp, "can", None)
-            if chan is not None:                        # in-process path -> tap here
-                try:
-                    can_log_fh = open(self._can_log, "w", encoding="ascii")
-                    can_log_fh.write("# %s ZF6HP CAN debug trace\n" % branding.APP_NAME)
-                    can_log_fh.flush()
-                    _emit = _make_can_log_emit(can_log_fh)
-                    tp.can = _clim.CanTap(chan, _emit)
-                    self.stage.emit("CAN logging -> %s" % self._can_log)
-                except Exception as ex:                 # logging must never break the read
-                    self.stage.emit("(CAN log disabled: %s)" % ex)
-                    can_log_fh = None
-            else:                                       # bridge path -> logged inside the bridge
-                self.stage.emit("CAN logging (bridge) -> %s" % self._can_log)
-        try:
-            flash = _zf6hp.Zf6hpFlash(tp=tp, log=lambda s: self.stage.emit(s))
-            if self._op == "read":
-                self.stage.emit("Reading over TP 2.0 (6HP19 / 6HP26)...")
-                try:
-                    img = flash.read_image(on_percent=self.percent.emit,
-                                           is_stop=self._stop.is_set)
-                except Exception as ex:
-                    # Automatic only: fall back to UDS when TP 2.0 never got as
-                    # far as one KWP answer -- the channel setup failed, or the
-                    # TCU stayed silent. Any answer (even a refusal) means this
-                    # IS a TP 2.0 TCU and the error stands; so does a cancel.
-                    if (self._zf_transport == "auto" and not flash.answered
-                            and not self._stop.is_set() and _is_link_failure(ex)):
-                        raise _Tp20NoAnswer(str(ex)) from ex
-                    raise
-                self.finished_ok.emit(img)
-            elif self._op == "write":
-                # No on_stage= here: the constructor's log= callback above already
-                # routes write_areas' internal stage() calls to self.stage.emit,
-                # so passing on_stage too would double-emit every stage message.
-                # force_full=self._force_full bypasses the per-area checksum
-                # pre-check (see zf6hp.Zf6hpFlash.write_areas' docstring) and
-                # rewrites both areas unconditionally, same as the EDC16/EDC15
-                # "Force full write" checkbox already does for their own
-                # changed-sector/block checks.
-                flash.write_image(self._image, on_percent=self.percent.emit,
-                                  is_stop=self._stop.is_set, force_full=self._force_full)
-                self.finished_ok.emit(None)
-            else:
-                raise KLineError("Only flash read/write are available for the ZF6HP.")
-        finally:
-            if can_log_fh is not None:
-                try:
-                    frames = getattr(getattr(tp, "can", None), "frames", None)
-                    if frames is not None:
-                        self.stage.emit("CAN log: %d frames -> %s" % (frames, self._can_log))
-                    can_log_fh.close()
-                except Exception:
-                    pass
+        flash = _zf6hp.Zf6hpFlash(tp=tp, log=lambda s: self.stage.emit(s))
+        if self._op == "read":
+            self.stage.emit("Reading over TP 2.0 (6HP19 / 6HP26)...")
+            try:
+                img = flash.read_image(on_percent=self.percent.emit,
+                                       is_stop=self._stop.is_set)
+            except Exception as ex:
+                # Automatic only: fall back to UDS when TP 2.0 never got as
+                # far as one KWP answer -- the channel setup failed, or the
+                # TCU stayed silent. Any answer (even a refusal) means this
+                # IS a TP 2.0 TCU and the error stands; so does a cancel.
+                if (self._zf_transport == "auto" and not flash.answered
+                        and not self._stop.is_set() and _is_link_failure(ex)):
+                    raise _Tp20NoAnswer(str(ex)) from ex
+                raise
+            self.finished_ok.emit(img)
+        elif self._op == "write":
+            # No on_stage= here: the constructor's log= callback above already
+            # routes write_areas' internal stage() calls to self.stage.emit,
+            # so passing on_stage too would double-emit every stage message.
+            # force_full=self._force_full bypasses the per-area checksum
+            # pre-check (see zf6hp.Zf6hpFlash.write_areas' docstring) and
+            # rewrites both areas unconditionally, same as the EDC16/EDC15
+            # "Force full write" checkbox already does for their own
+            # changed-sector/block checks.
+            flash.write_image(self._image, on_percent=self.percent.emit,
+                              is_stop=self._stop.is_set, force_full=self._force_full)
+            self.finished_ok.emit(None)
+        else:
+            raise KLineError("Only flash read/write are available for the ZF6HP.")
 
     def _run_aisin09d(self, link):
         """Aisin TRx (VW 09D TR-60SN) TCU over TP 2.0 -- reuses the already-open
@@ -1243,16 +1191,31 @@ class _Worker(QtCore.QThread):
         transferData, the solved 09D checksum) but only proven against the
         simulator, so the UI keeps this module read-only until it is confirmed
         on a real TCU."""
-        tp = getattr(link, "tp", None)
-        if tp is None:
-            raise KLineError("Aisin TRx needs the CAN / TP 2.0 transport.")
-        try:
-            tp.is_stop = self._stop.is_set              # let Cancel abort a stuck wait
-        except Exception:
-            pass
-        flash = _aisin09d.Aisin09dFlash(tp=tp, log=lambda s: self.stage.emit(s))
+        log = lambda s: self.stage.emit(s)
+        if self._transport == "can":
+            tp = getattr(link, "tp", None)
+            if tp is None:
+                raise KLineError("Aisin TRx needs the CAN / TP 2.0 transport.")
+            try:
+                tp.is_stop = self._stop.is_set          # let Cancel abort a stuck wait
+            except Exception:
+                pass
+            flash = _aisin09d.Aisin09dFlash(tp=tp, log=log)
+            size = _aisin09d.IMAGE_SIZE
+        else:
+            # K-line: the same KWP2000 requests, framed ISO 14230 on the cable.
+            # Fast init first (5-baud as the fallback), then the same baud
+            # escalation as EDC16, back to 10400 if the TCU won't follow. The
+            # size is automatic: 1 MiB, or 512 KiB where the flash ends there.
+            speed = self._speed
+            if speed == "High" and not cable_allows_high(self._port):
+                speed = "Medium"
+            flash = _aisin09d.Aisin09dFlash(kline=link, log=log, speed=speed)
+            flash.tp.is_stop = self._stop.is_set
+            size = _aisin09d.KLINE_IMAGE_SIZE
         if self._op == "read":
-            img = flash.read_image(on_percent=self.percent.emit, is_stop=self._stop.is_set)
+            img = flash.read_image(on_percent=self.percent.emit, is_stop=self._stop.is_set,
+                                   image_size=size)
             self.finished_ok.emit(img)
         elif self._op == "write":
             # write_image() itself no longer refuses (it is implemented, but
@@ -1273,70 +1236,42 @@ class _Worker(QtCore.QThread):
         log = lambda m: self.stage.emit(m)
         if self._op == "read":
             data, meta = _vdo.read_cluster(link, log=log, on_percent=self.percent.emit,
-                                           is_stop=self._stop.is_set)
+                                           is_stop=self._stop.is_set,
+                                           fast=self._speed == "High")
             self.finished_ok.emit({"_vdo": "read", "eeprom": data, "meta": meta})
             return
         if self._op != "write":
             raise KLineError("Only read and write are available for the cluster.")
         rep = _vdo.write_cluster(link, self._image, log=log,
                                  on_percent=self.percent.emit,
-                                 is_stop=self._stop.is_set)
+                                 is_stop=self._stop.is_set,
+                                 fast=self._speed == "High",
+                                 verify=self._vdo_verify,
+                                 confirm_mismatch=self._vdo_confirm)
         self.finished_ok.emit({"_vdo": "write", "report": rep})
 
     def _tap_6hp_can(self, ch, tag):
         """Wrap a raw CAN channel in a frame tap that keeps a TX/RX tally
-        (TX-but-no-RX is the decisive datum when a read "gets no response"). A
-        full frame trace is written to a FILE only when the user set an explicit
-        CAN-log path (``self._can_log``) -- the read/write paths are now
-        hardware-verified, so the per-run diagnostic .log is no longer created by
-        default. The TX/RX tally is always folded into the status / error
-        message. Returns (wrapped_channel, bus) where ``bus`` has ``.summary()``
-        and ``.close()``."""
+        (TX-but-no-RX is the decisive datum when a read "gets no response") and,
+        when the flash trace is on, writes every frame to it. The tally is
+        always folded into the status / error message. Returns
+        (wrapped_channel, bus) where ``bus`` has ``.summary()`` and ``.close()``."""
         from . import zf6hp_uds as _uds
-        counts = {"tx": 0, "rx": 0}
-        path = self._can_log           # opt-in: trace to a file only if one was requested
-        fh = None
-        if path:
-            try:
-                fh = open(path, "w", encoding="ascii")
-                fh.write("# %s 6HP28 UDS %s CAN trace  tx=0x%03X rx=0x%03X rate=%s\n"
-                         % (branding.APP_NAME, tag, _uds.REQ_ID, _uds.RESP_ID,
-                            self._can_rate))
-                fh.flush()
-            except Exception as ex:             # noqa: BLE001 - tracing is best effort
-                self.stage.emit("(CAN trace disabled: %s)" % ex)
-                fh = None
-
-        def _emit(line):
-            if " can-tx " in line:
-                counts["tx"] += 1
-            elif " can " in line:
-                counts["rx"] += 1
-            if fh is not None:
-                try:
-                    fh.write(line + "\n")
-                    if (counts["tx"] + counts["rx"]) % 32 == 0:
-                        fh.flush()
-                except Exception:
-                    pass
-
-        wrapped = _clim.CanTap(ch, _emit)
+        from .flashtrace import TracedChannel
+        wrapped = TracedChannel(ch, self._trace)
+        if self._trace is not None:
+            self._trace.note("6HP28 UDS %s: tx=0x%03X rx=0x%03X rate=%s"
+                             % (tag, _uds.REQ_ID, _uds.RESP_ID, self._can_rate))
+        trace = self._trace
 
         class _Bus:
             def summary(_s):
-                tr = ("; trace: %s" % path) if fh is not None else ""
-                return " [bus: TX=%d RX=%d%s]" % (counts["tx"], counts["rx"], tr)
+                where = ("; trace: %s" % trace.path) if trace is not None else ""
+                return " [bus: TX=%d RX=%d%s]" % (wrapped.tx, wrapped.rx, where)
 
             def close(_s):
-                if fh is not None:
-                    try:
-                        fh.flush()
-                        fh.close()
-                    except Exception:
-                        pass
+                pass
 
-        if fh is not None:
-            self.stage.emit("CAN trace -> %s" % path)
         return wrapped, _Bus()
 
     def _run_zf6hp_read(self):
@@ -1370,18 +1305,18 @@ class _Worker(QtCore.QThread):
         # so the in-bridge raw drain is the fast AND reliable path there.
         # OVT_6HP_FORCE_RAW=1 forces the old per-frame path for A/B comparison.
         if isinstance(self._can, _j.BridgePassThru) and not force_raw:
-            log_path = self._can_log           # opt-in CAN trace (no per-run .log by default)
+            bt = self._bridge_trace()          # the flash trace, if on (the bridge's half)
             try:
                 io = self._can.open_iso_tp(
                     self._can_rate, tx_id=_uds.REQ_ID, rx_id=_uds.RESP_ID,
-                    func_id=_uds.FUNC_ID, log_path=log_path,
+                    func_id=_uds.FUNC_ID, **bt,
                     log=lambda m: self.stage.emit(m), is_stop=self._stop.is_set)
             except Exception as ex:             # old bridge build without iso_* ops
                 self.stage.emit("In-bridge ISO-TP unavailable (%s); using the "
                                 "per-frame path." % ex)
             else:
                 self.stage.emit("Read transport: in-bridge ISO-TP (one IPC per chunk)."
-                                + (" Trace: %s" % log_path if log_path else ""))
+                                + (" CAN frames go to the trace when it ends." if bt else ""))
                 reader = _uds.Zf6hpUdsReader(
                     io, on_stage=lambda m: self.stage.emit(m),
                     on_percent=self.percent.emit, is_stop=self._stop.is_set)
@@ -1463,18 +1398,18 @@ class _Worker(QtCore.QThread):
         # a functional (0x7DF) wake first. OVT_6HP_FORCE_RAW=1 forces the old
         # per-frame path for A/B.
         if isinstance(self._can, _j.BridgePassThru) and not force_raw:
-            log_path = self._can_log           # opt-in CAN trace (no per-run .log by default)
+            bt = self._bridge_trace()          # the flash trace, if on (the bridge's half)
             try:
                 io = self._can.open_iso_tp(
                     self._can_rate, tx_id=_uds.REQ_ID, rx_id=_uds.RESP_ID,
-                    func_id=_uds.FUNC_ID, log_path=log_path,
+                    func_id=_uds.FUNC_ID, **bt,
                     log=lambda m: self.stage.emit(m), is_stop=self._stop.is_set)
             except Exception as ex:             # old bridge build without iso_* ops
                 self.stage.emit("In-bridge ISO-TP unavailable (%s); using the "
                                 "per-frame path." % ex)
             else:
                 self.stage.emit("Write transport: in-bridge ISO-TP (one IPC per request)."
-                                + (" Trace: %s" % log_path if log_path else ""))
+                                + (" CAN frames go to the trace when it ends." if bt else ""))
                 _uds.wake_gateway(io, log=lambda m: self.stage.emit(m))
                 writer = _uds.Zf6hpUdsWriter(
                     io, on_stage=lambda m: self.stage.emit(m),
@@ -1546,6 +1481,8 @@ class _Worker(QtCore.QThread):
         def size_guard(image):
             """Stop before writing a file whose size doesn't match the chip
             the ECU actually has, rather than writing the wrong half."""
+            if flash.layout is _edc15.LAYOUT_1M or len(image) == _edc15.LAYOUT_1M.size:
+                raise _edc15.KLineError(_edc15.WRITE_1M_UNSUPPORTED)
             if len(image) != flash.layout.size:
                 raise _edc15.KLineError(
                     "This ECU has a %s flash, but the file to write is %d KB "
@@ -1687,7 +1624,6 @@ class FlashDialog(QtWidgets.QDialog):
             self.setWindowIcon(app_icon())
         except Exception:
             pass
-        self.resize(600, 340)
         v = QtWidgets.QVBoxLayout(self)
 
         if self._standalone:
@@ -1757,7 +1693,7 @@ class FlashDialog(QtWidgets.QDialog):
         v.addLayout(row2)
 
         self.force_full = QtWidgets.QCheckBox()
-        v.addWidget(self.force_full)
+        # (placed in the options grid below)
         self.boot_mode = QtWidgets.QCheckBox("Boot mode (boot pin bridged; whole-chip write)")
         self.boot_mode.toggled.connect(self._boot_toggled)
         # added to the Advanced group below, not to the main column
@@ -1768,16 +1704,6 @@ class FlashDialog(QtWidgets.QDialog):
             "Closing the laptop's lid mid-flash costs nothing: the job carries on and\n"
             "this end picks the result up when it reconnects.")
         self.staged_chk.toggled.connect(self._staged_toggled)
-        v.addWidget(self.staged_chk)
-
-        # Climatronic/Cluster/ABS: log all CAN bus traffic during the read to a file (debug).
-        self.can_log_chk = QtWidgets.QCheckBox("Log CAN traffic to a file")
-        self.can_log_chk.setToolTip(
-            "Save every CAN message of the next read to a .log file you choose.\n"
-            "For troubleshooting; it does not change the read.")
-        self.can_log_chk.setVisible(False)       # in Advanced (below)
-
-
 
         # Climatronic-only, WRITE: opt-in selective skip via a deterministic
         # baseline diff. Only sections that differ from the stock the .hvac was
@@ -1790,7 +1716,6 @@ class FlashDialog(QtWidgets.QDialog):
             "that original. A .sgo picked from disk always writes every sector.")
         self.hvac_selective.setChecked(False)
         self.hvac_selective.setVisible(False)
-        v.addWidget(self.hvac_selective)
 
         # Diagnostic: instead of a normal read, remove the id filter, send ONE TP2.0
         # channel-setup broadcast (to the ECU's fixed address, see _CAN_DEST) and log
@@ -1804,44 +1729,60 @@ class FlashDialog(QtWidgets.QDialog):
             "answers at the selected CAN speed (100000 for the C6 comfort CAN).")
         self.probe_chk.setVisible(False)         # in Advanced (below)
 
+        # VDO cluster write: read every block back afterwards (in Advanced)
+        self.vdo_verify_chk = QtWidgets.QCheckBox(
+            "Verify the cluster write by reading it back")
+        self.vdo_verify_chk.setToolTip(
+            "After writing the cluster EEPROM, read all of it back and compare. "
+            "Takes as long again as the write.\nOff: each block is still "
+            "confirmed by the cluster's own reply as it is written.")
+        try:
+            _s = QtCore.QSettings(*branding.QSETTINGS)
+            self.vdo_verify_chk.setChecked(
+                _as_bool(_s.value("flash/vdo_verify", False), False))
+        except Exception:
+            pass
+        self.vdo_verify_chk.toggled.connect(self._vdo_verify_toggled)
+        self.vdo_verify_chk.setVisible(False)    # in Advanced (below)
         self.fast_disable_chk = QtWidgets.QCheckBox("Disable Fast Init")
         self.fast_disable_chk.setChecked(False)      # fast init is the K-line default
         self.fast_disable_chk.setToolTip(
             "By default K-line uses ISO 14230 fast init (break pulse on a serial cable; "
             "hardware on a J2534 device), which the later CAN-init-only EDC16 ECUs need. "
             "Check this to force the 5-baud slow init instead (older K-line-init ECUs).")
-        v.addWidget(self.fast_disable_chk)
+        # ZF6HP over UDS (6HP28) only -- the counterpart of Force full write,
+        # which applies over TP 2.0 only. _zf_options_sync shows whichever one
+        # the next write would use.
+        self.uds_cal_only_chk = QtWidgets.QCheckBox("Calibration only")
+        self.uds_cal_only_chk.setToolTip(
+            "6HP28: from a full 2 MB image, write only the calibration and leave "
+            "the program as it is.")
+        self.uds_cal_only_chk.setVisible(False)
+        # One fixed block of options, whichever of them the unit shows: a hidden
+        # option keeps its room, so the window never changes shape. Force full
+        # write, Calibration only and Write changed sectors only never apply to
+        # the same unit, so they share a cell.
+        opts = QtWidgets.QGridLayout()
+        opts.setContentsMargins(0, 0, 0, 0)
+        for w in (self.force_full, self.uds_cal_only_chk, self.hvac_selective):
+            opts.addWidget(w, 0, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+        opts.addWidget(self.staged_chk, 0, 1)
+        opts.addWidget(self.fast_disable_chk, 1, 0)
+        opts.setColumnStretch(2, 1)
+        self.options_grid = opts
+        v.addLayout(opts)
+        _dlgbase.retain_space(self.force_full, self.uds_cal_only_chk,
+                              self.hvac_selective, self.staged_chk,
+                              self.fast_disable_chk, self.can_rate)
 
-        # EDC16 block selection: which regions a write (and the container read)
-        # covers. Only the blocks the loaded source actually contains data for are
-        # enabled -- see _refresh_blocks -- so a blank region is never offered or
-        # written over a good one. Selections persist via QSettings.
-        self.blocks_row = QtWidgets.QHBoxLayout()
-        self.blocks_lbl = QtWidgets.QLabel("Blocks:")
-        self.blocks_row.addWidget(self.blocks_lbl)
-        self.blk_boot_chk = QtWidgets.QCheckBox("Boot")
-        self.blk_boot_chk.setToolTip("The boot block. The riskiest to write; offered only "
-                                     "when the file contains it.")
-        self.blk_program_chk = QtWidgets.QCheckBox("Program")
-        self.blk_program_chk.setToolTip("The program (software).")
-        self.blk_cal_chk = QtWidgets.QCheckBox("Calibration")
-        self.blk_cal_chk.setToolTip("The calibration (maps).")
-        self.blk_mpc_chk = QtWidgets.QCheckBox("MPC")
-        self.blk_mpc_chk.setToolTip("The processor's internal flash. Needs a set that "
-                                    "holds it (a .dim, .sgo or full read).")
-        self._block_chks = {"boot": self.blk_boot_chk, "program": self.blk_program_chk,
-                            "cal": self.blk_cal_chk, "mpc": self.blk_mpc_chk}
-        for _c in self._block_chks.values():
-            self.blocks_row.addWidget(_c)
-        self.blocks_row.addStretch(1)
-        self._blocks_widgets = (self.blocks_lbl, self.blk_boot_chk, self.blk_program_chk,
-                                self.blk_cal_chk, self.blk_mpc_chk)
-        v.addLayout(self.blocks_row)
+        # (EDC16 Read full / Write full ask for their blocks when chosen:
+        # gui_edc16_blocks)
 
         srow = QtWidgets.QHBoxLayout()
         self.stage = QtWidgets.QLabel("Ready.")
         self.stage.setWordWrap(True)
         self.stage.setStyleSheet("font-weight:600")
+        _dlgbase.reserve_lines(self.stage, 2)        # a text swap never resizes the window
         srow.addWidget(self.stage, 1)
         self.timer_lbl = QtWidgets.QLabel("")
         self.timer_lbl.setStyleSheet("font-weight:600; font-family:monospace")
@@ -1849,7 +1790,7 @@ class FlashDialog(QtWidgets.QDialog):
                                     | QtCore.Qt.AlignmentFlag.AlignVCenter)
         srow.addWidget(self.timer_lbl)
         v.addLayout(srow)
-        self.bar = QtWidgets.QProgressBar()
+        self.bar = _dlgbase.PercentBar()             # shows its % on macOS too
         self.bar.setRange(0, 100)
         v.addWidget(self.bar)
 
@@ -1862,6 +1803,8 @@ class FlashDialog(QtWidgets.QDialog):
         self.note = QtWidgets.QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet("color:gray")
+        _dlgbase.reserve_lines(self.note, 5)         # the longest note fits
+        self.note.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
         v.addWidget(self.note)
 
         btns = QtWidgets.QHBoxLayout()
@@ -1871,136 +1814,29 @@ class FlashDialog(QtWidgets.QDialog):
         self.write_btn = QtWidgets.QPushButton("Write flash")
         self.write_btn.clicked.connect(lambda: self._start("write"))
         btns.addWidget(self.write_btn)
-        # EDC16-only: ARMED program-area (and MPC) write. ERASES + WRITES the code
-        # ranges over the confirmed programming session. Destructive -- recover via
-        # BDM if it fails. Only enabled for EDC16; guarded by a stern confirm.
-        self.prog_arm_btn = QtWidgets.QPushButton("Write blocks...")
-        self.prog_arm_btn.setToolTip(
-            "Erase and rewrite the blocks ticked above. A block the ECU already holds "
-            "is skipped, unless Force full write is ticked. If this fails, the ECU "
-            "needs a bench (BDM) recovery.")
-        self.prog_arm_btn.clicked.connect(lambda: self._start("write_program"))
-        self.prog_arm_btn.setVisible(False)
-        btns.addWidget(self.prog_arm_btn)
-        # EDC16-only: REAL read of the program area + MPC internal flash over OBD
-        # (non-destructive). Saves the uploaded regions to files.
-        self.prog_readfull_btn = QtWidgets.QPushButton("Full read...")
+        # EDC16-only: Read full (non-destructive) and Write full (ERASES and
+        # rewrites; recover via BDM if it fails), each asking for its blocks
+        # first (gui_edc16_blocks) and guarded by a stern confirm for a write.
+        self.prog_readfull_btn = QtWidgets.QPushButton("Read full...")
         self.prog_readfull_btn.setToolTip(
-            "Read the whole flash and the processor's internal flash into a project "
-            "(one set holding both). Takes longer; changes nothing.")
+            "Read the blocks you pick (program, calibration, internal flash) into "
+            "a project, as one set. Changes nothing.")
         self.prog_readfull_btn.clicked.connect(lambda: self._start("read_program_full"))
         self.prog_readfull_btn.setVisible(False)
-        btns.addWidget(self.prog_readfull_btn)
-        # EDC16-only: non-destructive BOOT read-level probe. Opens the read session
-        # and tries requestUpload of the boot/low region at each security level we
-        # hold a key for (LVL3 read, LVL1 write), to find which level (if any)
-        # unlocks reading boot. Reads no data; nothing is written.
-        self.prog_bootprobe_btn = QtWidgets.QPushButton("Boot read-level probe")
-        self.prog_bootprobe_btn.setToolTip(
-            "EDC16: find which security level unlocks READING the boot/low region. "
-            "Opens the read session and issues requestUpload(0x10000) at LVL3 (read) "
-            "and LVL1 (write) with 0x40000 as the readable control. Non-destructive.")
-        self.prog_bootprobe_btn.clicked.connect(lambda: self._start("boot_read_probe"))
-        self.prog_bootprobe_btn.setVisible(False)
-
-        self.prog_cksumprobe_btn = QtWidgets.QPushButton("Checksum-range probe")
-        self.prog_cksumprobe_btn.setToolTip(
-            "EDC16 NON-DESTRUCTIVE: open the programming session and run 0x31 C5 "
-            "checksum over candidate ranges to find which ranges the ECU will "
-            "VERIFY (73 C5) vs reject (7F 33 22) -- especially the 0xA0000+ region. "
-            "No erase, no write, no transfer.")
-        self.prog_cksumprobe_btn.clicked.connect(lambda: self._start("checksum_range_probe"))
-        self.prog_cksumprobe_btn.setVisible(False)
-
-        self.prog_seedprobe_btn = QtWidgets.QPushButton("Security level probe")
-        self.prog_seedprobe_btn.setToolTip(
-            "EDC16 NON-DESTRUCTIVE: enumerate the ECU's SecurityAccess levels -- send "
-            "0x27 seed requests (01/03/05/07/09/0B/0D/...) with NO key and record "
-            "which return a seed (level exists) vs NAK. No key is sent, nothing "
-            "unlocks. Finds candidate levels for reading the boot region.")
-        self.prog_seedprobe_btn.clicked.connect(lambda: self._start("security_seed_probe"))
-        self.prog_seedprobe_btn.setVisible(False)
-
-        self.prog_ramread_btn = QtWidgets.QPushButton("Read RAM / coding (probe)")
-        self.prog_ramread_btn.setToolTip(
-            "EDC16 NON-DESTRUCTIVE: readMemoryByAddress (0x23) of a RAM address at "
-            "each security level we hold. Defaults to the coding struct 0x7FE9E4 and "
-            "decodes K5 (the level-5 additive key constant at +0x27). Also tests "
-            "whether RAM / the EEPROM shadow is readable over OBD. Reads only.")
-        self.prog_ramread_btn.clicked.connect(lambda: self._start("ram_read_probe"))
-        self.prog_ramread_btn.setVisible(False)
-        # ZF6HP over UDS (6HP28) only -- the counterpart of Force full write,
-        # which applies over TP 2.0 only. _zf_options_sync shows whichever one
-        # the next write would use.
-        self.uds_cal_only_chk = QtWidgets.QCheckBox("Calibration only")
-        self.uds_cal_only_chk.setToolTip(
-            "6HP28: from a full 2 MB image, write only the calibration and leave "
-            "the program as it is.")
-        self.uds_cal_only_chk.setVisible(False)
-        # with the other options (Force full write's row), not on the button row
-        v.insertWidget(v.indexOf(self.force_full) + 1, self.uds_cal_only_chk)
-        self.prog_immoread_btn = QtWidgets.QPushButton("Read immo/coding (L3)")
-        self.prog_immoread_btn.setToolTip(
-            "EDC16 NON-DESTRUCTIVE: open the LVL3 read session and readMemoryByAddress "
-            "(0x23) the coding struct (0x7FE9E4), the coding mirror (0x8012C0) and the "
-            "ImmCtl RAM state, then decode the immobiliser status byte (struct+0x56) and "
-            "K5. Reads the live coding/immo image for immo-off; nothing is written.")
-        self.prog_immoread_btn.clicked.connect(lambda: self._start("immo_coding_read"))
-        self.prog_immoread_btn.setVisible(False)
-        self.prog_findeep_btn = QtWidgets.QPushButton("Find EEPROM (L3)")
-        self.prog_findeep_btn.setToolTip(
-            "EDC16 NON-DESTRUCTIVE: open the LVL3 read session and $23-sweep RAM to\n"
-            "locate the 4 KB EEPROM (or its shadow) by its own block-checksum structure\n"
-            "(canonical counters). Reports the base address + the immo bytes (0x156/0x176)\n"
-            "and blocks 0x140/0x160. Reads only.")
-        self.prog_findeep_btn.clicked.connect(lambda: self._start("find_eeprom"))
-        self.prog_findeep_btn.setVisible(False)
-        self.prog_gptverify_btn = QtWidgets.QPushButton("GPT crank/cam test")
-        self.prog_gptverify_btn.setToolTip(
-            "EDC16 + Scanmatik SM2: drive the crank (G28) and cam (G40) inputs with the\n"
-            "SM2 GPT/PWM outputs (vendor ioctl 0x8008), open a diagnostic session and read\n"
-            "the engine-speed measuring block to confirm the ECU believes it is running.\n"
-            "The pre-flight check before the EEPROM-find passes. Non-destructive.")
-        self.prog_gptverify_btn.clicked.connect(lambda: self._start("gpt_verify"))
-        self.prog_gptverify_btn.setVisible(False)
-        self.prog_gptverify_find_btn = QtWidgets.QPushButton("GPT → Find EEPROM")
-        self.prog_gptverify_find_btn.setToolTip(
-            "EDC16 + Scanmatik SM2: drive crank/cam GPT signals, confirm ECU\n"
-            "sees RPM via measuring block, then sweep for the EEPROM - one click.")
-        self.prog_gptverify_find_btn.clicked.connect(
-            lambda: self._start("gpt_verify_and_find"))
-        self.prog_gptverify_find_btn.setVisible(False)
-        # GPT options: gap-pattern + force-EEPROM
-        self.gpt_crank_only_chk = QtWidgets.QCheckBox("Crank only")
-        self.gpt_crank_only_chk.setChecked(True)   # default: avoid TIM4/DMA1 conflict
-        self.gpt_crank_only_chk.setToolTip(
-            "Skip cam (TIM4) GPT channel to avoid DMA1 conflict with K-LINE.\n"
-            "SM2 firmware does not tear down DMA1 after GPT, crashing on the\n"
-            "next PassThruOpen. Crank-only avoids TIM4 entirely.")
-        self.gpt_crank_only_chk.setVisible(False)
-        self.gpt_gap_chk = QtWidgets.QCheckBox("Gap pattern (60-2)")
-        self.gpt_gap_chk.setToolTip(
-            "Simulate missing-tooth gap: thread alternates set_pwm between\n"
-            "normal period and 3\u00d7 period so the EDC16 crank decoder\n"
-            "can synchronise.  Try this if uniform PWM gives 0 RPM.")
-        self.gpt_gap_chk.setVisible(False)
-        self.gpt_force_ee_chk = QtWidgets.QCheckBox("Force EEPROM sweep")
-        self.gpt_force_ee_chk.setToolTip(
-            "Run the EEPROM sweep even when the ECU did not report RPM.\n"
-            "Use when GPT signals are active but uniform PWM gives 0 RPM.")
-        self.gpt_force_ee_chk.setVisible(False)
-        self.gpt_crank_only_chk.toggled.connect(
-            lambda v: setattr(self, '_gpt_crank_only', v))
-        self.gpt_gap_chk.toggled.connect(
-            lambda v: setattr(self, '_gpt_gap_pattern', v))
-        self.gpt_force_ee_chk.toggled.connect(
-            lambda v: setattr(self, '_gpt_force_eeprom', v))
+        self.prog_arm_btn = QtWidgets.QPushButton("Write full...")
+        self.prog_arm_btn.setToolTip(
+            "Erase and rewrite the blocks you pick from the file in front. A block "
+            "the ECU already holds is skipped, unless Force full write is ticked. "
+            "If this fails, the ECU needs a bench (BDM) recovery.")
+        self.prog_arm_btn.clicked.connect(lambda: self._start("write_program"))
+        self.prog_arm_btn.setVisible(False)
+        # EDC16 research probes: built by gui_edc16, placed in Advanced below and
+        # shown only when gui_edc16.RESEARCH_TOOLS is on.
+        _gui16.make_research_widgets(self)
         self.ee_read_btn = QtWidgets.QPushButton("Read EEPROM")
         self.ee_read_btn.clicked.connect(lambda: self._start("ee_read"))
-        btns.addWidget(self.ee_read_btn)
         self.ee_write_btn = QtWidgets.QPushButton("Write EEPROM...")
         self.ee_write_btn.clicked.connect(lambda: self._start("ee_write"))
-        btns.addWidget(self.ee_write_btn)
         self.irom_btn = QtWidgets.QPushButton("Read internal ROM")
         self.irom_btn.setToolTip(
             "Read the C167's own 32 KB boot ROM (CPU 0x000000-0x007FFF), which holds the\n"
@@ -2012,11 +1848,9 @@ class FlashDialog(QtWidgets.QDialog):
         self.backup_btn = QtWidgets.QPushButton("Read flash + EEPROM")
         self.backup_btn.setToolTip("Read the flash and the EEPROM into a project (one set holding both)")
         self.backup_btn.clicked.connect(lambda: self._start("backup"))
-        btns.addWidget(self.backup_btn)
         self.restore_btn = QtWidgets.QPushButton("Write flash + EEPROM")
         self.restore_btn.setToolTip("Write the loaded backup's flash (changed sectors) and EEPROM")
         self.restore_btn.clicked.connect(lambda: self._start("restore"))
-        btns.addWidget(self.restore_btn)
         btns.addStretch(1)
         self.cancel_btn = QtWidgets.QPushButton("Cancel")
         self.cancel_btn.setEnabled(False)
@@ -2026,6 +1860,27 @@ class FlashDialog(QtWidgets.QDialog):
         self.close_btn.clicked.connect(self.reject)
         btns.addWidget(self.close_btn)
         v.addLayout(btns)
+        # Read and Write keep their slots (and a width that holds each of their
+        # labels, or the unit's own); the other operations sit in a block of four
+        # fixed slots under them. EDC16's Read / Write full and EDC15's EEPROM
+        # pair share the first two slots (never on the same unit), and a hidden
+        # button keeps its room, so no unit's choice moves anything.
+        _dlgbase.fit_width(self.read_btn, ("Read flash", "Read calibration", "Read EEPROM"))
+        _dlgbase.fit_width(self.write_btn, ("Write flash", "Write calibration", "Write EEPROM"))
+        xg = QtWidgets.QGridLayout()
+        xg.setContentsMargins(0, 0, 0, 0)
+        xg.addWidget(self.ee_read_btn, 0, 0)
+        xg.addWidget(self.prog_readfull_btn, 0, 0)
+        xg.addWidget(self.ee_write_btn, 0, 1)
+        xg.addWidget(self.prog_arm_btn, 0, 1)
+        xg.addWidget(self.backup_btn, 0, 2)
+        xg.addWidget(self.restore_btn, 0, 3)
+        xg.setColumnStretch(4, 1)
+        self.extras_grid = xg
+        v.addLayout(xg)
+        _dlgbase.retain_space(self.read_btn, self.write_btn, self.ee_read_btn,
+                              self.ee_write_btn, self.prog_readfull_btn,
+                              self.prog_arm_btn, self.backup_btn, self.restore_btn)
 
         # --- Advanced -----------------------------------------------------
         # A disclosure, not a setting: an arrow QToolButton that expands a plain
@@ -2035,11 +1890,11 @@ class FlashDialog(QtWidgets.QDialog):
         # row; expanded, an indented block.
         #
         # The controls here are the ones that are rarely the right answer: boot
-        # mode, the internal-ROM read, the EDC16 boot read-level / checksum-range /
-        # security-level / RAM / immo / EEPROM probes and the GPT test. Each keeps
-        # its own conditional visibility (`irom_btn` is EDC15-only,
-        # `prog_bootprobe_btn` EDC16-only), combined with the expanded state in
-        # `_adv_visible` rather than one overwriting the other.
+        # mode, the internal-ROM read, and the EDC16 research probes (shown only
+        # with gui_edc16.RESEARCH_TOOLS). Each keeps its own conditional
+        # visibility (`irom_btn` is EDC15-only, the probes EDC16-only), combined
+        # with the expanded state in `_adv_visible` rather than one overwriting
+        # the other.
         self.adv_toggle = QtWidgets.QToolButton()
         self.adv_toggle.setText("Advanced")
         self.adv_toggle.setCheckable(True)
@@ -2077,10 +1932,10 @@ class FlashDialog(QtWidgets.QDialog):
         advr.addWidget(self.prog_findeep_btn)
         advr.addStretch(1)
         abox.addLayout(advr)
-        # Cluster / ABS troubleshooting aids
+        # Cluster / ABS troubleshooting aid
         advc = QtWidgets.QHBoxLayout()
-        advc.addWidget(self.can_log_chk)
         advc.addWidget(self.probe_chk)
+        advc.addWidget(self.vdo_verify_chk)
         advc.addStretch(1)
         abox.addLayout(advc)
         advg = QtWidgets.QHBoxLayout()           # Scanmatik SM2 GPT test + its options
@@ -2111,6 +1966,7 @@ class FlashDialog(QtWidgets.QDialog):
         abox.addWidget(self.zf_transport_row)
         self.adv_panel.setVisible(False)
         v.addWidget(self.adv_panel)
+        v.addStretch(1)       # spare height goes below everything: nothing above moves
 
         self._adv_children = (self.boot_mode, self.irom_btn,
                               self.prog_bootprobe_btn, self.prog_cksumprobe_btn,
@@ -2118,9 +1974,11 @@ class FlashDialog(QtWidgets.QDialog):
                               self.prog_immoread_btn, self.prog_findeep_btn,
                               self.prog_gptverify_btn, self.prog_gptverify_find_btn,
                               self.gpt_crank_only_chk, self.gpt_gap_chk,
-                              self.gpt_force_ee_chk, self.can_log_chk,
-                              self.probe_chk, self.zf_transport_row)
+                              self.gpt_force_ee_chk,
+                              self.probe_chk, self.vdo_verify_chk,
+                              self.zf_transport_row)
         self._adv_sync()
+        self._init_size()
 
         self.ecu_box.currentIndexChanged.connect(self._ecu_changed)
         self.ecu_box.currentIndexChanged.connect(self._ecu_picked)
@@ -2196,7 +2054,6 @@ class FlashDialog(QtWidgets.QDialog):
         self._update_file_label()
         self._default_ecu_from_file()
         self._ecu_changed()
-        self._refresh_blocks()
         return True
 
     # ---- UI state ----
@@ -2212,12 +2069,12 @@ class FlashDialog(QtWidgets.QDialog):
         # / CAN-log debug aids are NOT part of this shared shape any more --
         # ZF6HP dropped them (2026-09-22, see the diag_ecu check further down) --
         # they stay Climatronic/Cluster-only now.
-        clim = self._ecu() in CAN_ONLY_ECUS
+        clim = self._ecu() in CLIM_SHAPE_ECUS
         if self._ecu() in KLINE_ONLY_ECUS and self._is_can():
             i = self.transport_box.findData("kline")
             if i >= 0:
                 self.transport_box.setCurrentIndex(i)   # -> _transport_changed
-        if clim and not self._is_can():
+        if self._ecu() in CAN_ONLY_ECUS and not self._is_can():
             i = self.transport_box.findData("can")
             if i >= 0:
                 self.transport_box.setCurrentIndex(i)   # -> _transport_changed
@@ -2226,13 +2083,13 @@ class FlashDialog(QtWidgets.QDialog):
                 # branch needed to do. But _transport_changed() does NOT call
                 # _ecu_changed() back, so everything BELOW this early return --
                 # can_dest, window title, force_full/note text, and critically
-                # can_log_chk.setVisible(clim) -- never ran for whichever ECU
+                # the Advanced-panel checkboxes' visibility -- never ran for whichever ECU
                 # triggered this branch. Harmless when the user manually picks
                 # a clim ECU from a non-CAN state (they'd naturally reselect it
                 # or the visible effect was never checked), but _restore_settings()
                 # hitting this exact path on dialog open (ECU restored to ZF6HP
                 # while transport was still at its pre-restore kline default)
-                # left can_log_chk permanently hidden until the user manually
+                # left them permanently hidden until the user manually
                 # switched ECU away and back -- exactly what unmasked this: two
                 # ECU selections in a row skips the early-return the SECOND time
                 # (transport is already "can" by then), which is why that
@@ -2321,10 +2178,9 @@ class FlashDialog(QtWidgets.QDialog):
         self.read_btn.setVisible(self._ecu() != "Climatronic")
         self.write_btn.setVisible(True)
         diag_ecu = self._ecu() in ("Cluster", "ABS")
-        self._adv_visible(self.can_log_chk, diag_ecu)
         self._adv_visible(self.probe_chk, diag_ecu)
+        self._adv_visible(self.vdo_verify_chk, self._ecu() == VDO_ECU)
         if not diag_ecu:
-            self.can_log_chk.setChecked(False)
             self.probe_chk.setChecked(False)
         if clim:                                    # staged path must never fire for HVAC
             self.staged_chk.setChecked(False)
@@ -2338,27 +2194,16 @@ class FlashDialog(QtWidgets.QDialog):
         is_edc16 = self._ecu() == "EDC16"
         self.prog_arm_btn.setVisible(is_edc16)
         self.prog_readfull_btn.setVisible(is_edc16)
-        self._adv_visible(self.prog_bootprobe_btn, is_edc16)
-        self._adv_visible(self.prog_cksumprobe_btn, is_edc16)
-        self._adv_visible(self.prog_seedprobe_btn, is_edc16)
-        self._adv_visible(self.prog_ramread_btn, is_edc16)
-        self._adv_visible(self.prog_immoread_btn, is_edc16)
-        self._adv_visible(self.prog_findeep_btn, is_edc16)
-        self._adv_visible(self.prog_gptverify_btn, is_edc16)
-        self._adv_visible(self.prog_gptverify_find_btn, is_edc16)
-        self._adv_visible(self.gpt_crank_only_chk, is_edc16)
-        self._adv_visible(self.gpt_gap_chk, is_edc16)
-        self._adv_visible(self.gpt_force_ee_chk, is_edc16)
-        for _w in self._blocks_widgets:
-            _w.setVisible(is_edc16)
-        if is_edc16:
-            self._refresh_blocks()
-        else:
-            for _c in self._block_chks.values():
-                _c.setChecked(False)
+        for _name in _gui16.RESEARCH_WIDGETS:
+            self._adv_visible(getattr(self, _name), _gui16.research_visible(is_edc16))
+        # EDC16: the plain Read / Write move the calibration only
+        self.read_btn.setText("Read calibration" if is_edc16 else "Read flash")
+        self.write_btn.setText("Write calibration" if is_edc16 else "Write flash")
         if clim:
-            self.speed_box.setEnabled(False)
-            self.fast_disable_chk.setVisible(False)
+            # the Aisin TRx on K-line keeps the init choice and the speed list
+            tcu_kline = self._ecu() in EITHER_BUS_TCU and not self._is_can()
+            self.speed_box.setEnabled(tcu_kline)
+            self.fast_disable_chk.setVisible(tcu_kline)
             if self._ecu() == "Climatronic":
                 self.note.setText(
                     "Write flashes the Climatronic set in front, or a chosen .sgo (this "
@@ -2379,8 +2224,12 @@ class FlashDialog(QtWidgets.QDialog):
                     "during a write.</b>")
             elif self._ecu() == "Aisin TRx":
                 self.note.setText(
-                    "Aisin 09D. Read goes into a project (the whole flash). Writing is "
-                    "not available yet. The TR-80SD (0C8/09G) is not supported.")
+                    "Aisin 09D, over CAN / TP 2.0 (1 MB flash) or K-line (5-baud init at "
+                    "0x02; 1 MB or 512 KB flash, found automatically). K-line Speed: Low stays "
+                    "at 10400 (a full read takes about 50 minutes); Medium / High ask the TCU "
+                    "to go faster and fall back to 10400 if it or the cable cannot. Read goes "
+                    "into a project. "
+                    "Writing is not available yet. The TR-80SD (0C8/09G) is not supported.")
             else:
                 self.note.setText(
                     "Read goes into a project (the calibration). Write rewrites only "
@@ -2389,6 +2238,8 @@ class FlashDialog(QtWidgets.QDialog):
 
         if self._ecu() == VDO_ECU:
             self._vdo_ui()
+        if hasattr(self, "_adv_base"):
+            self._adv_refit()                       # Advanced open: its rows changed
 
     # ---- ZF6HP: one entry, two transports ----
     def _zf_override(self):
@@ -2444,6 +2295,13 @@ class FlashDialog(QtWidgets.QDialog):
         self._zf_options_sync()
         self._zf_keep_visible()
 
+    def _vdo_verify_toggled(self, on):
+        try:
+            s = QtCore.QSettings(*branding.QSETTINGS)
+            s.setValue("flash/vdo_verify", bool(on))
+        except Exception:
+            pass
+
     def _vdo_ui(self):
         """The VDO cluster's shape: K-line only, always 5-baud init at 10400,
         read and write of the 2 KB EEPROM, nothing else."""
@@ -2451,27 +2309,42 @@ class FlashDialog(QtWidgets.QDialog):
             i = self.transport_box.findData("kline")
             if i >= 0:
                 self.transport_box.setCurrentIndex(i)
-        self.speed_box.setEnabled(False)
+        self.speed_box.setEnabled(True)
         self.fast_disable_chk.setVisible(False)
         self.force_full.setVisible(False)
         self.staged_chk.setChecked(False)
         self.staged_chk.setVisible(False)
         self.write_btn.setEnabled(True)
+        self.read_btn.setText("Read EEPROM")         # the cluster has an EEPROM, no flash
+        self.write_btn.setText("Write EEPROM")
         self.write_btn.setToolTip("Write the cluster EEPROM that is open in %s." % branding.APP_NAME)
         self.note.setText(
             "Mk4-era VDO cluster. Read goes into a project (its 2 KB EEPROM). Write "
-            "writes the cluster EEPROM in front. Ignition on, engine off.")
+            "writes the cluster EEPROM in front. Ignition on, engine off. Speed: High "
+            "sends one command per block (about twice as fast); Low is the "
+            "standard dialog.")
 
     def _rebuild_speeds(self):
         """Populate the speed list for the current ECU, dropping High when the
         selected cable can't hold it (CH340/CH341 or a J2534 device -> Medium cap)."""
         edc15 = self._ecu() == "EDC15"
-        labels = list(EDC15_SPEEDS if edc15 else EDC16_SPEEDS)
-        keys = list(SPEED_KEYS if edc15 else EDC16_SPEED_KEYS)
-        if not edc15 and not cable_allows_high(self.port_box.currentData()):
+        aisin = self._ecu() == "Aisin TRx"
+        vdo = self._ecu() == VDO_ECU
+        labels = list(VDO_SPEEDS if vdo else AISIN_SPEEDS if aisin
+                      else EDC15_SPEEDS if edc15 else EDC16_SPEEDS)
+        keys = list(VDO_SPEED_KEYS if vdo else SPEED_KEYS if (edc15 or aisin)
+                    else EDC16_SPEED_KEYS)
+        if not edc15 and not vdo and not cable_allows_high(self.port_box.currentData()):
             labels = labels[:-1]                     # drop High (244898) for capped cables
             keys = keys[:-1]
         prev = self.speed_box.currentData()
+        if aisin and getattr(self, "_speeds_for", None) != "Aisin TRx":
+            prev = "Low"                             # a fresh pick starts at 10400
+        elif not aisin and getattr(self, "_speeds_for", None) == "Aisin TRx":
+            prev = None                              # the Aisin's Low is not the others' Low
+        if vdo != (getattr(self, "_speeds_for", None) == VDO_ECU):
+            prev = "High" if vdo else None           # the cluster's list is its own
+        self._speeds_for = self._ecu()
         self.speed_box.blockSignals(True)
         self.speed_box.clear()
         for lbl, key in zip(labels, keys):
@@ -2486,7 +2359,7 @@ class FlashDialog(QtWidgets.QDialog):
         self._apply_staged_default()                 # boot mode has no staged job
         boot = self.boot_mode.isChecked() and self._ecu() == "EDC15"
         # boot mode has no speed negotiation / sector logic and cannot reach the EEPROM
-        self.speed_box.setEnabled(not boot)
+        self.speed_box.setEnabled(not boot and self._speed_applies())
         self.force_full.setEnabled(not boot)
         for w in (self.ee_read_btn, self.ee_write_btn, self.backup_btn, self.restore_btn,
                   self.irom_btn):
@@ -2500,6 +2373,17 @@ class FlashDialog(QtWidgets.QDialog):
     def _transport_kind(self):
         tb = getattr(self, "transport_box", None)
         return tb.currentData() if tb is not None else "kline"
+
+    #: control units whose K-line speed is the user's choice (the rest talk at
+    #: a rate of their own: the VDO cluster 10400, the TCUs/HVAC over CAN)
+    _SPEED_ECUS = ("EDC16", "EDC15", VDO_ECU) + EITHER_BUS_TCU
+
+    def _speed_applies(self) -> bool:
+        """The Speed list means something for the control unit picked (and
+        the transport): K-line EDC15 / EDC16. One rule, so a finished job
+        (``_busy(False)``) does not switch the list back on for a unit that
+        never offered it."""
+        return self._ecu() in self._SPEED_ECUS and not self._is_can()
 
     def _is_can(self):
         return self._transport_kind() == "can"
@@ -2521,8 +2405,9 @@ class FlashDialog(QtWidgets.QDialog):
         finally:
             self._ecu_from_transport = False
         self.ecu_box.setEnabled(True)               # EDC16 is the one ECU on both transports
-        self.speed_box.setEnabled(not can)
-        self.fast_disable_chk.setVisible(not can and self._ecu() not in ("EDC15", VDO_ECU))  # K-line, EDC16 only
+        self.speed_box.setEnabled(not can and self._speed_applies())
+        self.fast_disable_chk.setVisible(                       # K-line, EDC16 / Aisin TRx
+            not can and self._ecu() not in ("EDC15", VDO_ECU))
         # Ask the upcoming rescan for the cable this (controller, transport)
         # last used. The scan is off-thread, so this is the same hand-off
         # _restore_settings() uses rather than a synchronous match.
@@ -2780,6 +2665,20 @@ class FlashDialog(QtWidgets.QDialog):
                 buf = bytearray(b"\xFF" * 0x81000)      # VMA 0x400000..0x481000
                 buf[0x4000:0x4000 + len(sec.plaintext)] = sec.plaintext
                 return bytes(buf), "sgo"
+        # a project's tab: the internal flash kept with its set (a companion
+        # or a member of the set), as saved -- already final
+        ref = getattr(getattr(self._window, "current", None), "project_ref", None)
+        if ref is not None:
+            try:
+                from ..project import companions as _co
+                from . import edc16_blocks as _b
+                m = _co.bytes_of(ref.doc.project, ref.set.id, "mpc",
+                                 branch=ref.bid)
+                m = _b.pad_mpc(m) if m is not None else None
+                if m is not None and len(m) >= _b.MPC_IMAGE_SIZE:
+                    return bytes(m), "project"
+            except Exception:
+                pass
         return None, None
 
     def _source_program_end(self):
@@ -2812,24 +2711,6 @@ class FlashDialog(QtWidgets.QDialog):
             mpc = None
         return image, mpc
 
-    def _refresh_blocks(self):
-        """Enable each block checkbox only when the loaded source contains that
-        region (a blank region is never offered, so it can't be written over a
-        good one). Called from _ecu_changed for EDC16."""
-        if self._ecu() != "EDC16":
-            return
-        try:
-            from . import edc16_program as _edc16p
-            image, mpc = self._block_sources()
-            avail = _edc16p.available_blocks(image, mpc)
-        except Exception:
-            avail = {}
-        for key, chk in self._block_chks.items():
-            on = bool(avail.get(key))
-            chk.setEnabled(on)
-            if not on:
-                chk.setChecked(False)
-
     def _adv_open(self) -> bool:
         return bool(getattr(self, "adv_toggle", None)
                     and self.adv_toggle.isChecked())
@@ -2849,16 +2730,26 @@ class FlashDialog(QtWidgets.QDialog):
         self._adv_show_toggle()
 
     def _adv_show_toggle(self):
-        """Offer Advanced only when this ECU has something in it: an empty
-        disclosure is clutter."""
+        """Advanced is always on screen (so the window keeps its shape) but
+        only usable when this ECU has something in it."""
         toggle = getattr(self, "adv_toggle", None)
         if toggle is None:
             return
         any_ = any(getattr(w, "_adv_wanted", True)
                    for w in getattr(self, "_adv_children", ()))
-        toggle.setVisible(any_)
+        toggle.setVisible(True)
+        toggle.setEnabled(any_)
+        toggle.setToolTip(self._ADV_TIP if any_
+                          else "Nothing in Advanced applies to this control unit.")
         if getattr(self, "adv_panel", None) is not None:
-            self.adv_panel.setVisible(any_ and self._adv_open())
+            show = any_ and self._adv_open()
+            if show and not self.adv_panel.isVisibleTo(self) \
+                    and getattr(self, "_adv_base", None) is None:
+                # the panel is about to appear (an ECU change made Advanced
+                # usable while it is open): the layout grows the window on its
+                # next pass, so the collapsed size is taken now, before that
+                self._adv_base = QtCore.QSize(self.size())
+            self.adv_panel.setVisible(show)
 
     def _adv_sync(self):
         """Apply the expanded state AND each control's own rule."""
@@ -2873,6 +2764,74 @@ class FlashDialog(QtWidgets.QDialog):
                 QtCore.Qt.ArrowType.DownArrow if on
                 else QtCore.Qt.ArrowType.RightArrow)
 
+    _ADV_TIP = ("Diagnostics and recovery. Nothing here is needed for an ordinary "
+                "read, write or backup.")
+
+    #: QSettings key of the remembered size of the dialog (collapsed Advanced)
+    _SIZE_KEY = "flash/dialog_size"
+
+    def _init_size(self):
+        """The dialog's size with Advanced collapsed: what was left last time
+        when that is larger than the content needs. Everything that could
+        change the content's size is reserved (see gui_dialogbase), so this is
+        the same for every unit and transport."""
+        self.layout().activate()
+        hint = self.sizeHint()
+        saved = _dlgbase.load_size(self._SIZE_KEY)
+        size = hint if saved is None else QtCore.QSize(
+            max(saved.width(), hint.width()), max(saved.height(), hint.height()))
+        self._adv_base = None
+        self.resize(size)
+
+    def _adv_absorb(self):
+        """Advanced open: a manual resize since the window was last fitted is
+        the difference between the window now and the size ``_adv_refit`` gave
+        it. Fold that offset into the collapsed base size, so the user's
+        resize survives collapsing (and is what is remembered)."""
+        base = getattr(self, "_adv_base", None)
+        fitted = getattr(self, "_adv_fitted", None)
+        if base is None or fitted is None:
+            return
+        cur = self.size()
+        dw, dh = cur.width() - fitted.width(), cur.height() - fitted.height()
+        if dw or dh:
+            self._adv_base = QtCore.QSize(max(base.width() + dw, 1),
+                                          max(base.height() + dh, 1))
+            self._adv_fitted = QtCore.QSize(cur)
+
+    def _base_size(self):
+        """The size with Advanced collapsed (what is remembered)."""
+        self._adv_absorb()
+        return self._adv_base if getattr(self, "_adv_base", None) is not None \
+            else self.size()
+
+    def done(self, r):
+        try:
+            _dlgbase.save_size(self._SIZE_KEY, self._base_size())
+        except Exception:                      # noqa: BLE001
+            pass
+        super().done(r)
+
+    def _adv_refit(self):
+        """Advanced open: the window is the base size plus the panel, in height
+        only. Collapsed: exactly the base size again."""
+        self._adv_absorb()                           # a manual resize while open
+        base = getattr(self, "_adv_base", None)
+        panel_on = self._adv_open() and self.adv_panel.isVisibleTo(self)
+        if panel_on:
+            if base is None:
+                base = self._adv_base = QtCore.QSize(self.size())
+            self.layout().activate()
+            extra = self.adv_panel.sizeHint().height() + self.layout().spacing()
+            self.resize(base.width(), base.height() + extra)
+            self._adv_fitted = QtCore.QSize(self.size())
+        elif base is not None:
+            self._adv_base = None
+            self._adv_fitted = None
+            self.layout().invalidate()
+            self.layout().activate()                # the minimum height drops first
+            self.resize(base)
+
     def _adv_toggled(self, on: bool):
         # Boot mode changes what Read and Write DO, so it must never be armed out
         # of sight: while it is ticked the section refuses to collapse.
@@ -2880,6 +2839,8 @@ class FlashDialog(QtWidgets.QDialog):
                        or self._zf_forced()):
             self.adv_toggle.setChecked(True)
             return
+        if on and getattr(self, "_adv_base", None) is None:
+            self._adv_base = QtCore.QSize(self.size())   # before the panel grows the window
         self._adv_sync()
         try:
             s = QtCore.QSettings(*branding.QSETTINGS)
@@ -2888,21 +2849,16 @@ class FlashDialog(QtWidgets.QDialog):
             s.endGroup()
         except Exception:
             pass
-        self.adjustSize()
+        self._adv_refit()
 
     #: what is remembered for each module on its own (Bear: the flasher
     #: opened from the ECU tab and from the TCU tab must each bring back
     #: their own connection, not whichever was used last)
-    _PER_MODULE = ("transport", "speed", "can_rate", "blk_boot", "blk_program",
-                   "blk_cal", "blk_mpc", "zf6hp_transport")
+    _PER_MODULE = ("transport", "speed", "can_rate", "zf6hp_transport")
 
     def _module_values(self):
         return {"transport": self._transport_kind(), "speed": self._speed(),
                 "can_rate": self.can_rate.currentData() or 500000,
-                "blk_boot": self.blk_boot_chk.isChecked(),
-                "blk_program": self.blk_program_chk.isChecked(),
-                "blk_cal": self.blk_cal_chk.isChecked(),
-                "blk_mpc": self.blk_mpc_chk.isChecked(),
                 "zf6hp_transport": self._zf_override()}
 
     def _save_settings(self, ecu=None):
@@ -2960,7 +2916,7 @@ class FlashDialog(QtWidgets.QDialog):
 
     def _apply_module_settings(self, ecu, transport=True):
         """Bring back ``ecu``'s own transport (unless ``transport`` is False),
-        speed, CAN rate, blocks and cable (when it has any remembered)."""
+        speed, CAN rate and cable (when it has any remembered)."""
         vals = self._module_settings(ecu)
         self._restoring = True
         try:
@@ -2989,11 +2945,6 @@ class FlashDialog(QtWidgets.QDialog):
                 j = self.speed_box.findData(sp)
                 if j >= 0:
                     self.speed_box.setCurrentIndex(j)
-            self._refresh_blocks()
-            for key, chk in self._block_chks.items():
-                v = vals.get("blk_" + key)
-                if chk.isEnabled() and v is not None:
-                    chk.setChecked(_as_bool(v, False))
         finally:
             self._restoring = False
 
@@ -3022,6 +2973,10 @@ class FlashDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._shown_ecu = new
+        # Force full write is a one-off for the write in front of you, never a
+        # setting: it is not remembered, and a tick made for one control unit
+        # does not carry over to the next one picked.
+        self.force_full.setChecked(False)
         self._apply_module_settings(
             new, transport=not getattr(self, "_ecu_from_transport", False))
 
@@ -3117,9 +3072,7 @@ class FlashDialog(QtWidgets.QDialog):
                   self.prog_arm_btn, self.prog_cksumprobe_btn,
                   self.prog_seedprobe_btn, self.prog_bootprobe_btn,
                   self.prog_ramread_btn, self.prog_readfull_btn,
-                  self.zf_transport_box, self.uds_cal_only_chk,
-                  self.blk_boot_chk, self.blk_program_chk,
-                  self.blk_cal_chk, self.blk_mpc_chk):
+                  self.zf_transport_box, self.uds_cal_only_chk, self.vdo_verify_chk):
             w.setEnabled(not on)
         self.cancel_btn.setEnabled(on)
         if on:
@@ -3138,7 +3091,7 @@ class FlashDialog(QtWidgets.QDialog):
                 self, "Flashing",
                 "Select a J2534 device." if can else "Select a K-line cable or J2534 device.")
             return
-        if can and op not in ("read", "write", "write_program", "read_program_full", "boot_read_probe", "checksum_range_probe", "security_seed_probe", "ram_read_probe"):
+        if can and op not in ("read", "write") + _gui16.CAN_OPS:
             QtWidgets.QMessageBox.warning(
                 self, "Flashing", "Over CAN only flash read/write are available; "
                 "EEPROM and EDC15 need K-line.")
@@ -3169,6 +3122,7 @@ class FlashDialog(QtWidgets.QDialog):
                 zf_path = self._zf_override()
         clim_hvac = self._ecu() == "Climatronic"
         image = None
+        edc16_opts = None
         # --- Climatronic write / test-write: flash the image open in the app AS
         # IT IS NOW (unsaved edits included, like every other write in this
         # dialog); only prompt for a file if no Climatronic image is open ---
@@ -3241,116 +3195,11 @@ class FlashDialog(QtWidgets.QDialog):
                     % (what, self._zf_guess_note(zf_choice))) \
                     != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
-        elif op == "write_program":
-            if self._ecu() != "EDC16":
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "Block write is EDC16 only.")
+        elif op in _gui16.BLOCK_OPS or op in _gui16.RESEARCH_OPS:
+            edc16_opts = _gui16.prepare(self, op)
+            if edc16_opts is None:
                 return
-            sel = [k for k, c in self._block_chks.items()
-                   if c.isChecked() and c.isEnabled()]
-            if not sel:
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "Tick at least one block to write "
-                    "(only blocks present in the loaded source can be selected).")
-                return
-            try:
-                image = self._prepare_write_image()   # corrects external incl program sig
-            except _WriteCancelled:
-                return
-            except Exception as ex:
-                QtWidgets.QMessageBox.critical(self, "Flashing", str(ex))
-                return
-            _boot_warn = ("\n\n*** BOOT BLOCK INCLUDED ***\n"
-                          "Erases and rewrites boot (0x10000-0x3FEFF) FIRST. HIGHEST "
-                          "brick risk -- a failed boot erase needs BDM recovery."
-                          if self.blk_boot_chk.isChecked() else "")
-            _labels = {"boot": "boot", "program": "program", "cal": "calibration",
-                       "mpc": "MPC"}
-            _sel_txt = ", ".join(_labels[k] for k in
-                                 ("boot", "program", "cal", "mpc") if k in sel)
-            _skip = ("" if self.force_full.isChecked() else
-                     "\n\nEach block is pre-verified (0x31 C5) and SKIPPED if the ECU "
-                     "already holds it; tick Force full write to rewrite regardless.")
-            if QtWidgets.QMessageBox.question(
-                    self, "Write blocks — ARM",
-                    "DESTRUCTIVE: this ERASES and REPROGRAMS these blocks: %s."
-                    % _sel_txt
-                    + _boot_warn + _skip + "\n\n"
-                    "A failed or interrupted erase/write can leave the ECU unbootable"
-                    " -- recover via BDM.\n\nProceed with the armed write?") \
-                    != QtWidgets.QMessageBox.StandardButton.Yes:
-                return
-        elif op == "read_program_full":
-            if self._ecu() != "EDC16":
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "Program/MPC read is EDC16 only.")
-                return
-        elif op == "boot_read_probe":
-            if self._ecu() != "EDC16":
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "Boot read-level probe is EDC16 only.")
-                return
-            if QtWidgets.QMessageBox.question(
-                    self, "Boot read-level probe",
-                    "Non-destructive: open the read session and try requestUpload of "
-                    "the boot/low region (0x10000) at LVL3 (read) and LVL1 (write) to "
-                    "find which security level unlocks reading boot. 0x40000 is the "
-                    "readable control.\n\nNo data is transferred, nothing is written."
-                    "\n\nProceed?") \
-                    != QtWidgets.QMessageBox.StandardButton.Yes:
-                return
-        elif op == "checksum_range_probe":
-            if self._ecu() != "EDC16":
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "Checksum-range probe is EDC16 only.")
-                return
-            try:
-                image = self._prepare_write_image()
-            except Exception:
-                image = None
-            if QtWidgets.QMessageBox.question(
-                    self, "Checksum-range probe",
-                    "Non-destructive: open the programming session and run 0x31 C5 "
-                    "checksum over candidate ranges to find which the ECU will VERIFY "
-                    "(73 C5) vs reject (7F 33 22) -- especially the 0xA0000+ region.\n\n"
-                    "Nothing is erased, written or transferred.\n\nProceed?") \
-                    != QtWidgets.QMessageBox.StandardButton.Yes:
-                return
-        elif op == "security_seed_probe":
-            if self._ecu() != "EDC16":
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "Security level probe is EDC16 only.")
-                return
-            if QtWidgets.QMessageBox.question(
-                    self, "Security level probe",
-                    "Non-destructive: connect and send SecurityAccess seed requests "
-                    "(0x27 01/03/05/07/...) with NO key, to enumerate which security "
-                    "levels the ECU has. No key is sent, nothing unlocks, nothing is "
-                    "written.\n\nProceed?") \
-                    != QtWidgets.QMessageBox.StandardButton.Yes:
-                return
-        elif op == "ram_read_probe":
-            if self._ecu() != "EDC16":
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "RAM read probe is EDC16 only.")
-                return
-            txt, ok = QtWidgets.QInputDialog.getText(
-                self, "Read RAM / coding (probe)",
-                "24-bit RAM address and byte count (hex), e.g. 7FE9E4 40.\n"
-                "Default reads the coding struct and decodes the level-5 K5.",
-                text="7FE9E4 40")
-            if not ok:
-                return
-            try:
-                parts = txt.replace(",", " ").split()
-                self._ram_probe_addr = int(parts[0], 16) & 0xFFFFFF
-                self._ram_probe_size = (int(parts[1], 16) if len(parts) > 1 else 0x40) & 0xFF
-                if self._ram_probe_size == 0:
-                    self._ram_probe_size = 0x40
-            except Exception:
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing", "Couldn't parse the address/size.")
-                return
+            image = edc16_opts.pop("image", None)
         elif op == "ee_write":
             image = self._held_eeprom()
             source = "the loaded backup's EEPROM" if image is not None else None
@@ -3389,51 +3238,8 @@ class FlashDialog(QtWidgets.QDialog):
         self._op = op
         self._save_settings()
         self.bar.setValue(0)
-        # Climatronic/Cluster/ABS debug: if logging is on, pick a file for the CAN
-        # traffic log. (ZF6HP dropped out of this in 2026-09-22: the checkbox is no
-        # longer shown for it -- see _ecu_changed -- now that its read/write path is
-        # fully solved, so self._can_log is simply always None for a ZF6HP job.)
-        can_log = None
-        if (self._ecu() in ("Cluster", "ABS") and self.can_log_chk.isVisible()
-                and self.can_log_chk.isChecked()):
-            from .. import recent as _recent
-            default = os.path.join(
-                _recent.get_last_dir("log"),
-                "%s-canlog-%s.log" % (self._ecu().lower(),
-                                      datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
-            path, _f = QtWidgets.QFileDialog.getSaveFileName(
-                self, "Save CAN traffic log", default, "Log files (*.log *.txt);;All files (*)")
-            if path:
-                _recent.set_last_dir(os.path.dirname(path), "log")
-                can_log = path
-        # EDC16 block write: MPC image from whatever container is loaded (.dim,
-        # .edc16, or .sgo). Only prepared when the MPC block is ticked.
-        mpc_image = None
-        include_mpc = False
-        prog_end = self._source_program_end() if op == "write_program" else None
-        if op == "write_program" and self.blk_mpc_chk.isChecked() and self.blk_mpc_chk.isEnabled():
-            try:
-                mpc_image, _mpc_src = self._source_mpc_image()
-                if mpc_image is not None and _mpc_src == "dim":
-                    # .dim may be edited -- correct the MPC checksum/signature
-                    # (external image is the key source). .sgo/.edc16 are final.
-                    # (without the EDC16 module the external image's write
-                    # was already confirmed uncorrected; the MPC follows suit)
-                    _cs16 = _registry.checksum("edc16")
-                    if _cs16 is not None:
-                        mpc_image = _cs16.correct(mpc_image, key_image=image)
-                if mpc_image is not None:
-                    include_mpc = True
-                else:
-                    QtWidgets.QMessageBox.warning(
-                        self, "Flashing",
-                        "The loaded source has no MPC/internal-flash block to write "
-                        "(it needs a set that holds it: a .dim, .sgo or full read).")
-            except Exception as ex:
-                QtWidgets.QMessageBox.warning(
-                    self, "Flashing",
-                    "Couldn't prepare the MPC internal flash from the loaded "
-                    "source (%s) -- skipping the MPC block." % ex)
+        # (The flash trace -- Tools > Options > Flasher -- is the worker's: it
+        # reads the options itself, so every ECU and cable is covered.)
         self._busy(True)
         # K-line fast init: always on for a J2534 device (hardware); the checkbox for
         # a serial cable (break pulse, default on).  CAN has no fast init.
@@ -3451,27 +3257,27 @@ class FlashDialog(QtWidgets.QDialog):
                                fast_init=fast_init,
                                staged=(self.staged_chk.isChecked()
                                        and self.staged_chk.isEnabled()),
-                               can_log=can_log,
-                               mpc_image=mpc_image, include_mpc=include_mpc,
-                               include_program=self.blk_program_chk.isChecked(),
-                               include_boot=self.blk_boot_chk.isChecked(),
-                               include_cal=self.blk_cal_chk.isChecked(),
-                               ram_addr=getattr(self, '_ram_probe_addr', 0x7FE9E4),
-                               ram_size=getattr(self, '_ram_probe_size', 0x40),
-                               program_end=prog_end,
+                               edc16=edc16_opts,
                                uds_cal_only=zf_uds and self.uds_cal_only_chk.isChecked(),
                                zf_transport=zf_path or "auto",
-                               # Same as can_log above: ZF6HP no longer offers this
-                               # checkbox at all (2026-09-22), so probe is always False
-                               # for it now -- Climatronic/Cluster/ABS keep the diagnostic.
+                               # ZF6HP does not offer the probe checkbox (2026-09-22),
+                               # so probe is always False for it --
+                               # Cluster/ABS keep the diagnostic.
                                probe=(self._ecu() in ("Cluster", "ABS")
                                       and self.probe_chk.isVisible()
                                       and self.probe_chk.isChecked()))
-        self._worker.stage.connect(self.stage.setText)
+        self._worker.stage.connect(self._show_stage)
         self._worker.percent.connect(self.bar.setValue)
         self._worker.finished_ok.connect(lambda r: self._done(op, r))
         self._worker.failed.connect(self._error)
         self._worker.start()
+
+    def _show_stage(self, text):
+        """A step on the status line. The ECU's "busy" notices are left off
+        it: the step it is busy with (an erase, say) stays on screen."""
+        from .tp20_transport import BUSY
+        if not str(text).startswith(BUSY):
+            self.stage.setText(text)
 
     def _loaded_hvac_image(self):
         """The Climatronic image open in the app AS IT IS NOW -- a copy of the
@@ -3592,6 +3398,9 @@ class FlashDialog(QtWidgets.QDialog):
                     "EDC15VM+ / EDC15P ECUs (512 KB) only; write an MSA15 / EDC15V "
                     "file with your own programmer. Save it first: saving corrects "
                     "its checksums.")
+            if len(raw) == _edc15.LAYOUT_1M.size:
+                raise RuntimeError(_edc15.WRITE_1M_UNSUPPORTED + " Reading a "
+                                   "1 MB EDC15 works; writing one does not yet.")
             if len(raw) not in (_edc15.LAYOUT_512.size, _edc15.LAYOUT_1M.size):
                 raise RuntimeError(
                     "An EDC15 flash image must be 512 KB (0x80000) or 1 MB (0x100000 "
@@ -3783,6 +3592,17 @@ class FlashDialog(QtWidgets.QDialog):
         beside the flash), else the one a native .edc15 container carries."""
         ee = getattr(self._window, "_eeprom", None)
         if ee is None:
+            # a tab that IS an EEPROM image (opened on its own): that is the
+            # EEPROM Write EEPROM sends
+            is_ee = getattr(self._window, "is_eeprom_image", None)
+            prim = getattr(self._window, "primary", None)
+            try:
+                if callable(is_ee) and is_ee() and prim is not None \
+                        and len(prim.binfile.data) == _edc15.EEPROM_SIZE:
+                    ee = bytes(prim.binfile.data)
+            except Exception:
+                ee = None
+        if ee is None:
             fn = getattr(self._window, "_container_eeprom", None)
             try:
                 ee = fn() if callable(fn) else None
@@ -3834,11 +3654,38 @@ class FlashDialog(QtWidgets.QDialog):
         c.set_meta({"source": "obd_uds_read", "platform": "zf6hp",
                     "variant": "6hp28", "region": "calibration",
                     "flash_base": base, "padded": True})
-        try:
-            self._window.load_from_image(
-                c.to_bytes(), "6hp28-cal-%s" % _dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
-        except Exception as ex:
-            QtWidgets.QMessageBox.critical(self, "6HP28 read", str(ex))
+        parent = self.parentWidget()
+
+        def _open(win, blob, name):
+            try:
+                win.load_from_image(blob, name)
+            except Exception as ex:
+                QtWidgets.QMessageBox.critical(parent, "6HP28 read", str(ex))
+        self._hand_over(_open, self._window, c.to_bytes(),
+                        "6hp28-cal-%s" % _dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+
+    def _hand_over(self, fn, *args):
+        """Close the flasher first, then open the finished read: the prompt
+        that follows (add to a project / save as) must not sit behind a
+        flasher window still on screen (macOS keeps the older window in
+        front). The load runs on the next turn of the event loop, once the
+        window has gone; ``fn`` and ``args`` are captured now, so nothing
+        depends on this dialog afterwards."""
+        parent = self.parentWidget()
+        self.accept()
+
+        def _run():
+            try:
+                fn(*args)
+            except Exception as ex:             # noqa: BLE001
+                # a slot exception would only reach the log: tell the user,
+                # the way every other flasher error is told
+                try:
+                    QtWidgets.QMessageBox.critical(
+                        parent, "Flashing", "Opening the finished read failed: %s" % ex)
+                except Exception:               # noqa: BLE001
+                    pass
+        QtCore.QTimer.singleShot(0, _run)
 
     def _flashed(self, what):
         """A write succeeded: the source tab's version is marked as flashed
@@ -3951,16 +3798,14 @@ class FlashDialog(QtWidgets.QDialog):
             ecu = self._ecu()
             self.stage.setText("%s read complete." % ecu)
             name = "%s-%s" % (ecu, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-            self.accept()
-            self._window.load_from_image(bytes(result), name)
+            self._hand_over(self._window.load_from_image, bytes(result), name)
         elif op == "read" and result is not None:
             how = " over TP 2.0" if self._ecu() == "ZF6HP" else ""
             self.stage.setText("Read complete%s — choose where to save it." % how
                                if self._standalone
                                else "Read complete%s — into a project." % how)
             name = "ECU-read-%s" % datetime.datetime.now().strftime("%H%M%S")
-            self._window.load_from_image(result, name)
-            self.accept()
+            self._hand_over(self._window.load_from_image, result, name)
         elif op == "restore":
             self.stage.setText("Flash and EEPROM written.")
             self._flashed("flash + EEPROM")
@@ -3977,142 +3822,8 @@ class FlashDialog(QtWidgets.QDialog):
             if self._ecu() == "EDC16":
                 msg += " Turn off the ignition for 5 seconds."
             QtWidgets.QMessageBox.information(self, "Flashing", msg)
-        elif op == "write_program":
-            self.stage.setText("Block write complete.")
-            self._flashed("block write")
-            QtWidgets.QMessageBox.information(
-                self, "Write blocks",
-                "Selected blocks written and verified (blocks already matching were "
-                "skipped). Turn the ignition off for 5 seconds. If the ECU does not "
-                "start, restore via BDM. See the log above for per-block results.")
-        elif op == "read_program_full":
-            res = result if isinstance(result, dict) else {}
-            self.stage.setText("Full read complete.")
-            from .. import recent as _recent
-            from .. import edc16_container as _cont
-            ext = res.get("external")
-            mpc = res.get("internal")
-            bootv = res.get("boot_virtual")
-            container = _cont.Edc16Container()
-            if ext:
-                container.add(_cont.BLOCK_EXTERNAL, ext)
-            if mpc:
-                # add() places the MPC at its default address. (Naming it here
-                # as _cont._DEFAULT_ADDR broke when the format moved to
-                # container.py: an AttributeError in this slot meant a full
-                # read neither opened in the app nor asked where to save.)
-                container.add(_cont.BLOCK_MPC, mpc)
-            if not container.blocks:
-                QtWidgets.QMessageBox.information(
-                    self, "Read full", "Read complete; nothing to save.")
-            else:
-                stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                _bootnote = ""
-                if bootv:
-                    _bootnote = ("\n\nBoot: VIRTUAL %s match from %s%s"
-                                 % (bootv.get("quality"), bootv.get("source"),
-                                    "" if bootv.get("quality") == "exact"
-                                    else " (approximate -- correct code, "
-                                         "reference SW id/signature)"))
-                elif ext and bytes(ext[0x10000:0x10000+0x2FF00]).count(0xFF) > 0x20000:
-                    _bootnote = ("\n\nBoot: left 0xFF (unreadable over OBD, no boot-DB "
-                                 "match).")
-                QtWidgets.QMessageBox.information(
-                    self, "Read full", "Read complete:\n\n%s%s"
-                    % (container.summary(), _bootnote))
-                # into a project, like every read (external + MPC as one set)
-                self._window.load_from_image(container.to_bytes(),
-                                             "edc16-full-%s" % stamp)
-        elif op == "boot_read_probe":
-            self.stage.setText("Boot read-level probe complete (no flash modified).")
-            res = result if isinstance(result, dict) else {}
-            lines = []
-            hit = []
-            def _mark(v):
-                return "READ" if v else ("-" if v is None else "no")
-            for lvl, row in res.items():
-                lines.append("  %s:  boot[0x35=%s 0x23=%s]  program[0x35=%s 0x23=%s]"
-                             % (lvl, _mark(row.get("boot")), _mark(row.get("boot_rma")),
-                                _mark(row.get("program")), _mark(row.get("program_rma"))))
-                if row.get("boot"):
-                    hit.append("%s via upload(0x35)" % lvl)
-                if row.get("boot_rma"):
-                    hit.append("%s via readMemoryByAddress(0x23)" % lvl)
-            verdict = ("Boot IS readable -- %s. Read the whole boot region that way."
-                       % "; ".join(hit)) if hit \
-                else ("Boot refused by BOTH read services (0x35 upload and 0x23 "
-                      "readMemoryByAddress) at every level tested.")
-            QtWidgets.QMessageBox.information(
-                self, "Boot read-level probe",
-                "Non-destructive boot read probe finished (0x35 upload vs 0x23 "
-                "readMemoryByAddress, per level):\n\n%s\n\n%s"
-                % ("\n".join(lines) or "  (nothing probed)", verdict))
-        elif op == "checksum_range_probe":
-            self.stage.setText("Checksum-range probe complete (no flash modified).")
-            res = result if isinstance(result, list) else []
-            lines = []
-            for (start, end, label, verdict) in res:
-                lines.append("  0x%06X-0x%06X  %-34s -> %s" % (start, end, label, verdict))
-            acc = [r for r in res if str(r[3]).startswith("accepted")]
-            summary = ("The ECU verifies %d of %d probed ranges. 'accepted' = the "
-                       "0x31 C5 routine ran over that range (a valid checksum "
-                       "descriptor); 'rejected:7F 33 22' = not a verifiable range."
-                       % (len(acc), len(res)))
-            QtWidgets.QMessageBox.information(
-                self, "Checksum-range probe",
-                "Non-destructive 0x31 C5 range probe finished:\n\n%s\n\n%s"
-                % ("\n".join(lines) or "  (nothing probed)", summary))
-        elif op == "security_seed_probe":
-            self.stage.setText("Security level probe complete (no flash modified).")
-            res = result if isinstance(result, list) else []
-            lines = []
-            live = []
-            for (sf, verdict) in res:
-                known = {0x01: " write/SA2", 0x03: " read"}.get(sf, "")
-                lines.append("  27 %02X%s -> %s" % (sf, known, verdict))
-                if str(verdict).startswith(("seed", "open")):
-                    live.append("27 %02X" % sf)
-            summary = ("Live security levels: %s. Known: 27 01=write/SA2, 27 03=read. "
-                       "Any OTHER level returning a seed is a candidate for unlocking "
-                       "the boot region (refused at read/write). No key was sent."
-                       % (", ".join(live) or "none beyond the standard set"))
-            QtWidgets.QMessageBox.information(
-                self, "Security level probe",
-                "Non-destructive SecurityAccess seed probe finished:\n\n%s\n\n%s"
-                % ("\n".join(lines) or "  (nothing probed)", summary))
-        elif op == "ram_read_probe":
-            self.stage.setText("RAM read probe complete (no flash modified).")
-            res = result if isinstance(result, dict) else {}
-            addr = getattr(self, "_ram_probe_addr", 0x7FE9E4)
-            lines = []
-            k5 = None
-            readable = []
-            for lvl, row in res.items():
-                data = row.get("data") if isinstance(row, dict) else None
-                if data:
-                    readable.append(lvl)
-                    lines.append("  [%s] 0x%06X: %s" % (lvl, addr, bytes(data).hex()))
-                    if row.get("k5") is not None:
-                        k5 = row["k5"]
-                else:
-                    err = row.get("error") if isinstance(row, dict) else "?"
-                    lines.append("  [%s] refused (%s)" % (lvl, err))
-            if k5 is not None:
-                verdict = ("K5 = 0x%04X  =>  level-5 key = (seed + 0x%04X) & 0xFFFFFFFF.\n"
-                           "This is the live per-ECU coding value; the level-5 auth can "
-                           "now be built from it." % (k5, k5))
-            elif readable:
-                verdict = ("RAM is READABLE over OBD at %s (readMemoryByAddress works) -- "
-                           "so RAM/EEPROM-shadow reads are viable. The address may be "
-                           "region-remapped; check the bytes look right."
-                           % ", ".join(readable))
-            else:
-                verdict = ("RAM read refused at every level held -- readMemoryByAddress of "
-                           "this address isn't granted (or the region isn't mapped).")
-            QtWidgets.QMessageBox.information(
-                self, "Read RAM / coding (probe)",
-                "Non-destructive readMemoryByAddress probe finished:\n\n%s\n\n%s"
-                % ("\n".join(lines) or "  (nothing read)", verdict))
+        elif _gui16.done(self, op, result):
+            pass
         elif op == "backup" and result is not None:
             flash_img, ee = result
             self.stage.setText("Backup read complete.")
@@ -4124,8 +3835,7 @@ class FlashDialog(QtWidgets.QDialog):
                 self.stage.setText("EEPROM read complete.")
                 name = "ECU-EEPROM-%s" % datetime.datetime.now().strftime(
                     "%Y%m%d-%H%M%S")
-                self.accept()
-                hook(bytes(result), name)
+                self._hand_over(hook, bytes(result), name)
             else:
                 self.stage.setText("EEPROM read complete — opening in the "
                                    "EEPROM editor.")
@@ -4142,8 +3852,7 @@ class FlashDialog(QtWidgets.QDialog):
         a new project whose original is the read -- or, in the standalone
         flasher, is saved as an .ovt project."""
         name = "EDC15-backup-%s" % datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.accept()
-        self._window.load_backup(flash_img, ee, name=name)
+        self._hand_over(lambda: self._window.load_backup(flash_img, ee, name=name))
 
     def _open_eeprom_editor(self, data):
         name = "ECU-EEPROM-%s (unsaved)" % datetime.datetime.now().strftime("%H%M%S")
@@ -4162,10 +3871,13 @@ class FlashDialog(QtWidgets.QDialog):
                 _recent.set_last_dir(os.path.dirname(path), "eeprom")
             self.accept()
             return
-        self.accept()
-        dlg = gui_eeprom.open_editor(self.parentWidget(), data, name=name)
-        if dlg is not None:
-            dlg.exec()
+        parent = self.parentWidget()
+
+        def _edit():
+            dlg = gui_eeprom.open_editor(parent, data, name=name)
+            if dlg is not None:
+                dlg.exec()
+        self._hand_over(_edit)
 
     # ---- VDO cluster (K-line EEPROM) ----
     def _vdo_image(self):
@@ -4219,13 +3931,36 @@ class FlashDialog(QtWidgets.QDialog):
         self._save_settings()
         self.bar.setValue(0)
         self._busy(True)
-        self._worker = _Worker(op, VDO_ECU, port, "Low", image=image,
-                               transport="kline", fast_init=False)
+        self._worker = _Worker(op, VDO_ECU, port, self._speed(), image=image,
+                               transport="kline", fast_init=False,
+                               vdo_verify=self.vdo_verify_chk.isChecked())
+        self._worker.vdo_mismatch.connect(self._vdo_mismatch_prompt)
         self._worker.stage.connect(self.stage.setText)
         self._worker.percent.connect(self.bar.setValue)
         self._worker.finished_ok.connect(lambda r: self._done(op, r))
         self._worker.failed.connect(self._error)
         self._worker.start()
+
+    def _vdo_mismatch_prompt(self, file_type, cluster_type, ident):
+        """GUI thread: the file is not this cluster's type. Cancel is the
+        default; the worker keeps the session alive until this answers."""
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        box.setWindowTitle("Cluster type mismatch")
+        box.setText("This file is a %s EEPROM, but the connected cluster is "
+                    "%s." % (file_type, cluster_type))
+        box.setInformativeText(
+            "Cluster: %s\n\nWriting another family's EEPROM can leave the "
+            "cluster unusable. The connection is held open while you "
+            "decide." % (ident or "ident unknown"))
+        go = box.addButton("Write anyway", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        w = self._worker
+        if w is not None:
+            w.answer_vdo_mismatch(box.clickedButton() is go)
 
     def _done_vdo(self, op, result):
         kind = result.get("_vdo")
@@ -4237,20 +3972,46 @@ class FlashDialog(QtWidgets.QDialog):
             name = "Cluster-%s-%s" % (ver, datetime.datetime.now().strftime("%H%M%S"))
             self.stage.setText("Cluster read: %s" % (meta.get("rom_version") or "done"))
             # into a project (the standalone flasher saves it as an .ovt)
-            self._window.load_from_image(blob, name)
-            self.accept()
+            self._hand_over(self._window.load_from_image, blob, name)
             return
         rep = result.get("report")
+        if getattr(rep, "cancelled", False):
+            self.stage.setText("Cluster write cancelled; nothing written.")
+            QtWidgets.QMessageBox.information(self, "Write cluster", rep.describe())
+            return
         self.stage.setText("Cluster write complete.")
         self._flashed("cluster EEPROM")
-        QtWidgets.QMessageBox.information(
-            self, "Write cluster",
-            rep.describe()
-            + "\n\nSwitch the ignition off and on for the cluster to reload it.")
+        # a cluster that was sent the reset restarts by itself; otherwise the
+        # report already says to switch the ignition off and on
+        QtWidgets.QMessageBox.information(self, "Write cluster", rep.describe())
+
+    #: operations that write to the control unit; when one fails at a speed
+    #: above the lowest, the message suggests the next one down
+    _WRITE_OPS = ("write", "ee_write", "restore", "write_program")
+
+    def _lower_speed_hint(self, msg):
+        """``msg`` with a suggestion to try the next lower speed, when a
+        write failed and the speed list (K-line EDC15 / EDC16 only) has one.
+        Unchanged for a Cancel, for a read, and when the speed picked is
+        already the lowest."""
+        if getattr(self, "_op", None) not in self._WRITE_OPS:
+            return msg
+        if (msg or "").strip().rstrip(".") == "Stopped":
+            return msg
+        if not self._speed_applies() or self.boot_mode.isChecked():
+            return msg                       # no speed is chosen for these
+        i = self.speed_box.currentIndex()
+        if i <= 0:
+            return msg
+        lower = self.speed_box.itemText(i - 1)
+        return "%s\n\nIf this keeps failing, try a lower speed (%s) in the " \
+               "Speed list: a slower link is more forgiving of a noisy cable " \
+               "or a weak connection." % (msg.rstrip(), lower)
 
     def _error(self, msg):
         self._busy(False)
-        self.stage.setText("Failed: %s" % msg)
+        msg = self._lower_speed_hint(msg)
+        self.stage.setText("Failed: %s" % msg.split("\n\n")[0])
         QtWidgets.QMessageBox.critical(self, "Flashing", msg)
 
 

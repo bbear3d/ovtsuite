@@ -1,6 +1,7 @@
 # Automatic gearbox TCUs that speak KWP2000 inside TP 2.0 (ZF 6HP19/26,
 # Aisin 09D): no K-line, session 0x86, identification 1A 9B, no security for
-# reads. Variants for adaptation/coding are not captured yet -- probe first.
+# reads. Variants for adaptation/coding are not captured yet -- probe first
+# (no capture, and no ODX-D / VCDS data for these TCUs, exists in Reference/).
 kind: module
 match: { addr: "02", protocol: kwp2000 }
 name: Transmission (KWP2000 over TP 2.0)

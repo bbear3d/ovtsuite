@@ -350,8 +350,8 @@ class ReplayBox(QtWidgets.QGroupBox):
         row.addWidget(self.map_btn)
         v.addWidget(row_w)
         prog = QtWidgets.QHBoxLayout()
-        self.bar = QtWidgets.QProgressBar()
-        self.bar.setTextVisible(True)
+        from .flash.gui_dialogbase import PercentBar
+        self.bar = PercentBar()      # the % shows on macOS's native style too
         self.cancel_btn = QtWidgets.QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.cancel)
         prog.addWidget(self.bar, 1)

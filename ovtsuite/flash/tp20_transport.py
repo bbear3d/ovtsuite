@@ -51,6 +51,9 @@ except Exception:                       # standalone import (inside the 32-bit b
         class KLineTimeout(KLineError):
             pass
 
+#: how a busy notice (KWP responsePending) starts: the flasher keeps the
+#: step it was showing on screen, the log gets the line
+BUSY = "ECU busy ("
 SETUP_ID = 0x200
 POLL_MS = 5                    # historical device-read wait, no longer used as a
                                # PassThruReadMsgs timeout (see _next_frame's docstring,
@@ -810,7 +813,8 @@ class CanKLine:
                 raise KLineError("CanKLine: aborted (stop requested)")
             resp = self.tp.recv(int(self._timeout * 1000))
             if len(resp) == 3 and resp[0] == 0x7F and resp[2] == 0x78:
-                self._log("KWP responsePending (7F %02X 78); awaiting real response" % resp[1])
+                self._log(BUSY + "service 0x%02X, 7F %02X 78); waiting for its answer..."
+                          % (resp[1], resp[1]))
                 continue
             return resp
         raise KLineTimeout("CanKLine: ECU stayed in responsePending")

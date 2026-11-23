@@ -169,3 +169,64 @@ def test_outline_delegate_for_a_model_view(app):
     assert _px(img, b, 0, b.height() // 2) == DIFF_OUTLINE
     assert _px(img, a, 0, a.height() // 2) != DIFF_OUTLINE
     v.deleteLater()
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("active", [True, False])
+def test_outline_delegate_selected_heat_cell_is_legible(app, dark, active):
+    """A heat-coloured cell (dark text role, light fill) selected in a view
+    drawn with OutlineDelegate -- the main editor's table and the comparison
+    grids -- keeps text that contrasts with the selection actually painted,
+    focused or not, in both palettes (the inactive highlight of the light one
+    is pale, under the white selected-text colour)."""
+    from ovtsuite.gui_cellmarks import OutlineDelegate, contrast
+
+    class M(QtCore.QAbstractTableModel):
+        def rowCount(self, _=QtCore.QModelIndex()):
+            return 2
+
+        def columnCount(self, _=QtCore.QModelIndex()):
+            return 2
+
+        def data(self, ix, role=QtCore.Qt.DisplayRole):
+            if role == QtCore.Qt.DisplayRole:
+                return "88"
+            if role == QtCore.Qt.BackgroundRole:
+                return QtGui.QBrush(QtGui.QColor(160, 230, 170))
+            if role == QtCore.Qt.ForegroundRole:
+                return QtGui.QBrush(QtGui.QColor(20, 20, 20))
+
+    pal = _palette(dark)
+    if not dark:
+        pal.setColor(P.ColorGroup.Inactive, P.ColorRole.Highlight,
+                     QtGui.QColor(215, 215, 215))
+        pal.setColor(P.ColorGroup.Inactive, P.ColorRole.HighlightedText,
+                     QtGui.QColor(255, 255, 255))
+    other = QtWidgets.QWidget()
+    v = QtWidgets.QTableView()
+    v.setModel(M())
+    v.setItemDelegate(OutlineDelegate(v))
+    v.setPalette(pal)
+    v.setAlternatingRowColors(True)
+    v.resize(300, 150)
+    v.show()
+    if not active:
+        other.show()
+        other.activateWindow()
+    else:
+        v.activateWindow()
+    v.selectRow(0)
+    QtWidgets.QApplication.processEvents()
+    img = v.viewport().grab().toImage()
+    r = v.visualRect(v.model().index(0, 0))
+    counts = {}
+    for x in range(r.left() + 2, r.right() - 2):
+        for y in range(r.top() + 2, r.bottom() - 2):
+            k = img.pixelColor(x, y).rgb()
+            counts[k] = counts.get(k, 0) + 1
+    bg = QtGui.QColor.fromRgb(max(counts, key=counts.get))
+    txt = max((QtGui.QColor.fromRgb(k) for k in counts),
+              key=lambda c: contrast(c, bg))
+    assert contrast(bg, txt) >= 3.0, (bg.getRgb(), txt.getRgb())
+    v.deleteLater()
+    other.deleteLater()

@@ -113,7 +113,12 @@ def platform_tag() -> str:
     an extension module runs on (wheel-style, without the macOS version)."""
     plat = sysconfig.get_platform()
     if plat.startswith("macosx-"):
-        plat = "macosx-" + plat.rsplit("-", 1)[-1]
+        # python.org's Python says "universal2" whatever this process is, but a module's
+        # compiled files are for ONE architecture: the one this process runs as (an Intel
+        # app under Rosetta says x86_64), so an Intel build is never offered to an Apple-
+        # silicon app, nor the reverse
+        import platform as _pf
+        plat = "macosx-" + (_pf.machine() or plat.rsplit("-", 1)[-1])
     return plat.replace("-", "_").replace(".", "_")
 
 

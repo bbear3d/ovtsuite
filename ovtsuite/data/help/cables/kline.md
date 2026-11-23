@@ -32,8 +32,14 @@ lower latency.
 
 CH34x cables work for K-line but **cannot hold the High speed** — the flasher
 removes **High** from the speed list for them and caps them at **Medium**.
-They always go through the serial port. For EDC15, EDC16 at Medium and the VDO
-cluster they are fine.
+They go through the serial port; on macOS the Port list can also offer a
+**CH34x (direct via libusb)** entry that bypasses Apple's CH340 driver. That
+entry is remembered by the USB socket the cable is plugged into, so it is
+found again after a replug into the same socket. With several CH34x cables
+connected, if the saved one is no longer there the app asks you to select the
+cable again instead of picking one for you. Linux does not offer the direct
+entry (the system's serial port, `/dev/ttyUSB*`, works). For EDC15, EDC16 at
+Medium and the VDO cluster they are fine.
 
 ## Which speed
 

@@ -36,14 +36,26 @@ Protocol (from the BSD-licensed reference driver, NikolaKozina/j2534):
 either.  The USB layer is a two-method transport (``write`` / ``read``) so
 tests drive the parser without hardware.
 """
+import sys
 import time
 from collections import deque
 from typing import Deque, List, Optional
 
 from . import j2534 as J
+from . import libusb_dll
+
+libusb_dll.prepare()          # PyUSB loads the bundled libusb (Windows) or the one libusb_locate finds (macOS/Linux)
 
 VID, PID = 0x0403, 0xCC4D
 MAX_LEN = 4128
+
+#: Config ids the firmware does not take the way J2534 defines them. W2 / W3 are the
+#: longest the tester waits for the ECU's key bytes of a 5-baud init; the firmware
+#: sits them out as a pause before it sends the inverted key byte 2, so the 0xE7
+#: (231 ms) a tool sets for a slow ECU made an EDC16 (which allows ~50 ms) drop the
+#: session. Left at the firmware default the byte follows in ~30 ms. A caller that
+#: sets them gets success and the default; a vendor DLL has to cope with the same.
+_TESTER_WAITS = ("W2", "W3")
 
 # packet types
 TX_DONE = 0x10
@@ -97,6 +109,11 @@ class UsbTransport:
         self._reattach = False
         try:
             cfg = dev.get_active_configuration()
+        except NotImplementedError:
+            raise OpenPortError(
+                "libusb cannot open this OpenPort: no WinUSB driver is bound to it (Windows "
+                "has given it its generic serial driver or Tactrix's). Install a WinUSB "
+                "driver for it, or use its J2534 driver.")
         except usb.core.USBError:
             # Unconfigured. Only then: SET_CONFIGURATION on a configured device is
             # a reset on Linux, and is refused while a kernel driver holds it.
@@ -113,15 +130,19 @@ class UsbTransport:
                 self._reattach = True
         except (NotImplementedError, usb.core.USBError):
             pass                                    # Windows / no driver bound / macOS
-        try:
-            usb.util.claim_interface(dev, n)
-        except usb.core.USBError as ex:
-            raise OpenPortError(
-                "could not claim OpenPort interface %d (%s). Check USB access (the udev "
-                "rule for 0403:cc4d) and that no other program holds the cable." % (n, ex))
-        if intf.bAlternateSetting:
-            intf.set_altsetting()
         self.iface = n
+        try:
+            try:
+                usb.util.claim_interface(dev, n)
+            except usb.core.USBError as ex:
+                raise OpenPortError(
+                    "could not claim OpenPort interface %d (%s). Check USB access (the udev "
+                    "rule for 0403:cc4d) and that no other program holds the cable." % (n, ex))
+            if intf.bAlternateSetting:
+                intf.set_altsetting()
+        except BaseException:
+            self.close()                            # give the kernel driver back, free the handle
+            raise
         self.chunk = max(64, self.ep_in.wMaxPacketSize)
 
     def write(self, data: bytes):
@@ -203,11 +224,37 @@ def explain_absence() -> str:
     try:
         devs = list(usb.core.find(find_all=True, idVendor=VID, idProduct=PID) or [])
     except usb.core.NoBackendError:
-        return ("libusb-1.0 not found (Linux: install the libusb-1.0-0 package; "
-                "macOS: brew install libusb)")
+        from . import libusb_locate
+        return libusb_locate.not_found_message()
     except Exception as ex:
         return "USB scan failed: %s" % ex
-    return "" if devs else "no OpenPort 2.0 on USB (0403:CC4D)"
+    if not devs:
+        return "no OpenPort 2.0 on USB (0403:CC4D)"
+    if not any(_openable(d) for d in devs):
+        return ("an OpenPort 2.0 is on USB but no WinUSB driver is bound to it (Windows "
+                "has given it its generic serial driver or Tactrix's), so it cannot be "
+                "driven directly; install a WinUSB driver for it, or Tactrix's J2534 driver")
+    return ""
+
+
+def _openable(dev) -> bool:
+    """False when libusb cannot open ``dev`` at all.
+
+    Windows only: libusb opens a device only while a WinUSB (or libusb) driver
+    is bound to it, and refuses one on any other driver -- an OpenPort on
+    Tactrix's own driver is on the bus but is reached through its J2534 DLL,
+    not from here. Everywhere else the answer is "yes" (access problems
+    surface when the cable is opened, with their own message).
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        dev.get_active_configuration()
+    except NotImplementedError:
+        return False
+    except Exception:
+        pass
+    return True
 
 
 def find_devices() -> List[str]:
@@ -220,6 +267,8 @@ def find_devices() -> List[str]:
     out = []
     try:
         for dev in usb.core.find(find_all=True, idVendor=VID, idProduct=PID) or []:
+            if not _openable(dev):
+                continue
             try:
                 sn = usb.util.get_string(dev, dev.iSerialNumber) or ""
             except Exception:
@@ -332,6 +381,8 @@ class OpenPortChannel:
     # ---- config ----
     def set_config(self, **params):
         for k, v in params.items():
+            if k in _TESTER_WAITS and self.protocol in (J.ISO9141, J.ISO14230):
+                continue                    # see _TESTER_WAITS
             self.dev._cmd(b"ats%d %d %d\r\n" % (self.id, getattr(J, k), int(v)))
 
     def set_baud(self, baud: int):
@@ -500,6 +551,7 @@ class OpenPort:
     def _read_msgs(self, chan: int, max_msgs: int, timeout_ms: int) -> List[J.Msg]:
         deadline = time.monotonic() + timeout_ms / 1000.0
         out: List[J.Msg] = []
+        polled = False
         while True:
             self._drain()
             keep: Deque = deque()
@@ -514,7 +566,19 @@ class OpenPort:
             # gather whatever the device already has; block only while empty
             left = deadline - time.monotonic()
             wait = 1 if out else int(max(0, left) * 1000)
-            if (left <= 0 and not out) or not self._pump(wait):
+            if chan == J.CAN:
+                # A zero timeout still reads the device once on a CAN channel: TP 2.0
+                # polls that way, and a read that never touched USB never saw the ECU's
+                # reply. Not on a K-line channel: there the 1 ms USB read it costs drops
+                # bytes (KW1281 blocks came back with a wrong end byte, 3 cluster
+                # connects in 5 failed), and nothing there polls with a zero timeout.
+                wait = max(1, wait)
+                if left <= 0 and not out and polled:
+                    return out
+                polled = True
+            elif left <= 0 and not out:
+                return out
+            if not self._pump(wait):
                 return out
 
     # ---- public ----

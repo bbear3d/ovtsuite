@@ -41,7 +41,7 @@ class Option:
     default: Any
     label: str
     page: str
-    #: "bool", "int", "choice" or "folder" (a path, "" for none)
+    #: "bool", "int", "choice", "folder" or "file" (a path, "" for none)
     kind: str = "bool"
     help: str = ""
     minimum: int = 0
@@ -58,6 +58,7 @@ class Option:
 GENERAL = "General"
 PROJECTS = "Projects and saving"
 EDITOR = "Editor"
+FLASHER = "Flasher"
 APPEARANCE = "Appearance"
 TOOLBAR = "Toolbar"
 MODULES = "Modules"
@@ -66,6 +67,9 @@ AI = "AI"
 #: ZF 6HP: also correct the program-area checksums (session
 #: ``correct_program_area``); the key it had as a Tools-menu switch
 PROGRAM_AREA_KEY = "zf6hp/correct_program_area"
+#: EDC17: patch the CVN back to its stock value as part of the checksum
+#: correction (session ``fix_cvn``); off by default
+FIX_CVN_KEY = "edc17/fix_cvn"
 
 OPTIONS: Tuple[Option, ...] = (
     # -- General -----------------------------------------------------------
@@ -143,6 +147,17 @@ OPTIONS: Tuple[Option, ...] = (
            "(CRC-32) as well as the calibration checksum. Off unless you edit "
            "program or boot bytes: a calibration tune never changes them.",
            module="zf6hp"),
+    Option(FIX_CVN_KEY, False, "EDC17: also patch the CVN back to its stock "
+           "value when correcting checksums", PROJECTS,
+           help="Off by default. On: correcting an EDC17 file's checksums (a "
+           "save, or a flash that corrects first) first patches the "
+           "calibration verification number (CVN) back to the stock value, in "
+           "a padding run of the dataset, and then does the block checksum "
+           "fixes over the result. It is refused, with the reason, when the "
+           "file has no safe place for the patch or the CVN cannot survive "
+           "the block fixes. It is done at checksum time, never while "
+           "flashing.",
+           module="edc17"),
     # -- Editor --------------------------------------------------------------
     Option("history/version_menu_max", 25, "Versions listed in Compare with "
            "saved version", EDITOR, "int", minimum=5, maximum=200),
@@ -165,7 +180,12 @@ OPTIONS: Tuple[Option, ...] = (
                     ("mark", "In the same grid, matching cells marked"))),
     Option("ui/compare_size", "resampled", "Comparison values", EDITOR,
            "choice", "How a comparison's table is shown. Resampled: put onto "
-           "the primary's rows and columns (cell for cell when they match). "
+           "the primary's rows and columns (cell for cell when they match, "
+           "whatever their breakpoints). Aligned: also put onto the "
+           "primary's axes when the size matches but the breakpoints do not, "
+           "so each cell is compared at the same operating point (a changed "
+           "breakpoint is still marked; a ZF schedule's gear columns are "
+           "never interpolated). "
            "Original size: as stored -- its own rows, columns and axes -- in "
            "a grid of its own; the two tables are linked (scroll, "
            "selection) only when they have the same size, and when they "
@@ -173,7 +193,8 @@ OPTIONS: Tuple[Option, ...] = (
            "cell. Copying from it never resamples. This is the default: each "
            "table can have its own (the Comparison button on the edit bar, "
            "right-click, View > Comparison size).",
-           choices=(("resampled", "Resampled onto the primary's axes"),
+           choices=(("resampled", "Resampled onto the primary's rows and columns"),
+                    ("aligned", "Aligned to the primary's axes"),
                     ("original", "Original size"))),
     Option("ui/compare_delta", "abs", "Difference view: show as", EDITOR,
            "choice", "While a comparison is loaded, the cells as their own "
@@ -201,6 +222,24 @@ OPTIONS: Tuple[Option, ...] = (
            "text in both themes. Not shown while a table's heat map is on, "
            "which has the fill. The orange outline of a differing cell stays "
            "either way."),
+    # -- Flasher -------------------------------------------------------------
+    # (ovtsuite.flash.flashtrace reads these; its KEY_* and DEFAULT_* match)
+    Option("flash/trace_on", False, "Trace flash reads and writes", FLASHER,
+           help="Writes everything a read or write of any ECU puts on the wire "
+           "(CAN frames, K-line bytes) and the flasher's status messages to the "
+           "file below, for finding out why a session failed. Off unless you "
+           "turn it on; it does not change what is sent."),
+    Option("flash/trace_file", "", "Trace file", FLASHER, "file",
+           "Added to from one session to the next. Empty: the default, in your "
+           "Documents folder."),
+    Option("flash/trace_max_mb", 25, "Largest trace file", FLASHER, "int",
+           "When the file reaches this size it is renamed to .1 and a new one "
+           "starts, so it never grows past this size (per file).",
+           minimum=1, maximum=1000, suffix=" MB"),
+    Option("flash/trace_keep", 3, "Older trace files kept", FLASHER, "int",
+           "How many full files (.1, .2 ...) are kept; the oldest is deleted "
+           "when a new one is started. 0: a full file is just emptied.",
+           minimum=0, maximum=20),
     # -- Appearance ----------------------------------------------------------
     Option("ui/theme", "system", "Theme", APPEARANCE, "choice",
            "System follows Windows' light or dark app mode.",
@@ -267,7 +306,7 @@ def _convert(opt: Option, raw):
         if opt.kind == "choice":
             v = str(raw)
             return v if v in {c for c, _l in opt.choices} else opt.default
-        if opt.kind == "folder":
+        if opt.kind in ("folder", "file"):
             return str(raw).strip()
     except (TypeError, ValueError):
         return opt.default

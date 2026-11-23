@@ -61,6 +61,7 @@ FOR_ACTION = {
     "edit/apply-patch": "bandage",
     "edit/remove-patch": "eraser",
     "edit/version-history": "history",
+    "view/difference-view": "difference-view",
     "view/swap-x-and-y-axes": "arrow-right-left",
     "view/keep-table-open": "pin",
     "view/close-table": "file-x",

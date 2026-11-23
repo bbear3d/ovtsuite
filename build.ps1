@@ -117,6 +117,8 @@
       logger    OVT Logger only         converter OVT Converter only
       diag      OVT Diag only (its own product; not part of 'tools')
       tools     all of these tools, no main app
+      j2534-driver   the J2534 USB driver add-on (packaging\j2534_driver;
+                        dist\module-installers\OVTSuite-J2534Driver-<version>-setup.exe)
     The tool installers ship the same build minus the other tools' launchers
     and the full modules (OVTSuite.exe included: every launcher starts it),
     install to their own folder, and upgrade/uninstall on their own, so they
@@ -243,7 +245,7 @@ param(
     [string]$InnoSetup,
     [switch]$NoInstaller,
     [ValidateSet('full', 'main', 'base', 'modules', 'modules-checksum',
-                 'flasher', 'sniffer', 'logger', 'converter', 'diag', 'tools')]
+                 'flasher', 'sniffer', 'logger', 'converter', 'diag', 'tools', 'j2534-driver')]
     [string[]]$Installers = @('full'),
     [string[]]$Modules = @('all'),
     [switch]$BaseOnly,
@@ -1210,6 +1212,37 @@ if (-not $OneFile) {
 }
 
 # --------------------------------------------------------------------------
+# 5b2. Native J2534 driver DLL (ovtj2534_*.dll + the configurator)
+# --------------------------------------------------------------------------
+# tools\j2534drv: one DLL that serves a Scanmatik SM2 and a Tactrix OpenPort 2.0 to other
+# J2534 programs, built with mingw-w64 from MSYS2 (C:\msys64\mingw32 for the 32-bit one,
+# mingw64 for the 64-bit one when installed). The installer ships what lands in
+# packaging\j2534_driver\native; without MSYS2 the installer simply leaves the files out
+# (its J2534 drivers task then has no DLL to register). Never a failed build.
+if (-not $OneFile) {
+    $msysSh = 'C:\msys64\usr\bin\sh.exe'
+    $drvDir = Join-Path $Root 'tools\j2534drv'
+    if (Test-Path -LiteralPath $msysSh) {
+        Write-Step 'Building the native J2534 driver DLL (mingw-w64)'
+        try {
+            Push-Location $drvDir
+            # A bare sh.exe has no MSYS /usr/bin on PATH (dirname, mkdir, cp would be
+            # "not found"), so put it there for the run.
+            $oldPath = $env:PATH
+            $env:PATH = (Split-Path -Parent $msysSh) + ';' + $env:PATH
+            try { $code = Invoke-NativeStreaming $msysSh @('build.sh') }
+            finally { $env:PATH = $oldPath; Pop-Location }
+            if ($code -ne 0) { throw "build.sh failed ($code)" }
+            Write-Ok (Join-Path $Root 'packaging\j2534_driver\native')
+        } catch {
+            Write-Warn "native J2534 driver not built: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Step 'Skipping the native J2534 driver DLL (no MSYS2 at C:\msys64)'
+    }
+}
+
+# --------------------------------------------------------------------------
 # 5c. Modules installed into the build: dist\OVTSuite\modules (so the built
 #     app runs as the full app, and the full installer's components come from
 #     there) and the checksum variants for the tool installers.
@@ -1392,6 +1425,20 @@ if ($NoInstaller) {
                         }
                     }
                 }
+                'j2534-driver' {
+                    # its own add-on (packaging\j2534_driver): Microsoft's WinUSB bound to
+                    # an OpenPort 2.0 -- own version, no part of the app build
+                    $drvDir = Join-Path $Root 'packaging\j2534_driver'
+                    $drvVer = (Get-Content -Raw -LiteralPath (Join-Path $drvDir 'VERSION')).Trim()
+                    $Jobs += ,@('j2534-driver', 'j2534_driver_installer.iss',
+                                "OVTSuite-J2534Driver-$drvVer-setup", @(),
+                                @("/DDriverVersion=$drvVer"), $drvDir, $ModuleInstallers)
+                    if (Test-Path -LiteralPath $ModuleInstallers) {
+                        Get-ChildItem -LiteralPath $ModuleInstallers -Filter 'OVTSuite-J2534Driver-*-setup.exe' |
+                            Where-Object { $_.Name -ne "OVTSuite-J2534Driver-$drvVer-setup.exe" } |
+                                Remove-Item -Force
+                    }
+                }
                 default {
                     # every launcher starts OVTSuite.exe: a tool installer ships it too
                     $exe = @{ flasher = @('OVTSuite.exe', 'OVTFlasher.exe');
@@ -1433,7 +1480,9 @@ if ($NoInstaller) {
                 ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } |
                 Sort-Object -Unique)
             $missing = @($inputs | Where-Object {
-                -not (Test-Path -LiteralPath (Join-Path (Split-Path $Iss) $_)) })
+                # a wildcard Source (j2534_driver\native\*) needs a pattern match, not a literal path
+                $p = Join-Path (Split-Path $Iss) $_
+                if ($_ -match '[*?]') { -not (Test-Path -Path $p) } else { -not (Test-Path -LiteralPath $p) } })
             if ($missing.Count) {
                 throw ("installer input file(s) missing from packaging\: " + ($missing -join ', ') +
                        ". If this folder is a synced copy, let the sync finish and rebuild.")

@@ -72,7 +72,8 @@ def test_main_window_has_a_help_menu(app, tmp_path):
     assert helpm, "no Help menu"
     texts = [a.text() for a in helpm[0].actions()]
     assert any(t.startswith("About ") and "Qt" not in t for t in texts)
-    assert "About Qt" in " ".join(texts)
+    # About Qt lives in the About dialog only, not the Help menu
+    assert "About Qt" not in " ".join(texts)
     w.close()
 
 

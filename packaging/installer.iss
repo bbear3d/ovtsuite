@@ -310,6 +310,9 @@ Type: filesandordirs; Name: "{app}\modules"
 #include "addon_bootdb.iss"
 [Files]
 #include "addon_ftdi.iss"
+[Files]
+; the J2534 USB driver task (both the full and the base installer); see its header
+#include "addon_usbdriver.iss"
 #ifdef ModulesInclude
 [Files]
 #include "modules_eula.iss"

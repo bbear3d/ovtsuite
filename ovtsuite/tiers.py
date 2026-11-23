@@ -142,8 +142,22 @@ def tier_of(name: str, description: str = "") -> int:
     Fuel, boost, torque/limit and pedal/idle modules are where the headline
     maps come from; what the catalogue does not lift out of them is
     supporting material, filed under "Other engine maps"."""
+    if is_sigblk(name):
+        return G.INTERNALS
     g = system_of(name)
     return G.OTHER_ENGINE if g in _SUPPORTING else g
+
+
+#: The tables that say which signals a measuring-block group shows
+#: (``Uacc_AdjValK2SigBlkVal_MAP``, ``BasAdj_K2SigBlkVal0_MAP``,
+#: ``TstTog_K2SigBlkVal1_MAP``, ``UACC_ShtrpApplSigBlk_MAP``...). Their module
+#: prefixes put them with coding, sensors or the test toggle; what they are is
+#: the tester's diagnostic display, so they share one heading.
+MEASURING_BLOCKS = "Measuring blocks"
+
+
+def is_sigblk(name: str) -> bool:
+    return "SigBlk" in name and name.endswith("_MAP")
 
 
 def system_label(name: str) -> str:
@@ -257,7 +271,9 @@ def place(e, cat=None) -> None:
         return
     heading = _catalogue.heading_text(
         e.categories[0] if e.categories else "", e.name)
-    if e.tier == G.OTHER_ENGINE:
+    if is_sigblk(e.name) and e.tier == G.INTERNALS:
+        e.category_path = [MEASURING_BLOCKS, heading]
+    elif e.tier == G.OTHER_ENGINE:
         e.category_path = [system_label(e.name), heading]
     elif e.tier == G.VEHICLE:
         sysname = _VEHICLE_SYSTEM.get(e.name.split("_", 1)[0], "Other")

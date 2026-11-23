@@ -3,12 +3,15 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""EDC16 external-flash read/write over K-line (direct KWP2000 programming).
+"""EDC16 flash access over K-line or CAN/TP 2.0 (direct KWP2000 programming).
 
 Ported from KWHack ``EDC16/Edc16FlashVM.cs`` and ``docs/EDC16-Write-Protocol-Map.md``
-(both bench-validated on a 038997016T / EDC16U31). Reads/writes the 512 KB
-calibration window 0x180000-0x1FFFFF; the lower 1.5 MB (code) is not reachable
-over K-line. Security access is ADDRESSED; the transfer phase is ADDRESS-LESS.
+(both bench-validated on a 038997016T / EDC16U31). :class:`Edc16Flash` holds the
+protocol primitives and the sessions; it reads and writes the 512 KB calibration
+on its own (``read_flash`` / ``write_flash``). The other blocks -- program, MPC,
+boot -- and the block-selected read are in :mod:`.edc16_read` and
+:mod:`.edc16_write`, over the block table in :mod:`.edc16_blocks`. Security
+access is ADDRESSED; the transfer phase is ADDRESS-LESS.
 
 Speeds map to KWHack's: Low 38400 (0x50), Medium 124800 (0x87), High 244898 (0xA7).
 All progress/stop hooks are optional and safe to omit.
@@ -20,9 +23,8 @@ from .transport import KLineError, KLineTimeout
 from .crypto import (edc16_lvl1_key, edc16_lvl3_key, edc16_lvl5_key,
                      edc16_lvl9_key, encrypt)
 
-CAL_START = 0x180000
-CAL_SIZE = 0x080000
-FULL_SIZE = 0x200000
+from . import edc16_blocks as _blocks
+from .edc16_blocks import CAL_START, CAL_SIZE, FULL_SIZE  # noqa: F401 (re-exported)
 
 # TP 2.0 logical address of the engine ECU over CAN, for the later CAN-only
 # EDC16 variants (see project notes: edc16-kline-can-coexist.md). Standard VAG
@@ -169,9 +171,16 @@ _PRIME_TRIM = False             # True = prime with the fast StartCommunication 
                                 # (skip erase-sig / lvl1-auth / the refused 0x85);
                                 # False = full prime driven through the refused 0x85
 
-# per-block (start, checksum/verify end, erase end, download size)
-_BLOCK = {7: (0x1C0000, 0x1FDFFF, 0x1FFFFF, 0x3E000),
-          6: (0x180000, 0x1BFFFF, 0x1BFFFF, 0x40000)}
+# per cal block (start, checksum/verify end, erase end, download size), from
+# the block table
+_BLOCK = {n: (w.addr, w.verify_end, w.erase_end, w.size)
+          for n, w in _blocks.CAL_BLOCK_NUMBERS.items()}
+
+# Tester inter-byte time (P4_MIN) once a J2534 K-line programming session is up.
+# The slow-init handshake needs 2 (see kline_j2534), but that spacing makes a
+# full write take ~1 h; 0 has caused no trouble. Set back to 2 if a bench run
+# shows dropped TransferData bytes (a block checksum mismatch).
+_TRANSFER_P4_MIN = 0
 
 _TRANSFER_CHUNK = 0xF8          # 248 data bytes; header length byte = 0xF9
 
@@ -797,6 +806,74 @@ class Edc16Flash:
         prepare()
         self._enter_session(session_sub, "Medium", True)
 
+    # ---- sessions: every read and write opens through one of these two ----
+    def bus_name(self) -> str:
+        return "CAN/TP2.0" if getattr(self.k, "is_tp20", False) else "K-line"
+
+    def open_read_session(self, speed, allow_fast, is_stop=None, reopen=True):
+        """The read session: connect, read-level security (27 03/04), 10 86.
+        ``reopen`` (the uploads): over TP 2.0, set the channel up again inside
+        the session for the faster ECU T3 (see :meth:`reopen_for_read`). The
+        probes, which upload nothing, pass False."""
+        def _prepare():
+            self.connect()
+            self.log("Requesting security access (read)...")
+            self._lvl3_auth()
+        self._establish_session(0x86, speed, allow_fast, _prepare, is_stop)
+        if reopen:
+            self.reopen_for_read(_prepare, speed, allow_fast, is_stop)
+
+    def open_program_session(self, speed, allow_fast, fast_init_prime=None,
+                             is_stop=None, on_stage=None, prime_teardown=None,
+                             prime_trim=None):
+        """The programming (download) session: write-level security (27 01/02)
+        and 10 85, ready for RequestDownload.
+
+        Over TP 2.0, entering 10 85 resets the ECU's transport and security, so
+        the channel is set up again and security repeated (as MPPS does). Over
+        K-line the session comes through a slow init, primed with a fast init
+        where ``fast_init_prime`` says so (True / False / None = try slow first;
+        see :meth:`_open_kline_write_session`), then the transfer timing is
+        tightened. ``prime_teardown`` / ``prime_trim`` None take the module
+        defaults."""
+        self._is_stop = is_stop               # the poll loops honour Cancel too
+        if prime_teardown is None:
+            prime_teardown = _PRIME_TEARDOWN
+        if prime_trim is None:
+            prime_trim = _PRIME_TRIM
+        if getattr(self.k, "is_tp20", False):
+            def _prepare():
+                self.connect()
+                self._read_erase_signature()
+                self.log("Requesting security access (write)...")
+                self._lvl1_auth()
+            self._establish_session(0x85, speed, allow_fast, _prepare, is_stop)
+            self.log(tp20_level_text())
+            self.log("Re-establishing channel + security (programming session)...")
+            reset = getattr(self.k, "reset_channel", None)
+            if reset is not None:
+                reset()
+            self._lvl1_auth()
+            return
+        self.log("Init strategy: %s" % (
+            "slow init (family accepts it)" if fast_init_prime is False
+            else "fast-init prime (later CAN-init family)" if fast_init_prime is True
+            else "auto (unknown family): slow init, prime only if ignored"))
+        self._open_kline_write_session(speed, allow_fast, fast_init_prime, is_stop, on_stage,
+                                       prime_teardown=prime_teardown, prime_trim=prime_trim)
+        self._set_access_timing()
+        # The J2534 slow-init channel keeps the init's timing: P4_MIN 2 between
+        # sent bytes, P3_MIN 55 ms before each send and P1_MAX 20 ms to end each
+        # reply -- 333 ms per 256-byte TransferData and a 6-minute write. The
+        # session is up, so drop them.
+        timing = getattr(self.k, "set_session_timing", None)
+        if timing is not None and _TRANSFER_P4_MIN == 0:
+            timing()
+        else:
+            setter = getattr(self.k, "set_tx_interbyte", None)
+            if setter is not None:
+                setter(_TRANSFER_P4_MIN)
+
     # ---- read ----
     def _read_memory_by_address(self, addr, size):
         """readMemoryByAddress (0x23) of `size` bytes at 24-bit `addr`.  Returns
@@ -855,10 +932,16 @@ class Edc16Flash:
                     return
                 raise KLineError("EDC16 requestUpload: unexpected 02 %02X %02X"
                                  % (d1, d2))
-            if b0 == 0x83:                               # responsePending header
-                rest = self.k.read(6)
-                if len(rest) >= 5 and rest[2] == 0x7F and rest[4] == 0x78                         and time.time() < deadline:
-                    continue
+            if b0 == 0x83:                               # addressed 3-byte reply
+                rest = self.k.read(6)                    # tgt src 7F 35 <NRC> cks
+                if len(rest) >= 5 and rest[2] == 0x7F and rest[3] == 0x35:
+                    if rest[4] == 0x78 and time.time() < deadline:
+                        continue                         # responsePending
+                    if rest[4] != 0x78:
+                        # a refusal in the addressed format is still a refusal:
+                        # the read pads it instead of failing the whole read
+                        raise RangeRefused("EDC16 requestUpload rejected: 7F 35 %02X (%s)"
+                                           % (rest[4], _nrc_name(rest[4])))
                 raise KLineError("EDC16 requestUpload: NAK-shaped 83 %s"
                                  % rest.hex())
             if b0 == 0x03:                               # negative: 03 7F 35 <NRC>
@@ -892,13 +975,7 @@ class Edc16Flash:
         single upload (``None``)."""
         if on_stage:
             on_stage("Connecting...")
-
-        def _prepare():
-            self.connect()
-            self.log("Requesting security access (read)...")
-            self._lvl3_auth()
-        self._establish_session(0x86, speed, allow_fast, _prepare, is_stop)
-        self.reopen_for_read(_prepare, speed, allow_fast, is_stop)
+        self.open_read_session(speed, allow_fast, is_stop)
         time.sleep(0.075)
 
         image = bytearray(b"\xFF" * CAL_START)
@@ -1240,13 +1317,6 @@ class Edc16Flash:
                     fast_init_prime="auto", prime_teardown=None, prime_trim=None):
         if len(image) < FULL_SIZE:
             raise ValueError("EDC16 write needs a full 2 MB image")
-        # Prime tuning (bench-testable); None -> module defaults so a bench run can
-        # flip _PRIME_TEARDOWN / _PRIME_TRIM without touching callers.
-        self._is_stop = is_stop               # the poll loops honour Cancel too
-        if prime_teardown is None:
-            prime_teardown = _PRIME_TEARDOWN
-        if prime_trim is None:
-            prime_trim = _PRIME_TRIM
         # Binary-driven init strategy: the OS *family* decides slow-vs-fast, and
         # the app identifies it structurally from the image (no DAMOS, no part
         # number).  Callers may override with an explicit True/False/None.
@@ -1262,45 +1332,13 @@ class Edc16Flash:
         # never sit idle across a long local step.
         if on_stage:
             on_stage("Encrypting...")
-        block7, cks7 = encrypt(image, 0x1C0000, 0x1FE000)
-        block6, cks6 = encrypt(image, 0x180000, 0x1C0000)
+        block7, cks7 = encrypt(image, _blocks.CAL_A.addr, _blocks.CAL_A.end)
+        block6, cks6 = encrypt(image, _blocks.CAL_B.addr, _blocks.CAL_B.end)
 
         if on_stage:
             on_stage("Connecting...")
-
-        if getattr(self.k, "is_tp20", False):
-            # CAN/TP2.0 write path -- unchanged (read path also unchanged).  Over CAN,
-            # entering the programming session (10 85) RESETS the ECU's transport AND
-            # security, so after 50 85 00 MPPS tears the channel down (A8), re-establishes
-            # it (0x200 setup + A0/A1) and re-authenticates before any programming command.
-            def _prepare():
-                self.connect()
-                self._read_erase_signature()
-                self.log("Requesting security access (write)...")
-                self._lvl1_auth()
-            self._establish_session(0x85, speed, allow_fast, _prepare, is_stop)
-            self.log(tp20_level_text())
-            self.log("Re-establishing channel + security (programming session)...")
-            reset = getattr(self.k, "reset_channel", None)
-            if reset is not None:
-                reset()
-            self._lvl1_auth()
-        else:
-            # K-line write: init strategy chosen from the OS family (above).
-            self.log("Init strategy: %s" % (
-                "slow init (family accepts it)" if fast_init_prime is False
-                else "fast-init prime (later CAN-init family)" if fast_init_prime is True
-                else "auto (unknown family): slow init, prime only if ignored"))
-            self._open_kline_write_session(speed, allow_fast, fast_init_prime, is_stop, on_stage,
-                                           prime_teardown=prime_teardown, prime_trim=prime_trim)
-            self._set_access_timing()
-            # The J2534 slow-init channel keeps the init's timing: P4_MIN 2
-            # between sent bytes, P3_MIN 55 ms before each send and P1_MAX
-            # 20 ms to end each reply -- 333 ms per 256-byte TransferData and
-            # a 6-minute write. The session is up, so drop them.
-            timing = getattr(self.k, "set_session_timing", None)
-            if timing is not None:
-                timing()
+        self.open_program_session(speed, allow_fast, fast_init_prime, is_stop, on_stage,
+                                  prime_teardown=prime_teardown, prime_trim=prime_trim)
 
         if is_stop and is_stop():
             self._finalize()

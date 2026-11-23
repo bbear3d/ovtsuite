@@ -442,3 +442,141 @@ def test_selected_shaded_cells_keep_readable_text(pair, kind):
     for t in (d.table, d.cmpv.cmp_table):
         assert isinstance(t.itemDelegate(), CellDelegate)
     d.close()
+
+
+# ------------------------------------------- a pedal axis that differs, aligned
+def test_aligned_reads_a_pair_on_another_pedal_axis_at_this_files_points(shift):
+    """The comparison's schedule 0 gets another pedal axis: drawn but not compared; with
+    "Align to this file's pedal axis" it is read at this file's pedal points and compared,
+    shaded and copied like the rest."""
+    cv = shift.cmpv
+    assert not cv.align_chk.isVisibleTo(shift)       # nothing differs in this pair
+    j = cv.pairing.pairs[0]
+    t = cv.cset.schedules[j]
+    own = tuple(t.pedal)
+    t.pedal = tuple(p + (3.0 if 0 < k < len(own) - 2 else 0.0) for k, p in enumerate(own))
+    try:
+        cv.pairing.axis_differs.add(0)
+        shift._apply_preset("All schedules")
+        shift._recompute()
+        assert not cv.pairing.comparable(0)
+        cv._set_aligned(True)
+        shift._recompute()
+        assert cv.pairing.comparable(0) and "read at this file's pedal points" in cv.lbl.text()
+        ped, vals = cv.cvalues(0)
+        s = shift.sset.schedules[0]
+        assert ped == tuple(s.pedal) and len(vals) == s.rows * s.cols
+        assert cv.copy_line_op([0], shift._line()) is not None or \
+            vals == shift.result.grid[0]
+        cv._set_aligned(False)
+        shift._recompute()
+        assert not cv.pairing.comparable(0) and cv.cvalues(0)[0] == tuple(t.pedal)
+    finally:
+        t.pedal = own
+        cv.pairing.axis_differs.discard(0)
+        cv._set_aligned(False)
+
+
+# ----------------------------- lock-up maps of another size (30 against 40 columns)
+def _tcc_dialog(primary_name, comparison_name):
+    from ovtsuite.session import TunerSession
+    from conftest import ZF6HP_REFERENCE as S
+    paths = [os.path.join(S, n) for n in (primary_name, comparison_name)]
+    if not all(os.path.exists(p) for p in paths):
+        pytest.skip("no ZF 6HP reference binaries")
+    return _dialog(TunerSession(paths[0]), TunerSession(paths[1]), kind="tcc")
+
+
+def test_lockup_characteristics_of_three_and_four_lines_are_compared_by_name():
+    """The 3.0 TFSI's lock-up map has four characteristics per gear, the 2.0 TFSI's three:
+    the shared ones are compared, the fourth has nothing to compare with."""
+    d = _tcc_dialog("3.0TFSI-Stock.bin", "2.0TFSI-Stock.bin")
+    try:
+        cv = d.cmpv
+        assert cv.pairing.ok and cv.pairing.line_map == {0: 0, 1: 1, 2: 2}
+        assert "lines matched by name" in cv.lbl.text()
+        d._apply_preset("Both codings: Gear 3")
+        for ln in range(4):                              # RO OR RC COC, none may raise
+            b = d.line_group.button(ln)
+            if b is not None:
+                b.setChecked(True)
+            d._recompute()
+        assert d.chart.series
+        # the line the comparison lacks has no ghost line, the others do
+        d.line_group.button(3).setChecked(True)
+        d._recompute()
+        assert not any(s.get("cmp") for s in d.chart.series)
+        d.line_group.button(0).setChecked(True)
+        d._recompute()
+        assert all(s.get("cmp") for s in d.chart.series)
+    finally:
+        d.close()
+
+
+def test_lockup_characteristics_of_nine_and_ten_pedal_points_compare_when_aligned():
+    d = _tcc_dialog("3.0TFSI-Stock.bin", "5.0TFSI-Stock.bin")
+    try:
+        cv = d.cmpv
+        assert cv.pairing.ok and len(cv.pairing.axis_differs) == len(cv.pairing.pairs)
+        assert cv.align_chk.isVisibleTo(d) and not cv.pairing.comparable(0)
+        d._recompute()                                    # drawn, not compared: no error
+        cv.align_chk.setChecked(True)
+        d._recompute()
+        assert cv.pairing.comparable(0)
+        ped, vals = cv.cvalues(0)
+        s = d.sset.schedules[0]
+        assert ped == tuple(s.pedal) and len(vals) == s.rows * s.cols
+    finally:
+        d.close()
+
+
+# ------------------------------------------------------ Average with the comparison
+def test_average_selected_cells_in_the_right_click_menu(shift):
+    """Moves the selected cells part of the way to the comparison's values: 50 % from the
+    menu, a step like Copy, undone with it."""
+    cv, pt = shift.cmpv, shift.table
+    shift.range_edit.setText("10.0, 11.0")
+    shift._select_range(False)
+    shift._recompute()
+    diff = _differing(pt)
+    assert len(diff) >= 2
+    r, c = diff[0]
+    pt.setRangeSelected(QtWidgets.QTableWidgetSelectionRange(r, c, r, c), True)
+    acts = {a.text(): a for a in cv.table_menu(pt).actions()}
+    assert acts["Average selected cells with comparison"].isEnabled()
+    assert acts["Average selected cells with comparison..."].isEnabled()
+    i, line = cv._sel[r], shift._line()
+    s = shift.sset.schedules[i]
+    k = c * s.cols + line
+    mine = shift.result.grid[i][k]
+    theirs = cv.cvalues(i)[1][k]
+    assert mine != theirs
+    acts["Average selected cells with comparison"].trigger()
+    assert len(shift.steps) == 1 and "average 1 cell with the comparison (50 %)" in \
+        shift.steps_list.item(0).text()
+    shift._recompute()
+    assert shift.result.grid[i][k] == pytest.approx((mine + theirs) / 2.0, abs=1.0)
+
+
+def test_average_whole_line_from_the_chart_and_the_weight(tcc):
+    from ovtsuite import gearbox_edit as GE
+    cv = tcc.cmpv
+    pr = cv.pairing
+    line = tcc._line()
+    i = next(i for i in pr.pairs if pr.comparable(i) and _line_differs(tcc, i, line))
+    menu = cv.chart_menu(tcc.sset.schedules[i].key)
+    avg = [a for a in menu.actions() if a.text().startswith("Average whole line")]
+    assert avg and avg[0].isEnabled()
+    op = cv.average_line_op([i], line, 25.0)
+    assert op is not None and "25 %" in op.label
+    s = tcc.sset.schedules[i]
+    for (si, r, ln), v in op.values.items():
+        mine = tcc.result.grid[si][r * s.cols + ln]
+        theirs = cv.cvalues(si)[1][r * s.cols + ln]
+        assert v == pytest.approx(mine + 0.25 * (theirs - mine))
+    # the weight 0 keeps everything, so there is no step
+    assert cv.average_line_op([i], line, 0.0) is None
+    # the comparison's own values at 100 %
+    full = cv.average_line_op([i], line, 100.0)
+    copy = cv.copy_line_op([i], line)
+    assert full is not None and copy is not None and full.values == copy.values

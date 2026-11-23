@@ -132,3 +132,45 @@ def test_the_comparison_bands_are_not_editable(win):
     sep = m.sep_row()
     for ix in (m.index(sep + 1, 1), m.index(sep + 2, 0), m.index(sep + 1, 0)):
         assert not (m.flags(ix) & QtCore.Qt.ItemIsEditable)
+
+
+# ---- "Aligned to the primary's axes" (gui_cmpsize): the same-size case ------
+def _aligned(win, on):
+    from ovtsuite import gui_cmpsize as cs
+    ws = win.current
+    cs.set_size(ws, "aligned" if on else None)
+    QtWidgets.QApplication.processEvents()
+    return ws
+
+
+def test_aligned_puts_a_same_size_comparison_on_the_primarys_axes(win):
+    ws = _aligned(win, True)
+    try:
+        _ws, e, cp = _show(win, MISMATCH)
+        m = ws.model
+        assert m.overlay.mode == "resampled"
+        sep = m.sep_row()
+        # it was put onto them, so they label it -- as for a different size
+        assert _row(m, sep + 1) == _fmt(e.x_values())
+        assert _col(m, 0, range(sep + 2, m.rowCount())) == _fmt(e.y_values())
+        # ... and a changed breakpoint is still seen as one
+        assert m._ax_diff and "axis point(s) differ" in m.sep_text()
+        ax, i = sorted(m._ax_diff)[0]
+        mine, theirs = m._ax_vals[(ax, i)]
+        k = "x" if ax == "x" else "y"
+        # the primary's own band cell says what the comparison had
+        for r in range(m.rowCount()):
+            for c in range(m.columnCount()):
+                if m._kind(r, c) == (k, i, 0) or m._kind(r, c)[:2] == (k, i):
+                    tip = m.data(m.index(r, c), QtCore.Qt.ToolTipRole)
+                    assert tip and "%.3f" % theirs in tip
+                    return
+        pytest.fail("no band cell for the changed breakpoint")
+    finally:
+        _aligned(win, False)
+
+
+def test_without_aligned_a_same_size_comparison_is_still_cell_for_cell(win):
+    _aligned(win, False)
+    ws, _e, _cp = _show(win, MISMATCH)
+    assert ws.model.overlay.mode == "axis-mismatch"

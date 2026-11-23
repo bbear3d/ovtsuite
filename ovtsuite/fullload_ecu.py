@@ -47,7 +47,7 @@ def versions(project, sid: str) -> List[Version]:
     out: List[Version] = []
     seen = set()
     fl = (s.extra or {}).get("flashed") or {}
-    cid = fl.get("checkpoint")
+    cid = fl.get("checkpoint") or fl.get("merged_into")   # (merged away: its newer)
     if cid and s.checkpoint(cid) is not None:
         c = s.checkpoint(cid)
         out.append(Version(cid, "As flashed %s (%s)" % (

@@ -75,6 +75,12 @@ def ask_save_read(parent, data, name: str, eeprom=None, source=None,
     from PySide6 import QtWidgets
     from . import recent as _recent
     default = os.path.join(_recent.get_last_dir(), name + ".ovt")
+    if parent is not None:                  # keep the prompt in front (macOS)
+        try:
+            parent.window().raise_()
+            parent.window().activateWindow()
+        except Exception:                   # noqa: BLE001 - cosmetic
+            pass
     path, chosen = QtWidgets.QFileDialog.getSaveFileName(
         parent, title, default, ";;".join(FILTERS))
     if not path:

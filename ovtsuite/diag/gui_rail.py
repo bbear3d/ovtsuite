@@ -210,6 +210,7 @@ class ModuleRail(QtWidgets.QWidget):
     stopRequested = QtCore.Signal()
     obdRequested = QtCore.Signal()
     garageRequested = QtCore.Signal()
+    knownToggled = QtCore.Signal(bool)          # the "All known addresses" group opened / closed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -271,6 +272,7 @@ class ModuleRail(QtWidgets.QWidget):
         self._body.addWidget(self._absent_box)
         self.known_head = _GroupHeader()
         self.known_head.toggled.connect(self._group_toggled)
+        self.known_head.toggled.connect(self.knownToggled)
         self._known_box = QtWidgets.QWidget()
         self._known_lay = QtWidgets.QVBoxLayout(self._known_box)
         self._known_lay.setContentsMargins(0, 0, 0, 0)

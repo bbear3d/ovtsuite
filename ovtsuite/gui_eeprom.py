@@ -31,9 +31,11 @@ EDC16: ``ovtsuite.edc16.eeprom_layout``). The layout protocol, duck-typed:
                     clicking the state already shown leaves the image alone
                     (unless the copies of its ``kind == "immo"`` field differ).
 
-A 512-byte image opens as EDC15 and a 4 KB one as EDC16 when their modules
-are installed; when two layouts fit, the one whose checksums agree wins and
-the other stays one click away (Layout).
+The editor opens on an EEPROM the tab holds (an EEPROM tab, a paired EEPROM,
+one stored in a .edc15 / .edc16 / .dim); it opens no files. A 512-byte image
+is EDC15 and a 4 KB one EDC16 when their modules are installed; when two
+layouts fit, the one whose checksums agree wins and the other stays one click
+away (Layout).
 """
 
 from __future__ import annotations
@@ -176,16 +178,15 @@ class EepromEditor(QtWidgets.QDialog):
         btns = QtWidgets.QHBoxLayout()
         self.buttons = {}
         for text, slot, tip in (
-                ("Open...", self.open_file, "Open another EEPROM image"),
-                ("Save", self.save, ""),
-                ("Save As...", self.save_as, "Write the image to a .bin file"),
+                ("Apply", self.save, ""),
+                ("Export...", self.save_as, "Write the image to a .bin file"),
                 ("Revert", self.revert, "Undo every edit since it was opened")):
             b = QtWidgets.QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(slot)
             btns.addWidget(b)
             self.buttons[text] = b
-        self.save_btn = self.buttons["Save"]
+        self.save_btn = self.buttons["Apply"]
         self._sync_save_btn()
         self._action_btns = []
         self._action_row = btns
@@ -379,72 +380,34 @@ class EepromEditor(QtWidgets.QDialog):
         self._populate()
 
     # ---- files ------------------------------------------------------------
-    def open_file(self):
-        from . import recent as _recent
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Open an EEPROM image", _recent.get_last_dir("eeprom"), FILTER)
-        if not path:
-            return
-        with open(path, "rb") as fh:
-            data = fh.read()
-        cands = layouts_for(data)
-        if not cands:
-            QtWidgets.QMessageBox.critical(self, "EEPROM editor",
-                                           self._no_layout_text(len(data)))
-            return
-        _recent.set_last_dir(os.path.dirname(path), "eeprom")
-        self._on_save = None             # a file of its own now
-        self._sync_save_btn()
-        self.original = self.data = data
-        self.path = path
-        self._name = os.path.basename(path)
-        self._cands = cands
-        self.layout = cands[0]
-        self.layout_box.blockSignals(True)
-        self.layout_box.clear()
-        for lay in cands:
-            self.layout_box.addItem("%s (%d bytes)" % (lay.name, lay.size))
-        self.layout_box.setEnabled(len(cands) > 1)
-        self.layout_box.blockSignals(False)
-        self._build_layout()
-
     def _sync_save_btn(self):
-        """**Apply** for an EEPROM a tab holds (its edits go into the tab, as
-        one undoable edit; File > Save keeps them in the project), **Save**
-        for an image of its own on disk."""
+        """**Apply** puts the edits into the tab as one undoable edit (File >
+        Save keeps them in the project). The editor works on the EEPROM its
+        tab holds; an EEPROM leaves it with **Export...**."""
         btn = getattr(self, "save_btn", None)
         if btn is None:
             return
-        if self._on_save is not None:
-            btn.setText("Apply")
-            btn.setToolTip("Put the edits into the tab, as one undoable "
-                           "edit; File > Save keeps them in the project")
-        else:
-            btn.setText("Save")
-            btn.setToolTip("Write the edits to the image's file")
+        btn.setText("Apply")
+        btn.setEnabled(self._on_save is not None)
+        btn.setToolTip("Put the edits into the tab, as one undoable "
+                       "edit; File > Save keeps them in the project")
 
     def save(self):
+        """Apply: the edits go into the tab."""
         if self._on_save is not None:
             self._on_save(self.data)
             self.original = self.data
             self._populate()
-            return
-        if not self.path:
-            return self.save_as()
-        with open(self.path, "wb") as fh:
-            fh.write(self.data)
-        self.original = self.data
-        self._populate()
 
     def save_as(self):
-        """A standalone .bin of the image (a project's EEPROM is kept by Save)."""
+        """Export...: the EEPROM as a plain .bin. The tab and its project are
+        not changed by it."""
         from . import recent as _recent
-        base = self.path or os.path.join(
+        base = os.path.join(
             _recent.get_last_dir("eeprom"),
             os.path.splitext(self._name.split(" [")[0])[0] + "_EEPROM.bin")
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save EEPROM image as", base,
-            "EEPROM images (*.bin);;All files (*)")
+            self, "Export EEPROM", base, "EEPROM images (*.bin);;All files (*)")
         if not path:
             return
         if not os.path.splitext(path)[1]:
@@ -452,11 +415,6 @@ class EepromEditor(QtWidgets.QDialog):
         with open(path, "wb") as fh:
             fh.write(self.data)
         _recent.set_last_dir(os.path.dirname(path), "eeprom")
-        if self._on_save is None:
-            self.path = path
-            self._name = os.path.basename(path)
-            self.original = self.data
-        self._populate()
 
     def write_to_ecu(self):
         ecu = getattr(self.layout, "flasher_ecu", None)

@@ -36,7 +36,7 @@ from typing import Optional
 from . import j2534 as J
 
 try:
-    from .transport import KLineError, KLineTimeout
+    from .transport import KLineError, KLineTimeout, adjust_parity
 except Exception:                                   # pragma: no cover
     class KLineError(Exception):
         pass
@@ -44,9 +44,31 @@ except Exception:                                   # pragma: no cover
     class KLineTimeout(KLineError):
         pass
 
+    def adjust_parity(b: int, even_parity: bool) -> int:
+        parity = not even_parity
+        for i in range(7):
+            if (b >> i) & 1:
+                parity = not parity
+        return (b | 0x80) if parity else (b & 0x7F)
+
 # ISO 14230 StartCommunication request (fmt 0x81, tgt 0x10 engine, src 0xF1
 # tester, service 0x81) + checksum -- what MPPS sends for fast init.
 START_COMM = bytes([0x81, 0x10, 0xF1, 0x81])
+
+#: On a bench EDC16 that has heard another unit's 5-baud init (a VDO cluster on
+#: the same K-line) a fast init gets no answer, and the 5-baud init that follows
+#: succeeds and makes the ECU take fast inits again. (That state survives a
+#: battery disconnect and is the same whichever adapter sent the cluster's init,
+#: so it lives in the ECU, not the adapter.)
+#:
+#: Quiet line between the last unanswered fast init and the 5-baud fallback.
+#: Measured on that bench (2 runs each, fresh cluster init before each): 0 s and
+#: 0.25 s failed, 0.5 s and 1.0 s answered; 1.0 s leaves a margin.
+FAST_TO_SLOW_QUIET_S = 1.0
+#: Quiet line before repeating a 5-baud init that got no answer: inits sent a
+#: second or two apart kept failing for as long as they were repeated, the same
+#: init after 6 s of silence answered first time.
+INIT_RETRY_QUIET_S = 6.0
 
 # 5-baud slow-init address for VAG EDC16 K-line (ODIS: address 0x01 -> EF 8F).
 SLOW_INIT_ADDR = 0x01
@@ -164,6 +186,17 @@ def _version_from_keybytes(resp: bytes) -> int:
     return _version_from_keyword(kb)
 
 
+def _kw2_from_keybytes(resp: bytes) -> Optional[int]:
+    """KW2 (the second key byte) from a 5-baud init reply, by the same offset
+    rule as :func:`_version_from_keybytes` -- needed to echo its complement
+    back (see ``wake_up``)."""
+    kb = bytes(resp)
+    first = 1 if len(kb) >= 3 and kb[0] == 0x55 else 0
+    if len(kb) - first >= 2:
+        return kb[first + 1]
+    return None
+
+
 class J2534KLine:
     """K-line look-alike (the subset edc16.py / diag.py use) over a J2534
     ISO 14230 channel, connecting with hardware fast init."""
@@ -180,6 +213,8 @@ class J2534KLine:
         self._trace = on_trace          # optional (dir, bytes) wire-log hook
         self._fast = fast_init
         self._allow_slow = allow_slow_fallback
+        #: the controller StartCommunication is addressed to (0x10 = EDC16)
+        self.fast_target = START_COMM[1]
         self.direct = True
         self._timeout = 8.0
         self._tx = bytearray()          # bytes written, not yet a whole frame
@@ -235,6 +270,15 @@ class J2534KLine:
         self._tx.clear()
         self._rx.clear()
         self._carry.clear()
+        # five_baud_init sends this byte on the wire as-is -- the device does not
+        # compute the address byte's parity bit itself (confirmed on a Scanmatik
+        # SM2: raw 0x17 never got a reply from a VDO cluster at any FIVE_BAUD_MOD/
+        # timing setting, while the parity-adjusted 0x97 worked first try). An
+        # address whose adjusted byte equals the raw value either way (0x01, every
+        # engine ECU this path was written for) hid this until the VDO cluster
+        # path exercised a different one. Serial KLine does the same adjustment
+        # in _bitbang_5baud before it ever reaches the wire.
+        kline_address = adjust_parity(address, even_parity)
         # (Re)open the channel on the protocol this init mode needs -- if the mode
         # was toggled (fast<->slow) after an earlier connect, the old channel is on
         # the wrong protocol and must be dropped first.
@@ -250,10 +294,11 @@ class J2534KLine:
         # StartCommunication targets the KWP controller address 0x10 (as MPPS
         # does: 81 10 F1 81), NOT the 5-baud init address (0x01) -- using 0x01
         # here made the ECU never answer (the fast init "failed").
-        req = START_COMM + bytes([_cks(START_COMM)])
+        start = bytes([0x81, self.fast_target, 0xF1, 0x81])     # START_COMM, any target
+        req = start + bytes([_cks(start)])
         last = None
         for attempt in range(1, tries + 1):
-            if any(f is not None and f() for f in (self.is_stop, self.init_is_stop)):
+            if self._init_stopped():
                 raise KLineError("J2534 K-line init: stop requested")
             try:
                 self._ch.clear_rx()
@@ -265,9 +310,9 @@ class J2534KLine:
                         self._trace("rx", bytes(resp))
                     self._log("J2534 K-line fast init -> %s" % (bytes(resp).hex() or "(no data)"))
                 else:
-                    resp = self._ch.five_baud_init(address)
+                    resp = self._ch.five_baud_init(kline_address)
                     self._log("J2534 K-line 5-baud init -> %s" % (bytes(resp).hex() or "(no data)"))
-                    return _version_from_keybytes(bytes(resp))
+                    return self._finish_slow_init(bytes(resp))
                 return _version_from_keyword(bytes(resp))
             except Exception as ex:                             # noqa: BLE001
                 last = ex
@@ -275,6 +320,12 @@ class J2534KLine:
                 # slow init -- which needs an ISO9141 channel, so switch mode and
                 # reopen before trying it.
                 if self._fast and self._allow_slow and attempt == tries:
+                    # The 5-baud address sent straight after a fast init the ECU
+                    # did not answer is ignored (bench EDC16, after a VDO cluster
+                    # session had shared its K-line: a fast init got no answer,
+                    # the 5-baud init sent 0.1 s later failed, and so did every
+                    # repeat; the same 5-baud init on a quiet line answered).
+                    self._quiet(FAST_TO_SLOW_QUIET_S)
                     try:
                         self._fast = False
                         try:
@@ -284,16 +335,98 @@ class J2534KLine:
                             pass
                         self._ch = None
                         self._connect_channel()
-                        resp = self._ch.five_baud_init(SLOW_INIT_ADDR)
+                        resp = self._ch.five_baud_init(kline_address)  # the caller's, not EDC16's
                         self._log("J2534 K-line fast init failed; 5-baud (ISO9141) "
                                   "fallback ok -> %s" % (bytes(resp).hex() or "(no data)"))
-                        return _version_from_keybytes(bytes(resp))
+                        return self._finish_slow_init(bytes(resp))
                     except Exception as ex2:                   # noqa: BLE001
                         last = ex2
                         self._fast = True                       # restore for retry
                 if attempt < tries:
-                    time.sleep(0.4)
+                    # fast inits are pulses and need no rest between them; a missed
+                    # 5-baud init is repeated on a quiet line
+                    self._quiet(0.4 if self._fast else INIT_RETRY_QUIET_S)
         raise KLineError("J2534 K-line init failed: %s" % last)
+
+    def _init_stopped(self) -> bool:
+        return any(f is not None and f() for f in (self.is_stop, self.init_is_stop))
+
+    def _quiet(self, seconds: float):
+        """Rest the line for ``seconds`` in short slices, so a stop request is seen
+        within ~50 ms instead of after the whole pause (up to 6 s)."""
+        end = time.monotonic() + seconds
+        while True:
+            if self._init_stopped():
+                raise KLineError("J2534 K-line init: stop requested")
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(0.05, left))
+
+    def _finish_slow_init(self, resp: bytes) -> int:
+        """Pick up the cluster's first ident-block byte for a KW1281 reply
+        (version 1281).
+
+        Vendors disagree on what their FIVE_BAUD_MOD setting actually does
+        here: a Scanmatik SM2 sends KW2's complement itself as part of the
+        ioctl ("tester sends inverted KB2" is literally what FIVE_BAUD_MOD=1
+        means) -- confirmed on the bench, and confirmed the hard way that
+        sending it AGAIN ourselves puts a stray duplicate on the wire that
+        desyncs every ack after it. A Tactrix OpenPort returns only the raw
+        sync+keywords and does nothing further -- nobody sends the
+        complement unless this does it. So: poll briefly first (covers the
+        SM2 case); if nothing shows up, this device didn't send it, so send
+        it now (covers OpenPort).
+
+        Ignore a stray echo of ``resp`` throughout the probe: an OpenPort
+        leaves the sync+keyword bytes five_baud_init() already returned
+        sitting in its own receive queue too (re-delivered any time within
+        the probe window, not necessarily right away), and that stale
+        re-delivery looks exactly like a genuine post-complement reply --
+        taking the first one found without checking never fell through to
+        send the complement at all. A blind clear_rx() instead risks the
+        opposite mistake on a device like the SM2, which can have the real
+        reply already queued by the time this runs: only a byte-for-byte
+        echo of what five_baud_init() already handed back is discarded, for
+        the whole probe, not just its first poll -- anything else found
+        stays and ends the probe."""
+        version = _version_from_keybytes(resp)
+        if version == 1281:
+            kw2 = _kw2_from_keybytes(resp)
+            if not self._poll_into_rx(0.03, ignore=bytes(resp)) and kw2 is not None:
+                self.write_before_read(bytes([(~kw2) & 0xFF]))
+        return version
+
+    def _poll_into_rx(self, timeout_s: Optional[float] = None,
+                      ignore: Optional[bytes] = None) -> bool:
+        """Pull one already-earned reply byte off the channel into self._rx,
+        same capture logic as write_before_read but with no write of its own
+        -- see _finish_slow_init. ``ignore``: a message exactly equal to this
+        is a stale re-delivery, not a real answer -- skip it and keep
+        polling instead of taking it. Returns whether a byte was captured."""
+        deadline = time.monotonic() + (self._timeout if timeout_s is None else timeout_s)
+        got = bytearray(self._carry)
+        self._carry.clear()
+        while not got and time.monotonic() < deadline:
+            left_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+            for m in self._ch.read(16, min(left_ms, 50)):
+                if getattr(m, "is_tx_echo", False):
+                    continue
+                d = bytes(m.payload)
+                # a stale re-delivery may carry the sync byte five_baud_init()
+                # itself already stripped off (OpenPort's "018a" vs. the raw
+                # "55 01 8a" still sitting in its queue) -- compare by suffix
+                if d and ignore and d.endswith(ignore):
+                    continue
+                if d:
+                    got += d
+        if self._trace and got:
+            self._trace("rx", bytes(got))
+        if got:
+            self._rx.append(got[0])
+            self._carry += got[1:]
+            return True
+        return False
 
     def close(self):
         if self._ch is not None:
@@ -320,7 +453,12 @@ class J2534KLine:
 
     def set_baud(self, baud: int):
         if self._ch is not None:
-            self._ch.set_baud(baud)                            # device switches K-line baud
+            try:
+                self._ch.set_baud(baud)                        # device switches K-line baud
+            except J.J2534Error as ex:
+                # a device that cannot make this rate (an OpenPort's firmware stops near 125 kbaud)
+                # is "no clean rate", which the High-speed discovery steps past -- not a crash
+                raise KLineError("this device cannot run the K-line at %d baud: %s" % (baud, ex))
         else:
             self._baud0 = int(baud)                            # the next channel opens at it
 
@@ -407,6 +545,35 @@ class J2534KLine:
     def write_byte(self, b: int):
         self._feed(bytes([b & 0xFF]), echo=False)
 
+    def write_before_read(self, data: bytes):
+        """kwp.py's ``_write_then_read`` extension point: send ``data`` (one
+        byte -- KW1281's per-byte ack) as its own message right now, and pull
+        the ECU's reply straight into self._rx for the read_byte() the caller
+        makes immediately after.
+
+        KW1281's byte-at-a-time ack dialog has no "frame" for _feed()'s
+        kline_frame_len to recognise -- most ack bytes just sit in self._tx
+        unsent, since that heuristic is built for ISO14230's addressed,
+        length-prefixed frames (what the EDC15/16 KWP2000 dialog actually
+        sends). And routing a lone ack byte through _exchange()/_recv_message
+        instead -- which call kline_split, built for the same ISO14230 framing
+        -- would make it wait out the full read timeout for a 'frame' a single
+        raw byte never forms, once per ack byte: fatal for a 2 KB EEPROM read's
+        thousands of individual byte acks. So this neither frame-buffers nor
+        frame-parses: it treats whatever the channel hands back next as the
+        answer, exactly as the single-byte stream it is."""
+        # KW1281's per-byte ack is strict one-for-one: this write earns exactly
+        # one reply byte, never more -- a read can hand back more than one in
+        # the same poll (two block bytes sent close together), and grabbing
+        # all of it here would let read_byte() see the second one before its
+        # own ack ever went out, desyncing the dialog a byte early. See
+        # _poll_into_rx, which only keeps the first and holds the rest in
+        # self._carry for the next call.
+        if self._trace:
+            self._trace("tx", bytes(data))
+        self._ch.write(bytes(data), timeout_ms=max(100, len(data) * 4))
+        self._poll_into_rx()
+
     def _feed(self, data: bytes, echo: bool):
         self._tx += data
         while True:
@@ -491,6 +658,15 @@ class J2534KLine:
 
     # -- reads: serve from the reassembled byte stream ------------------------
     def read_byte(self) -> int:
+        if not self._rx and self._carry:
+            # bytes _poll_into_rx already pulled off the wire alongside the
+            # one it served, held back so write_before_read()'s next ack
+            # earns exactly one more -- but some callers (kwp.py's KW1281
+            # resync branch) read several bytes straight with no ack between
+            # them, genuinely expecting more than one already-arrived byte
+            # at once. It already arrived; nothing is skipped by handing it
+            # over now instead of making the caller wait for it twice.
+            self._rx.append(self._carry.pop(0))
         if not self._rx:
             raise KLineTimeout("J2534 K-line: no data")
         return self._rx.pop(0)
